@@ -2,7 +2,8 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 $appPath = Join-Path $repository 'local-data/publish/TogetherServer.exe'
 $fixturePath = Join-Path $repository 'src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe'
-if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath)) {
+$valheimFixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
+if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath) -or !(Test-Path -LiteralPath $valheimFixturePath)) {
     throw 'Run scripts/build.ps1 first.'
 }
 
@@ -11,7 +12,10 @@ $worldDirectory = Join-Path $caseRoot 'disposable-world'
 New-Item -ItemType Directory -Path $worldDirectory -Force | Out-Null
 $isolatedApp = Join-Path $caseRoot 'TogetherServer.exe'
 Copy-Item -LiteralPath $appPath -Destination $isolatedApp
-$port = Get-Random -Minimum 51000 -Maximum 59000
+$probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$probe.Start()
+$port = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+$probe.Stop()
 $gamePort = Get-Random -Minimum 35000 -Maximum 45000
 $baseUrl = "http://127.0.0.1:$port"
 $profileId = [guid]::NewGuid().ToString()
@@ -24,12 +28,16 @@ try {
     $appProcess = Start-Process -FilePath $isolatedApp -ArgumentList @('--host', '--port', $port) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $caseRoot 'app-out.txt') -RedirectStandardError (Join-Path $caseRoot 'app-err.txt')
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
+        if ($appProcess.HasExited) { throw "The local GUI exited during startup; see $caseRoot/app-err.txt" }
         try {
-            $page = Invoke-WebRequest -Uri "$baseUrl/" -UseBasicParsing
+            $page = Invoke-WebRequest -Uri "$baseUrl/" -UseBasicParsing -TimeoutSec 2
             $ready = $page.StatusCode -eq 200
             if ($ready) { break }
         }
-        catch { Start-Sleep -Milliseconds 100 }
+        catch {
+            if ($appProcess.HasExited) { throw "The local GUI exited during startup; see $caseRoot/app-err.txt" }
+            Start-Sleep -Milliseconds 100
+        }
     }
     if (!$ready) { throw 'The local GUI did not start.' }
     $jsMatch = [regex]::Match($page.Content, '/assets/[^" ]+\.js')
@@ -66,6 +74,16 @@ try {
     if (!$stopped.ok) { throw "Stop failed: $($stopped.message)" }
     $fixtureStarted = $false
     Write-Host 'PASS served settings, Start, Health, Stop, and mode guard'
+
+    $valheimId = [guid]::NewGuid().ToString()
+    $valheimProfile = @{ id = $valheimId; kind = 'Valheim'; name = 'Synthetic Valheim settings'; serverName = 'Fixture Valheim'; worldId = 'not-started'; worldDirectory = $worldDirectory; gamePort = ($gamePort + 10); executablePath = $valheimFixturePath }
+    $settings.profiles = @($profile, $valheimProfile)
+    $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
+    if (!$saved.ok) { throw "Valheim settings rejected: $($saved.message)" }
+    $password = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/password" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"password":"fixture-pass-123"}'
+    if (!$password.ok -or !$password.snapshot.passwordConfigured.$valheimId) { throw 'Protected Valheim password route failed.' }
+    if ((Get-Content (Join-Path $caseRoot 'host.json') -Raw).Contains('fixture-pass-123')) { throw 'Valheim password leaked into Host settings.' }
+    Write-Host 'PASS served Valheim profile and protected password endpoint (synthetic settings)'
 
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     $friend = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"

@@ -4,7 +4,7 @@ TogetherServer is a small, Windows-first Valheim hosting app for one owner and a
 
 The same app will run in **Host** mode on the owner's PC and **Friend** mode on each player's PC. One app process on each PC serves its own bundled React interface; the Valheim dedicated server remains a separate game process managed by Host mode. Friends use the companion to report whether their Valheim game is running and, when the owner permits it, request start and stop actions over a public-IP connection.
 
-The local Host and Friend slices are implemented. Host actions still launch a synthetic process fixture; they do not launch Valheim or modify a world. Pairing, pinned HTTPS, heartbeat, permissions, and remote-control notices work in local tests. A real public-IP route, Valheim game behavior, and auto shutdown remain unverified or unavailable.
+The Host can now launch an owner-selected `valheim_server.exe` directly, watch its unique log for the server-connected signal, and request Ctrl+C in its isolated Windows console to stop it. This path has passed only a synthetic console fixture test. Real Valheim startup, joining, and save/restart are not yet verified. Pairing, pinned HTTPS, heartbeat, permissions, and remote-control notices work in local tests. A real public-IP route and auto shutdown remain unverified or unavailable.
 
 ## Build and run locally
 
@@ -17,9 +17,17 @@ On Windows, install the .NET 10 SDK and Node for **building** the React assets. 
 
 Open `http://127.0.0.1:5127/`. The GUI is bound to loopback. The same executable starts in Friend mode with `--friend`, and the GUI can switch modes when no managed run or companion listener is active. An unpaired Friend makes no network request.
 
-To try the local fixture, create an empty disposable directory under ignored `local-data/`. In the GUI, add a profile with that existing directory, a unique world ID and UDP port pair, and the absolute path to `src\TogetherServer.Fixture\bin\Release\net10.0\TogetherServer.Fixture.exe`. Save settings, then use Start fixture, Health check, and Stop. The fixture never reads or writes a world. Host settings and run identity are stored under `%LOCALAPPDATA%\TogetherServer` by default. `TOGETHERSERVER_DATA_DIR` can override that location for isolated development.
+To try the local fixture, create an empty disposable directory under ignored `local-data/`. In the GUI, add a **Synthetic fixture** profile with that existing directory, a unique world ID and UDP port pair, and the absolute path to `src\TogetherServer.Fixture\bin\Release\net10.0\TogetherServer.Fixture.exe`. Save settings, then use Start, Health check, and Stop. The fixture never reads or writes a world. Host settings and run identity are stored under `%LOCALAPPDATA%\TogetherServer` by default. `TOGETHERSERVER_DATA_DIR` can override that location for isolated development.
 
-The publish output has one self-contained app executable with the React assets embedded. `TogetherServer.Fixture.exe` is a separate development-only fixture and is not part of the app publish.
+The publish output has one self-contained app executable with the React assets embedded. Both test fixtures are separate development binaries and are not part of the app publish.
+
+## Valheim profile
+
+After the owner has installed and approved Valheim Dedicated Server, choose **Valheim** in the Host GUI. Enter its installed `valheim_server.exe`, a server name, world ID, existing save directory, and UDP start port. Save the profile, then set its server password in the separate protected field. TogetherServer does not modify Steam's startup script, download the game, accept terms, create the save directory, or delete a world. The password is encrypted in the current Windows user's local data; Valheim still requires it in its launch arguments, which Windows users with sufficient process access may inspect.
+
+Local Start launches the selected executable with fixed Valheim arguments. `Starting` changes to `Ready` only after the unique log contains `Game server connected`; this is not a verified client join. Local Stop rechecks the recorded PID, start time, and executable, sends Ctrl+C only to its isolated console, and waits for exit without force killing. A timeout or uncertain identity leaves the run recorded and blocked. A real client join and recognizable world change through stop/restart must still be tested before trusting this path with a valued world. The [official dedicated-server guide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/) documents these arguments, readiness text, and Ctrl+C stop.
+
+Other games can later use owner-authored local action scripts as approved profiles. Friends would still request a profile ID only. A custom script needs a trackable server process and a proven stop behavior before remote Stop or automatic shutdown can safely use it.
 
 ## Local companion setup
 
@@ -31,6 +39,7 @@ Friend mode can check an approved Valheim client executable path; the path can b
 
 ```powershell
 dotnet run --project checks\TogetherServer.Checks\TogetherServer.Checks.csproj -c Release
+dotnet run --project checks\TogetherServer.ValheimChecks\TogetherServer.ValheimChecks.csproj -c Release
 .\checks\served-smoke.ps1
 dotnet run --project checks\TogetherServer.CompanionChecks\TogetherServer.CompanionChecks.csproj -c Release
 ```

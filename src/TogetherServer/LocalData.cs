@@ -3,6 +3,8 @@ using System.Security.Cryptography;
 
 namespace TogetherServer;
 
+public sealed record ValheimPasswordRequest(string Password);
+
 public sealed class HostSettings
 {
     public int MaxConcurrentServers { get; set; } = 1;
@@ -21,7 +23,11 @@ public sealed class HostSettings
 public sealed class ServerProfile
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public string Kind { get; set; } = "Fixture";
     public string Name { get; set; } = "";
+    public string ServerName { get; set; } = "";
+    public bool Crossplay { get; set; }
+    public bool PublicListing { get; set; }
     public string WorldId { get; set; } = "";
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; } = 2456;
@@ -32,11 +38,13 @@ public sealed class ManagedRun
 {
     public Guid ProfileId { get; set; }
     public Guid OperationId { get; set; }
+    public string Kind { get; set; } = "Fixture";
     public string WorldId { get; set; } = "";
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; }
     public string ExecutablePath { get; set; } = "";
     public string StopPipeName { get; set; } = "";
+    public string LogPath { get; set; } = "";
     public int? ProcessId { get; set; }
     public long? StartTimeUtcTicks { get; set; }
 }
@@ -60,6 +68,20 @@ public sealed class LocalData : IDisposable
     public List<ManagedRun> LoadRuns() => Load("runs.json", new List<ManagedRun>());
     public void SaveSettings(HostSettings settings) => Save("host.json", settings);
     public void SaveRuns(List<ManagedRun> runs) => Save("runs.json", runs);
+    public string NewRunLogPath(Guid operationId)
+    {
+        var directory = Path.Combine(root, "logs");
+        Directory.CreateDirectory(directory);
+        return Path.Combine(directory, operationId.ToString("N") + ".log");
+    }
+    public bool HasValheimPassword(Guid profileId) => HasProtected($"valheim-password-{profileId:N}.protected");
+    public void SaveValheimPassword(Guid profileId, string password) =>
+        SaveProtected($"valheim-password-{profileId:N}.protected", System.Text.Encoding.UTF8.GetBytes(password));
+    public string? LoadValheimPassword(Guid profileId)
+    {
+        var bytes = LoadProtected($"valheim-password-{profileId:N}.protected");
+        return bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes);
+    }
     public List<PairedDevice> LoadDevices() => Load("devices.json", new List<PairedDevice>());
     public void SaveDevices(List<PairedDevice> devices) => Save("devices.json", devices);
     public bool HasProtected(string name) => File.Exists(Path.Combine(root, name));

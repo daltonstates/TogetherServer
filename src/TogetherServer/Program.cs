@@ -115,6 +115,8 @@ app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => m
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
+    HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
 app.MapPost("/api/local/mode/{mode}", async (string mode) =>
 {
     await modeGate.WaitAsync();

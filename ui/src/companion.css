@@ -1,3 +1,18 @@
+.settings-grid select,
+.profile-form .save-row input[type="password"] {
+  display: block;
+  width: 100%;
+  background: #101813;
+  border: 1px solid #475749;
+  color: #e8ede8;
+  border-radius: 7px;
+  padding: 10px 11px;
+  margin-top: 7px;
+  font-size: 13px;
+}
+.profile-form .save-row label { flex: 1; color: #d6dfd4; font-size: 12px; font-weight: 650; }
+.profile-form .save-row .secondary { background: transparent; color: #d3e4cd; border-color: #627760; }
+
 .settings-grid textarea {
   display: block;
   width: 100%;

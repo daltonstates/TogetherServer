@@ -2,7 +2,7 @@
 
 ## Goal
 
-Let the owner host a Valheim dedicated server on a Windows PC and let a small, known group of friends see its status and request start/stop from their own Windows PCs. Keep the program understandable: one installable app with Host and Friend modes, a bundled GUI, a few fixed host actions, and local settings. No cloud control plane or separate database service.
+Let the owner host a Valheim dedicated server on a Windows PC and let a small, known group of friends see its status and request start/stop from their own Windows PCs. Valheim is the first supported game; later games may use owner-authored local action scripts. Keep the program understandable: one installable app with Host and Friend modes, a bundled GUI, approved actions, and local settings. No cloud control plane or separate database service.
 
 ## People and modes
 
@@ -37,4 +37,4 @@ Let the owner host a Valheim dedicated server on a Windows PC and let a small, k
 
 ## Out of scope for v1
 
-Minecraft/Paper, commercial or cloud servers, billing, a public web dashboard, arbitrary scripts/plugins, provider provisioning, automatic DNS/router/firewall changes, mobile or console companions, and guaranteeing physical server capacity. These can be reconsidered after a real Valheim friend join/save/restart test.
+Commercial or cloud servers, billing, a public web dashboard, a plugin system, provider provisioning, automatic DNS/router/firewall changes, mobile or console companions, and guaranteeing physical server capacity. Owner-authored scripts for other games are a planned local profile type, not a public command endpoint. They must identify the actual server process and prove safe Stop behavior before remote Stop or automatic shutdown is enabled for that profile. The Valheim friend join/save/restart gate remains required.
