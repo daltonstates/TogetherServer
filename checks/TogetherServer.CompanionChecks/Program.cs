@@ -9,7 +9,7 @@ using System.Text.Json;
 using TogetherServer;
 
 var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-var appPath = Path.GetFullPath("local-data/publish/TogetherServer.exe");
+var appPath = Path.GetFullPath("local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
 if (!File.Exists(appPath) || !File.Exists(fixturePath)) throw new Exception("Run scripts/build.ps1 first.");
 var root = Path.GetFullPath("local-data/companion-checks/" + Guid.NewGuid().ToString("N"));

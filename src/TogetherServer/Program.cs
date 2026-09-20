@@ -6,9 +6,12 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using TogetherServer;
 
-var friendMode = args.Contains("--friend", StringComparer.OrdinalIgnoreCase);
-if (friendMode && args.Contains("--host", StringComparer.OrdinalIgnoreCase))
+var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase);
+var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
+if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
+var openBrowser = args.Length == 0;
+DesktopLaunch.EnsureConsoleForGameStop(openBrowser);
 var portIndex = Array.IndexOf(args, "--port");
 var port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
     ? parsedPort : 5127;
@@ -16,7 +19,16 @@ if (port is < 1024 or > 65535) throw new ArgumentException("Local GUI port must 
 
 var root = Environment.GetEnvironmentVariable("TOGETHERSERVER_DATA_DIR")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TogetherServer");
-using var data = new LocalData(root);
+LocalData data;
+try { data = new LocalData(root); }
+catch (IOException ex) when (openBrowser)
+{
+    if (await DesktopLaunch.TryOpenExistingAsync(port)) return;
+    DesktopLaunch.ShowError("TogetherServer could not open its local data. Another instance may be starting.\n\n" + ex.Message);
+    return;
+}
+using var ownedData = data;
+var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
 var manager = new HostManager(data);
 var pairing = new PairingService(data);
 var identity = new HostIdentity(data);
@@ -143,8 +155,22 @@ app.MapPost("/api/local/mode/{mode}", async (string mode) =>
             return Results.Conflict(new { ok = false, code = "ManagedRunPresent", message = "Stop or resolve every managed run before switching to Friend mode." });
         if (mode.Equals("friend", StringComparison.OrdinalIgnoreCase) && companionActive)
             return Results.Conflict(new { ok = false, code = "CompanionListenerActive", message = "Disable the companion listener and restart before switching to Friend mode." });
+        data.SavePreferredMode(mode.Equals("friend", StringComparison.OrdinalIgnoreCase) ? "Friend" : "Host");
         friendMode = mode.Equals("friend", StringComparison.OrdinalIgnoreCase);
         return Results.Json(new { ok = true, code = "ModeChanged", message = $"Switched to {(friendMode ? "Friend" : "Host")} mode." });
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/quit", async (HttpContext context) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (!friendMode && (await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+            return Results.Json(new { ok = false, code = "ManagedRunPresent",
+                message = "Stop or resolve every managed server before quitting TogetherServer." });
+        context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
+        return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing. You can close this browser tab." });
     }
     finally { modeGate.Release(); }
 });
@@ -334,5 +360,12 @@ var pollTask = Task.Run(async () =>
         catch (OperationCanceledException) { break; }
     }
 });
+if (openBrowser) app.Lifetime.ApplicationStarted.Register(() =>
+    _ = Task.Run(() => DesktopLaunch.Open($"http://127.0.0.1:{port}/")));
 try { await app.RunAsync(); }
+catch (Exception ex) when (openBrowser)
+{
+    DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
+    Environment.ExitCode = 1;
+}
 finally { pollStop.Cancel(); await pollTask; }

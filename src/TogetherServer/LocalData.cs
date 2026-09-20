@@ -67,6 +67,8 @@ public sealed class LocalData : IDisposable
     }
 
     public HostSettings LoadSettings() => Load("host.json", new HostSettings());
+    public string LoadPreferredMode() => Load("mode.json", "Host");
+    public void SavePreferredMode(string mode) => Save("mode.json", mode);
     public List<ManagedRun> LoadRuns() => Load("runs.json", new List<ManagedRun>());
     public void SaveSettings(HostSettings settings) => Save("host.json", settings);
     public void SaveRuns(List<ManagedRun> runs) => Save("runs.json", runs);

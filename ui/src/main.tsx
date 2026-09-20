@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './style.css'
 import './companion.css'
@@ -76,10 +76,13 @@ function App() {
   const [passwords, setPasswords] = useState<Record<string, string>>({})
   const [discovery, setDiscovery] = useState<Discovery | null>(null)
   const [sourceRoots, setSourceRoots] = useState<Record<string, string>>({})
+  const [exiting, setExiting] = useState(false)
+  const exited = useRef(false)
 
   useEffect(() => {
     let alive = true
     const refresh = async () => {
+      if (exited.current) return
       try {
         const next = await readSnapshot()
         if (!alive) return
@@ -233,13 +236,26 @@ function App() {
     finally { setPending('') }
   }
 
+  const quitApp = async () => {
+    if (dirty && !window.confirm('Discard unsaved settings and quit TogetherServer?')) return
+    setPending('quit')
+    try {
+      const result = await change<BasicResult>('/api/local/quit', 'POST')
+      if (result.ok) { exited.current = true; setExiting(true) }
+      else setNotice({ good: false, text: `${result.code}: ${result.message}` })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+
+  if (exiting) return <div className="shell"><main><section className="panel"><h1>TogetherServer is closing</h1><p>You can close this browser tab. Double-click TogetherServer.exe to open the app again.</p></section></main></div>
+
   return <div className="shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><div><strong>TogetherServer</strong><small>Local companion</small></div></div>
-      <nav className="mode-switch" aria-label="Application mode">
+      <div className="topbar-actions"><nav className="mode-switch" aria-label="Application mode">
         <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}>Host</button>
         <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Friend</button>
-      </nav>
+      </nav><button className="quit-button" disabled={!!pending} onClick={() => void quitApp()}>Quit app</button></div>
     </header>
 
     <main>
@@ -373,6 +389,7 @@ function App() {
         </section>
         <div className="hint">The mode switch is available when no managed run is active. Fixture work does not alter a real Valheim world.</div>
       </>}
+      <p className="footnote">Closing this browser tab leaves TogetherServer running so Friend heartbeat and Host controls continue. Use Quit app to stop it.</p>
     </main>
   </div>
 }

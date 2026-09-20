@@ -2,7 +2,7 @@
 
 ```text
 Friend PC                                      Owner PC
-TogetherServer.exe --friend                   TogetherServer.exe --host
+TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)
   bundled React UI on localhost                 bundled React UI on localhost
   Valheim.exe process check                      settings + friend pairing
   outbound HTTPS heartbeat/start/stop  ----->   small HTTPS companion API

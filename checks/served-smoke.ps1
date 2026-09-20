@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
-$appPath = Join-Path $repository 'local-data/publish/TogetherServer.exe'
+$appPath = Join-Path $repository 'local-data/release/TogetherServer.exe'
 $fixturePath = Join-Path $repository 'src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe'
 $valheimFixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
 if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath) -or !(Test-Path -LiteralPath $valheimFixturePath)) {
@@ -10,8 +10,6 @@ if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath
 $caseRoot = Join-Path $repository ('local-data/served-smoke/' + [guid]::NewGuid().ToString('N'))
 $worldDirectory = Join-Path $caseRoot 'disposable-world'
 New-Item -ItemType Directory -Path $worldDirectory -Force | Out-Null
-$isolatedApp = Join-Path $caseRoot 'TogetherServer.exe'
-Copy-Item -LiteralPath $appPath -Destination $isolatedApp
 $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
 $probe.Start()
 $port = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
@@ -21,21 +19,25 @@ $baseUrl = "http://127.0.0.1:$port"
 $profileId = [guid]::NewGuid().ToString()
 $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $oldDataDirectory = $env:TOGETHERSERVER_DATA_DIR
+$oldFixtureRoot = $env:TOGETHERSERVER_FIXTURE_ROOT
 $env:TOGETHERSERVER_DATA_DIR = $caseRoot
+$env:TOGETHERSERVER_FIXTURE_ROOT = $caseRoot
 $appProcess = $null
 $fixtureStarted = $false
+$valheimStarted = $false
+$valheimRun = $null
 try {
-    $appProcess = Start-Process -FilePath $isolatedApp -ArgumentList @('--host', '--port', $port) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $caseRoot 'app-out.txt') -RedirectStandardError (Join-Path $caseRoot 'app-err.txt')
+    $appProcess = Start-Process -FilePath $appPath -ArgumentList @('--host', '--port', $port) -NoNewWindow -PassThru
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
-        if ($appProcess.HasExited) { throw "The local GUI exited during startup; see $caseRoot/app-err.txt" }
+        if ($appProcess.HasExited) { throw 'The local GUI exited during startup.' }
         try {
             $page = Invoke-WebRequest -Uri "$baseUrl/" -UseBasicParsing -TimeoutSec 2
             $ready = $page.StatusCode -eq 200
             if ($ready) { break }
         }
         catch {
-            if ($appProcess.HasExited) { throw "The local GUI exited during startup; see $caseRoot/app-err.txt" }
+            if ($appProcess.HasExited) { throw 'The local GUI exited during startup.' }
             Start-Sleep -Milliseconds 100
         }
     }
@@ -49,7 +51,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find Valheim installs and saves') -or !$js.Content.Contains('steam://install/896660')) {
+    if (!$js.Content.Contains('Find Valheim installs and saves') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
@@ -77,6 +79,8 @@ try {
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers -UseBasicParsing | Out-Null }
     catch { $blocked = [int]$_.Exception.Response.StatusCode -eq 409 }
     if (!$blocked) { throw 'Friend mode was allowed while a managed process was active.' }
+    $quitBlocked = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+    if ($quitBlocked.code -ne 'ManagedRunPresent') { throw 'The app quit while a managed server was running.' }
     $stopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/stop" -Method Post -Headers $headers
     if (!$stopped.ok) { throw "Stop failed: $($stopped.message)" }
     $fixtureStarted = $false
@@ -95,16 +99,39 @@ try {
     $sourceSave = Join-Path $caseRoot 'source-save'
     $sourceWorlds = Join-Path $sourceSave 'worlds_local'
     New-Item -ItemType Directory -Path $sourceWorlds -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $sourceWorlds 'test-save.db') -Value 'synthetic database'
-    Set-Content -LiteralPath (Join-Path $sourceWorlds 'test-save.fwl') -Value 'synthetic metadata'
-    $importBody = @{ profileId = $valheimId; sourceSaveRoot = $sourceSave; worldId = 'test-save' } | ConvertTo-Json
+    Set-Content -LiteralPath (Join-Path $sourceWorlds 'fixture-world.db') -Value 'synthetic database'
+    Set-Content -LiteralPath (Join-Path $sourceWorlds 'fixture-world.fwl') -Value 'synthetic metadata'
+    $importBody = @{ profileId = $valheimId; sourceSaveRoot = $sourceSave; worldId = 'fixture-world' } | ConvertTo-Json
     $imported = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body $importBody
-    if (!$imported.ok -or !(Test-Path -LiteralPath (Join-Path $imported.worldDirectory 'worlds_local/test-save.db'))) { throw 'Local world import failed.' }
-    if ((Get-Content -LiteralPath (Join-Path $sourceWorlds 'test-save.db') -Raw).Trim() -ne 'synthetic database') { throw 'Source save changed during import.' }
+    if (!$imported.ok -or !(Test-Path -LiteralPath (Join-Path $imported.worldDirectory 'worlds_local/fixture-world.db'))) { throw 'Local world import failed.' }
+    if ((Get-Content -LiteralPath (Join-Path $sourceWorlds 'fixture-world.db') -Raw).Trim() -ne 'synthetic database') { throw 'Source save changed during import.' }
     $repeat = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body $importBody
     if ($repeat.code -ne 'AlreadyImported') { throw 'Import overwrote an existing copy.' }
     Write-Host 'PASS served Valheim profile and protected password endpoint (synthetic settings)'
     Write-Host 'PASS served missing-save guard and copy import without source mutation (synthetic)'
+
+    $valheimProfile.worldId = 'fixture-world'
+    $valheimProfile.serverName = 'Fixture "Valheim"'
+    $valheimProfile.worldDirectory = $imported.worldDirectory
+    $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
+    if (!$saved.ok) { throw 'Imported synthetic Valheim profile was rejected.' }
+    $valheimStart = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/start" -Method Post -Headers $headers
+    if (!$valheimStart.ok -or $valheimStart.code -ne 'ValheimStarting') { throw "Synthetic Valheim launch failed: $($valheimStart.message)" }
+    $valheimStarted = $true
+    $valheimRun = (Get-Content (Join-Path $caseRoot 'runs.json') -Raw | ConvertFrom-Json) | Where-Object profileId -EQ $valheimId
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        $health = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/health" -Method Post -Headers $headers
+        if ($health.code -eq 'ValheimLogReady') { $ready = $true; break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (!$ready) { throw 'Published EXE did not see the synthetic server-connected log.' }
+    $valheimStop = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/stop" -Method Post -Headers $headers -TimeoutSec 15
+    if (!$valheimStop.ok -or !(Test-Path -LiteralPath (Join-Path $imported.worldDirectory 'synthetic-stop.marker'))) {
+        throw "Published EXE did not stop the synthetic Valheim process with Ctrl+C: $($valheimStop.message)"
+    }
+    $valheimStarted = $false
+    Write-Host 'PASS published EXE starts and gracefully stops synthetic Valheim'
 
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     $friend = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
@@ -113,13 +140,28 @@ try {
     $hostState = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
     if (!$mode.ok -or $hostState.mode -ne 'Host') { throw 'Host mode switch failed.' }
     Write-Host 'PASS in-app Host/Friend mode switching'
+    $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+    if (!$closed.ok -or !$appProcess.WaitForExit(5000)) { throw 'Quit app did not close the published EXE.' }
+    Write-Host 'PASS local Quit app after managed servers stop'
     Write-Host "Smoke data: $caseRoot"
 }
 finally {
+    if ($valheimStarted) {
+        try { Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/stop" -Method Post -Headers $headers -TimeoutSec 5 | Out-Null }
+        catch { Write-Warning 'Synthetic Valheim Stop failed; checking exact fixture identity for cleanup.' }
+        if ($valheimRun -and $valheimRun.processId) {
+            $remaining = Get-Process -Id $valheimRun.processId -ErrorAction SilentlyContinue
+            if ($remaining -and $remaining.Path -eq $valheimFixturePath -and
+                $remaining.StartTime.ToUniversalTime().Ticks -eq $valheimRun.startTimeUtcTicks) {
+                Stop-Process -Id $remaining.Id
+            }
+        }
+    }
     if ($fixtureStarted) {
         try { Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/stop" -Method Post -Headers $headers | Out-Null }
         catch { Write-Warning 'Fixture stop did not complete; inspect the smoke data before closing the app.' }
     }
     if ($appProcess -and !$appProcess.HasExited) { Stop-Process -Id $appProcess.Id }
     $env:TOGETHERSERVER_DATA_DIR = $oldDataDirectory
+    $env:TOGETHERSERVER_FIXTURE_ROOT = $oldFixtureRoot
 }

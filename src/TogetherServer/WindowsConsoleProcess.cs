@@ -14,6 +14,10 @@ internal static class WindowsConsoleProcess
     public static int Start(string executable, IReadOnlyList<string> arguments, string? steamAppId = null)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console launch is required.");
+        // Windows inherits the parent's Ctrl+C ignore flag into a child even
+        // when the child gets a new console. Ensure the server can receive Stop.
+        if (!SetConsoleCtrlHandler(IntPtr.Zero, false))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not enable Ctrl+C for the server process.");
         var command = new StringBuilder(Quote(executable));
         foreach (var argument in arguments) command.Append(' ').Append(Quote(argument));
         var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>(), Flags = StartUseShowWindow, ShowWindow = 0 };

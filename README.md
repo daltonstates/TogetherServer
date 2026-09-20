@@ -6,20 +6,23 @@ The same app will run in **Host** mode on the owner's PC and **Friend** mode on 
 
 The Host can now launch an owner-selected `valheim_server.exe` directly, watch its unique log for the server-connected signal, and request Ctrl+C in its isolated Windows console to stop it. This path has passed only a synthetic console fixture test. Real Valheim startup, joining, and save/restart are not yet verified. Pairing, pinned HTTPS, heartbeat, permissions, and remote-control notices work in local tests. A real public-IP route and auto shutdown remain unverified or unavailable.
 
-## Build and run locally
+## Open the app on Windows
 
-On Windows, install the .NET 10 SDK and Node for **building** the React assets. Node is not needed to run the published app.
+Double-click `local-data\release\TogetherServer.exe`. It opens the local GUI in your default browser. Choose **Host** or **Friend** inside the app; it remembers your choice for the next launch. Double-clicking again reopens the running GUI. Closing the browser tab leaves the app running; use **Quit app** in the GUI after stopping any managed server. Friends use the same EXE on their own PCs. No terminal, .NET SDK, Node install, or separate web server is needed to run the published EXE.
+
+If Windows Security asks whether to allow public and private networks while you are using only the local GUI, choose **Cancel**. The GUI uses `127.0.0.1` and needs no public firewall access. Windows may ask again after a new build or when you run another copy of the EXE. The app never changes firewall rules. Public Friend access requires a separate owner decision and network setup.
+
+To build the EXE from source, developers need the .NET 10 SDK and Node:
 
 ```powershell
 .\scripts\build.ps1
-.\local-data\publish\TogetherServer.exe --host
 ```
 
-Open `http://127.0.0.1:5127/`. The GUI is bound to loopback. The same executable starts in Friend mode with `--friend`, and the GUI can switch modes when no managed run or companion listener is active. An unpaired Friend makes no network request.
+The GUI is bound to loopback. The GUI can switch modes when no managed run or companion listener is active. An unpaired Friend makes no network request. Command-line mode and port flags exist only for isolated developer checks.
 
 To try the local fixture, create an empty disposable directory under ignored `local-data/`. In the GUI, add a **Synthetic fixture** profile with that existing directory, a unique world ID and UDP port pair, and the absolute path to `src\TogetherServer.Fixture\bin\Release\net10.0\TogetherServer.Fixture.exe`. Save settings, then use Start, Health check, and Stop. The fixture never reads or writes a world. Host settings and run identity are stored under `%LOCALAPPDATA%\TogetherServer` by default. `TOGETHERSERVER_DATA_DIR` can override that location for isolated development.
 
-The publish output has one self-contained app executable with the React assets embedded. Both test fixtures are separate development binaries and are not part of the app publish.
+The `local-data\release` folder has just the self-contained app EXE with the React assets embedded. Both test fixtures are separate development binaries and are not part of that folder.
 
 ## Valheim profile
 
@@ -35,7 +38,7 @@ Other games can later use owner-authored local action scripts as approved profil
 
 ## Local companion setup
 
-Host mode defaults to no companion listener and remote controls off. For a **loopback-only** test, save `https://127.0.0.1:5131` as the companion endpoint, `127.0.0.1` as the bind IP, and port `5131`. Create one invite per Friend device in the Host GUI; this explicitly creates a Host TLS identity. Then enable the authenticated companion listener, save, and restart the Host app. Launch the same EXE in Friend mode with a different local GUI port and a separate data directory, paste its one-time invite, and pair. Enable remote controls only after a Friend has activated its credential. Turning them off is enforced by Host immediately while authenticated status and heartbeat continue.
+Host mode defaults to no companion listener and remote controls off. For a **loopback-only** test, save `https://127.0.0.1:5131` as the companion endpoint, `127.0.0.1` as the bind IP, and port `5131`. Create one invite per Friend device in the Host GUI; this explicitly creates a Host TLS identity. Then enable the authenticated companion listener, save, and restart the Host app. On each Friend PC, double-click the same EXE, choose Friend, paste its one-time invite, and pair. Enable remote controls only after a Friend has activated its credential. Turning them off is enforced by Host immediately while authenticated status and heartbeat continue.
 
 Friend mode can check an approved Valheim client executable path; the path can be updated or cleared after pairing. If the path is absent or cannot be verified, its game-running signal is Unknown. Turning off the companion listener rejects public requests immediately; restart the app to release its HTTPS port. Remote Stop stays denied until actual permitted-player coverage and player state can be verified. The current fixture tests do not enable auto shutdown. Do not treat loopback pairing as public-IP reachability. The app never changes Windows Firewall, a router, or DNS.
 
@@ -45,10 +48,11 @@ Friend mode can check an approved Valheim client executable path; the path can b
 dotnet run --project checks\TogetherServer.Checks\TogetherServer.Checks.csproj -c Release
 dotnet run --project checks\TogetherServer.ValheimChecks\TogetherServer.ValheimChecks.csproj -c Release
 .\checks\served-smoke.ps1
+.\checks\desktop-smoke.ps1
 dotnet run --project checks\TogetherServer.CompanionChecks\TogetherServer.CompanionChecks.csproj -c Release
 ```
 
-The process checks run real Windows fixture processes and leave only ignored disposable test data. The Valheim checks also use disposable fake save pairs and a fake Steam library listing; they do not open a real world. The served smoke copies the published EXE alone to an isolated folder and verifies its loopback assets and API. The companion check uses separate local Host and Friend processes with temporary credentials and takes about a minute because it verifies a stale heartbeat. See [implementation status](docs/06-IMPLEMENTATION-STATUS.md) for the latest pass, fail, and skip record.
+The process checks run real Windows fixture processes and leave only ignored disposable test data. The Valheim checks also use disposable fake save pairs and a fake Steam library listing; they do not open a real world. The served smoke runs the published EXE from its normal path with isolated test data and verifies its loopback assets and API. The companion check uses separate local Host and Friend processes with temporary credentials and takes about a minute because it verifies a stale heartbeat. See [implementation status](docs/06-IMPLEMENTATION-STATUS.md) for the latest pass, fail, and skip record.
 
 [docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md](docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md) remains the v1 acceptance gate. Fixture process identity is not Valheim readiness or save evidence.
 

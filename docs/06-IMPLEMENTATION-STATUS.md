@@ -86,3 +86,27 @@ For an existing save, the owner clicks **Use copy** or **Copy named world**. The
 One earlier parallel check invocation failed while two `dotnet run` builds tried to write the same `TogetherServer.dll` (`CS2012` file lock). Rerunning the Valheim check alone passed; the final checks above were run serially. No game terms were accepted, binary downloaded, public settings changed, real credentials used, or real world contents read or modified in this slice.
 
 Launch now: `.\local-data\publish\TogetherServer.exe --host`, then open `http://127.0.0.1:5127/`. The next code action is to validate an owner-approved real Valheim installation and disposable copy through a client join and graceful save/restart, then verify permitted-player/idle behavior with real companions. Until then, remote Stop and auto shutdown remain blocked by the current policy.
+
+## 2026-09-20 - Slice 5 double-click launch and Windows firewall prompt
+
+Starting Git HEAD: `27d45cb2c07857e038771751b9bfd0b5dc44ceec`, clean `main` worktree. The published Windows GUI-subsystem EXE now opens its loopback GUI in the default browser with no arguments and no lasting console window. Host/Friend mode is selected in the GUI and saved locally. A second launch returns to the running app, and **Quit app** exits only after managed servers stop. Closing the browser tab leaves the app running. The one-file release path is stable; the served test no longer makes a fresh copy of the EXE for each run.
+
+The owner-provided screenshot identifies the repeated permission dialog as **Windows Security / Windows Firewall network access**, not UAC. A local GUI run needs no public access; choose **Cancel** for that dialog while using only `127.0.0.1`. The app does not add firewall rules, disable notifications, or enable the public companion listener by default. Windows may ask again for a changed build or another EXE path; this has not been proven eliminated on the owner's machine.
+
+An initial published-EXE synthetic Stop test timed out even though in-process checks passed. Windows can inherit a Ctrl+C ignore setting into a child server process. Host now clears that inheritable setting before launch; the final published-EXE checks observed the synthetic Ctrl+C stop marker and clean exit. The synthetic fixture is not Valheim save evidence. No real game executable, world, credentials, or public network setting was changed.
+
+| Final check | Result |
+| --- | --- |
+| `scripts/build.ps1`: UI, two fixtures, Windows x64 single EXE | Pass; 0 warnings, 0 errors |
+| `local-data/release`: one EXE, PE GUI subsystem value 2 | Pass |
+| `checks/desktop-smoke.ps1`: no-argument launch, synthetic start/stop/restart, second launch, mode persistence and Quit | Pass: 5 groups, 0 failures |
+| `checks/served-smoke.ps1`: embedded GUI assets, local routes, synthetic import and start/stop, Quit | Pass: 9 groups, 0 failures |
+| `TogetherServer.Checks`: duplicate, world, maximum, port, identity and unrelated-process guards | Pass: 7 cases, 0 failures |
+| `TogetherServer.ValheimChecks`: synthetic import, readiness, Ctrl+C, restart and world-file preservation | Pass: 5 groups, 0 failures |
+| `TogetherServer.CompanionChecks`: local Host/two-Friend HTTPS, heartbeat, permissions and notices | Pass: 10 groups, 0 failures |
+| Rendered browser inspection | Skipped: the Browser runtime reported no available browser; HTTP asset and route checks passed |
+| Real Valheim join/save/restart, public-IP Friend connection, real-world idle behavior | Skipped: owner installation and real client/network tests still required |
+
+During development, six published synthetic Stop attempts timed out and one headless startup failed with `AllocConsole` error 5. The published Host's inherited Ctrl+C setting is the likely cause of the timeouts, based on the Windows API behavior and the passing tests after clearing it. A separate immediate Stop on a just-restarted fixture returned `StopUnconfirmed` before readiness; the managed run stayed recorded, and a restart/Stop after readiness passed. These exploratory failures are outside the final check counts above. The owner may still see the Windows firewall dialog for a changed executable. No firewall choice was made by the app or these tests.
+
+Launch now by double-clicking `local-data\release\TogetherServer.exe`; no command line is needed. The next developer command for this slice is `.\checks\desktop-smoke.ps1`. The next acceptance action is an owner-approved Valheim Dedicated Server installation and disposable copy, then a real client join, graceful save/restart, and Friend network test. Remote Stop and auto shutdown remain gated on real permitted-player and heartbeat coverage.
