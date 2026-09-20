@@ -5,7 +5,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>TogetherServer</AssemblyName>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+  </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\..\ui\dist\**\*" LogicalName="Ui/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>

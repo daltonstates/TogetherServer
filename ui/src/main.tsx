@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './style.css'
+import './companion.css'
 
 type Profile = {
   id: string
@@ -15,12 +16,22 @@ type Settings = {
   idleMinutes: number
   autoShutdownEnabled: boolean
   remoteControlsEnabled: boolean
+  companionListeningEnabled: boolean
+  companionBindAddress: string
+  companionEndpoint: string
+  companionPort: number
+  ownerClientExecutablePath: string
+  permittedPlayersVerified: boolean
   profiles: Profile[]
 }
 type Run = { profileId: string; state: string; detail: string; processId: number | null }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[] }
-type FriendSnapshot = { mode: 'Friend'; state: string; detail: string }
+type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; ownerGameRunning: boolean | null; ownerCheckedUtc: string }
+type PublicProfile = { id: string; name: string; state: string }
+type Device = { id: string; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null }
+type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[] }
+type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; localGameRunning: boolean | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[] }
 type Snapshot = HostSnapshot | FriendSnapshot
+type BasicResult = { ok: boolean; code: string; message: string }
 type ActionResult = { ok: boolean; code: string; message: string; snapshot: HostSnapshot }
 
 const localHeaders = { 'Content-Type': 'application/json', 'X-TogetherServer-Local': '1' }
@@ -31,7 +42,7 @@ async function readSnapshot(): Promise<Snapshot> {
   return response.json()
 }
 
-async function change(path: string, method: 'POST' | 'PUT', body?: unknown): Promise<ActionResult> {
+async function change<T extends BasicResult>(path: string, method: 'POST' | 'PUT', body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: localHeaders,
@@ -48,6 +59,13 @@ function App() {
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [companion, setCompanion] = useState<CompanionInfo | null>(null)
+  const [deviceName, setDeviceName] = useState('')
+  const [deviceStart, setDeviceStart] = useState(false)
+  const [deviceStop, setDeviceStop] = useState(false)
+  const [invitation, setInvitation] = useState('')
+  const [friendInvite, setFriendInvite] = useState('')
+  const [friendClientPath, setFriendClientPath] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -58,6 +76,10 @@ function App() {
         setSnapshot(next)
         setLoadError('')
         setDraft(current => current ?? (next.mode === 'Host' ? next.settings : null))
+        if (next.mode === 'Host') {
+          const response = await fetch('/api/local/companion', { cache: 'no-store' })
+          if (response.ok && alive) setCompanion(await response.json())
+        }
       } catch (error) {
         if (alive) setLoadError(String(error))
       }
@@ -68,6 +90,68 @@ function App() {
   }, [])
 
   const edit = (next: Settings) => { setDraft(next); setDirty(true) }
+  const issueInvite = async (rotateDeviceId?: string, name = deviceName, canStart = deviceStart, canStop = deviceStop) => {
+    setPending('invite')
+    setNotice(null)
+    try {
+      const response = await fetch('/api/local/devices/invite', { method: 'POST', headers: localHeaders,
+        body: JSON.stringify({ name, canStart, canStop, rotateDeviceId: rotateDeviceId ?? null }) })
+      const result: { ok: boolean; code: string; message: string; invitation?: string } = await response.json()
+      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      if (result.ok && result.invitation) {
+        setInvitation(result.invitation)
+        const latest = await fetch('/api/local/companion')
+        if (latest.ok) setCompanion(await latest.json())
+      }
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const revokeDevice = async (id: string) => {
+    if (!window.confirm('Revoke this Friend device now? Its next request will be denied.')) return
+    setPending(id)
+    try {
+      const response = await fetch(`/api/local/devices/${id}/revoke`, { method: 'POST', headers: localHeaders })
+      const result: { ok: boolean; code: string; message: string } = await response.json()
+      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const pairFriend = async () => {
+    setPending('pair')
+    try {
+      const result = await change<BasicResult>('/api/local/friend/pair', 'POST', { invitation: friendInvite, clientExecutablePath: friendClientPath })
+      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      if (result.ok) {
+        setFriendInvite('')
+        await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
+        setSnapshot(await readSnapshot())
+      }
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const saveFriendClientPath = async () => {
+    setPending('client-path')
+    try {
+      const result = await change<BasicResult>('/api/local/friend/client-path', 'POST', { path: friendClientPath })
+      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      if (result.ok) {
+        await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
+        setSnapshot(await readSnapshot())
+      }
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const friendAction = async (id: string, action: 'start' | 'stop') => {
+    setPending(id)
+    try {
+      const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
+      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      setSnapshot(await readSnapshot())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
   const switchMode = async (mode: 'host' | 'friend') => {
     if (dirty && !window.confirm('Discard unsaved Host settings and switch mode?')) return
     setPending('mode')
@@ -89,7 +173,7 @@ function App() {
     setPending(key)
     setNotice(null)
     try {
-      const result = await change(path, method, body)
+      const result = await change<ActionResult>(path, method, body)
       setSnapshot(result.snapshot)
       setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
       if (result.ok && key === 'save') { setDraft(result.snapshot.settings); setDirty(false) }
@@ -115,7 +199,7 @@ function App() {
     <main>
       <div className="eyebrow">{snapshot?.mode === 'Friend' ? 'FRIEND MODE' : 'HOST MODE'} <span>·</span> THIS PC ONLY</div>
       <div className="hero"><div><h1>{snapshot?.mode === 'Friend' ? 'Your connection to the host' : 'Your server, in your hands.'}</h1>
-        <p>{snapshot?.mode === 'Friend' ? 'Friend pairing and heartbeat arrive in the next slice.' : 'Configure a local profile and test fixed process controls with a synthetic fixture.'}</p></div>
+        <p>{snapshot?.mode === 'Friend' ? 'Pair this PC, report whether your game client is running, and request approved Host actions.' : 'Configure a local profile and test fixed process controls with a synthetic fixture.'}</p></div>
         <div className="hero-badge">{snapshot?.mode === 'Host' ? 'Local Host' : 'Local Friend'}<small>127.0.0.1 only</small></div>
       </div>
 
@@ -123,17 +207,37 @@ function App() {
       {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
       {!snapshot && !loadError && <section className="panel">Loading local state…</section>}
 
-      {snapshot?.mode === 'Friend' && <section className="panel friend-panel">
-        <div className="section-heading"><span className="section-icon">↗</span><div><h2>{snapshot.state}</h2><p>{snapshot.detail}</p></div></div>
-        <p>This instance has no Host endpoint or credential. It sends no heartbeat and makes no remote requests yet.</p>
-        <div className="hint">Use the mode switch above, or start this app directly in Friend mode with <code>TogetherServer.exe --friend</code>.</div>
-      </section>}
+      {snapshot?.mode === 'Friend' && <>
+        <div className="stats">
+          <div className="stat"><span>Host connection</span><strong className="small-stat">{snapshot.state}</strong><small>{snapshot.lastConnectedUtc ? `Last verified ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'No verified reply yet'}</small></div>
+          <div className="stat"><span>Remote controls</span><strong>{snapshot.remoteControlsEnabled ? 'On' : 'Off'}</strong><small>Host decides on every request</small></div>
+          <div className="stat"><span>Your game client</span><strong>{snapshot.localGameRunning === null ? 'Unknown' : snapshot.localGameRunning ? 'Running' : 'Closed'}</strong><small>Exact executable path check</small></div>
+        </div>
+        <section className="panel friend-panel">
+          <div className="section-heading"><span className="section-icon">↗</span><div><h2>{snapshot.state}</h2><p>{snapshot.detail}</p></div></div>
+          {snapshot.endpoint && <p>Saved Host endpoint: <code>{snapshot.endpoint}</code></p>}
+          <div className="settings-grid">
+            <label>One-time Host invitation<textarea rows={5} value={friendInvite} onChange={event => setFriendInvite(event.target.value)} placeholder="Paste the invite copied by the Host" /></label>
+            <label>Installed Valheim game client path<input value={friendClientPath} onChange={event => setFriendClientPath(event.target.value)} placeholder="C:\\...\\valheim.exe" /><small>Without a verified path, your heartbeat reports Unknown.</small></label>
+          </div>
+          <div className="save-row"><span>Pairing connects only to the invited Host TLS fingerprint.</span><button disabled={!friendInvite || !!pending} onClick={() => void pairFriend()}>{pending === 'pair' ? 'Pairing…' : 'Pair this PC'}</button><button className="secondary" disabled={!snapshot.endpoint || !!pending} onClick={() => void saveFriendClientPath()}>Save client path</button></div>
+        </section>
+        {snapshot.profiles.length > 0 && <section className="panel">
+          <div className="section-heading"><span className="section-icon">◎</span><div><h2>Host servers</h2><p>Requests name a saved profile only. The Host checks permissions and player state.</p></div></div>
+          {snapshot.profiles.map(profile => <article className="profile-card" key={profile.id}>
+            <div className="profile-top"><div><h3>{profile.name}</h3><p>{profile.state}</p></div><span className={`status ${profile.state === 'Process running' ? 'running' : 'offline'}`}>{profile.state}</span></div>
+            <div className="actions"><button disabled={!!pending || snapshot.state !== 'Connected' || !snapshot.canStart} onClick={() => void friendAction(profile.id, 'start')}>Request Start</button>
+              <button className="secondary" disabled={!!pending || snapshot.state !== 'Connected' || !snapshot.canStop} onClick={() => void friendAction(profile.id, 'stop')}>Request Stop</button></div>
+          </article>)}
+          <p className="footnote">Remote Stop is denied while any player is playing or Unknown. Fixture status is process evidence only.</p>
+        </section>}
+      </>}
 
       {snapshot?.mode === 'Host' && draft && <>
         <div className="stats">
           <div className="stat"><span>Managed processes</span><strong>{snapshot.runs.filter(r => r.state === 'Process running').length}<em> / {snapshot.settings.maxConcurrentServers}</em></strong><small>Fixture processes only</small></div>
-          <div className="stat"><span>Remote controls</span><strong>Off</strong><small>No public listener</small></div>
-          <div className="stat"><span>Auto shutdown</span><strong>Off</strong><small>Player coverage unverified</small></div>
+          <div className="stat"><span>Remote controls</span><strong>{snapshot.settings.remoteControlsEnabled ? 'On' : 'Off'}</strong><small>{companion?.listenerActive ? 'Authenticated HTTPS listener active' : 'Listener off or restart needed'}</small></div>
+          <div className="stat"><span>Owner game client</span><strong>{snapshot.ownerGameRunning === null ? 'Unknown' : snapshot.ownerGameRunning ? 'Running' : 'Closed'}</strong><small>Checked even with this tab closed</small></div>
         </div>
 
         <section className="panel">
@@ -167,7 +271,6 @@ function App() {
             <label>Maximum managed servers<input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /></label>
             <label>Idle minutes<input type="number" min="1" max="1440" value={draft.idleMinutes} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Saved for later; automatic shutdown is unavailable.</small></label>
           </div>
-          <div className="policy-line"><div><strong>Remote Start / Stop</strong><p>Disabled until TLS, pairing, and permissions are in place.</p></div><span className="pill">Off</span></div>
           <div className="policy-line"><div><strong>Automatic shutdown</strong><p>Disabled until every allowed player and game access are verified.</p></div><span className="pill">Off</span></div>
           <div className="subheading"><h3>Approved fixture profiles</h3><button className="secondary" onClick={() => edit({ ...draft, profiles: [...draft.profiles, { id: crypto.randomUUID(), name: '', worldId: '', worldDirectory: '', gamePort: 2456, executablePath: '' }] })}>Add profile</button></div>
           {draft.profiles.map((profile, index) => <div className="profile-form" key={profile.id}>
@@ -180,7 +283,32 @@ function App() {
               <label className="wide">Built TogetherServer.Fixture.exe path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>
             </div>
           </div>)}
+          <div className="subheading"><h3>Companion connection</h3><span className="pill">{companion?.listenerActive ? 'HTTPS active' : 'Listener off'}</span></div>
+          <p className="footnote">The companion listener is separate from this local GUI. Set an IP address endpoint, create an invite, then enable the listener and restart the app. Router and firewall changes are always manual.</p>
+          <div className="settings-grid companion-fields">
+            <label>HTTPS endpoint friends will use<input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value })} placeholder="https://127.0.0.1:5131" /><small>Use a real public IP only after you plan the network test.</small></label>
+            <label>Bind IP address<input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /><small>127.0.0.1 stays local; 0.0.0.0 needs deliberate owner setup.</small></label>
+            <label>Companion HTTPS port<input type="number" value={draft.companionPort} onChange={event => edit({ ...draft, companionPort: Number(event.target.value) })} /></label>
+            <label>Owner Valheim client path<input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="C:\\...\\valheim.exe" /><small>Unknown until the exact executable is configured.</small></label>
+          </div>
+          <label className="check-row"><input type="checkbox" checked={draft.companionListeningEnabled} onChange={event => edit({ ...draft, companionListeningEnabled: event.target.checked })} /> Enable authenticated HTTPS companion listener on next launch</label>
+          <label className="check-row"><input type="checkbox" checked={draft.remoteControlsEnabled} onChange={event => edit({ ...draft, remoteControlsEnabled: event.target.checked })} /> Allow permitted Friends to request Start / Stop</label>
+          {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
           <div className="save-row"><span>{dirty ? 'Unsaved changes. Save before using process controls.' : 'Settings saved locally.'}</span><button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>{pending === 'save' ? 'Saving…' : 'Save settings'}</button></div>
+        </section>
+        <section className="panel">
+          <div className="section-heading"><span className="section-icon">↗</span><div><h2>Paired Friend devices</h2><p>Each PC gets its own one-time invite, credential, and Start/Stop permissions.</p></div></div>
+          <div className="settings-grid">
+            <label>Device name<input value={deviceName} onChange={event => setDeviceName(event.target.value)} placeholder="Friend's PC" /></label>
+            <div className="device-options"><label className="check-row"><input type="checkbox" checked={deviceStart} onChange={event => setDeviceStart(event.target.checked)} /> May request Start</label><label className="check-row"><input type="checkbox" checked={deviceStop} onChange={event => setDeviceStop(event.target.checked)} /> May request Stop</label></div>
+          </div>
+          <div className="save-row"><span>Invites expire after 30 minutes and work once.</span><button disabled={!!pending || dirty || !deviceName} onClick={() => void issueInvite()}>{pending === 'invite' ? 'Creating…' : 'Create invite'}</button></div>
+          {invitation && <div className="invite-box"><strong>One-time invitation</strong><p>Copy privately. This is shown only in this browser session.</p><textarea readOnly rows={5} value={invitation} /><div className="actions"><button onClick={() => void navigator.clipboard.writeText(invitation)}>Copy invite</button><button className="secondary" onClick={() => setInvitation('')}>Hide</button></div></div>}
+          <div className="profile-list device-list">{companion?.devices.map(device => <div className="device" key={device.id}>
+            <div><strong>{device.name}</strong><small>{device.revoked ? 'Revoked' : device.lastHeartbeatUtc ? `Heartbeat ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()} · Game ${device.gameRunning === null ? 'Unknown' : device.gameRunning ? 'running' : 'closed'}` : device.paired ? 'Heartbeat Unknown' : 'Invite pending'} · {device.canStart ? 'Start allowed' : 'Start denied'} · {device.canStop ? 'Stop allowed' : 'Stop denied'}</small></div>
+            <div className="actions"><button className="secondary" disabled={!!pending || device.revoked} onClick={() => void issueInvite(device.id, device.name, device.canStart, device.canStop)}>Rotate</button><button className="text-button danger" disabled={!!pending || device.revoked} onClick={() => void revokeDevice(device.id)}>Revoke</button></div>
+          </div>)}</div>
+          {companion?.fingerprint && <p className="footnote">Pinned Host certificate fingerprint: <code>{companion.fingerprint}</code></p>}
         </section>
         <div className="hint">The mode switch is available when no managed run is active. Fixture work does not alter a real Valheim world.</div>
       </>}

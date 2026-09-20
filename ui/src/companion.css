@@ -1,0 +1,79 @@
+.settings-grid textarea {
+  display: block;
+  width: 100%;
+  background: #101813;
+  border: 1px solid #475749;
+  color: #e8ede8;
+  border-radius: 7px;
+  padding: 10px 11px;
+  margin-top: 7px;
+  outline: none;
+  font-size: 13px;
+  resize: vertical;
+}
+.settings-grid textarea:focus,
+.invite-box textarea:focus {
+  border-color: #b0d998;
+  box-shadow: 0 0 0 3px #7cb56733;
+}
+.companion-fields { margin-top: 16px; }
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #d6dfd4;
+  font-size: 12px;
+  margin-top: 15px;
+}
+.check-row input { accent-color: #acd889; width: 15px; height: 15px; }
+.device-options .check-row { margin-top: 6px; }
+.warning-text { font-size: 12px; color: #f0bd97; }
+.invite-box {
+  border: 1px solid #627760;
+  border-radius: 9px;
+  padding: 17px;
+  margin-top: 18px;
+  background: #203126;
+}
+.invite-box strong { font-size: 13px; }
+.invite-box p { font-size: 12px; color: #aac0a9; }
+.invite-box textarea {
+  width: 100%;
+  background: #101813;
+  border: 1px solid #475749;
+  color: #d5e7d1;
+  border-radius: 7px;
+  padding: 10px;
+  font-size: 11px;
+  resize: vertical;
+}
+.invite-box .actions { margin-top: 10px; }
+.invite-box .actions button {
+  border: 1px solid #a9d788;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #acd889;
+  color: #172019;
+  font-size: 12px;
+  font-weight: 750;
+}
+.invite-box .actions .secondary { background: transparent; color: #d3e4cd; border-color: #627760; }
+.device-list { margin-top: 17px; }
+.device {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid #364238;
+  background: #1c271f;
+  border-radius: 9px;
+  padding: 14px 16px;
+}
+.device strong { font-size: 13px; }
+.device small { display: block; color: #9bab9b; font-size: 11px; margin-top: 5px; line-height: 1.5; }
+.device .actions button { font-size: 11px; }
+.small-stat { font-size: 18px !important; }
+.friend-panel { max-width: none; }
+@media (max-width: 700px) {
+  .device { align-items: flex-start; flex-direction: column; }
+}

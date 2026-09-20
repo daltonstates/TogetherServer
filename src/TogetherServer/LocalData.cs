@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace TogetherServer;
 
@@ -8,6 +9,12 @@ public sealed class HostSettings
     public int IdleMinutes { get; set; } = 15;
     public bool AutoShutdownEnabled { get; set; }
     public bool RemoteControlsEnabled { get; set; }
+    public bool CompanionListeningEnabled { get; set; }
+    public bool PermittedPlayersVerified { get; set; }
+    public string CompanionBindAddress { get; set; } = "127.0.0.1";
+    public string CompanionEndpoint { get; set; } = "";
+    public int CompanionPort { get; set; } = 5131;
+    public string OwnerClientExecutablePath { get; set; } = "";
     public List<ServerProfile> Profiles { get; set; } = [];
 }
 
@@ -39,6 +46,7 @@ public sealed class LocalData : IDisposable
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly FileStream gate;
     private readonly string root;
+    private readonly object auditSync = new();
 
     public LocalData(string root)
     {
@@ -52,6 +60,28 @@ public sealed class LocalData : IDisposable
     public List<ManagedRun> LoadRuns() => Load("runs.json", new List<ManagedRun>());
     public void SaveSettings(HostSettings settings) => Save("host.json", settings);
     public void SaveRuns(List<ManagedRun> runs) => Save("runs.json", runs);
+    public List<PairedDevice> LoadDevices() => Load("devices.json", new List<PairedDevice>());
+    public void SaveDevices(List<PairedDevice> devices) => Save("devices.json", devices);
+    public bool HasProtected(string name) => File.Exists(Path.Combine(root, name));
+    public string? LoadIdentityEndpoint() => Load("host-identity-endpoint.json", (string?)null);
+    public void SaveIdentityEndpoint(string endpoint) => Save("host-identity-endpoint.json", endpoint);
+    public void SaveProtected(string name, byte[] bytes)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows protected storage is required.");
+        var encrypted = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+        Save(name, Convert.ToBase64String(encrypted));
+    }
+    public byte[]? LoadProtected(string name)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows protected storage is required.");
+        if (!HasProtected(name)) return null;
+        var encoded = Load(name, "");
+        return ProtectedData.Unprotect(Convert.FromBase64String(encoded), null, DataProtectionScope.CurrentUser);
+    }
+    public void Audit(string entry)
+    {
+        lock (auditSync) File.AppendAllText(Path.Combine(root, "audit.log"), entry + Environment.NewLine);
+    }
 
     private T Load<T>(string name, T fallback)
     {

@@ -57,7 +57,11 @@ await Check("duplicate start is serialized", async () =>
         Require(starts.Single(result => !result.Ok).Code == "AlreadyManaged", "duplicate was not rejected");
         Require((await manager.HealthAsync(profile.Id)).Code == "FixtureProcessRunning", "fixture identity missing");
     }
-    finally { Require((await manager.StopAsync(profile.Id)).Ok, "fixture cleanup failed"); }
+    finally
+    {
+        var cleanup = await manager.StopAsync(profile.Id);
+        Require(cleanup.Ok, $"fixture cleanup failed: {cleanup.Code} {cleanup.Message}");
+    }
 });
 
 await Check("one writer per world", async () =>

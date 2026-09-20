@@ -7,7 +7,7 @@ namespace TogetherServer;
 
 public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
-    string Evidence, string Mode);
+    string Evidence, string Mode, bool? OwnerGameRunning, DateTimeOffset OwnerCheckedUtc);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot);
 
 public sealed class HostManager(LocalData data)
@@ -15,6 +15,8 @@ public sealed class HostManager(LocalData data)
     private readonly SemaphoreSlim gate = new(1, 1);
     private HostSettings settings = data.LoadSettings();
     private readonly List<ManagedRun> runs = data.LoadRuns();
+
+    public bool CompanionListeningEnabled => Volatile.Read(ref settings).CompanionListeningEnabled;
 
     public async Task<HostSnapshot> SnapshotAsync()
     {
@@ -30,6 +32,14 @@ public sealed class HostManager(LocalData data)
         {
             var error = Validate(next);
             if (error is not null) return Result(false, "InvalidSettings", error);
+            if (next.CompanionListeningEnabled &&
+                (!data.HasProtected("host-certificate.protected") ||
+                 !data.LoadDevices().Any(device => !device.Revoked &&
+                    (device.InviteHash is not null || device.CredentialHash is not null))))
+                return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
+            if (next.RemoteControlsEnabled &&
+                !data.LoadDevices().Any(device => !device.Revoked && device.CredentialHash is not null))
+                return Result(false, "PairedDeviceRequired", "Activate a paired device before enabling remote controls.");
             foreach (var run in runs)
             {
                 var oldProfile = settings.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
@@ -38,6 +48,8 @@ public sealed class HostManager(LocalData data)
                     return Result(false, "ProfileInUse", "Stop or resolve a managed run before changing its profile.");
             }
             data.SaveSettings(next);
+            if (settings.RemoteControlsEnabled != next.RemoteControlsEnabled)
+                data.Audit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
             settings = next;
             return Result(true, "SettingsSaved", "Host settings saved.");
         }
@@ -125,7 +137,7 @@ public sealed class HostManager(LocalData data)
                     !Path.GetFullPath(process.MainModule!.FileName).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
                     return Result(false, "IdentityUnknown", "Process identity changed. No stop signal was sent.");
                 using var pipe = new NamedPipeClientStream(".", run.StopPipeName, PipeDirection.Out, PipeOptions.Asynchronous);
-                using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
                 await pipe.ConnectAsync(connectTimeout.Token);
                 using (var writer = new StreamWriter(pipe) { AutoFlush = true })
                     await writer.WriteLineAsync("stop");
@@ -192,7 +204,8 @@ public sealed class HostManager(LocalData data)
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId)
             };
         }).ToList();
-        return new HostSnapshot(settings, views, "Synthetic fixture / process identity only", "Host");
+        return new HostSnapshot(settings, views, "Synthetic fixture / process identity only", "Host",
+            ClientMonitor.IsRunning(settings.OwnerClientExecutablePath), DateTimeOffset.UtcNow);
     }
 
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
@@ -202,7 +215,18 @@ public sealed class HostManager(LocalData data)
         if (next.MaxConcurrentServers < 1 || next.MaxConcurrentServers > 16) return "Maximum servers must be between 1 and 16.";
         if (next.IdleMinutes < 1 || next.IdleMinutes > 1440) return "Idle minutes must be between 1 and 1440.";
         if (next.AutoShutdownEnabled) return "Auto shutdown is unavailable until real player coverage is verified.";
-        if (next.RemoteControlsEnabled) return "Remote controls are unavailable until pairing and TLS are implemented.";
+        if (next.PermittedPlayersVerified) return "Permitted-player coverage requires real Valheim verification.";
+        if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
+        if (!System.Net.IPAddress.TryParse(next.CompanionBindAddress, out _)) return "Companion bind address must be an IP address.";
+        if (!string.IsNullOrWhiteSpace(next.CompanionEndpoint) &&
+            (!HostIdentity.TryEndpoint(next.CompanionEndpoint, out var endpoint) || endpoint.Port != next.CompanionPort))
+            return "Companion endpoint must be an HTTPS IP address on the configured port.";
+        if (next.CompanionListeningEnabled && string.IsNullOrWhiteSpace(next.CompanionEndpoint))
+            return "Set the companion endpoint before enabling its listener.";
+        if (next.RemoteControlsEnabled && !next.CompanionListeningEnabled)
+            return "Enable the authenticated companion listener before remote controls.";
+        if (!string.IsNullOrWhiteSpace(next.OwnerClientExecutablePath) && !Path.IsPathFullyQualified(next.OwnerClientExecutablePath))
+            return "Owner game client path must be absolute.";
         if (next.Profiles is null || next.Profiles.Select(p => p.Id).Distinct().Count() != next.Profiles.Count)
             return "Each profile needs a unique ID.";
         foreach (var profile in next.Profiles)
