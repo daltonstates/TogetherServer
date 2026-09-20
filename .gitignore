@@ -1,0 +1,30 @@
+# Builds and tool caches
+bin/
+obj/
+node_modules/
+dist/
+build/
+coverage/
+TestResults/
+.vs/
+.idea/
+
+# Local settings, secrets, and run data
+.env
+.env.*
+!.env.example
+local-data/
+*.pfx
+*.pem
+*.key
+*.log
+*.sqlite
+*.sqlite-*
+
+# Game data and binaries
+worlds/
+backups/
+game-binaries/
+valheim_server.exe
+*.db
+*.fwl
