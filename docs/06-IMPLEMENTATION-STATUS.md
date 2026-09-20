@@ -66,3 +66,23 @@ During development, the first Ctrl+C check terminated the synthetic test process
 One later served-smoke rerun failed to bind a randomly selected local TCP port (`10013`, Windows access denied). The smoke now asks Windows for an available loopback port and fails promptly if the app exits during startup; its final rerun passed all five groups.
 
 Launch now: `./local-data/publish/TogetherServer.exe --host`, open `http://127.0.0.1:5127/`, and choose Valheim only after the owner approves an installed server and a safe test world. Exact next local check: `dotnet run --project checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj -c Release`. No terms were accepted, game binaries downloaded, public ports changed, real credentials used, or real worlds touched.
+
+## 2026-09-20 — Slice 4 local world import and Steam path discovery
+
+Host mode now has a read-only search for Valheim Dedicated Server in fixed-drive Steam folders, the current user's Steam install registry path, and libraries listed in `libraryfolders.vdf`. It also lists local worlds with matching `.db` and `.fwl` files in `worlds_local`. An owner can point to another local save root when a single-player or multiplayer save came from another PC. The GUI offers an owner-clicked `steam://install/896660` link for Steam to handle installation; TogetherServer does not download or accept terms. The owner can rescan after installing.
+
+For an existing save, the owner clicks **Use copy** or **Copy named world**. The local Host route copies both save files into a new profile-specific folder under local app data, never replacing an existing copy and never writing to the source. Valheim Start requires this imported copy and both files, so a mistyped name cannot silently create a new seed. **Create a new seed** is explicit and Start rejects a name with existing world files. Existing profile settings from earlier slices may need an import before Start. This code has only been exercised with disposable synthetic files; actual save compatibility and consistent import of a real world are unverified.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1`: React/TypeScript, fixtures, single Windows x64 EXE | Pass; 0 build warnings in final run |
+| `dotnet run --project checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj -c Release --no-restore` | Pass: 5 synthetic groups, 0 failures; includes second-library discovery, original/copy separation, missing pair, direct-source refusal, existing-name new-seed refusal, and synthetic restart |
+| `dotnet run --project checks/TogetherServer.Checks/TogetherServer.Checks.csproj -c Release --no-restore` | Pass: 7 process cases, 0 failures |
+| `checks/served-smoke.ps1` | Pass: 7 loopback HTTP groups, 0 failures; verifies bundled setup controls, read-only discovery route, import copy, and missing-save guard |
+| `dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore` | Pass: 10 local Host/two-Friend groups, 0 failures in the final run |
+| Visual browser interaction | Skipped: browser runtime reported no available browser; served assets and routes were checked over HTTP |
+| Steam installation, actual Valheim save import/start/join/stop/restart, public Friend network | Not run; require owner-approved installation, safe real-world test, and Friend network/client access |
+
+One earlier parallel check invocation failed while two `dotnet run` builds tried to write the same `TogetherServer.dll` (`CS2012` file lock). Rerunning the Valheim check alone passed; the final checks above were run serially. No game terms were accepted, binary downloaded, public settings changed, real credentials used, or real world contents read or modified in this slice.
+
+Launch now: `.\local-data\publish\TogetherServer.exe --host`, then open `http://127.0.0.1:5127/`. The next code action is to validate an owner-approved real Valheim installation and disposable copy through a client join and graceful save/restart, then verify permitted-player/idle behavior with real companions. Until then, remote Stop and auto shutdown remain blocked by the current policy.

@@ -29,6 +29,7 @@ public sealed class ServerProfile
     public bool Crossplay { get; set; }
     public bool PublicListing { get; set; }
     public string WorldId { get; set; } = "";
+    public string WorldSource { get; set; } = "Existing";
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; } = 2456;
     public string ExecutablePath { get; set; } = "";
@@ -55,6 +56,7 @@ public sealed class LocalData : IDisposable
     private readonly FileStream gate;
     private readonly string root;
     private readonly object auditSync = new();
+    public string WorldImportsRoot => Path.Combine(root, "world-imports");
 
     public LocalData(string root)
     {

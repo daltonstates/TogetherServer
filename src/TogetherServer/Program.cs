@@ -117,6 +117,20 @@ app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => 
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
+app.MapGet("/api/local/valheim/discover", async () => friendMode
+    ? Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." })
+    : Results.Json(ValheimSetup.Scan((await manager.SnapshotAsync()).Settings.Profiles
+        .Where(profile => profile.Kind == "Valheim").Select(profile => profile.WorldDirectory))));
+app.MapPost("/api/local/valheim/import", async (ImportWorldRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+        return Results.Json(ValheimSetup.ImportCopy(data, request));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/mode/{mode}", async (string mode) =>
 {
     await modeGate.WaitAsync();

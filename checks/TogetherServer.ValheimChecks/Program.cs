@@ -8,8 +8,11 @@ var unrelatedFixture = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the synthetic Valheim console fixture first.", fixture);
 if (!File.Exists(unrelatedFixture)) throw new FileNotFoundException("Build the ordinary fixture first.", unrelatedFixture);
 var root = Path.GetFullPath("local-data/valheim-checks/" + Guid.NewGuid().ToString("N"));
-var world = Path.Combine(root, "world");
-Directory.CreateDirectory(world);
+var sourceWorld = Path.Combine(root, "source-world");
+Directory.CreateDirectory(Path.Combine(sourceWorld, "worlds_local"));
+File.WriteAllText(Path.Combine(sourceWorld, "worlds_local", "fixture-world.db"), "synthetic database");
+File.WriteAllText(Path.Combine(sourceWorld, "worlds_local", "fixture-world.fwl"), "synthetic metadata");
+var world = sourceWorld;
 Environment.SetEnvironmentVariable("TOGETHERSERVER_FIXTURE_ROOT", root);
 var port = FreePort();
 var profile = new ServerProfile { Kind = "Valheim", Name = "Synthetic Valheim", ServerName = "Fixture \"Valheim\"",
@@ -21,14 +24,57 @@ int? fixturePid = null;
 long? fixtureStart = null;
 try
 {
+    var steam = Path.Combine(root, "Steam");
+    var secondLibrary = Path.Combine(root, "OtherDriveLibrary");
+    Directory.CreateDirectory(Path.Combine(steam, "steamapps"));
+    var installed = Path.Combine(secondLibrary, "steamapps", "common", "Valheim dedicated server");
+    Directory.CreateDirectory(installed);
+    File.WriteAllText(Path.Combine(steam, "steamapps", "libraryfolders.vdf"),
+        "\"libraryfolders\" { \"1\" { \"path\" \"" + secondLibrary.Replace("\\", "\\\\") + "\" } }");
+    File.WriteAllText(Path.Combine(secondLibrary, "steamapps", "appmanifest_896660.acf"),
+        "\"AppState\" { \"installdir\" \"Valheim dedicated server\" }");
+    File.WriteAllText(Path.Combine(installed, "valheim_server.exe"), "synthetic discovery marker; never executed");
+    var found = ValheimSetup.ScanRoots([steam], [sourceWorld]);
+    Require(found.Installations.Single().ExecutablePath == Path.Combine(installed, "valheim_server.exe"),
+        "Steam library path on another root was not found");
+    Require(found.Worlds.Single().Name == "fixture-world", "local world pair was not discovered");
+    using (var importData = new LocalData(Path.Combine(root, "host")))
+    {
+        var copied = ValheimSetup.ImportCopy(importData, new ImportWorldRequest(profile.Id, sourceWorld, profile.WorldId));
+        Require(copied.Ok && copied.WorldDirectory is not null, "local world import failed");
+        world = copied.WorldDirectory!;
+        profile.WorldDirectory = world;
+        second.WorldDirectory = world;
+        Require(ValheimSetup.HasWorldPair(world, profile.WorldId), "imported world pair was missing");
+        Require(File.ReadAllText(Path.Combine(sourceWorld, "worlds_local", "fixture-world.db")) == "synthetic database",
+            "original source world changed");
+        Require(ValheimSetup.ImportCopy(importData, new ImportWorldRequest(profile.Id, sourceWorld, profile.WorldId)).Code == "AlreadyImported",
+            "second import overwrote an existing world copy");
+        Require(ValheimSetup.ImportCopy(importData, new ImportWorldRequest(Guid.NewGuid(), sourceWorld, "missing")).Code == "MissingWorldPair",
+            "incomplete world was imported");
+    }
+    Console.WriteLine("PASS Steam library discovery and read-only source save import (synthetic)"); passes++;
+
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
         var host = new HostManager(data);
-        var settings = new HostSettings { MaxConcurrentServers = 2, Profiles = [profile, second] };
+        var newSeed = new ServerProfile { Kind = "Valheim", Name = "Unsafe new seed", ServerName = "Unsafe new seed",
+            WorldSource = "New", WorldId = profile.WorldId, WorldDirectory = world,
+            GamePort = port + 30, ExecutablePath = fixture };
+        var unimported = new ServerProfile { Kind = "Valheim", Name = "Unimported source", ServerName = "Unimported source",
+            WorldId = profile.WorldId, WorldDirectory = sourceWorld, GamePort = port + 40, ExecutablePath = fixture };
+        var settings = new HostSettings { MaxConcurrentServers = 2, Profiles = [profile, second, newSeed, unimported] };
         Require((await host.UpdateSettingsAsync(settings)).Ok, "Valheim settings rejected");
+        Require((await host.StartAsync(newSeed.Id)).Code == "WorldAlreadyExists", "new seed reused existing world files");
+        Require((await host.StartAsync(unimported.Id)).Code == "WorldImportRequired", "source save was allowed to be started directly");
         Require((await host.StartAsync(profile.Id)).Code == "PasswordRequired", "passwordless start was allowed");
         Require((await host.SetValheimPasswordAsync(profile.Id, "fixture-pass-123")).Ok, "protected password failed");
         Require(data.HasValheimPassword(profile.Id), "protected password was not stored");
+        var metadata = Path.Combine(world, "worlds_local", "fixture-world.fwl");
+        var withheld = metadata + ".withheld";
+        File.Move(metadata, withheld);
+        try { Require((await host.StartAsync(profile.Id)).Code == "MissingWorldPair", "missing world pair created a new seed"); }
+        finally { File.Move(withheld, metadata); }
         Console.WriteLine("PASS Valheim profile and protected password gate (synthetic)"); passes++;
 
         var started = await host.StartAsync(profile.Id);
@@ -83,6 +129,8 @@ try
         await WaitForReady(host, profile.Id);
         Require((await host.StopAsync(profile.Id)).Ok, "second synthetic Ctrl+C stop failed");
         Require(File.ReadAllText(keep) == "preserve this test file", "existing test world file changed");
+        Require(File.ReadAllText(Path.Combine(sourceWorld, "worlds_local", "fixture-world.db")) == "synthetic database",
+            "starting the imported copy changed the source world");
         Console.WriteLine("PASS synthetic restart preserves an unrelated world file"); passes++;
     }
     Console.WriteLine($"Synthetic Valheim checks: {passes} passed, 0 failed. Data: {root}");

@@ -13,7 +13,7 @@ Let the owner host a Valheim dedicated server on a Windows PC and let a small, k
 
 ## V1 user flow
 
-1. The owner installs/locates Valheim Dedicated Server and accepts any required game terms personally. TogetherServer records the selected executable and a separate world/save location without changing or deleting an existing world.
+1. The owner finds an installed Valheim Dedicated Server across common Steam libraries or opens Steam's install flow deliberately and accepts any required game terms personally. For an existing local world, TogetherServer imports a separate copy of its `.db`/`.fwl` pair and records that copy as the server save location; the source is not changed or deleted.
 2. The owner opens the local Host GUI, chooses a server profile and limits, and pairs each Friend device. The app displays connection information for manual sharing; it does not send messages to friends automatically.
 3. A Friend app connects to the Host's public IP and configured control port, verifies the pinned Host identity, and authenticates with its own revocable credential. The Friend GUI shows Connected, Disabled, Revoked, or Unknown/Disconnected distinctly.
 4. A permitted friend may request Start. The Host serializes requests, checks configured maximum concurrency and port/world conflicts, starts only the approved local Valheim server program, and reports Starting until it observes real readiness. A duplicate request cannot launch a second process for the same world.

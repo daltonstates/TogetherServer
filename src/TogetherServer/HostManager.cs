@@ -97,6 +97,15 @@ public sealed class HostManager(LocalData data)
                 return Result(false, "ValheimExecutableRequired", "Select the installed valheim_server.exe.");
             if (!Directory.Exists(profile.WorldDirectory))
                 return Result(false, "MissingWorldDirectory", "Select an existing save directory. TogetherServer will not create or replace it.");
+            if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
+                !ValheimSetup.HasWorldPair(profile.WorldDirectory, profile.WorldId))
+                return Result(false, "MissingWorldPair", "Existing world needs both .db and .fwl in worlds_local. Import a copy before Start; no new seed was created.");
+            if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
+                !ValheimSetup.IsImportedWorld(data, profile.Id, profile.WorldDirectory))
+                return Result(false, "WorldImportRequired", "Import a separate copy of the existing world before Start. Its original save stays untouched.");
+            if (profile.Kind == "Valheim" && profile.WorldSource == "New" &&
+                ValheimSetup.HasAnyWorldFile(profile.WorldDirectory, profile.WorldId))
+                return Result(false, "WorldAlreadyExists", "A world file already exists under this name. Choose a different new-world name.");
             var password = profile.Kind == "Valheim" ? data.LoadValheimPassword(profile.Id) : null;
             if (profile.Kind == "Valheim" && string.IsNullOrEmpty(password))
                 return Result(false, "PasswordRequired", "Set a protected Valheim server password before starting.");
@@ -296,8 +305,10 @@ public sealed class HostManager(LocalData data)
             if (profile.Id == Guid.Empty || string.IsNullOrWhiteSpace(profile.Name) || string.IsNullOrWhiteSpace(profile.WorldId))
                 return "Each profile needs a name and world ID.";
             if (profile.Kind is not ("Fixture" or "Valheim")) return "Choose Fixture or Valheim for the profile type.";
-            if (profile.WorldId.Length > 64 || profile.WorldId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            if (!ValheimSetup.ValidWorldId(profile.WorldId))
                 return "World ID must be a valid file name of at most 64 characters.";
+            if (profile.Kind == "Valheim" && profile.WorldSource is not ("Existing" or "New"))
+                return "Choose an existing imported world or explicitly create a new world.";
             if (profile.Kind == "Valheim" && (string.IsNullOrWhiteSpace(profile.ServerName) ||
                 profile.ServerName.Length > 80 || profile.ServerName.Any(char.IsControl)))
                 return "Valheim server name must be 1 to 80 characters without control characters.";
@@ -311,7 +322,7 @@ public sealed class HostManager(LocalData data)
     private static bool SameProfile(ServerProfile a, ServerProfile b) =>
         a.Kind == b.Kind && a.Name == b.Name && a.ServerName == b.ServerName &&
         a.Crossplay == b.Crossplay && a.PublicListing == b.PublicListing &&
-        a.WorldId == b.WorldId && a.GamePort == b.GamePort &&
+        a.WorldId == b.WorldId && a.WorldSource == b.WorldSource && a.GamePort == b.GamePort &&
         Path.GetFullPath(a.WorldDirectory).Equals(Path.GetFullPath(b.WorldDirectory), StringComparison.OrdinalIgnoreCase) &&
         Path.GetFullPath(a.ExecutablePath).Equals(Path.GetFullPath(b.ExecutablePath), StringComparison.OrdinalIgnoreCase);
 
