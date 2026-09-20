@@ -7,6 +7,7 @@ public sealed record ValheimInstallation(string ExecutablePath, string Source);
 public sealed record ValheimWorld(string Name, string SaveRoot);
 public sealed record ValheimDiscoveryResult(IReadOnlyList<ValheimInstallation> Installations,
     IReadOnlyList<ValheimWorld> Worlds);
+public sealed record WorldFileSelection(bool Ok, string Code, string Message, string? WorldId, string? SourceSaveRoot);
 public sealed record ImportWorldRequest(Guid ProfileId, string SourceSaveRoot, string WorldId);
 public sealed record ImportWorldResult(bool Ok, string Code, string Message, string? WorldDirectory);
 
@@ -17,15 +18,7 @@ public static partial class ValheimSetup
 
     public static ValheimDiscoveryResult Scan(IEnumerable<string>? extraSaveRoots = null)
     {
-        var steamRoots = new HashSet<string>(PathComparer);
-        foreach (var drive in DriveInfo.GetDrives())
-        {
-            if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
-            var root = drive.RootDirectory.FullName;
-            foreach (var relative in new[] { "Steam", "SteamLibrary", "Program Files (x86)\\Steam",
-                         "Program Files\\Steam", "" })
-                steamRoots.Add(Path.Combine(root, relative));
-        }
+        var steamRoots = new List<string>();
         try
         {
             if (OperatingSystem.IsWindows())
@@ -40,6 +33,45 @@ public static partial class ValheimSetup
         if (!string.IsNullOrWhiteSpace(profile))
             saveRoots.Add(Path.Combine(profile, "AppData", "LocalLow", "IronGate", "Valheim"));
         if (extraSaveRoots is not null) saveRoots.AddRange(extraSaveRoots);
+        var driveRoots = new List<string>();
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (drive.DriveType is DriveType.Fixed or DriveType.Removable && drive.IsReady)
+                    driveRoots.Add(drive.RootDirectory.FullName);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { /* An unavailable drive does not prevent scanning the others. */ }
+        }
+        return ScanDriveRoots(driveRoots, steamRoots, saveRoots);
+    }
+
+    // Only the root and its immediate folders are inspected. Browse handles arbitrary deeper locations.
+    public static ValheimDiscoveryResult ScanDriveRoots(IEnumerable<string> driveRoots,
+        IEnumerable<string> extraSteamRoots, IEnumerable<string> extraSaveRoots)
+    {
+        var steamRoots = new HashSet<string>(extraSteamRoots, PathComparer);
+        var saveRoots = new HashSet<string>(extraSaveRoots, PathComparer);
+        foreach (var driveRoot in driveRoots)
+        {
+            if (string.IsNullOrWhiteSpace(driveRoot) || !Path.IsPathFullyQualified(driveRoot)) continue;
+            var root = Path.GetFullPath(driveRoot);
+            foreach (var relative in new[] { "Steam", "SteamLibrary", "Program Files (x86)\\Steam",
+                         "Program Files\\Steam", "" })
+                steamRoots.Add(Path.Combine(root, relative));
+            saveRoots.Add(root);
+            try
+            {
+                foreach (var folder in Directory.EnumerateDirectories(root))
+                {
+                    if (Directory.Exists(Path.Combine(folder, "steamapps"))) steamRoots.Add(folder);
+                    if (Directory.Exists(Path.Combine(folder, "worlds_local"))) saveRoots.Add(folder);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            { /* An inaccessible drive does not prevent browsing another drive. */ }
+        }
         return ScanRoots(steamRoots, saveRoots);
     }
 
@@ -117,6 +149,29 @@ public static partial class ValheimSetup
 
     public static bool ValidWorldId(string? name) => !string.IsNullOrWhiteSpace(name) && name.Length <= 64 &&
         name is not ("." or "..") && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+
+    public static WorldFileSelection SelectWorldFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
+            return new(false, "InvalidWorldFile", "Choose a local .db or .fwl world file.", null, null);
+        string full;
+        try { full = Path.GetFullPath(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        { return new(false, "InvalidWorldFile", "The selected world file path is invalid.", null, null); }
+        if (!File.Exists(full) || (Path.GetExtension(full).ToLowerInvariant() is not (".db" or ".fwl")))
+            return new(false, "InvalidWorldFile", "Choose an existing Valheim .db or .fwl file.", null, null);
+        var worldId = Path.GetFileNameWithoutExtension(full);
+        var worldsFolder = Path.GetDirectoryName(full);
+        if (!ValidWorldId(worldId) || worldsFolder is null)
+            return new(false, "InvalidWorldFile", "The selected world filename is invalid.", null, null);
+        if (!Path.GetFileName(worldsFolder).Equals("worlds_local", StringComparison.OrdinalIgnoreCase))
+            return new(false, "UnsupportedWorldFolder",
+                "Select a file inside worlds_local. For a legacy or cloud save, use Valheim's Manage Saves > Move to Local first.", null, null);
+        var saveRoot = Path.GetDirectoryName(worldsFolder);
+        if (saveRoot is null || !HasWorldPair(saveRoot, worldId))
+            return new(false, "MissingWorldPair", "The selected world needs matching .db and .fwl files in worlds_local.", null, null);
+        return new(true, "WorldSelected", "World save pair found.", worldId, saveRoot);
+    }
 
     public static bool HasWorldPair(string saveRoot, string worldId) => ValidWorldId(worldId) &&
         File.Exists(Path.Combine(saveRoot, "worlds_local", worldId + ".db")) &&

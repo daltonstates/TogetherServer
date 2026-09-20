@@ -38,6 +38,43 @@ try
     Require(found.Installations.Single().ExecutablePath == Path.Combine(installed, "valheim_server.exe"),
         "Steam library path on another root was not found");
     Require(found.Worlds.Single().Name == "fixture-world", "local world pair was not discovered");
+    var customDrive = Path.Combine(root, "synthetic-drive");
+    var standardSteam = Path.Combine(customDrive, "Steam", "steamapps", "common", "Valheim dedicated server");
+    var customSteam = Path.Combine(customDrive, "My Custom Steam Folder");
+    var customSave = Path.Combine(customDrive, "My Valheim Saves");
+    var customInstall = Path.Combine(customSteam, "steamapps", "common", "Valheim dedicated server");
+    Directory.CreateDirectory(standardSteam);
+    Directory.CreateDirectory(customInstall);
+    Directory.CreateDirectory(Path.Combine(customSave, "worlds_local"));
+    File.WriteAllText(Path.Combine(standardSteam, "valheim_server.exe"), "synthetic G-drive Steam marker; never executed");
+    File.WriteAllText(Path.Combine(customInstall, "valheim_server.exe"), "synthetic discovery marker; never executed");
+    File.WriteAllText(Path.Combine(customSave, "worlds_local", "custom-world.db"), "synthetic database");
+    File.WriteAllText(Path.Combine(customSave, "worlds_local", "custom-world.fwl"), "synthetic metadata");
+    var customFound = ValheimSetup.ScanDriveRoots([customDrive], [], []);
+    Require(customFound.Installations.Count == 2 &&
+        customFound.Installations.Any(item => item.ExecutablePath == Path.Combine(standardSteam, "valheim_server.exe")) &&
+        customFound.Installations.Any(item => item.ExecutablePath == Path.Combine(customInstall, "valheim_server.exe")),
+        "G-drive Steam and custom Steam folders under another drive root were not both found");
+    Require(customFound.Worlds.Single().SaveRoot == customSave,
+        "custom save folder directly under another drive root was not found");
+    var selected = ValheimSetup.SelectWorldFile(Path.Combine(customSave, "worlds_local", "custom-world.db"));
+    Require(selected.Ok && selected.WorldId == "custom-world" && selected.SourceSaveRoot == customSave,
+        "selected world file did not resolve its save root and matching pair");
+    Require(ValheimSetup.SelectWorldFile(Path.Combine(customSave, "worlds_local", "custom-world.fwl")).Ok,
+        "selecting the matching .fwl file was refused");
+    var deepSave = Path.Combine(customDrive, "Games", "Backups", "Valheim Saves");
+    Directory.CreateDirectory(Path.Combine(deepSave, "worlds_local"));
+    File.WriteAllText(Path.Combine(deepSave, "worlds_local", "deep-world.db"), "synthetic database");
+    File.WriteAllText(Path.Combine(deepSave, "worlds_local", "deep-world.fwl"), "synthetic metadata");
+    Require(ValheimSetup.SelectWorldFile(Path.Combine(deepSave, "worlds_local", "deep-world.db")).SourceSaveRoot == deepSave,
+        "selected world in a deeply nested custom folder was not resolved");
+    File.WriteAllText(Path.Combine(customSave, "worlds_local", "missing-world.db"), "synthetic incomplete save");
+    Require(ValheimSetup.SelectWorldFile(Path.Combine(customSave, "worlds_local", "missing-world.db")).Code == "MissingWorldPair",
+        "incomplete selected world pair was accepted");
+    Directory.CreateDirectory(Path.Combine(customSave, "worlds"));
+    File.WriteAllText(Path.Combine(customSave, "worlds", "legacy.db"), "synthetic legacy save");
+    Require(ValheimSetup.SelectWorldFile(Path.Combine(customSave, "worlds", "legacy.db")).Code == "UnsupportedWorldFolder",
+        "legacy save folder was accepted without conversion");
     using (var importData = new LocalData(Path.Combine(root, "host")))
     {
         var copied = ValheimSetup.ImportCopy(importData, new ImportWorldRequest(profile.Id, sourceWorld, profile.WorldId));
@@ -53,7 +90,7 @@ try
         Require(ValheimSetup.ImportCopy(importData, new ImportWorldRequest(Guid.NewGuid(), sourceWorld, "missing")).Code == "MissingWorldPair",
             "incomplete world was imported");
     }
-    Console.WriteLine("PASS Steam library discovery and read-only source save import (synthetic)"); passes++;
+    Console.WriteLine("PASS custom-drive Steam/save discovery, selected world pair, read-only import (synthetic)"); passes++;
 
     using (var data = new LocalData(Path.Combine(root, "host")))
     {

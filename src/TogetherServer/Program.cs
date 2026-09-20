@@ -10,7 +10,7 @@ var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
-var openWindow = args.Length == 0;
+var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase);
 DesktopLaunch.EnsureConsoleForGameStop(openWindow);
 var portIndex = Array.IndexOf(args, "--port");
 var port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
@@ -121,7 +121,8 @@ app.MapGet("/api/local/window", () => Results.Json(new
 {
     available = desktop is not null,
     visible = desktop?.Visible ?? false,
-    rendered = desktop?.Rendered ?? false
+    rendered = desktop?.Rendered ?? false,
+    fileDialogOpen = desktop?.FileDialogOpen ?? false
 }));
 app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
     ? Results.Json(new { ok = true, code = "WindowShown" })
@@ -143,6 +144,37 @@ app.MapGet("/api/local/valheim/discover", async () => friendMode
     ? Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." })
     : Results.Json(ValheimSetup.Scan((await manager.SnapshotAsync()).Settings.Profiles
         .Where(profile => profile.Kind == "Valheim").Select(profile => profile.WorldDirectory))));
+app.MapPost("/api/local/valheim/browse-server", async () =>
+{
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
+    try
+    {
+        var path = await desktop.PickFileAsync("Choose Valheim Dedicated Server",
+            "Valheim Dedicated Server (valheim_server.exe)|valheim_server.exe|Applications (*.exe)|*.exe");
+        if (path is null) return Results.Json(new { ok = false, code = "Canceled", message = "No server executable selected." });
+        if (!File.Exists(path) || !Path.GetFileName(path).Equals("valheim_server.exe", StringComparison.OrdinalIgnoreCase))
+            return Results.Json(new { ok = false, code = "InvalidServerExecutable", message = "Choose valheim_server.exe from your installed Valheim Dedicated Server folder." });
+        return Results.Json(new { ok = true, code = "ServerSelected", message = "Server executable selected. Save settings before starting.", executablePath = path });
+    }
+    catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message }); }
+});
+app.MapPost("/api/local/valheim/browse-world", async () =>
+{
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
+    try
+    {
+        var localSaveRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "AppData", "LocalLow", "IronGate", "Valheim", "worlds_local");
+        var path = await desktop.PickFileAsync("Choose an existing Valheim world",
+            "Valheim world files (*.db;*.fwl)|*.db;*.fwl|All files (*.*)|*.*", localSaveRoot);
+        return Results.Json(path is null
+            ? new WorldFileSelection(false, "Canceled", "No world file selected.", null, null)
+            : ValheimSetup.SelectWorldFile(path));
+    }
+    catch (Exception ex) { return Results.Json(new WorldFileSelection(false, "BrowseFailed", "Could not open the Windows file picker: " + ex.Message, null, null)); }
+});
 app.MapPost("/api/local/valheim/import", async (ImportWorldRequest request) =>
 {
     await modeGate.WaitAsync();

@@ -1,3 +1,4 @@
+param([ValidateSet('release', 'release-candidate')][string]$ReleaseName = 'release')
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 Push-Location (Join-Path $repository 'ui')
@@ -17,9 +18,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Valheim console fixture build failed' }
     dotnet publish src/TogetherServer/TogetherServer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o local-data/publish
     if ($LASTEXITCODE -ne 0) { throw 'Host publish failed' }
-    $releaseDirectory = Join-Path $repository 'local-data/release'
+    $releaseDirectory = Join-Path $repository "local-data/$ReleaseName"
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repository 'local-data/publish/TogetherServer.exe') -Destination (Join-Path $releaseDirectory 'TogetherServer.exe') -Force
-    Write-Host 'Ready to double-click: local-data/release/TogetherServer.exe'
+    Write-Host "Ready to double-click: local-data/$ReleaseName/TogetherServer.exe"
 }
 finally { Pop-Location }

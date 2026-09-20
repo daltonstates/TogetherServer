@@ -132,3 +132,23 @@ The app uses the shared Microsoft WebView2 Runtime. If it is missing, a native m
 Two exploratory desktop-smoke runs found that sending a native close message closed the window without stopping the backend. The close handler now routes that message through Quit; the final smoke passed. The WebView2 WPF warning does not affect the published WinForms EXE in the observed checks, but a clean warning-free build is not claimed.
 
 Launch now by double-clicking `local-data\release\TogetherServer.exe`. The exact next local developer command is `.\checks\desktop-smoke.ps1`. The next v1 acceptance step is the owner-approved real Valheim/client test on a disposable world copy, followed by a Friend PC on the intended network. Remote Stop and auto shutdown remain gated on real permitted-player and heartbeat coverage.
+
+## 2026-09-20 - Slice 7 browse saves and custom Steam folders
+
+Starting Git HEAD: `671a9ac65d3049c3ee057d39e0583897be26b452`, clean `main` worktree. Host mode now offers Windows file pickers for an installed `valheim_server.exe` and a world `.db` or `.fwl` file. The world picker starts in the current user's local Valheim folder when present, but can navigate to any drive and depth. Selecting a file inside `worlds_local` verifies its matching pair and copies both files into a separate profile import; the source is never moved or overwritten. A legacy `worlds` file is rejected with a Move to Local explanation. The existing typed source-root field remains available.
+
+Automatic discovery now checks ready fixed and removable drives, common root paths such as `G:\Steam`, root-level custom folders containing `steamapps` or `worlds_local`, the registered Steam path, and listed Steam libraries. It does not recursively crawl arbitrary nested folders; the native picker handles those. Steam installation and Valheim save locations are separate. No real save content was imported, launched, or modified in this slice.
+
+The owner's prior `local-data\release\TogetherServer.exe` was initially running with zero managed server runs. The first build compiled and published successfully but its final copy failed because Windows held that EXE open. The app was left running while a one-file candidate was built and tested on an isolated port. Once that old process had closed, the normal release path was updated and rebuilt successfully; the final checks below used the normal release EXE. No running owner app was stopped by the developer checks.
+
+| Final check | Result |
+| --- | --- |
+| `scripts/build.ps1`: React/TypeScript, two fixtures, Windows x64 single EXE | Pass; 0 errors, existing `MSB3277` WebView2 WPF reference warning |
+| Normal release folder | Pass: one `TogetherServer.exe` |
+| `TogetherServer.ValheimChecks`: custom Steam and save folders at a drive root, selected world pair, incomplete/legacy rejection, import and process fixture | Pass: 5 synthetic groups, 0 failures |
+| `checks/desktop-smoke.ps1`: no-argument native React window, native world and server pickers open/cancel, synthetic start/stop/restart, relaunch, Friend mode, Quit | Pass: 7 groups, 0 failures; normal release EXE |
+| `checks/served-smoke.ps1`: bundled Browse controls, local API, synthetic import and start/stop | Pass: 9 groups, 0 failures; normal release EXE |
+| Actual picker file selection and real world import, join, save/restart, public Friend network | Not run; real game and world acceptance remain owner-gated |
+| Process-only and companion suites | Not rerun; this slice did not change their lifecycle or public protocol paths |
+
+Launch the updated app by double-clicking `local-data\release\TogetherServer.exe`. The exact next developer command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next v1 acceptance action is an owner-approved real Valheim/client test using a disposable copy of a world, then an actual Friend PC connection. Remote Stop and auto shutdown stay gated on player coverage and real save evidence.

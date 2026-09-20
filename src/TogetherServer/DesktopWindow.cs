@@ -18,6 +18,7 @@ internal sealed class DesktopWindow
     private bool closing;
     private bool requestingQuit;
     private int started;
+    private int fileDialogOpen;
     private volatile bool rendered;
     private volatile bool visible;
 
@@ -30,6 +31,7 @@ internal sealed class DesktopWindow
 
     public bool Visible => visible;
     public bool Rendered => rendered;
+    public bool FileDialogOpen => Volatile.Read(ref fileDialogOpen) != 0;
 
     public void Start()
     {
@@ -57,6 +59,44 @@ internal sealed class DesktopWindow
             return true;
         }
         catch (InvalidOperationException) { return false; }
+    }
+
+    public async Task<string?> PickFileAsync(string title, string filter, string? initialDirectory = null)
+    {
+        try { await shown.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { return null; }
+        var target = form;
+        if (target is null || target.IsDisposed) return null;
+        var selected = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            target.BeginInvoke(new Action(() =>
+            {
+                if (Interlocked.CompareExchange(ref fileDialogOpen, 1, 0) != 0)
+                {
+                    selected.TrySetResult(null);
+                    return;
+                }
+                try
+                {
+                    using var dialog = new OpenFileDialog
+                    {
+                        Title = title,
+                        Filter = filter,
+                        CheckFileExists = true,
+                        Multiselect = false,
+                        RestoreDirectory = true
+                    };
+                    if (!string.IsNullOrWhiteSpace(initialDirectory) && Directory.Exists(initialDirectory))
+                        dialog.InitialDirectory = initialDirectory;
+                    selected.TrySetResult(dialog.ShowDialog(target) == DialogResult.OK ? dialog.FileName : null);
+                }
+                catch (Exception ex) { selected.TrySetException(ex); }
+                finally { Volatile.Write(ref fileDialogOpen, 0); }
+            }));
+        }
+        catch (InvalidOperationException) { return null; }
+        return await selected.Task;
     }
 
     public void Exit()
