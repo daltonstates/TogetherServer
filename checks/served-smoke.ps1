@@ -53,7 +53,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find Valheim installs and saves') -or !$js.Content.Contains('Browse and copy a world save') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Find Valheim installs and saves') -or !$js.Content.Contains('Choose a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
@@ -97,7 +97,7 @@ try {
     if (!$password.ok -or !$password.snapshot.passwordConfigured.$valheimId) { throw 'Protected Valheim password route failed.' }
     if ((Get-Content (Join-Path $caseRoot 'host.json') -Raw).Contains('fixture-pass-123')) { throw 'Valheim password leaked into Host settings.' }
     $missing = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/start" -Method Post -Headers $headers
-    if ($missing.code -ne 'MissingWorldPair') { throw 'Missing save pair did not block synthetic Valheim launch.' }
+    if ($missing.code -ne 'MissingWorldData') { throw 'Missing world data did not block synthetic Valheim launch.' }
     $sourceSave = Join-Path $caseRoot 'source-save'
     $sourceWorlds = Join-Path $sourceSave 'worlds_local'
     New-Item -ItemType Directory -Path $sourceWorlds -Force | Out-Null
@@ -109,8 +109,20 @@ try {
     if ((Get-Content -LiteralPath (Join-Path $sourceWorlds 'fixture-world.db') -Raw).Trim() -ne 'synthetic database') { throw 'Source save changed during import.' }
     $repeat = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body $importBody
     if ($repeat.code -ne 'AlreadyImported') { throw 'Import overwrote an existing copy.' }
+    $cloudRoot = Join-Path $caseRoot 'Steam/userdata/synthetic/892970/remote'
+    $cloudWorld = Join-Path $cloudRoot 'worlds/chunked-http'
+    New-Item -ItemType Directory -Path $cloudWorld -Force | Out-Null
+    foreach ($file in @('_main.7.db2', '_main.7.fwl2', '_main.7.chunks', '_main.7.ok', 'terrain.7.chunk')) {
+        Set-Content -LiteralPath (Join-Path $cloudWorld $file) -Value "synthetic $file"
+    }
+    $cloudImport = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body (@{
+        profileId = [guid]::NewGuid().ToString(); sourceSaveRoot = $cloudRoot; worldId = 'chunked-http'; sourceFolder = 'worlds'
+    } | ConvertTo-Json)
+    if (!$cloudImport.ok -or !(Test-Path -LiteralPath (Join-Path $cloudImport.worldDirectory 'worlds_local/chunked-http/terrain.7.chunk')) -or
+        !(Test-Path -LiteralPath (Join-Path $cloudWorld '_main.7.db2'))) { throw 'Synthetic cloud folder HTTP import failed or changed its source.' }
     Write-Host 'PASS served Valheim profile and protected password endpoint (synthetic settings)'
     Write-Host 'PASS served missing-save guard and copy import without source mutation (synthetic)'
+    Write-Host 'PASS served synthetic Steam cloud folder import contract without source mutation'
 
     $valheimProfile.worldId = 'fixture-world'
     $valheimProfile.serverName = 'Fixture "Valheim"'

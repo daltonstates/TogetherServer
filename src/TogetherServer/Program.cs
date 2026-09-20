@@ -175,6 +175,21 @@ app.MapPost("/api/local/valheim/browse-world", async () =>
     }
     catch (Exception ex) { return Results.Json(new WorldFileSelection(false, "BrowseFailed", "Could not open the Windows file picker: " + ex.Message, null, null)); }
 });
+app.MapPost("/api/local/valheim/browse-world-folder", async () =>
+{
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse folders." });
+    try
+    {
+        var localSaveRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "AppData", "LocalLow", "IronGate", "Valheim", "worlds_local");
+        var path = await desktop.PickFolderAsync("Choose the Valheim world folder", localSaveRoot);
+        return Results.Json(path is null
+            ? new WorldFileSelection(false, "Canceled", "No world folder selected.", null, null)
+            : ValheimSetup.SelectWorldFolder(path));
+    }
+    catch (Exception ex) { return Results.Json(new WorldFileSelection(false, "BrowseFailed", "Could not open the Windows folder picker: " + ex.Message, null, null)); }
+});
 app.MapPost("/api/local/valheim/import", async (ImportWorldRequest request) =>
 {
     await modeGate.WaitAsync();

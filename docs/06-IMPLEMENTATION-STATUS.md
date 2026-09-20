@@ -152,3 +152,22 @@ The owner's prior `local-data\release\TogetherServer.exe` was initially running 
 | Process-only and companion suites | Not rerun; this slice did not change their lifecycle or public protocol paths |
 
 Launch the updated app by double-clicking `local-data\release\TogetherServer.exe`. The exact next developer command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next v1 acceptance action is an owner-approved real Valheim/client test using a disposable copy of a world, then an actual Friend PC connection. Remote Stop and auto shutdown stay gated on player coverage and real save evidence.
+
+## 2026-09-20 - Slice 8 Valheim 1.0 world folders
+
+Starting Git HEAD: `8592e351f9d833c7181745135d40c9686b3fa5c8`, clean `main` worktree. Host discovery now recognizes complete chunked world folders in `worlds_local` and Steam's `userdata/<account>/892970/remote/worlds`, alongside older `.db`/`.fwl` pairs. The native window offers a folder picker. An owner-selected folder is copied into a separate profile import while every source file is open against writes; a changed file list, an incomplete latest `_main` revision, a missing chunk, or a duplicate target refuses the import. Host Start accepts an imported folder and refuses a new seed when a folder with that name already exists. The file checks do not prove that Valheim can load or save the copy.
+
+A read-only discovery call against the current PC found one `V1release` world in a Steam cloud cache. No real world file was imported, launched, moved, or modified. The build still does not change a router, firewall, DNS, or game terms.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1`: React, fixtures, Windows x64 single EXE | Pass; 0 errors, existing `MSB3277` WebView2 WPF reference warning |
+| `TogetherServer.ValheimChecks`: local/cloud folder discovery, complete copy, source integrity, incomplete latest revision, imported Start and new-seed guards, fixture lifecycle | Pass: 5 synthetic groups, 0 failures |
+| `checks/desktop-smoke.ps1`: no-argument EXE, rendered React, three native pickers, fixture start/stop/restart, relaunch, mode and Quit | Pass: 8 groups, 0 failures |
+| `checks/served-smoke.ps1`: bundled React assets, local routes, synthetic pair and cloud-folder import, fixture lifecycle | Pass: 10 groups, 0 failures |
+| Current PC `V1release` detection | Pass: one folder found by read-only app discovery; no content copy or game load |
+| Early exploratory runs | Two failures corrected: concurrent UI/.NET builds raced an embedded asset filename (`CS1566`); the first new test used a different profile ID than its imported folder. Final sequential build and checks pass. |
+| Process-only and companion suites | Skipped in this slice; those paths were unchanged. |
+| Real Valheim load/join/save/restart, Friend public-IP connection, permitted-player and idle behavior | Not run; requires a disposable real-world test and an actual Friend PC. |
+
+Double-click `local-data\release\TogetherServer.exe`, choose Host, click **Find Valheim installs and saves**, and review the `V1release` cloud-folder entry. For a development recheck, the exact next command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next acceptance action is a real game test on a disposable copy after owner approval for any terms-gated installation or operation that could change a real world.

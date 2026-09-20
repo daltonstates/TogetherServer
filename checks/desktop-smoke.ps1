@@ -85,7 +85,7 @@ try {
     Wait-ForWindow $first
     Write-Host "PASS $launchLabel opens a visible native window with rendered React"
 
-    foreach ($pickerKind in @('world', 'server')) {
+    foreach ($pickerKind in @('world', 'world-folder', 'server')) {
         $picker = Start-Job -ArgumentList $baseUrl, $pickerKind -ScriptBlock {
             param($url, $kind)
             Invoke-RestMethod -Uri "$url/api/local/valheim/browse-$kind" -Method Post -Headers @{ Origin = $url; 'X-TogetherServer-Local' = '1' } -TimeoutSec 30

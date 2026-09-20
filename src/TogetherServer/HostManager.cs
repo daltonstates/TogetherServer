@@ -98,8 +98,8 @@ public sealed class HostManager(LocalData data)
             if (!Directory.Exists(profile.WorldDirectory))
                 return Result(false, "MissingWorldDirectory", "Select an existing save directory. TogetherServer will not create or replace it.");
             if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
-                !ValheimSetup.HasWorldPair(profile.WorldDirectory, profile.WorldId))
-                return Result(false, "MissingWorldPair", "Existing world needs both .db and .fwl in worlds_local. Import a copy before Start; no new seed was created.");
+                !ValheimSetup.HasWorldData(profile.WorldDirectory, profile.WorldId))
+                return Result(false, "MissingWorldData", "Existing world needs a complete .db/.fwl pair or chunked folder in worlds_local. Import a copy before Start; no new seed was created.");
             if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
                 !ValheimSetup.IsImportedWorld(data, profile.Id, profile.WorldDirectory))
                 return Result(false, "WorldImportRequired", "Import a separate copy of the existing world before Start. Its original save stays untouched.");

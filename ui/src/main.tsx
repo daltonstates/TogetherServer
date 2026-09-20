@@ -38,10 +38,10 @@ type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint:
 type Snapshot = HostSnapshot | FriendSnapshot
 type BasicResult = { ok: boolean; code: string; message: string }
 type ActionResult = { ok: boolean; code: string; message: string; snapshot: HostSnapshot }
-type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string }[] }
+type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
 type ImportResult = BasicResult & { worldDirectory: string | null }
 type ServerBrowseResult = BasicResult & { executablePath?: string }
-type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null }
+type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
 
 const localHeaders = { 'Content-Type': 'application/json', 'X-TogetherServer-Local': '1' }
 
@@ -219,15 +219,16 @@ function App() {
       if (!response.ok) throw new Error(`Discovery returned ${response.status}`)
       const result: Discovery = await response.json()
       setDiscovery(result)
-      setNotice({ good: true, text: `Found ${result.installations.length} server path candidate(s) and ${result.worlds.length} local save pair(s).` })
+      setNotice({ good: true, text: `Found ${result.installations.length} server path candidate(s) and ${result.worlds.length} world save(s).` })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const importWorld = async (profile: Profile, sourceSaveRoot: string, worldId: string) => {
+  const importWorld = async (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local') => {
+    if (sourceFolder === 'worlds' && !window.confirm('Close Valheim and wait for Steam Cloud to finish syncing before copying this cached world folder. Continue?')) return
     setPending(profile.id)
     try {
       const result = await change<ImportResult>('/api/local/valheim/import', 'POST', {
-        profileId: profile.id, sourceSaveRoot, worldId
+        profileId: profile.id, sourceSaveRoot, worldId, sourceFolder
       })
       setNotice({ good: result.ok, text: `${result.code}: ${result.message}${result.ok ? ' Save the profile next.' : ''}` })
       if (result.ok && result.worldDirectory) updateProfile(profile.id, {
@@ -246,14 +247,15 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const browseWorld = async (profile: Profile) => {
+  const browseWorld = async (profile: Profile, folder = false) => {
     setPending(profile.id)
     try {
-      const result = await change<WorldBrowseResult>('/api/local/valheim/browse-world', 'POST')
+      const result = await change<WorldBrowseResult>(folder ? '/api/local/valheim/browse-world-folder' : '/api/local/valheim/browse-world', 'POST')
       if (result.ok && result.sourceSaveRoot && result.worldId) {
-        setSourceRoots(current => ({ ...current, [profile.id]: result.sourceSaveRoot! }))
+        if (result.sourceFolder === 'worlds_local')
+          setSourceRoots(current => ({ ...current, [profile.id]: result.sourceSaveRoot! }))
         if (!profile.worldDirectory) updateProfile(profile.id, { worldId: result.worldId })
-        await importWorld(profile, result.sourceSaveRoot, result.worldId)
+        await importWorld(profile, result.sourceSaveRoot, result.worldId, result.sourceFolder)
       } else if (result.code !== 'Canceled') setNotice({ good: false, text: `${result.code}: ${result.message}` })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
@@ -359,7 +361,7 @@ function App() {
           <div className="policy-line"><div><strong>Automatic shutdown</strong><p>Disabled until every allowed player and game access are verified.</p></div><span className="pill">Off</span></div>
           <div className="subheading"><h3>Server profiles</h3><button className="secondary" onClick={() => edit({ ...draft, profiles: [...draft.profiles, { id: crypto.randomUUID(), kind: 'Valheim', name: '', serverName: '', crossplay: false, publicListing: false, worldId: '', worldSource: 'Existing', worldDirectory: '', gamePort: 2456, executablePath: '' }] })}>Add profile</button></div>
           <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void scanValheim()}>{pending === 'scan' ? 'Searching…' : 'Find Valheim installs and saves'}</button>{(!discovery || discovery.installations.length === 0) && <a href="steam://install/896660">Install Valheim Dedicated Server in Steam</a>}</div>
-          <p className="footnote">Search checks ready local drives, including G:\Steam and custom folders directly under a drive root, plus Steam library listings and your local Valheim saves. Your Steam install and world saves can be in different places. Browse below for a deeper custom location. The install link opens Steam for your confirmation; TogetherServer does not download or accept terms. For a cloud world, use Valheim’s Manage Saves → Move to Local, close the game, then search again.</p>
+          <p className="footnote">Search checks ready local drives, including G:\Steam and custom folders directly under a drive root, plus Steam libraries, local Valheim saves, and cached Steam Cloud world folders. Browse below for a deeper custom location. Close Valheim before copying a world and wait for Steam Cloud to finish syncing. The install link opens Steam for your confirmation; TogetherServer does not download or accept terms.</p>
           {draft.profiles.map((profile, index) => <div className="profile-form" key={profile.id}>
             <div className="form-head"><strong>Profile {index + 1}</strong><button className="text-button danger" onClick={() => edit({ ...draft, profiles: draft.profiles.filter(p => p.id !== profile.id) })}>Remove</button></div>
             <div className="settings-grid">
@@ -367,7 +369,7 @@ function App() {
               <label>Display name<input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value })} placeholder="My test world" /></label>
               {profile.kind === 'Valheim' && <label>Valheim server name<input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value })} placeholder="My Valheim server" /></label>}
               {profile.kind === 'Valheim' && <label>World setup<select value={profile.worldSource} onChange={event => updateProfile(profile.id, { worldSource: event.target.value as Profile['worldSource'], worldDirectory: '', worldId: '' })}><option value="Existing">Copy an existing save</option><option value="New">Create a new seed</option></select></label>}
-              <label>World ID<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="testworld" /><small>Exact save filename without .db or .fwl.</small></label>
+              <label>World ID<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="testworld" /><small>Exact world folder name or filename without .db/.fwl.</small></label>
               <label>{profile.kind === 'Valheim' ? 'Server save root' : 'Existing save directory'}<input value={profile.worldDirectory} readOnly={profile.kind === 'Valheim' && profile.worldSource === 'Existing'} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} placeholder={profile.kind === 'Valheim' && profile.worldSource === 'Existing' ? 'Use copy below to set this path' : 'C:\\...\\Valheim'} /><small>{profile.kind === 'Valheim' ? 'The server reads worlds_local inside this folder.' : ''}</small></label>
               <label>Game UDP start port<input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label>
               <label className="wide">{profile.kind === 'Valheim' ? 'Installed valheim_server.exe path' : 'Built TogetherServer.Fixture.exe path'}<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder={profile.kind === 'Valheim' ? 'C:\\...\\valheim_server.exe' : 'C:\\...\\TogetherServer.Fixture.exe'} /></label>
@@ -375,10 +377,10 @@ function App() {
             {profile.kind === 'Valheim' && <>
               <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void browseServer(profile)}>{pending === profile.id ? 'Browsing…' : 'Browse for valheim_server.exe'}</button></div>
               {discovery && <div className="choices"><strong>Server paths found</strong>{discovery.installations.length === 0 ? <p>None found. Browse for an installed executable or open Steam above.</p> : discovery.installations.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><button className="secondary" onClick={() => updateProfile(profile.id, { executablePath: item.executablePath })}>Use path</button></div>)}</div>}
-              {profile.worldSource === 'Existing' && <div className="choices"><strong>Import a separate copy of an existing local world</strong><p>Close the Valheim local session first. Your original .db and .fwl files stay untouched. Start is blocked if the copy is missing either file.</p>
-                <button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile)}>{pending === profile.id ? 'Browsing…' : 'Browse and copy a world save'}</button><p>Choose the world’s .db or .fwl file inside any worlds_local folder. The matching file must be beside it; a separate copy is made for this profile.</p>
-                {discovery?.worlds.map(world => <div className="choice" key={world.saveRoot + world.name}><span>{world.name} <small>{world.saveRoot}</small></span><button className="secondary" disabled={!!pending} onClick={() => void importWorld(profile, world.saveRoot, world.name)}>Use copy</button></div>)}
-                <div className="settings-grid"><label>Or enter a local save root<input value={sourceRoots[profile.id] ?? ''} onChange={event => setSourceRoots(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="C:\\...\\IronGate\\Valheim" /><small>World files must be in worlds_local below this folder.</small></label><button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => void importWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</button></div>
+              {profile.worldSource === 'Existing' && <div className="choices"><strong>Import a separate copy of an existing world</strong><p>Close Valheim first. The source save stays untouched. Start needs a complete imported save.</p>
+                <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile, true)}>{pending === profile.id ? 'Browsing…' : 'Choose a world folder'}</button><button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile)}>{pending === profile.id ? 'Browsing…' : 'Choose a .db or .fwl file'}</button></div><p>For Valheim 1.0 saves, select the named folder inside worlds_local or Steam’s remote/worlds. For older saves, select a .db or .fwl file inside worlds_local.</p>
+                {discovery?.worlds.map(world => <div className="choice" key={world.saveRoot + world.sourceFolder + world.name}><span>{world.name} <small>{world.format} · {world.saveRoot}</small></span><button className="secondary" disabled={!!pending} onClick={() => void importWorld(profile, world.saveRoot, world.name, world.sourceFolder)}>Use copy</button></div>)}
+                <div className="settings-grid"><label>Or enter a local save root<input value={sourceRoots[profile.id] ?? ''} onChange={event => setSourceRoots(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="C:\\...\\IronGate\\Valheim" /><small>World files or folders must be in worlds_local below this folder.</small></label><button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => void importWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</button></div>
               </div>}
               {profile.worldSource === 'New' && <p className="footnote">New seed is explicit. Select an existing empty save root; Start refuses any existing files with this world ID.</p>}
               <div className="device-options"><label className="check-row"><input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>

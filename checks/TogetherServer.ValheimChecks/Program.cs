@@ -22,6 +22,8 @@ var second = new ServerProfile { Kind = "Valheim", Name = "Duplicate world", Ser
 var passes = 0;
 int? fixturePid = null;
 long? fixtureStart = null;
+var chunkedImportDirectory = "";
+var chunkedProfileId = Guid.NewGuid();
 try
 {
     var steam = Path.Combine(root, "Steam");
@@ -34,10 +36,19 @@ try
     File.WriteAllText(Path.Combine(secondLibrary, "steamapps", "appmanifest_896660.acf"),
         "\"AppState\" { \"installdir\" \"Valheim dedicated server\" }");
     File.WriteAllText(Path.Combine(installed, "valheim_server.exe"), "synthetic discovery marker; never executed");
+    var chunkedSource = Path.Combine(sourceWorld, "worlds_local", "chunked-world");
+    CreateChunkedWorld(chunkedSource, 7);
+    var cloudRoot = Path.Combine(steam, "userdata", "synthetic-account", "892970", "remote");
+    var cloudSource = Path.Combine(cloudRoot, "worlds", "V1release");
+    CreateChunkedWorld(cloudSource, 107);
     var found = ValheimSetup.ScanRoots([steam], [sourceWorld]);
     Require(found.Installations.Single().ExecutablePath == Path.Combine(installed, "valheim_server.exe"),
         "Steam library path on another root was not found");
-    Require(found.Worlds.Single().Name == "fixture-world", "local world pair was not discovered");
+    Require(found.Worlds.Count == 3 &&
+        found.Worlds.Any(item => item.Name == "fixture-world" && item.Format == "Pair") &&
+        found.Worlds.Any(item => item.Name == "chunked-world" && item.Format == "Folder") &&
+        found.Worlds.Any(item => item.Name == "V1release" && item.SourceFolder == "worlds" && item.SaveRoot == cloudRoot),
+        "local pair, local folder, or Steam cloud folder was not discovered");
     var customDrive = Path.Combine(root, "synthetic-drive");
     var standardSteam = Path.Combine(customDrive, "Steam", "steamapps", "common", "Valheim dedicated server");
     var customSteam = Path.Combine(customDrive, "My Custom Steam Folder");
@@ -75,6 +86,18 @@ try
     File.WriteAllText(Path.Combine(customSave, "worlds", "legacy.db"), "synthetic legacy save");
     Require(ValheimSetup.SelectWorldFile(Path.Combine(customSave, "worlds", "legacy.db")).Code == "UnsupportedWorldFolder",
         "legacy save folder was accepted without conversion");
+    var selectedFolder = ValheimSetup.SelectWorldFolder(cloudSource);
+    Require(selectedFolder.Ok && selectedFolder.WorldId == "V1release" &&
+        selectedFolder.SourceSaveRoot == cloudRoot && selectedFolder.SourceFolder == "worlds",
+        "selected Steam cloud world folder did not resolve its source");
+    Require(ValheimSetup.SelectWorldFolder(Path.Combine(cloudRoot, "WORLDS", "V1release")).SourceFolder == "worlds",
+        "world folder selection did not normalize Windows path casing");
+    Require(ValheimSetup.SelectWorldFolder(chunkedSource).Ok, "local chunked world folder was refused");
+    var incompleteFolder = Path.Combine(sourceWorld, "worlds_local", "incomplete-world");
+    CreateChunkedWorld(incompleteFolder, 1);
+    File.WriteAllText(Path.Combine(incompleteFolder, "_main.2.db2"), "incomplete newer revision");
+    Require(ValheimSetup.SelectWorldFolder(incompleteFolder).Code == "IncompleteWorldFolder",
+        "an incomplete latest chunked revision was accepted");
     using (var importData = new LocalData(Path.Combine(root, "host")))
     {
         var copied = ValheimSetup.ImportCopy(importData, new ImportWorldRequest(profile.Id, sourceWorld, profile.WorldId));
@@ -89,8 +112,28 @@ try
             "second import overwrote an existing world copy");
         Require(ValheimSetup.ImportCopy(importData, new ImportWorldRequest(Guid.NewGuid(), sourceWorld, "missing")).Code == "MissingWorldPair",
             "incomplete world was imported");
+        var folderCopy = ValheimSetup.ImportCopy(importData, new ImportWorldRequest(chunkedProfileId, sourceWorld, "chunked-world"));
+        Require(folderCopy.Ok && folderCopy.WorldDirectory is not null &&
+            ValheimSetup.HasWorldData(folderCopy.WorldDirectory, "chunked-world"), "local chunked world was not imported");
+        chunkedImportDirectory = folderCopy.WorldDirectory!;
+        var copiedFolder = Path.Combine(folderCopy.WorldDirectory!, "worlds_local", "chunked-world");
+        Require(Directory.GetFiles(chunkedSource).Select(Path.GetFileName).Order().SequenceEqual(
+            Directory.GetFiles(copiedFolder).Select(Path.GetFileName).Order()), "chunked copy lost a file");
+        foreach (var file in Directory.GetFiles(chunkedSource))
+            Require(File.ReadAllBytes(file).SequenceEqual(File.ReadAllBytes(Path.Combine(copiedFolder, Path.GetFileName(file)))),
+                "chunked copy changed file contents");
+        Require(ValheimSetup.ImportCopy(importData, new ImportWorldRequest(chunkedProfileId, sourceWorld, "chunked-world")).Code == "AlreadyImported",
+            "second chunked import overwrote the first copy");
+        Require(ValheimSetup.ImportCopy(importData, new ImportWorldRequest(Guid.NewGuid(), sourceWorld, "incomplete-world")).Code == "IncompleteWorldFolder",
+            "incomplete chunked world was imported");
+        var cloudCopy = ValheimSetup.ImportCopy(importData, new ImportWorldRequest(Guid.NewGuid(), cloudRoot, "V1release", "WORLDS"));
+        Require(cloudCopy.Ok && cloudCopy.WorldDirectory is not null &&
+            File.Exists(Path.Combine(cloudCopy.WorldDirectory, "worlds_local", "V1release", "_main.107.db2")),
+            "synthetic Steam cloud folder did not copy into worlds_local");
+        Require(File.ReadAllText(Path.Combine(cloudSource, "_main.107.db2")) == "synthetic world database 107",
+            "synthetic Steam cloud source changed");
     }
-    Console.WriteLine("PASS custom-drive Steam/save discovery, selected world pair, read-only import (synthetic)"); passes++;
+    Console.WriteLine("PASS custom-drive discovery, local pair, chunked folder and Steam cloud cache copy (synthetic)"); passes++;
 
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
@@ -100,17 +143,33 @@ try
             GamePort = port + 30, ExecutablePath = fixture };
         var unimported = new ServerProfile { Kind = "Valheim", Name = "Unimported source", ServerName = "Unimported source",
             WorldId = profile.WorldId, WorldDirectory = sourceWorld, GamePort = port + 40, ExecutablePath = fixture };
-        var settings = new HostSettings { MaxConcurrentServers = 2, Profiles = [profile, second, newSeed, unimported] };
+        var chunked = new ServerProfile { Id = chunkedProfileId, Kind = "Valheim", Name = "Chunked copy", ServerName = "Chunked copy",
+            WorldId = "chunked-world", WorldDirectory = chunkedImportDirectory, GamePort = port + 50, ExecutablePath = fixture };
+        var chunkedNewSeed = new ServerProfile { Kind = "Valheim", Name = "Unsafe chunked seed", ServerName = "Unsafe chunked seed",
+            WorldSource = "New", WorldId = "chunked-world", WorldDirectory = chunkedImportDirectory,
+            GamePort = port + 60, ExecutablePath = fixture };
+        var chunkedUnimported = new ServerProfile { Kind = "Valheim", Name = "Unimported chunked source", ServerName = "Unimported chunked source",
+            WorldId = "chunked-world", WorldDirectory = sourceWorld, GamePort = port + 70, ExecutablePath = fixture };
+        var settings = new HostSettings { MaxConcurrentServers = 2,
+            Profiles = [profile, second, newSeed, unimported, chunked, chunkedNewSeed, chunkedUnimported] };
         Require((await host.UpdateSettingsAsync(settings)).Ok, "Valheim settings rejected");
         Require((await host.StartAsync(newSeed.Id)).Code == "WorldAlreadyExists", "new seed reused existing world files");
+        Require((await host.StartAsync(chunkedNewSeed.Id)).Code == "WorldAlreadyExists", "new seed reused an existing chunked world folder");
         Require((await host.StartAsync(unimported.Id)).Code == "WorldImportRequired", "source save was allowed to be started directly");
+        Require((await host.StartAsync(chunkedUnimported.Id)).Code == "WorldImportRequired", "chunked source was allowed to be started directly");
+        Require((await host.StartAsync(chunked.Id)).Code == "PasswordRequired", "complete imported chunked world did not pass the Start world guard");
+        var chunkIndex = Path.Combine(chunkedImportDirectory, "worlds_local", "chunked-world", "_main.7.chunks");
+        var withheldIndex = chunkIndex + ".withheld";
+        File.Move(chunkIndex, withheldIndex);
+        try { Require((await host.StartAsync(chunked.Id)).Code == "MissingWorldData", "incomplete imported chunked world passed Start"); }
+        finally { File.Move(withheldIndex, chunkIndex); }
         Require((await host.StartAsync(profile.Id)).Code == "PasswordRequired", "passwordless start was allowed");
         Require((await host.SetValheimPasswordAsync(profile.Id, "fixture-pass-123")).Ok, "protected password failed");
         Require(data.HasValheimPassword(profile.Id), "protected password was not stored");
         var metadata = Path.Combine(world, "worlds_local", "fixture-world.fwl");
         var withheld = metadata + ".withheld";
         File.Move(metadata, withheld);
-        try { Require((await host.StartAsync(profile.Id)).Code == "MissingWorldPair", "missing world pair created a new seed"); }
+        try { Require((await host.StartAsync(profile.Id)).Code == "MissingWorldData", "missing world pair created a new seed"); }
         finally { File.Move(withheld, metadata); }
         Console.WriteLine("PASS Valheim profile and protected password gate (synthetic)"); passes++;
 
@@ -197,6 +256,17 @@ finally
         catch (ArgumentException) { }
         catch (InvalidOperationException) { }
     }
+}
+
+static void CreateChunkedWorld(string folder, int revision)
+{
+    Directory.CreateDirectory(folder);
+    File.WriteAllText(Path.Combine(folder, $"_main.{revision}.db2"), $"synthetic world database {revision}");
+    File.WriteAllText(Path.Combine(folder, $"_main.{revision}.fwl2"), $"synthetic world metadata {revision}");
+    File.WriteAllText(Path.Combine(folder, $"_main.{revision}.chunks"), $"synthetic chunk index {revision}");
+    File.WriteAllText(Path.Combine(folder, $"_main.{revision}.ok"), "ok");
+    File.WriteAllText(Path.Combine(folder, $"terrain.{revision}.chunk"), $"synthetic terrain chunk {revision}");
+    File.WriteAllText(Path.Combine(folder, $"players.{revision}.chunk"), $"synthetic player chunk {revision}");
 }
 
 static async Task WaitForReady(HostManager host, Guid id)

@@ -99,6 +99,43 @@ internal sealed class DesktopWindow
         return await selected.Task;
     }
 
+    public async Task<string?> PickFolderAsync(string title, string? initialDirectory = null)
+    {
+        try { await shown.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { return null; }
+        var target = form;
+        if (target is null || target.IsDisposed) return null;
+        var selected = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            target.BeginInvoke(new Action(() =>
+            {
+                if (Interlocked.CompareExchange(ref fileDialogOpen, 1, 0) != 0)
+                {
+                    selected.TrySetResult(null);
+                    return;
+                }
+                try
+                {
+                    using var dialog = new FolderBrowserDialog
+                    {
+                        Description = title,
+                        UseDescriptionForTitle = true,
+                        ShowNewFolderButton = false,
+                        AutoUpgradeEnabled = true
+                    };
+                    if (!string.IsNullOrWhiteSpace(initialDirectory) && Directory.Exists(initialDirectory))
+                        dialog.SelectedPath = initialDirectory;
+                    selected.TrySetResult(dialog.ShowDialog(target) == DialogResult.OK ? dialog.SelectedPath : null);
+                }
+                catch (Exception ex) { selected.TrySetException(ex); }
+                finally { Volatile.Write(ref fileDialogOpen, 0); }
+            }));
+        }
+        catch (InvalidOperationException) { return null; }
+        return await selected.Task;
+    }
+
     public void Exit()
     {
         closing = true;

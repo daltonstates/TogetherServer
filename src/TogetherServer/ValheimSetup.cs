@@ -4,11 +4,13 @@ using Microsoft.Win32;
 namespace TogetherServer;
 
 public sealed record ValheimInstallation(string ExecutablePath, string Source);
-public sealed record ValheimWorld(string Name, string SaveRoot);
+public sealed record ValheimWorld(string Name, string SaveRoot, string SourceFolder, string Format);
 public sealed record ValheimDiscoveryResult(IReadOnlyList<ValheimInstallation> Installations,
     IReadOnlyList<ValheimWorld> Worlds);
-public sealed record WorldFileSelection(bool Ok, string Code, string Message, string? WorldId, string? SourceSaveRoot);
-public sealed record ImportWorldRequest(Guid ProfileId, string SourceSaveRoot, string WorldId);
+public sealed record WorldFileSelection(bool Ok, string Code, string Message, string? WorldId, string? SourceSaveRoot,
+    string SourceFolder = "worlds_local");
+public sealed record ImportWorldRequest(Guid ProfileId, string SourceSaveRoot, string WorldId,
+    string SourceFolder = "worlds_local");
 public sealed record ImportWorldResult(bool Ok, string Code, string Message, string? WorldDirectory);
 
 public static partial class ValheimSetup
@@ -79,11 +81,20 @@ public static partial class ValheimSetup
     public static ValheimDiscoveryResult ScanRoots(IEnumerable<string> steamRoots, IEnumerable<string> saveRoots)
     {
         var libraries = new HashSet<string>(PathComparer);
+        var cloudWorldRoots = new HashSet<string>(PathComparer);
         foreach (var root in steamRoots)
         {
             if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root)) continue;
             var full = Path.GetFullPath(root);
             libraries.Add(full);
+            var userdata = Path.Combine(full, "userdata");
+            try
+            {
+                if (Directory.Exists(userdata))
+                    foreach (var account in Directory.EnumerateDirectories(userdata))
+                        cloudWorldRoots.Add(Path.Combine(account, "892970", "remote"));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
             var vdf = Path.Combine(full, "steamapps", "libraryfolders.vdf");
             try
             {
@@ -132,13 +143,38 @@ public static partial class ValheimSetup
                 {
                     var name = Path.GetFileNameWithoutExtension(db);
                     if (!ValidWorldId(name) || !HasWorldPair(full, name)) continue;
-                    if (seenWorlds.Add(full + "|" + name)) worlds.Add(new ValheimWorld(name, full));
+                    AddWorld(name, full, "worlds_local", "Pair");
+                }
+                foreach (var worldFolder in Directory.EnumerateDirectories(folder))
+                {
+                    var name = Path.GetFileName(worldFolder);
+                    if (HasChunkedWorldFolder(worldFolder)) AddWorld(name, full, "worlds_local", "Folder");
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        foreach (var remoteRoot in cloudWorldRoots)
+        {
+            var folder = Path.Combine(remoteRoot, "worlds");
+            try
+            {
+                if (!Directory.Exists(folder)) continue;
+                foreach (var worldFolder in Directory.EnumerateDirectories(folder))
+                {
+                    var name = Path.GetFileName(worldFolder);
+                    if (HasChunkedWorldFolder(worldFolder)) AddWorld(name, remoteRoot, "worlds", "Steam cloud folder");
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
         return new ValheimDiscoveryResult(installations.OrderBy(i => i.ExecutablePath).ToList(),
             worlds.OrderBy(w => w.Name).ThenBy(w => w.SaveRoot).ToList());
+
+        void AddWorld(string name, string root, string sourceFolder, string format)
+        {
+            if (seenWorlds.Add(root + "|" + sourceFolder + "|" + name))
+                worlds.Add(new ValheimWorld(name, root, sourceFolder, format));
+        }
 
         void AddInstallation(string path, string source)
         {
@@ -173,15 +209,48 @@ public static partial class ValheimSetup
         return new(true, "WorldSelected", "World save pair found.", worldId, saveRoot);
     }
 
+    public static WorldFileSelection SelectWorldFolder(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
+            return new(false, "InvalidWorldFolder", "Choose a Valheim world folder.", null, null);
+        string full;
+        try { full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        { return new(false, "InvalidWorldFolder", "The selected world folder path is invalid.", null, null); }
+        var worldId = Path.GetFileName(full);
+        var parent = Path.GetDirectoryName(full);
+        var sourceFolder = parent is null ? null : NormalizeSourceFolder(Path.GetFileName(parent));
+        var saveRoot = parent is null ? null : Path.GetDirectoryName(parent);
+        if (!ValidWorldId(worldId) || saveRoot is null || sourceFolder is null)
+            return new(false, "UnsupportedWorldFolder", "Choose the world folder inside worlds_local or Steam's remote/worlds folder.", null, null);
+        if (!HasChunkedWorldFolder(full))
+            return new(false, "IncompleteWorldFolder", "This folder needs a matching latest _main revision and chunk files. No copy was made.", null, null);
+        return new(true, "WorldSelected", "Chunked world folder found. The copy will leave it untouched.",
+            worldId, saveRoot, sourceFolder);
+    }
+
     public static bool HasWorldPair(string saveRoot, string worldId) => ValidWorldId(worldId) &&
         File.Exists(Path.Combine(saveRoot, "worlds_local", worldId + ".db")) &&
         File.Exists(Path.Combine(saveRoot, "worlds_local", worldId + ".fwl"));
 
-    public static bool HasAnyWorldFile(string saveRoot, string worldId) =>
+    public static bool HasChunkedWorldFolder(string worldFolder)
+    {
+        try { return GetChunkedFiles(worldFolder) is not null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        { return false; }
+    }
+
+    public static bool HasWorldData(string saveRoot, string worldId) => ValidWorldId(worldId) &&
+        (HasWorldPair(saveRoot, worldId) ||
+         HasChunkedWorldFolder(Path.Combine(saveRoot, "worlds_local", worldId)));
+
+    public static bool HasAnyWorldFile(string saveRoot, string worldId) => ValidWorldId(worldId) && (
         File.Exists(Path.Combine(saveRoot, "worlds_local", worldId + ".db")) ||
         File.Exists(Path.Combine(saveRoot, "worlds_local", worldId + ".fwl")) ||
+        Directory.Exists(Path.Combine(saveRoot, "worlds_local", worldId)) ||
         File.Exists(Path.Combine(saveRoot, "worlds", worldId + ".db")) ||
-        File.Exists(Path.Combine(saveRoot, "worlds", worldId + ".fwl"));
+        File.Exists(Path.Combine(saveRoot, "worlds", worldId + ".fwl")) ||
+        Directory.Exists(Path.Combine(saveRoot, "worlds", worldId)));
 
     public static bool IsImportedWorld(LocalData data, Guid profileId, string saveRoot) =>
         Path.GetFullPath(saveRoot).Equals(Path.Combine(data.WorldImportsRoot, profileId.ToString("N")),
@@ -189,18 +258,27 @@ public static partial class ValheimSetup
 
     public static ImportWorldResult ImportCopy(LocalData data, ImportWorldRequest request)
     {
+        var sourceFolderName = NormalizeSourceFolder(request.SourceFolder);
         if (request.ProfileId == Guid.Empty || !ValidWorldId(request.WorldId) ||
-            string.IsNullOrWhiteSpace(request.SourceSaveRoot) || !Path.IsPathFullyQualified(request.SourceSaveRoot))
+            string.IsNullOrWhiteSpace(request.SourceSaveRoot) || !Path.IsPathFullyQualified(request.SourceSaveRoot) ||
+            sourceFolderName is null)
             return new(false, "InvalidWorld", "Select a valid local save root and world name.", null);
         string sourceRoot;
         try { sourceRoot = Path.GetFullPath(request.SourceSaveRoot); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         { return new(false, "InvalidWorld", "The local save root is not a valid path.", null); }
-        var sourceFolder = Path.Combine(sourceRoot, "worlds_local");
+        var sourceFolder = Path.Combine(sourceRoot, sourceFolderName);
         var db = Path.Combine(sourceFolder, request.WorldId + ".db");
         var fwl = Path.Combine(sourceFolder, request.WorldId + ".fwl");
-        if (!HasWorldPair(sourceRoot, request.WorldId))
-            return new(false, "MissingWorldPair", "The local save needs both .db and .fwl files. Move cloud saves to Local in Valheim first.", null);
+        var chunkFolder = Path.Combine(sourceFolder, request.WorldId);
+        var hasFolder = Directory.Exists(chunkFolder);
+        var hasPair = sourceFolderName == "worlds_local" && HasWorldPair(sourceRoot, request.WorldId);
+        if (hasFolder && hasPair)
+            return new(false, "AmbiguousWorld", "This name has both a world folder and a .db/.fwl pair. Choose a source containing one format.", null);
+        if (hasFolder && !HasChunkedWorldFolder(chunkFolder))
+            return new(false, "IncompleteWorldFolder", "The world folder has no complete latest revision and chunk files. No copy was made.", null);
+        if (!hasFolder && !hasPair)
+            return new(false, "MissingWorldPair", "No complete .db/.fwl pair or chunked world folder was found.", null);
 
         var imports = data.WorldImportsRoot;
         var target = Path.Combine(imports, request.ProfileId.ToString("N"));
@@ -209,16 +287,43 @@ public static partial class ValheimSetup
         var staging = Path.Combine(imports, ".import-" + Guid.NewGuid().ToString("N"));
         try
         {
-            // Hold both source files against writes for the entire copy. The original is never modified.
-            using var dbSource = new FileStream(db, FileMode.Open, FileAccess.Read, FileShare.None);
-            using var fwlSource = new FileStream(fwl, FileMode.Open, FileAccess.Read, FileShare.None);
-            if (dbSource.Length == 0 || fwlSource.Length == 0)
-                return new(false, "EmptyWorldFile", "The selected world has an empty save file.", null);
-            Directory.CreateDirectory(Path.Combine(staging, "worlds_local"));
-            using (var dest = new FileStream(Path.Combine(staging, "worlds_local", request.WorldId + ".db"), FileMode.CreateNew))
-                dbSource.CopyTo(dest);
-            using (var dest = new FileStream(Path.Combine(staging, "worlds_local", request.WorldId + ".fwl"), FileMode.CreateNew))
-                fwlSource.CopyTo(dest);
+            if (hasFolder)
+            {
+                var files = GetChunkedFiles(chunkFolder);
+                if (files is null)
+                    return new(false, "IncompleteWorldFolder", "The source world changed before copying. No copy was made.", null);
+                var sources = new List<FileStream>();
+                try
+                {
+                    // Keep every chunk locked against writes while copying a complete snapshot.
+                    foreach (var file in files)
+                        sources.Add(new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None));
+                    var destination = Path.Combine(staging, "worlds_local", request.WorldId);
+                    Directory.CreateDirectory(destination);
+                    for (var index = 0; index < files.Length; index++)
+                    {
+                        using var output = new FileStream(Path.Combine(destination, Path.GetFileName(files[index])), FileMode.CreateNew);
+                        sources[index].CopyTo(output);
+                    }
+                    var after = GetChunkedFiles(chunkFolder);
+                    if (after is null || !files.SequenceEqual(after, PathComparer))
+                        return new(false, "SourceChanged", "The source world changed during copying. No copy was kept.", null);
+                }
+                finally { foreach (var source in sources) source.Dispose(); }
+            }
+            else
+            {
+                // Hold both legacy files against writes for the entire copy.
+                using var dbSource = new FileStream(db, FileMode.Open, FileAccess.Read, FileShare.None);
+                using var fwlSource = new FileStream(fwl, FileMode.Open, FileAccess.Read, FileShare.None);
+                if (dbSource.Length == 0 || fwlSource.Length == 0)
+                    return new(false, "EmptyWorldFile", "The selected world has an empty save file.", null);
+                Directory.CreateDirectory(Path.Combine(staging, "worlds_local"));
+                using (var dest = new FileStream(Path.Combine(staging, "worlds_local", request.WorldId + ".db"), FileMode.CreateNew))
+                    dbSource.CopyTo(dest);
+                using (var dest = new FileStream(Path.Combine(staging, "worlds_local", request.WorldId + ".fwl"), FileMode.CreateNew))
+                    fwlSource.CopyTo(dest);
+            }
             Directory.Move(staging, target);
             return new(true, "WorldImported", "A separate copy is ready. The source save was left untouched.", target);
         }
@@ -234,8 +339,37 @@ public static partial class ValheimSetup
         }
     }
 
+    private static string[]? GetChunkedFiles(string worldFolder)
+    {
+        if (!Directory.Exists(worldFolder) || !ValidWorldId(Path.GetFileName(worldFolder)) ||
+            File.GetAttributes(worldFolder).HasFlag(FileAttributes.ReparsePoint) ||
+            Directory.EnumerateDirectories(worldFolder).Any()) return null;
+        var files = Directory.GetFiles(worldFolder).OrderBy(path => path, PathComparer).ToArray();
+        if (files.Length == 0 || files.Any(path => File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint))) return null;
+        var revisions = files.Select(path => MainFileRegex().Match(Path.GetFileName(path)))
+            .Where(match => match.Success && long.TryParse(match.Groups[1].Value, out _))
+            .Select(match => long.Parse(match.Groups[1].Value)).ToArray();
+        if (revisions.Length == 0) return null;
+        var latest = revisions.Max().ToString();
+        foreach (var extension in new[] { "db2", "fwl2", "chunks", "ok" })
+        {
+            var main = files.FirstOrDefault(path => Path.GetFileName(path).Equals($"_main.{latest}.{extension}",
+                StringComparison.OrdinalIgnoreCase));
+            if (main is null || (extension != "ok" && new FileInfo(main).Length == 0)) return null;
+        }
+        if (!files.Any(path => path.EndsWith(".chunk", StringComparison.OrdinalIgnoreCase) &&
+                               new FileInfo(path).Length > 0)) return null;
+        return files;
+    }
+
+    private static string? NormalizeSourceFolder(string? name) =>
+        name?.Equals("worlds_local", StringComparison.OrdinalIgnoreCase) == true ? "worlds_local" :
+        name?.Equals("worlds", StringComparison.OrdinalIgnoreCase) == true ? "worlds" : null;
+
     [GeneratedRegex("\"path\"\\s*\"((?:\\\\.|[^\"\\\\])*)\"", RegexOptions.IgnoreCase)]
     private static partial Regex LibraryPathRegex();
     [GeneratedRegex("\"installdir\"\\s*\"([^\"\\\\/]+)\"", RegexOptions.IgnoreCase)]
     private static partial Regex InstallDirRegex();
+    [GeneratedRegex(@"^_main\.(\d+)\.(db2|fwl2|chunks|ok)$", RegexOptions.IgnoreCase)]
+    private static partial Regex MainFileRegex();
 }
