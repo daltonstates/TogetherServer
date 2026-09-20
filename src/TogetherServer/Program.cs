@@ -10,8 +10,8 @@ var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
-var openBrowser = args.Length == 0;
-DesktopLaunch.EnsureConsoleForGameStop(openBrowser);
+var openWindow = args.Length == 0;
+DesktopLaunch.EnsureConsoleForGameStop(openWindow);
 var portIndex = Array.IndexOf(args, "--port");
 var port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
     ? parsedPort : 5127;
@@ -21,9 +21,9 @@ var root = Environment.GetEnvironmentVariable("TOGETHERSERVER_DATA_DIR")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TogetherServer");
 LocalData data;
 try { data = new LocalData(root); }
-catch (IOException ex) when (openBrowser)
+catch (IOException ex) when (openWindow)
 {
-    if (await DesktopLaunch.TryOpenExistingAsync(port)) return;
+    if (await DesktopLaunch.TryShowExistingAsync(port)) return;
     DesktopLaunch.ShowError("TogetherServer could not open its local data. Another instance may be starting.\n\n" + ex.Message);
     return;
 }
@@ -77,6 +77,7 @@ builder.Services.AddRateLimiter(options =>
         { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
 });
 var app = builder.Build();
+var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"), root, app.Lifetime.StopApplication) : null;
 app.Use(async (context, next) =>
 {
     var localGui = context.Connection.LocalPort == port;
@@ -116,6 +117,15 @@ app.UseRateLimiter();
 app.MapGet("/api/local/snapshot", async () => friendMode
     ? Results.Json(friend.View())
     : Results.Json(await manager.SnapshotAsync()));
+app.MapGet("/api/local/window", () => Results.Json(new
+{
+    available = desktop is not null,
+    visible = desktop?.Visible ?? false,
+    rendered = desktop?.Rendered ?? false
+}));
+app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
+    ? Results.Json(new { ok = true, code = "WindowShown" })
+    : Results.Conflict(new { ok = false, code = "WindowUnavailable" }));
 async Task<IResult> HostOnly(Func<Task<ActionResult>> action)
 {
     await modeGate.WaitAsync();
@@ -170,7 +180,7 @@ app.MapPost("/api/local/quit", async (HttpContext context) =>
             return Results.Json(new { ok = false, code = "ManagedRunPresent",
                 message = "Stop or resolve every managed server before quitting TogetherServer." });
         context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
-        return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing. You can close this browser tab." });
+        return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
     }
     finally { modeGate.Release(); }
 });
@@ -360,10 +370,13 @@ var pollTask = Task.Run(async () =>
         catch (OperationCanceledException) { break; }
     }
 });
-if (openBrowser) app.Lifetime.ApplicationStarted.Register(() =>
-    _ = Task.Run(() => DesktopLaunch.Open($"http://127.0.0.1:{port}/")));
+if (desktop is not null)
+{
+    app.Lifetime.ApplicationStarted.Register(desktop.Start);
+    app.Lifetime.ApplicationStopping.Register(desktop.Exit);
+}
 try { await app.RunAsync(); }
-catch (Exception ex) when (openBrowser)
+catch (Exception ex) when (openWindow)
 {
     DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
     Environment.ExitCode = 1;

@@ -3,7 +3,7 @@
 ```text
 Friend PC                                      Owner PC
 TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)
-  bundled React UI on localhost                 bundled React UI on localhost
+  React UI in native window                      React UI in native window
   Valheim.exe process check                      settings + friend pairing
   outbound HTTPS heartbeat/start/stop  ----->   small HTTPS companion API
                                                 fixed process supervisor
@@ -13,6 +13,8 @@ TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)
 ```
 
 This is **one codebase and one TogetherServer process per PC**. The game client and Valheim dedicated server remain their own processes. There is no separate TogetherServer web server, worker agent, Docker runtime, PostgreSQL server, or cloud relay. Development may use frontend tooling, but a published app must bundle the built React assets and run without Node installed.
+
+The native window embeds the bundled React UI with WebView2 and talks to the same process's loopback API. WebView2 may start its normal renderer child processes; there is still only one TogetherServer app process and no second web-server process. The Evergreen WebView2 Runtime is a shared Windows component; the app shows a native setup message if it is absent.
 
 ## Host internals
 

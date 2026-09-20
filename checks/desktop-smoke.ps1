@@ -22,6 +22,21 @@ $first = $null
 $second = $null
 $reopened = $null
 $valheimRun = $null
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class TogetherServerWindowCheck
+{
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr window);
+}
+'@
 
 function Wait-ForGui($process) {
     for ($i = 0; $i -lt 80; $i++) {
@@ -32,11 +47,26 @@ function Wait-ForGui($process) {
     throw 'The no-argument desktop EXE did not serve its GUI.'
 }
 
+function Wait-ForWindow($process) {
+    for ($i = 0; $i -lt 100; $i++) {
+        if ($process.HasExited) { throw 'The TogetherServer window process exited.' }
+        try {
+            $window = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
+            $process.Refresh()
+            if ($window.visible -and $window.rendered -and $process.MainWindowHandle -ne [IntPtr]::Zero) { return }
+        }
+        catch { }
+        Start-Sleep -Milliseconds 100
+    }
+    throw 'The native TogetherServer window did not visibly render React.'
+}
+
 try {
-    $first = Start-Process -FilePath $appPath -WindowStyle Hidden -PassThru
+    $first = Start-Process -FilePath $appPath -PassThru
     $state = Wait-ForGui $first
     if ($state.mode -ne 'Host') { throw 'First desktop launch did not default to Host mode.' }
-    Write-Host 'PASS double-click path starts the standalone EXE without arguments'
+    Wait-ForWindow $first
+    Write-Host 'PASS double-click path opens a visible native window with rendered React'
 
     $saveRoot = Join-Path $caseRoot 'source-save'
     $saveFiles = Join-Path $saveRoot 'worlds_local'
@@ -84,25 +114,40 @@ try {
     $valheimRun = $null
     Write-Host 'PASS no-argument desktop EXE restarts and stops synthetic Valheim again'
 
-    $second = Start-Process -FilePath $appPath -WindowStyle Hidden -PassThru
+    $first.Refresh()
+    [TogetherServerWindowCheck]::ShowWindow($first.MainWindowHandle, 6) | Out-Null
+    if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { throw 'The first window did not minimize.' }
+    $second = Start-Process -FilePath $appPath -PassThru
     if (!$second.WaitForExit(10000) -or $first.HasExited) {
         throw 'Second desktop launch did not return to the running app.'
     }
-    Write-Host 'PASS second double-click reuses the running app'
+    $restored = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { $restored = $true; break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (!$restored) { throw 'Second desktop launch did not restore the minimized TogetherServer window.' }
+    Write-Host 'PASS second double-click restores the existing native window'
 
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
         throw 'Friend mode selection failed.'
     }
-    $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
-    if (!$closed.ok -or !$first.WaitForExit(10000)) { throw 'Quit app did not close the first desktop instance.' }
+    $first.Refresh()
+    $posted = [TogetherServerWindowCheck]::PostMessage($first.MainWindowHandle, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
+    if (!$posted) { throw "Could not send close to the native window: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    if (!$first.WaitForExit(10000)) {
+        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+        throw "Closing the native window did not exit: visible=$($windowState.visible), rendered=$($windowState.rendered), title=$($first.MainWindowTitle)"
+    }
 
-    $reopened = Start-Process -FilePath $appPath -WindowStyle Hidden -PassThru
+    $reopened = Start-Process -FilePath $appPath -PassThru
     $state = Wait-ForGui $reopened
+    Wait-ForWindow $reopened
     if ($state.mode -ne 'Friend') { throw 'Friend mode was not restored after a normal double-click relaunch.' }
     $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
     if (!$closed.ok -or !$reopened.WaitForExit(10000)) { throw 'Quit app did not close the Friend instance.' }
-    Write-Host 'PASS Friend mode persists and Quit app closes both desktop modes'
+    Write-Host 'PASS Friend mode persists; window close and Quit app both exit'
     Write-Host "Desktop smoke data: $caseRoot"
 }
 finally {

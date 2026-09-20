@@ -4,7 +4,7 @@ Keep the project small and deliver working vertical slices. Start implementation
 
 ## Slice 1 — Local Host app and GUI
 
-- Create one Windows .NET 10 app that serves bundled React/TypeScript assets to a loopback-only browser GUI, with a clear Host/Friend mode switch. Build and publish without requiring Node at runtime.
+- Create one Windows .NET 10 app that shows bundled React/TypeScript assets in its own window over a loopback-only local API, with a clear Host/Friend mode switch. Build and publish without requiring Node at runtime.
 - Add local settings for an approved server executable/profile, maximum concurrent managed servers (default 1), idle minutes (initially disabled), and remote-control disabled state. Keep secrets and worlds outside the repo.
 - Implement fixed local Start, Stop, and Health actions with a small purpose-built synthetic process fixture. Verify duplicate Start, one-writer-per-world, max count, port conflicts, process identity, crash/restart Unknown, and that Stop never kills an unrelated process.
 - The GUI must show actual state, pending actions, and errors. Do not label a fixture or running process as a real Valheim server. This slice is accepted only after a Windows build, meaningful process tests, and a served React GUI check.

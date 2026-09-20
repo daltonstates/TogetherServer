@@ -8,7 +8,9 @@ The Host can now launch an owner-selected `valheim_server.exe` directly, watch i
 
 ## Open the app on Windows
 
-Double-click `local-data\release\TogetherServer.exe`. It opens the local GUI in your default browser. Choose **Host** or **Friend** inside the app; it remembers your choice for the next launch. Double-clicking again reopens the running GUI. Closing the browser tab leaves the app running; use **Quit app** in the GUI after stopping any managed server. Friends use the same EXE on their own PCs. No terminal, .NET SDK, Node install, or separate web server is needed to run the published EXE.
+Double-click `local-data\release\TogetherServer.exe`. It opens the React GUI in its own TogetherServer window. Choose **Host** or **Friend** inside the app; it remembers your choice for the next launch. Double-clicking again restores the running window. Minimize it to keep Host monitoring or Friend heartbeat active. Closing the window or using **Quit app** exits after managed servers stop. Friends use the same EXE on their own PCs. No terminal, .NET SDK, Node install, or separate web server is needed to run the published EXE.
+
+The window uses Microsoft's WebView2 Runtime. It is present on Windows 11 and many Windows 10 PCs; if missing, TogetherServer shows an in-window link to Microsoft's installer. It never installs the Runtime without your click. [Microsoft's distribution guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution) explains this shared Windows component.
 
 If Windows Security asks whether to allow public and private networks while you are using only the local GUI, choose **Cancel**. The GUI uses `127.0.0.1` and needs no public firewall access. Windows may ask again after a new build or when you run another copy of the EXE. The app never changes firewall rules. Public Friend access requires a separate owner decision and network setup.
 

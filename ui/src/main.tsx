@@ -247,7 +247,7 @@ function App() {
     finally { setPending('') }
   }
 
-  if (exiting) return <div className="shell"><main><section className="panel"><h1>TogetherServer is closing</h1><p>You can close this browser tab. Double-click TogetherServer.exe to open the app again.</p></section></main></div>
+  if (exiting) return <div className="shell"><main><section className="panel"><h1>TogetherServer is closing</h1><p>This window will close. Double-click TogetherServer.exe to open the app again.</p></section></main></div>
 
   return <div className="shell">
     <header className="topbar">
@@ -380,7 +380,7 @@ function App() {
             <div className="device-options"><label className="check-row"><input type="checkbox" checked={deviceStart} onChange={event => setDeviceStart(event.target.checked)} /> May request Start</label><label className="check-row"><input type="checkbox" checked={deviceStop} onChange={event => setDeviceStop(event.target.checked)} /> May request Stop</label></div>
           </div>
           <div className="save-row"><span>Invites expire after 30 minutes and work once.</span><button disabled={!!pending || dirty || !deviceName} onClick={() => void issueInvite()}>{pending === 'invite' ? 'Creating…' : 'Create invite'}</button></div>
-          {invitation && <div className="invite-box"><strong>One-time invitation</strong><p>Copy privately. This is shown only in this browser session.</p><textarea readOnly rows={5} value={invitation} /><div className="actions"><button onClick={() => void navigator.clipboard.writeText(invitation)}>Copy invite</button><button className="secondary" onClick={() => setInvitation('')}>Hide</button></div></div>}
+          {invitation && <div className="invite-box"><strong>One-time invitation</strong><p>Copy privately. This is shown only in this app session.</p><textarea readOnly rows={5} value={invitation} /><div className="actions"><button onClick={() => void navigator.clipboard.writeText(invitation)}>Copy invite</button><button className="secondary" onClick={() => setInvitation('')}>Hide</button></div></div>}
           <div className="profile-list device-list">{companion?.devices.map(device => <div className="device" key={device.id}>
             <div><strong>{device.name}</strong><small>{device.revoked ? 'Revoked' : device.lastHeartbeatUtc ? `Heartbeat ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()} · Game ${device.gameRunning === null ? 'Unknown' : device.gameRunning ? 'running' : 'closed'}` : device.paired ? 'Heartbeat Unknown' : 'Invite pending'} · {device.canStart ? 'Start allowed' : 'Start denied'} · {device.canStop ? 'Stop allowed' : 'Stop denied'}</small></div>
             <div className="actions"><button className="secondary" disabled={!!pending || device.revoked} onClick={() => void issueInvite(device.id, device.name, device.canStart, device.canStop)}>Rotate</button><button className="text-button danger" disabled={!!pending || device.revoked} onClick={() => void revokeDevice(device.id)}>Revoke</button></div>
@@ -389,7 +389,7 @@ function App() {
         </section>
         <div className="hint">The mode switch is available when no managed run is active. Fixture work does not alter a real Valheim world.</div>
       </>}
-      <p className="footnote">Closing this browser tab leaves TogetherServer running so Friend heartbeat and Host controls continue. Use Quit app to stop it.</p>
+      <p className="footnote">Minimize this window to keep TogetherServer running. Close the window or use Quit app to exit after managed servers stop.</p>
     </main>
   </div>
 }

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -27,7 +26,7 @@ internal static class DesktopLaunch
         if (hideWindow && window != IntPtr.Zero) ShowWindow(window, 0);
     }
 
-    public static async Task<bool> TryOpenExistingAsync(int port)
+    public static async Task<bool> TryShowExistingAsync(int port)
     {
         var address = $"http://127.0.0.1:{port}/";
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
@@ -42,8 +41,11 @@ internal static class DesktopLaunch
                     if (json.RootElement.TryGetProperty("mode", out var mode) &&
                         mode.GetString() is "Host" or "Friend")
                     {
-                        Open(address);
-                        return true;
+                        using var show = new HttpRequestMessage(HttpMethod.Post, address + "api/local/show");
+                        show.Headers.TryAddWithoutValidation("Origin", address.TrimEnd('/'));
+                        show.Headers.Add("X-TogetherServer-Local", "1");
+                        using var shown = await client.SendAsync(show);
+                        if (shown.IsSuccessStatusCode) return true;
                     }
                 }
             }
@@ -51,16 +53,6 @@ internal static class DesktopLaunch
             if (attempt < 19) await Task.Delay(200);
         }
         return false;
-    }
-
-    public static void Open(string address)
-    {
-        try
-        {
-            using var browser = Process.Start(new ProcessStartInfo(address) { UseShellExecute = true });
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-        { ShowError("TogetherServer is running. Open " + address + " in your browser.\n\n" + ex.Message); }
     }
 
     public static void ShowError(string message)

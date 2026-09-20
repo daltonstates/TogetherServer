@@ -110,3 +110,25 @@ An initial published-EXE synthetic Stop test timed out even though in-process ch
 During development, six published synthetic Stop attempts timed out and one headless startup failed with `AllocConsole` error 5. The published Host's inherited Ctrl+C setting is the likely cause of the timeouts, based on the Windows API behavior and the passing tests after clearing it. A separate immediate Stop on a just-restarted fixture returned `StopUnconfirmed` before readiness; the managed run stayed recorded, and a restart/Stop after readiness passed. These exploratory failures are outside the final check counts above. The owner may still see the Windows firewall dialog for a changed executable. No firewall choice was made by the app or these tests.
 
 Launch now by double-clicking `local-data\release\TogetherServer.exe`; no command line is needed. The next developer command for this slice is `.\checks\desktop-smoke.ps1`. The next acceptance action is an owner-approved Valheim Dedicated Server installation and disposable copy, then a real client join, graceful save/restart, and Friend network test. Remote Stop and auto shutdown remain gated on real permitted-player and heartbeat coverage.
+
+## 2026-09-20 - Slice 6 native app window
+
+Starting Git HEAD: `e1b5143a2aa8dd53b232adff8751fcee0cc4fc6e`, clean `main` worktree. Double-clicking the same single-file `TogetherServer.exe` now opens its bundled React interface in a TogetherServer window using WebView2. The local API remains bound to loopback. A second launch restores the existing window. Minimizing keeps Host monitoring or Friend heartbeat active; closing the window asks the existing Quit route to exit and stays open when a managed run must be stopped first. Host and Friend modes use the same window and saved mode choice.
+
+The app uses the shared Microsoft WebView2 Runtime. If it is missing, a native message offers an owner-clicked link to Microsoft's installer. The app does not install it automatically. No game binary, real world, credential, or public network setting was changed. The Windows Firewall permission dialog may still appear for this EXE because the app has a local listener; this slice did not change firewall rules or prove that the dialog is gone on the owner's PC.
+
+| Final check | Result |
+| --- | --- |
+| `scripts/build.ps1`: React/TypeScript, two fixtures, Windows x64 self-contained single EXE | Pass; 0 errors, 1 `MSB3277` WindowsBase version warning from WebView2's unused WPF reference |
+| `local-data/release`: one `TogetherServer.exe` | Pass |
+| `checks/desktop-smoke.ps1`: visible native window and rendered React, synthetic Valheim start/stop/restart, second-launch restore, Friend mode persistence, window close and Quit | Pass: 5 groups, 0 failures |
+| `checks/served-smoke.ps1`: bundled assets and local API through the released EXE | Pass: 9 groups, 0 failures |
+| `TogetherServer.Checks`: duplicate, world, maximum, port, identity and unrelated-process guards | Pass: 7 cases, 0 failures |
+| `TogetherServer.ValheimChecks`: synthetic discovery/import/readiness/Ctrl+C/restart | Pass: 5 groups, 0 failures |
+| `TogetherServer.CompanionChecks`: local Host/two-Friend HTTPS, permissions, heartbeat and disable notice | Pass: 10 groups, 0 failures |
+| Manual window interaction or screenshot | Not run; the smoke test checked a visible Win32 window and queried the rendered React DOM in WebView2 |
+| Real Valheim join/save/restart, public-IP Friend connection, real-world idle behavior | Not run; owner-approved installation, safe test copy, and real client/network testing are still needed |
+
+Two exploratory desktop-smoke runs found that sending a native close message closed the window without stopping the backend. The close handler now routes that message through Quit; the final smoke passed. The WebView2 WPF warning does not affect the published WinForms EXE in the observed checks, but a clean warning-free build is not claimed.
+
+Launch now by double-clicking `local-data\release\TogetherServer.exe`. The exact next local developer command is `.\checks\desktop-smoke.ps1`. The next v1 acceptance step is the owner-approved real Valheim/client test on a disposable world copy, followed by a Friend PC on the intended network. Remote Stop and auto shutdown remain gated on real permitted-player and heartbeat coverage.

@@ -27,7 +27,7 @@ Persist enough identity to check whether a previously managed server process sti
 
 - Friend mode runs while the game is closed. It sends an authenticated outbound heartbeat about every 15 seconds with device ID, version, monotonic sequence, and a boolean for whether that PC's verified Valheim game client executable is running. The Host uses **its receipt time** for freshness, not the Friend PC's clock.
 - A heartbeat older than roughly 45 seconds is Stale/Unknown. Retries are bounded. Host reachability and game-running status are separate fields in the GUI.
-- Host mode performs the same local Valheim-client check for the owner's PC. Closing the Host UI tab must not stop this check while the Host app is running.
+- Host mode performs the same local Valheim-client check for the owner's PC. Minimizing the Host window must not stop this check while the Host app is running.
 - If a Friend app is revoked or a required device is missing, its status is Unknown for idle decisions until the owner explicitly changes the allowed-player set. Do not assume offline equals not playing.
 - The heartbeat response includes public Host status and the remote-controls flag. This is enough for a connected Friend app to show an enable/disable notice without a second push service.
 
