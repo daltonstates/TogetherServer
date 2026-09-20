@@ -26,6 +26,15 @@ var chunkedImportDirectory = "";
 var chunkedProfileId = Guid.NewGuid();
 try
 {
+    Require(GameConnection.JoinAddress(profile, "1.2.3.4") == $"1.2.3.4:{port}" &&
+        GameConnection.JoinAddress(profile, "127.0.0.1") is null &&
+        GameConnection.JoinAddress(profile, "192.168.1.2") is null &&
+        GameConnection.JoinAddress(profile, "100.64.1.2") is null &&
+        GameConnection.JoinAddress(profile, "203.0.113.2") is null &&
+        GameConnection.JoinAddress(new ServerProfile { Kind = "Fixture" }, "1.2.3.4") is null,
+        "Game join address used an unshareable address or a synthetic profile");
+    Console.WriteLine("PASS public Valheim join address omits local, shared, test, and fixture addresses"); passes++;
+
     var steam = Path.Combine(root, "Steam");
     var secondLibrary = Path.Combine(root, "OtherDriveLibrary");
     Directory.CreateDirectory(Path.Combine(steam, "steamapps"));

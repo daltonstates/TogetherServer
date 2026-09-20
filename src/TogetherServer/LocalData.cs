@@ -16,6 +16,7 @@ public sealed class HostSettings
     public string CompanionBindAddress { get; set; } = "127.0.0.1";
     public string CompanionEndpoint { get; set; } = "";
     public int CompanionPort { get; set; } = 5131;
+    public string PublicGameIp { get; set; } = "";
     public string OwnerClientExecutablePath { get; set; } = "";
     public List<ServerProfile> Profiles { get; set; } = [];
 }

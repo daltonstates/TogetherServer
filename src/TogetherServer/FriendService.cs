@@ -18,7 +18,7 @@ public sealed class FriendConfiguration
     public string ClientExecutablePath { get; set; } = "";
 }
 
-public sealed record PublicProfile(Guid Id, string Name, string State);
+public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,

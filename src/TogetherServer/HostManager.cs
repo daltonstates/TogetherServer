@@ -288,6 +288,8 @@ public sealed class HostManager(LocalData data)
         if (next.AutoShutdownEnabled) return "Auto shutdown is unavailable until real player coverage is verified.";
         if (next.PermittedPlayersVerified) return "Permitted-player coverage requires real Valheim verification.";
         if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
+        if (!string.IsNullOrWhiteSpace(next.PublicGameIp) && !GameConnection.IsPublicIpv4(next.PublicGameIp))
+            return "Enter a public IPv4 address for Valheim friends; 127.0.0.1, local, shared, and test addresses cannot be used.";
         if (!System.Net.IPAddress.TryParse(next.CompanionBindAddress, out _)) return "Companion bind address must be an IP address.";
         if (!string.IsNullOrWhiteSpace(next.CompanionEndpoint) &&
             (!HostIdentity.TryEndpoint(next.CompanionEndpoint, out var endpoint) || endpoint.Port != next.CompanionPort))

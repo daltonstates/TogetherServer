@@ -301,7 +301,8 @@ async Task<CompanionStatus> PublicStatus(Guid deviceId)
 {
     var snapshot = await manager.SnapshotAsync();
     var profiles = snapshot.Settings.Profiles.Select(profile => new PublicProfile(profile.Id, profile.Name,
-        snapshot.Runs.Single(run => run.ProfileId == profile.Id).State)).ToList();
+        snapshot.Runs.Single(run => run.ProfileId == profile.Id).State,
+        GameConnection.JoinAddress(profile, snapshot.Settings.PublicGameIp))).ToList();
     var own = pairing.Views().SingleOrDefault(view => view.Id == deviceId);
     return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,
         snapshot.Settings.RemoteControlsEnabled ? null : "The Host has turned remote Start and Stop off.",

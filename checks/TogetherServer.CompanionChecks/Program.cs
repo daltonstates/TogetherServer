@@ -27,6 +27,10 @@ var gamePort = Random.Shared.Next(36000, 43000);
 var endpoint = $"https://127.0.0.1:{companionPort}";
 var profile = new ServerProfile { Name = "Fixture world", WorldId = "companion-fixture", WorldDirectory = world,
     GamePort = gamePort, ExecutablePath = fixturePath };
+var joinWorld = Path.Combine(root, "join-world");
+Directory.CreateDirectory(joinWorld);
+var joinProfile = new ServerProfile { Kind = "Valheim", Name = "Friend join example", ServerName = "Friend join example",
+    WorldId = "join-example", WorldDirectory = joinWorld, GamePort = gamePort + 4, ExecutablePath = fixturePath };
 Process? host = null, friendA = null, friendB = null;
 var passes = 0;
 try
@@ -34,7 +38,8 @@ try
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
-    var settings = new HostSettings { MaxConcurrentServers = 1, Profiles = [profile], CompanionEndpoint = endpoint,
+    var settings = new HostSettings { MaxConcurrentServers = 1, Profiles = [profile, joinProfile], CompanionEndpoint = endpoint,
+        PublicGameIp = "1.2.3.4",
         CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1", OwnerClientExecutablePath = fixturePath };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
     var inviteA = await Invite(owner, "Friend A", true, false);
@@ -68,6 +73,9 @@ try
     var aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     var bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
+    Require(aView.Profiles.Single(item => item.Id == joinProfile.Id).JoinAddress == $"1.2.3.4:{joinProfile.GamePort}" &&
+        aView.Profiles.Single(item => item.Id == profile.Id).JoinAddress is null,
+        "paired Friend did not receive only the Valheim join address while controls were disabled");
     Console.WriteLine("PASS two Friend processes, wrong pin, one-time invite, disabled notice"); passes++;
 
     using var publicClient = PinnedClient(endpoint, inviteA.Fingerprint);
@@ -117,7 +125,7 @@ try
     var requestId = Guid.NewGuid();
     var first = await PublicAction(publicClient, credentialC, profile.Id, requestId, "start");
     var runningHost = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
-    var firstPid = runningHost.Runs.Single().ProcessId;
+    var firstPid = runningHost.Runs.Single(run => run.ProfileId == profile.Id).ProcessId;
     Require(runningHost.OwnerGameRunning == true, "Host did not perform its local synthetic game-client check");
     var retry = await PublicAction(publicClient, credentialC, profile.Id, requestId, "start");
     using (var conflicting = new HttpRequestMessage(HttpMethod.Post, "/api/companion/stop"))
@@ -129,7 +137,7 @@ try
         using var rejected = await publicClient.SendAsync(conflicting);
         Require(rejected.StatusCode == HttpStatusCode.Conflict, "reused action key was accepted for a different action");
     }
-    var retryPid = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single().ProcessId;
+    var retryPid = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single(run => run.ProfileId == profile.Id).ProcessId;
     Require(first.Code == "FixtureStarted" && retry.Code == first.Code && firstPid == retryPid, "idempotent retry launched a second process");
     var duplicate = await OwnerPost<object, FriendActionResult>(aLocal, $"/api/local/friend/{profile.Id}/start", new { });
     Require(duplicate.Code == "AlreadyManaged", "another device launched a duplicate");
@@ -146,7 +154,7 @@ try
     Require(aView.State == "Disconnected/Unknown", "Host outage was mistaken for a connected state");
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
-    Require((await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single().State == "Process running", "Host restart did not reattach fixture");
+    Require((await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single(run => run.ProfileId == profile.Id).State == "Process running", "Host restart did not reattach fixture");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Connected", "Friend did not reconnect after Host restart");
     settings.RemoteControlsEnabled = false;
@@ -275,7 +283,7 @@ finally
         {
             using var owner = LocalClient(hostPort);
             var snapshot = await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
-            if (snapshot?.Runs.SingleOrDefault()?.State == "Process running")
+            if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == profile.Id)?.State == "Process running")
                 await OwnerPost<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { });
         }
         catch { Console.WriteLine("Fixture cleanup via Host failed; inspect the recorded process."); }
