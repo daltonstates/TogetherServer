@@ -42,7 +42,7 @@ public sealed class FriendService
         this.data = data;
         config = LoadConfig(data);
         view = config is null
-            ? new("Friend", "Not paired", "Paste a one-time invite from the Host.", "", null, null, false, false, false, [])
+            ? new("Friend", "Not paired", "Enter the Host IP and one-time pairing code.", "", null, null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
                 null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [], config.ClientExecutablePath);
     }
@@ -66,20 +66,24 @@ public sealed class FriendService
         finally { gate.Release(); }
     }
 
-    public async Task<FriendActionResult> PairAsync(string invitation, string clientExecutablePath)
+    public async Task<FriendActionResult> PairAsync(string invitation, string clientExecutablePath, string? hostAddress = null)
     {
         await gate.WaitAsync();
         try
         {
             PairingInvite? invite;
             try { invite = JsonSerializer.Deserialize<PairingInvite>(invitation, Json); }
-            catch (JsonException) { return new(false, "InvalidInvite", "Invite is not valid JSON.", null); }
+            catch (JsonException) { return new(false, "InvalidInvite", "Pairing code is invalid. Paste the whole code from the Host.", null); }
             if (invite is null || !HostIdentity.TryEndpoint(invite.Endpoint, out _) ||
                 !ValidFingerprint(invite.Fingerprint) || string.IsNullOrWhiteSpace(invite.Code) ||
                 invite.DeviceId == Guid.Empty || invite.ExpiresUtc <= DateTimeOffset.UtcNow ||
                 clientExecutablePath is null ||
                 (clientExecutablePath.Length > 0 && !Path.IsPathFullyQualified(clientExecutablePath)))
                 return new(false, "InvalidInvite", "Invite or game client path is invalid or expired.", null);
+            if (!string.IsNullOrWhiteSpace(hostAddress) &&
+                (!HostIdentity.TryAddress(hostAddress, out var enteredEndpoint) ||
+                 !string.Equals(enteredEndpoint, invite.Endpoint, StringComparison.OrdinalIgnoreCase)))
+                return new(false, "HostAddressMismatch", "Host IP or port differs from the pairing code. Check the address with the Host.", null);
             try
             {
                 using var client = MakeClient(invite.Endpoint, invite.Fingerprint);

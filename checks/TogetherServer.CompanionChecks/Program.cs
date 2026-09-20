@@ -44,6 +44,11 @@ try
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
     var inviteA = await Invite(owner, "Friend A", true, false);
     var inviteB = await Invite(owner, "Friend B", false, true);
+    settings.CompanionEndpoint = $"https://127.0.0.2:{companionPort}";
+    var changedPinnedAddress = await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings);
+    Require(!changedPinnedAddress.Ok && changedPinnedAddress.Code == "HostAddressPinned",
+        "the Host app address changed after its TLS identity was pinned");
+    settings.CompanionEndpoint = endpoint;
     settings.CompanionListeningEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "listener setting failed");
     StopApp(host);
@@ -59,11 +64,19 @@ try
     using var aLocal = LocalClient(friendAPort);
     using var bLocal = LocalClient(friendBPort);
     var tampered = inviteA with { Fingerprint = new string('0', 64) };
+    Require(HostIdentity.TryAddress("127.0.0.1", out var defaultAddress) &&
+        defaultAddress == "https://127.0.0.1:5131" &&
+        HostIdentity.TryAddress($"127.0.0.1:{companionPort}", out var explicitAddress) && explicitAddress == endpoint &&
+        !HostIdentity.TryAddress("http://127.0.0.1", out _),
+        "Host IP with optional control port was not normalized safely");
+    var wrongAddress = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
+        new(JsonSerializer.Serialize(inviteA, webJson), fixturePath, "127.0.0.1:9999"));
+    Require(wrongAddress.Code == "HostAddressMismatch", "pairing ignored an address that differed from the pinned invite");
     var wrongPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(tampered, webJson), fixturePath));
     Require(!wrongPin.Ok && wrongPin.Code == "Disconnected", "wrong Host pin was accepted");
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(JsonSerializer.Serialize(inviteA, webJson), fixturePath));
+        new(JsonSerializer.Serialize(inviteA, webJson), fixturePath, $"127.0.0.1:{companionPort}"));
     var pairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(inviteB, webJson), fixturePath));
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");

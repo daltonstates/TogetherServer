@@ -29,7 +29,7 @@ $fixtureStarted = $false
 $valheimStarted = $false
 $valheimRun = $null
 try {
-    $appProcess = Start-Process -FilePath $appPath -ArgumentList @('--host', '--port', $port) -NoNewWindow -PassThru
+    $appProcess = Start-Process -FilePath $appPath -ArgumentList @('--host', '--port', $port) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $caseRoot 'stdout.txt') -RedirectStandardError (Join-Path $caseRoot 'stderr.txt')
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         if ($appProcess.HasExited) { throw 'The local GUI exited during startup.' }
@@ -53,7 +53,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Detected public IPv4') -or !$js.Content.Contains('Check again') -or !$js.Content.Contains('Use detected address') -or !$js.Content.Contains('Create invite for this PC') -or !$js.Content.Contains('Copy address') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Host IP (port optional)') -or !$js.Content.Contains('Create pairing code') -or !$js.Content.Contains('Copy Host address') -or !$js.Content.Contains('Copy Join IP') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -86,10 +86,17 @@ try {
     Write-Host 'PASS loopback cannot be saved as a public Friend game address'
 
     $profile = @{ id = $profileId; name = 'HTTP fixture'; worldId = 'http-smoke'; worldDirectory = $worldDirectory; gamePort = $gamePort; executablePath = $fixturePath }
-    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; publicGameIp = '1.2.3.4'; profiles = @($profile) }
+    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; publicGameIp = '1.2.3.4'; publicGameIpCheckedUtc = (Get-Date).ToUniversalTime().ToString('o'); profiles = @($profile) }
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw "Settings rejected: $($saved.message)" }
     if ((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings.publicGameIp -ne '1.2.3.4') { throw 'Friend game address was not saved.' }
+    $invite = Invoke-RestMethod -Uri "$baseUrl/api/local/devices/invite" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"name":"Synthetic friend","canStart":true,"canStop":false}'
+    $invitedSettings = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings
+    if (!$invite.ok -or !$invite.invitation -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating an invite did not prepare the standard Host address safely.' }
+    $settings.companionEndpoint = $invitedSettings.companionEndpoint
+    $settings.companionBindAddress = $invitedSettings.companionBindAddress
+    $settings.companionPort = $invitedSettings.companionPort
+    Write-Host 'PASS first invite prepares the standard app address without opening a listener'
     $started = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/start" -Method Post -Headers $headers
     if (!$started.ok -or $started.code -ne 'FixtureStarted') { throw "Start failed: $($started.message)" }
     $fixtureStarted = $true

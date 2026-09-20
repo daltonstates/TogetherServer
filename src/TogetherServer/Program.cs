@@ -264,7 +264,20 @@ app.MapPost("/api/local/devices/invite", async (InviteRequest request) =>
     try
     {
         if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
-        var settings = (await manager.SnapshotAsync()).Settings;
+        var settings = data.LoadSettings();
+        if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
+        {
+            if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 80)
+                return Results.BadRequest(new { ok = false, code = "InvalidName", message = "Enter a device name up to 80 characters." });
+            if (settings.PublicGameIpCheckedUtc is not { } checkedUtc ||
+                DateTimeOffset.UtcNow - checkedUtc > TimeSpan.FromHours(1) ||
+                !GameConnection.IsPublicIpv4(settings.PublicGameIp))
+                return Results.BadRequest(new { ok = false, code = "AddressUnavailable", message = "Check this PC's public IP address first." });
+            settings.CompanionEndpoint = $"https://{settings.PublicGameIp}:{settings.CompanionPort}";
+            settings.CompanionBindAddress = "0.0.0.0";
+            var saved = await manager.UpdateSettingsAsync(settings);
+            if (!saved.Ok) return Results.BadRequest(new { ok = false, code = saved.Code, message = saved.Message });
+        }
         if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out var endpoint) || endpoint.Port != settings.CompanionPort)
             return Results.BadRequest(new { ok = false, code = "InvalidEndpoint", message = "Save an HTTPS IP endpoint and matching companion port first." });
         try
@@ -289,7 +302,7 @@ app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
     finally { modeGate.Release(); }
 });
 app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>
-    friendMode ? Results.Json(await friend.PairAsync(request.Invitation, request.ClientExecutablePath))
+    friendMode ? Results.Json(await friend.PairAsync(request.Invitation, request.ClientExecutablePath, request.HostAddress))
         : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/client-path", async (ClientPathRequest request) =>
     friendMode ? Results.Json(await friend.SetClientPathAsync(request.Path))

@@ -29,7 +29,7 @@ public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Seque
 public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc, bool? GameRunning);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record InviteRequest(string Name, bool CanStart, bool CanStop, Guid? RotateDeviceId);
-public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath);
+public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
 public sealed record ClientPathRequest(string Path);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
@@ -37,6 +37,21 @@ public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
 public sealed class HostIdentity(LocalData data)
 {
     private const string FileName = "host-certificate.protected";
+
+    public static bool TryAddress(string? address, out string endpoint)
+    {
+        endpoint = "";
+        var value = address?.Trim();
+        if (string.IsNullOrEmpty(value) || value.Contains('/') || value.Contains(' ')) return false;
+        var separator = value.LastIndexOf(':');
+        var ipText = separator < 0 ? value : value[..separator];
+        var port = 5131;
+        if (separator >= 0 && !int.TryParse(value[(separator + 1)..], out port)) return false;
+        if (port is < 1024 or > 65535 || !IPAddress.TryParse(ipText, out var ip) ||
+            ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+        endpoint = $"https://{ip}:{port}";
+        return true;
+    }
 
     public X509Certificate2? Load()
     {

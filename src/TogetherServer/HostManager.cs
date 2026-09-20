@@ -39,6 +39,10 @@ public sealed class HostManager(LocalData data)
             }
             var error = Validate(next);
             if (error is not null) return Result(false, "InvalidSettings", error);
+            var pinnedEndpoint = data.LoadIdentityEndpoint();
+            if (pinnedEndpoint is not null &&
+                !string.Equals(next.CompanionEndpoint, pinnedEndpoint, StringComparison.OrdinalIgnoreCase))
+                return Result(false, "HostAddressPinned", "The Friend app address is pinned by the Host identity. Keep the address used for pairing.");
             if (next.CompanionListeningEnabled &&
                 (!data.HasProtected("host-certificate.protected") ||
                  !data.LoadDevices().Any(device => !device.Revoked &&
