@@ -171,3 +171,24 @@ A read-only discovery call against the current PC found one `V1release` world in
 | Real Valheim load/join/save/restart, Friend public-IP connection, permitted-player and idle behavior | Not run; requires a disposable real-world test and an actual Friend PC. |
 
 Double-click `local-data\release\TogetherServer.exe`, choose Host, click **Find Valheim installs and saves**, and review the `V1release` cloud-folder entry. For a development recheck, the exact next command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next acceptance action is a real game test on a disposable copy after owner approval for any terms-gated installation or operation that could change a real world.
+
+## 2026-09-20 - Slice 9 real V1release copy and simpler Host UI
+
+Starting Git HEAD: `04df72658f5fec9476314ce88220742395f7e7c7`, clean `main` worktree. The owner requested a full test using `V1release`. The literal `worlds\_local\V1release` path does not exist, and `worlds_local\V1release` contains only older map cache files. Read-only discovery found the complete newer `V1release` folder in Steam's Valheim cloud cache. TogetherServer imported all 23 files into an ignored, separate test directory; all 23 import hashes matched the source. The original source still had 23 unchanged hashes after the first start, graceful stop, restart, and during the current join test. No original world file was deleted, moved, or overwritten.
+
+The installed Valheim Dedicated Server Steam build ID was `25390671` (executable SHA-256 `E01757027E08D35C5FC926ADFEEC164344B73EADB4D4C61196945642B787E4FD`); the installed client build ID was `25390630`. The test used a disposable password, UDP start port `45678`, Steam backend, no public listing or crossplay relay, and an isolated Host app/data copy. Both completed server runs showed `Game server connected` after loading `V1release`; the first loaded save revision 107, the second loaded revision 108. Both accepted TogetherServer Stop, exited gracefully, and logged `World save (5/5) done`. A third start loaded revision 109 and is currently running for the owner client join. Windows showed UDP ports `45678` and `45679` owned by that recorded server PID. The logs contain private player history and remain ignored outside Git. These observations prove server load, port binding, readiness signal, graceful save, and restart on the test copy. They do not prove a client join, in-game change, or public reachability.
+
+The Host GUI now separates **Servers**, **Setup**, and **Friends**. Setup edits one server at a time, leads with world/import, installed server, and password, and collapses uncommon paths, game options, limits, and idle settings. One **Save setup** action saves settings followed by the protected password. The copied world source stays separate. The published self-contained EXE continues to open in its own WebView2 window.
+
+| Check | Result |
+| --- | --- |
+| Real `V1release` import, source integrity, two starts, two readiness checks, two graceful saves, restart load | Pass; on a separate copy, 23 source hashes unchanged |
+| Real client join, recognizable world change and return after restart | Pending owner participation; third server run is Ready for local join |
+| `npm run build` and `scripts/build.ps1`: React/TypeScript and Windows x64 single EXE | Pass; 0 errors, existing `MSB3277` WebView2 WPF reference warning |
+| `checks/served-smoke.ps1`: bundled React, local API and synthetic fixture lifecycle | Pass: 10 groups, 0 failures |
+| `checks/desktop-smoke.ps1` on the combined-save UI | Pass: 8 groups, 0 failures; no Valheim client process was active during the brief native-window check. A later removal of the redundant App label was covered by the final build and served check. |
+| In-app browser visual review | Skipped: browser runtime returned no available browser. A native screen-capture attempt was rejected by automatic approval review as blocked by policy; no screenshot was taken. |
+| Public-IP Friend connection, permitted-player coverage and idle shutdown | Not run; a real Friend PC and owner network setup are still required. Auto shutdown remains off. |
+| Process and companion suites | Not rerun; no lifecycle, pairing or remote protocol code changed in this slice. |
+
+Double-click `local-data\release\TogetherServer.exe` after the current join session to inspect the new GUI. The exact next developer command after that session is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next acceptance action is a real client join, visible change, graceful stop, restart and return on the copied world, followed by the Friend PC network and permission checks.

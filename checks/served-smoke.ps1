@@ -53,7 +53,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find Valheim installs and saves') -or !$js.Content.Contains('Choose a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
