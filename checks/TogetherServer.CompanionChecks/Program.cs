@@ -39,7 +39,7 @@ try
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
     var settings = new HostSettings { MaxConcurrentServers = 1, Profiles = [profile, joinProfile], CompanionEndpoint = endpoint,
-        PublicGameIp = "1.2.3.4",
+        PublicGameIp = "1.2.3.4", PublicGameIpCheckedUtc = DateTimeOffset.UtcNow.AddHours(-2),
         CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1", OwnerClientExecutablePath = fixturePath };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
     var inviteA = await Invite(owner, "Friend A", true, false);
@@ -73,6 +73,12 @@ try
     var aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     var bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
+    Require(aView.Profiles.Single(item => item.Id == joinProfile.Id).JoinAddress is null,
+        "paired Friend received a stale Valheim join address");
+    settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
+    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
+        "fresh Host address update failed");
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.Profiles.Single(item => item.Id == joinProfile.Id).JoinAddress == $"1.2.3.4:{joinProfile.GamePort}" &&
         aView.Profiles.Single(item => item.Id == profile.Id).JoinAddress is null,
         "paired Friend did not receive only the Valheim join address while controls were disabled");

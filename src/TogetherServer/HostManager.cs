@@ -31,6 +31,12 @@ public sealed class HostManager(LocalData data)
         await gate.WaitAsync();
         try
         {
+            if (settings.PublicGameIpCheckedUtc is { } recorded &&
+                (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
+            {
+                next.PublicGameIp = settings.PublicGameIp;
+                next.PublicGameIpCheckedUtc = recorded;
+            }
             var error = Validate(next);
             if (error is not null) return Result(false, "InvalidSettings", error);
             if (next.CompanionListeningEnabled &&
@@ -53,6 +59,28 @@ public sealed class HostManager(LocalData data)
                 data.Audit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
             settings = next;
             return Result(true, "SettingsSaved", "Host settings saved.");
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<HostSnapshot> RecordDetectedPublicIpAsync(string address)
+    {
+        if (!GameConnection.IsPublicIpv4(address)) throw new ArgumentException("The detected address is not public IPv4.");
+        await gate.WaitAsync();
+        try
+        {
+            var previousAddress = settings.PublicGameIp;
+            var previousChecked = settings.PublicGameIpCheckedUtc;
+            settings.PublicGameIp = IPAddress.Parse(address).ToString();
+            settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
+            try { data.SaveSettings(settings); }
+            catch
+            {
+                settings.PublicGameIp = previousAddress;
+                settings.PublicGameIpCheckedUtc = previousChecked;
+                throw;
+            }
+            return Snapshot();
         }
         finally { gate.Release(); }
     }
@@ -289,7 +317,7 @@ public sealed class HostManager(LocalData data)
         if (next.PermittedPlayersVerified) return "Permitted-player coverage requires real Valheim verification.";
         if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
         if (!string.IsNullOrWhiteSpace(next.PublicGameIp) && !GameConnection.IsPublicIpv4(next.PublicGameIp))
-            return "Enter a public IPv4 address for Valheim friends; 127.0.0.1, local, shared, and test addresses cannot be used.";
+            return "The Valheim friend address must be public IPv4; 127.0.0.1, local, shared, and test addresses cannot be used.";
         if (!System.Net.IPAddress.TryParse(next.CompanionBindAddress, out _)) return "Companion bind address must be an IP address.";
         if (!string.IsNullOrWhiteSpace(next.CompanionEndpoint) &&
             (!HostIdentity.TryEndpoint(next.CompanionEndpoint, out var endpoint) || endpoint.Port != next.CompanionPort))

@@ -7,6 +7,7 @@ The owner chose **public-IP access without requiring a VPN**. This is workable f
 - The Friend app initiates the connection to the Host. The Host does not try to open an inbound connection to a Friend PC behind a home router.
 - The Host has a configurable TCP control port separate from Valheim's game port. No listener on a public interface is enabled by default. Explicitly display the bound address and port after the owner enables it.
 - An Internet test must come from a Friend on another network. A localhost or same-LAN request is not proof that the public IP/port works. Detect and explain likely unroutable WAN/ISP NAT cases; do not silently alter the router or Windows Firewall.
+- Host mode may use an outbound HTTPS request to ipify to display its current public IPv4 address. A successful lookup is only an address hint: it does not prove port forwarding, firewall access, game join, or Friend app reachability. No account or credential is sent; if the lookup fails or becomes stale, do not present it as a verified connection.
 - The game network mode is a separate setting. Valheim's [official dedicated-server guide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/) states that the Steam backend normally needs the selected UDP port and the following port reachable (default 2456-2457), while its Crossplay backend uses a relay and does not require game-port forwarding. Neither mode supplies the companion-control connection.
 
 ## Host identity and Friend credentials

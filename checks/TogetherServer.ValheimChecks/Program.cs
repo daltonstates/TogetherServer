@@ -26,6 +26,23 @@ var chunkedImportDirectory = "";
 var chunkedProfileId = Guid.NewGuid();
 try
 {
+    using (var lookupClient = new HttpClient(new SyntheticIpHandler("1.2.3.4\n")))
+    {
+        var detection = await new PublicIpLookup(lookupClient, new Uri("https://lookup.invalid/")).DetectAsync();
+        Require(detection.Ok && detection.Address == "1.2.3.4", "a valid external IPv4 lookup was not accepted");
+    }
+    using (var lookupClient = new HttpClient(new SyntheticIpHandler("127.0.0.1")))
+    {
+        var detection = await new PublicIpLookup(lookupClient, new Uri("https://lookup.invalid/")).DetectAsync();
+        Require(!detection.Ok && detection.Address is null, "a loopback lookup was accepted as public");
+    }
+    using (var lookupClient = new HttpClient(new SyntheticIpHandler(new string('1', 128))))
+    {
+        var detection = await new PublicIpLookup(lookupClient, new Uri("https://lookup.invalid/")).DetectAsync();
+        Require(!detection.Ok && detection.Address is null, "an oversized lookup response was accepted");
+    }
+    Console.WriteLine("PASS bounded outbound public-IP lookup accepts only a usable IPv4 response"); passes++;
+
     Require(GameConnection.JoinAddress(profile, "1.2.3.4") == $"1.2.3.4:{port}" &&
         GameConnection.JoinAddress(profile, "127.0.0.1") is null &&
         GameConnection.JoinAddress(profile, "192.168.1.2") is null &&
@@ -169,6 +186,13 @@ try
         var settings = new HostSettings { MaxConcurrentServers = 2,
             Profiles = [profile, second, newSeed, unimported, chunked, chunkedNewSeed, chunkedUnimported] };
         Require((await host.UpdateSettingsAsync(settings)).Ok, "Valheim settings rejected");
+        await host.RecordDetectedPublicIpAsync("1.2.3.4");
+        Require((await host.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2,
+            Profiles = settings.Profiles })).Ok, "an older settings form could not be saved");
+        var addressSnapshot = await host.SnapshotAsync();
+        Require(addressSnapshot.Settings.PublicGameIp == "1.2.3.4" &&
+            addressSnapshot.Settings.PublicGameIpCheckedUtc is not null,
+            "an older settings form replaced the detected address");
         Require((await host.StartAsync(newSeed.Id)).Code == "WorldAlreadyExists", "new seed reused existing world files");
         Require((await host.StartAsync(chunkedNewSeed.Id)).Code == "WorldAlreadyExists", "new seed reused an existing chunked world folder");
         Require((await host.StartAsync(unimported.Id)).Code == "WorldImportRequired", "source save was allowed to be started directly");
@@ -318,4 +342,10 @@ static int FreePort()
 static void Require(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+sealed class SyntheticIpHandler(string body) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
 }

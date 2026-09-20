@@ -53,9 +53,10 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Valheim game join') -or !$js.Content.Contains('Create invite for this PC') -or !$js.Content.Contains('Copy address') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Detected public IPv4') -or !$js.Content.Contains('Check again') -or !$js.Content.Contains('Use detected address') -or !$js.Content.Contains('Create invite for this PC') -or !$js.Content.Contains('Copy address') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
+    if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
 
     $discovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"

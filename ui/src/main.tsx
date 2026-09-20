@@ -26,6 +26,7 @@ type Settings = {
   companionEndpoint: string
   companionPort: number
   publicGameIp: string
+  publicGameIpCheckedUtc: string | null
   ownerClientExecutablePath: string
   permittedPlayersVerified: boolean
   profiles: Profile[]
@@ -39,6 +40,7 @@ type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint:
 type Snapshot = HostSnapshot | FriendSnapshot
 type BasicResult = { ok: boolean; code: string; message: string }
 type ActionResult = { ok: boolean; code: string; message: string; snapshot: HostSnapshot }
+type PublicIpDetection = BasicResult & { address: string | null; snapshot?: HostSnapshot }
 type Discovery = { installations: { executablePath: string; source: string }[]; clients: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
 type ImportResult = BasicResult & { worldDirectory: string | null }
 type ServerBrowseResult = BasicResult & { executablePath?: string }
@@ -93,6 +95,8 @@ function App() {
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
   const [loadError, setLoadError] = useState('')
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
+  const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
+  const [detectingPublicIp, setDetectingPublicIp] = useState(false)
   const [deviceName, setDeviceName] = useState('')
   const [deviceStart, setDeviceStart] = useState(false)
   const [deviceStop, setDeviceStop] = useState(false)
@@ -175,6 +179,27 @@ function App() {
       setNotice({ good: false, text: `Could not copy ${label.toLowerCase()}. Select and copy it instead.` })
     }
   }
+  const detectPublicIp = async () => {
+    setDetectingPublicIp(true)
+    try {
+      const result = await change<PublicIpDetection>('/api/local/network/detect-public-ip', 'POST')
+      setPublicIpDetection(result)
+      if (result.ok && result.address && result.snapshot) {
+        setSnapshot(current => current?.mode === 'Host' ? result.snapshot! : current)
+        setDraft(current => current ? { ...current, publicGameIp: result.address!,
+          publicGameIpCheckedUtc: result.snapshot!.settings.publicGameIpCheckedUtc } : current)
+      }
+    } catch {
+      setPublicIpDetection({ ok: false, code: 'PublicIpUnavailable', address: null,
+        message: 'Could not check the public IPv4 address. Check this PC’s Internet connection and retry.' })
+    } finally { setDetectingPublicIp(false) }
+  }
+  useEffect(() => {
+    if (snapshot?.mode !== 'Host') return
+    void detectPublicIp()
+    const timer = window.setInterval(() => void detectPublicIp(), 15 * 60 * 1000)
+    return () => window.clearInterval(timer)
+  }, [snapshot?.mode])
   const issueInvite = async (rotateDeviceId?: string, name = deviceName, canStart = deviceStart, canStop = deviceStop) => {
     setPending('invite')
     setNotice(null)
@@ -387,6 +412,9 @@ function App() {
   if (exiting) return <div className="shell"><main><section className="panel"><h1>TogetherServer is closing</h1><p>This window will close. Double-click TogetherServer.exe to open the app again.</p></section></main></div>
 
   const editedProfile = draft?.profiles.find(profile => profile.id === activeProfileId) ?? draft?.profiles[0]
+  const detectedGameIp = snapshot?.mode === 'Host' && snapshot.settings.publicGameIpCheckedUtc &&
+    Date.now() - Date.parse(snapshot.settings.publicGameIpCheckedUtc) < 60 * 60 * 1000
+    ? snapshot.settings.publicGameIp : ''
   const setupIssues = draft?.profiles.flatMap(profile => getSetupIssues(profile,
     snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[profile.id], passwords[profile.id] ?? '')
     .map(message => ({ id: profile.id, name: profile.name || profile.serverName || 'New server', message }))) ?? []
@@ -464,7 +492,7 @@ function App() {
                 <div className="profile-top"><div><h3>{profile.name}</h3><p>World {profile.worldId} <span>·</span> UDP {profile.gamePort}–{profile.gamePort + 1}</p></div>
                   <span className={`status ${status?.state === 'Process running' || status?.state === 'Ready' ? 'running' : status?.state === 'Offline' ? 'offline' : 'unknown'}`}>{status?.state ?? 'Unknown'}</span></div>
                 <p className="status-detail">{status?.detail}</p>
-                {profile.kind === 'Valheim' && <div className="join-line"><span>On this PC: <code>127.0.0.1:{profile.gamePort}</code></span>{snapshot.settings.publicGameIp ? <><span>Friend Join IP: <code>{snapshot.settings.publicGameIp}:{profile.gamePort}</code></span><button className="secondary" onClick={() => void copyText(`${snapshot.settings.publicGameIp}:${profile.gamePort}`, 'Valheim join address')}>Copy address</button></> : <button className="text-button" onClick={() => setHostView('friends')}>Set friend join address</button>}</div>}
+                {profile.kind === 'Valheim' && <div className="join-line"><span>On this PC: <code>127.0.0.1:{profile.gamePort}</code></span>{detectedGameIp ? <><span>Friend Join IP: <code>{detectedGameIp}:{profile.gamePort}</code></span><button className="secondary" onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Valheim join address')}>Copy address</button></> : <button className="text-button" onClick={() => setHostView('friends')}>Check friend join address</button>}</div>}
                 <div className="actions">
                   <button disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}>Start server</button>
                   <button className="secondary" disabled={!!pending || dirty || !['Process running', 'Starting', 'Ready'].includes(status?.state ?? '')} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}>Stop server</button>
@@ -535,20 +563,24 @@ function App() {
         {hostView === 'friends' && <>
         <section className="panel">
           <div className="section-heading"><span className="section-icon">◎</span><div><h2>Valheim game join</h2><p>Give players the game address for Valheim's Join IP screen.</p></div></div>
-          <p className="helper-text"><code>127.0.0.1</code> works only on this Host PC. Enter your router's public IPv4 address to prepare an address for friends outside your home. TogetherServer cannot verify your public IP or Internet reachability from this PC.</p>
-          <div className="settings-grid"><label>Public IPv4 address for Valheim<input value={draft.publicGameIp} onChange={event => edit({ ...draft, publicGameIp: event.target.value.trim() })} placeholder="Enter your public IPv4 address" /><small>Game traffic uses each server's UDP port and the following port. This field never changes router or firewall settings.</small></label></div>
-          {snapshot.settings.profiles.filter(profile => profile.kind === 'Valheim').map(profile => <div className="join-line" key={profile.id}><strong>{profile.name}</strong><span>On this PC: <code>127.0.0.1:{profile.gamePort}</code></span>{snapshot.settings.publicGameIp ? <><span>Friends: <code>{snapshot.settings.publicGameIp}:{profile.gamePort}</code></span><button className="secondary" onClick={() => void copyText(`${snapshot.settings.publicGameIp}:${profile.gamePort}`, 'Valheim join address')}>Copy address</button></> : <span>Save a public IP to show the friend address.</span>}</div>)}
+          <p className="helper-text"><code>127.0.0.1</code> works only on this Host PC. TogetherServer checks this PC's outbound public IPv4 address automatically through ipify.org over HTTPS. No account or command line is needed.</p>
+          <div className="join-line"><strong>Detected public IPv4</strong>{detectedGameIp ? <code>{detectedGameIp}</code> : <span>{detectingPublicIp ? 'Checking…' : 'Unavailable'}</span>}<button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking…' : 'Check again'}</button></div>
+          {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message} {detectedGameIp ? 'The displayed address is from the last successful check.' : 'No friend address can be shown yet.'}</p>}
+          {snapshot.settings.profiles.filter(profile => profile.kind === 'Valheim').map(profile => <div className="join-line" key={profile.id}><strong>{profile.name}</strong><span>On this PC: <code>127.0.0.1:{profile.gamePort}</code></span>{detectedGameIp ? <><span>Friends: <code>{detectedGameIp}:{profile.gamePort}</code></span><button className="secondary" onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Valheim join address')}>Copy address</button></> : <span>Friend address waiting for a successful public IP check.</span>}</div>)}
+          <p className="helper-text">Game traffic uses each server's UDP port and the following port. This lookup does not test incoming connections or change router or firewall settings.</p>
           <p className="footnote">These are configured addresses, not a successful remote join. Crossplay may offer a Valheim join code after launch; TogetherServer does not generate that code.</p>
         </section>
         <section className="panel">
           <div className="section-heading"><span className="section-icon">↗</span><div><h2>TogetherServer Friend app access</h2><p>Separate from the Valheim game join address. Pair each player's PC for status and approved controls.</p></div></div>
-          <div className="settings-grid companion-fields"><label>Friend app HTTPS endpoint<input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://YOUR_PUBLIC_IP:5131" /><small>This is the app's TCP control port, not Valheim's UDP game port.</small></label><div className="field-action"><button className="secondary" disabled={!draft.publicGameIp || !!pending} onClick={() => edit({ ...draft, companionEndpoint: `https://${draft.publicGameIp}:${draft.companionPort}`, companionBindAddress: '0.0.0.0' })}>Use game IP for Friend app</button><small>Fills the endpoint and bind setting only. It does not open a listener or network port.</small></div></div>
+          <div className="join-line"><strong>Friend app address</strong><span>{draft.companionEndpoint || 'Not set'}</span><button className="secondary" disabled={!detectedGameIp || !!pending} onClick={() => edit({ ...draft, companionEndpoint: `https://${detectedGameIp}:${draft.companionPort}`, companionBindAddress: '0.0.0.0' })}>Use detected address</button></div>
+          <p className="helper-text">This app uses a separate HTTPS control port. Use the detected address, then save before creating an invite. This does not open the listener or change router or firewall settings.</p>
           <div className="policy-line"><div><strong>Remote Start and Stop</strong><p>Turning this off blocks requests immediately without stopping a running server.</p></div><label className="check-row"><input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!draft.remoteControlsEnabled && !companion?.devices.some(device => device.paired && !device.revoked)} onChange={event => edit({ ...draft, remoteControlsEnabled: event.target.checked })} /> Allow</label></div>
           {!companion?.devices.some(device => device.paired && !device.revoked) && <p className="helper-text">Pair a Friend device before enabling remote controls.</p>}
           <label className="check-row"><input type="checkbox" checked={draft.companionListeningEnabled} onChange={event => edit({ ...draft, companionListeningEnabled: event.target.checked })} /> Enable authenticated HTTPS access on next launch</label>
           <p className="helper-text">First save the endpoint and create an invite below. Then enable HTTPS access, save, and restart this app. Router and firewall setup remains manual.</p>
-          <details className="advanced-block"><summary>Bind, port, and owner player check</summary>
+          <details className="advanced-block"><summary>Custom endpoint, bind, port, and owner player check</summary>
             <div className="settings-grid companion-fields">
+              <label>Custom Friend app HTTPS endpoint<input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /><small>Only needed for a custom or loopback connection.</small></label>
               <label>Bind IP address<input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
               <label>Companion HTTPS port<input type="number" value={draft.companionPort} onChange={event => edit({ ...draft, companionPort: Number(event.target.value) })} /></label>
               <label>Owner Valheim client path<input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="C:\\...\\valheim.exe" /><small>Until configured, the owner's game-running state is Unknown.</small></label>

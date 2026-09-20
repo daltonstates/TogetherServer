@@ -33,6 +33,8 @@ var manager = new HostManager(data);
 var pairing = new PairingService(data);
 var identity = new HostIdentity(data);
 var friend = new FriendService(data);
+using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+var publicIpLookup = new PublicIpLookup(publicIpClient);
 var modeGate = new SemaphoreSlim(1, 1);
 var startupSettings = data.LoadSettings();
 var companionUri = HostIdentity.TryEndpoint(startupSettings.CompanionEndpoint, out var configuredUri) ? configuredUri : null;
@@ -134,6 +136,20 @@ async Task<IResult> HostOnly(Func<Task<ActionResult>> action)
     finally { modeGate.Release(); }
 }
 app.MapPut("/api/local/settings", (HostSettings settings) => HostOnly(() => manager.UpdateSettingsAsync(settings)));
+app.MapPost("/api/local/network/detect-public-ip", async () =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    var detection = await publicIpLookup.DetectAsync();
+    if (!detection.Ok) return Results.Json(new { detection.Ok, code = "PublicIpUnavailable", detection.Address, detection.Message });
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+        var snapshot = await manager.RecordDetectedPublicIpAsync(detection.Address!);
+        return Results.Json(new { detection.Ok, code = "PublicIpDetected", detection.Address, detection.Message, snapshot });
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => manager.StartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
@@ -300,9 +316,11 @@ bool Authenticate(HttpContext context, out PairedDevice? device, out PairingDeci
 async Task<CompanionStatus> PublicStatus(Guid deviceId)
 {
     var snapshot = await manager.SnapshotAsync();
+    var address = snapshot.Settings.PublicGameIpCheckedUtc is { } checkedUtc &&
+        DateTimeOffset.UtcNow - checkedUtc <= TimeSpan.FromHours(1) ? snapshot.Settings.PublicGameIp : null;
     var profiles = snapshot.Settings.Profiles.Select(profile => new PublicProfile(profile.Id, profile.Name,
         snapshot.Runs.Single(run => run.ProfileId == profile.Id).State,
-        GameConnection.JoinAddress(profile, snapshot.Settings.PublicGameIp))).ToList();
+        GameConnection.JoinAddress(profile, address))).ToList();
     var own = pairing.Views().SingleOrDefault(view => view.Id == deviceId);
     return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,
         snapshot.Settings.RemoteControlsEnabled ? null : "The Host has turned remote Start and Stop off.",

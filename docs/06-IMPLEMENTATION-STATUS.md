@@ -233,3 +233,24 @@ The Host Friends tab now exposes the app's HTTPS endpoint, its distinct TCP port
 Two exploratory failures were resolved before the final checks: parallel UI and .NET builds raced an embedded asset filename (`CS1566`), so the final build ran sequentially; the first expanded companion check assumed one profile and failed after 3 groups. It now selects the intended profile by ID. Its exact synthetic fixture process was matched by PID, start time, and executable before cleanup; no unrelated process was stopped. The final companion run passed all 10 groups. The normal EXE was replaced only after the old TogetherServer process had exited.
 
 Double-click `local-data\release\TogetherServer.exe`, choose **Host → Friends**, enter and save the public game IP, fill and save the separate HTTPS endpoint, create one invitation per Friend PC, then explicitly enable the companion listener and restart when public access is approved and configured. The exact next developer command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next acceptance action is a real Friend PC pairing and Valheim Join IP test from a different network; no localhost result can substitute for it.
+
+## 2026-09-20 - Slice 12 automatic public address lookup
+
+Starting Git HEAD: `45ede0a`, clean `main` worktree. The owner rejected typing a public IP. Host mode now makes a bounded outbound HTTPS lookup through ipify when the GUI opens and every 15 minutes while it remains open. The detected IPv4 and check time are stored locally; the Host shows copyable Valheim Join IP addresses and a retry button. A paired Friend receives an address only if the Host's check is less than one hour old. Invalid, stale, or failed lookup results cannot become a claimed Friend address. An older unsaved form cannot replace a newer detected address. The main Friend app setup has a **Use detected address** button; a custom endpoint remains under advanced settings for local tests. No user needs to type their public IP for the normal path. The game and Friend app address are still separate ports.
+
+The lookup is an address hint, not evidence that the Host accepts inbound connections. The app still defaults to no public companion listener and remote Start/Stop off. This slice did not change Windows Firewall, a router, DNS, game worlds, credentials, or the server launch process.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1 -ReleaseName release-candidate` | Pass: bundled React/TypeScript and Windows x64 single EXE, 0 build errors; existing `MSB3277` WebView2 WPF reference warning |
+| `TogetherServer.ValheimChecks` | Pass: 7 synthetic groups, 0 failures; includes valid, loopback, and oversized lookup responses plus stale form preservation |
+| `TogetherServer.CompanionChecks` against candidate | Pass: 10 groups, 0 failures; paired Friend hid a stale Valheim Join IP, received a fresh one after update, and saw the disabled controls notice |
+| `checks/served-smoke.ps1` against candidate and again against installed EXE | Pass: 12 groups each, 0 failures; bundled GUI contains detected address controls and no old manual game-IP field |
+| Isolated candidate Host, real outbound HTTPS lookup | Pass: detected and persisted a public IPv4; actual address was omitted from test output. This did not test inbound reachability. |
+| `checks/desktop-smoke.ps1 -AppPath .\local-data\release-candidate\TogetherServer.exe -Port 0` | Pass: 8 groups, 0 failures; native window, React, pickers, synthetic lifecycle, modes, and Quit |
+| `checks/desktop-smoke.ps1` against installed no-argument EXE | Pass: 8 groups, 0 failures; same native desktop checks. Installed and candidate SHA-256 both `7A6B6A1396947F608F2105086F9046B887CB0CA9BC6F7CFAB022D7BF0AE2B01D`. |
+| Actual public Friend PC pairing and Valheim game join | Not run; needs a different network and owner-approved router/firewall setup if required. |
+| Real client world change/save/restart and idle behavior | Not run in this slice; previous real-copy load/save evidence still stands, but it is not client join evidence. |
+| Interactive visual layout review and process-only suite | Skipped; the native window rendered and the changed bundled UI text was checked, while process launch/stop code did not change. |
+
+Double-click `local-data\release\TogetherServer.exe`, choose **Host → Friends**, and wait for the detected address. The Join IP for each server can then be copied without entering an IP. To prepare a Friend app invitation, click **Use detected address**, save, and create an invite for that PC. Public listener and remote controls still need separate owner actions. The exact next developer recheck command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. The next acceptance action is pairing and joining from a real Friend PC on another network; verify the game connection before treating the detected address as reachable.
