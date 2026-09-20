@@ -302,8 +302,12 @@ public sealed class HostManager(LocalData data)
             return "Each profile needs a unique ID.";
         foreach (var profile in next.Profiles)
         {
-            if (profile.Id == Guid.Empty || string.IsNullOrWhiteSpace(profile.Name) || string.IsNullOrWhiteSpace(profile.WorldId))
-                return "Each profile needs a name and world ID.";
+            if (profile.Id == Guid.Empty) return "Each server needs a valid ID.";
+            if (string.IsNullOrWhiteSpace(profile.Name)) return "Enter a server name in Setup step 1.";
+            if (string.IsNullOrWhiteSpace(profile.WorldId))
+                return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
+                    ? "Choose and copy an existing world in Setup step 1."
+                    : "Enter a world name in Setup step 1.";
             if (profile.Kind is not ("Fixture" or "Valheim")) return "Choose Fixture or Valheim for the profile type.";
             if (!ValheimSetup.ValidWorldId(profile.WorldId))
                 return "World ID must be a valid file name of at most 64 characters.";
@@ -313,8 +317,16 @@ public sealed class HostManager(LocalData data)
                 profile.ServerName.Length > 80 || profile.ServerName.Any(char.IsControl)))
                 return "Valheim server name must be 1 to 80 characters without control characters.";
             if (profile.GamePort < 1024 || profile.GamePort > 65534) return "Game port must be between 1024 and 65534.";
-            if (!Path.IsPathFullyQualified(profile.ExecutablePath) || !Path.IsPathFullyQualified(profile.WorldDirectory))
-                return "Executable and save directory must be absolute paths.";
+            if (string.IsNullOrWhiteSpace(profile.WorldDirectory))
+                return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
+                    ? "Choose and copy an existing world in Setup step 1."
+                    : "Choose an existing save directory in Setup step 1.";
+            if (!Path.IsPathFullyQualified(profile.WorldDirectory))
+                return "The save directory needs a full path, such as C:\\ValheimSaves.";
+            if (string.IsNullOrWhiteSpace(profile.ExecutablePath))
+                return "Select an installed server in Setup step 2.";
+            if (!Path.IsPathFullyQualified(profile.ExecutablePath))
+                return "The installed server path needs a full path to its .exe file.";
         }
         return null;
     }

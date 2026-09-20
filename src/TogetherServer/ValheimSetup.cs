@@ -6,7 +6,7 @@ namespace TogetherServer;
 public sealed record ValheimInstallation(string ExecutablePath, string Source);
 public sealed record ValheimWorld(string Name, string SaveRoot, string SourceFolder, string Format);
 public sealed record ValheimDiscoveryResult(IReadOnlyList<ValheimInstallation> Installations,
-    IReadOnlyList<ValheimWorld> Worlds);
+    IReadOnlyList<ValheimInstallation> Clients, IReadOnlyList<ValheimWorld> Worlds);
 public sealed record WorldFileSelection(bool Ok, string Code, string Message, string? WorldId, string? SourceSaveRoot,
     string SourceFolder = "worlds_local");
 public sealed record ImportWorldRequest(Guid ProfileId, string SourceSaveRoot, string WorldId,
@@ -16,6 +16,7 @@ public sealed record ImportWorldResult(bool Ok, string Code, string Message, str
 public static partial class ValheimSetup
 {
     private const string DedicatedServerAppId = "896660";
+    private const string GameAppId = "892970";
     private static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
 
     public static ValheimDiscoveryResult Scan(IEnumerable<string>? extraSaveRoots = null)
@@ -109,6 +110,7 @@ public static partial class ValheimSetup
         }
 
         var installations = new List<ValheimInstallation>();
+        var clients = new List<ValheimInstallation>();
         foreach (var library in libraries)
         {
             var apps = Path.Combine(library, "steamapps");
@@ -125,6 +127,15 @@ public static partial class ValheimSetup
                 // SteamCMD and older libraries may have the files without a Steam manifest.
                 AddInstallation(Path.Combine(apps, "common", "Valheim dedicated server", "valheim_server.exe"),
                     "Common Steam path");
+                var gameManifest = Path.Combine(apps, $"appmanifest_{GameAppId}.acf");
+                if (File.Exists(gameManifest))
+                {
+                    var match = InstallDirRegex().Match(File.ReadAllText(gameManifest));
+                    var dir = match.Success ? match.Groups[1].Value : "";
+                    if (dir.Length > 0 && dir == Path.GetFileName(dir))
+                        AddClient(Path.Combine(apps, "common", dir, "valheim.exe"), "Steam manifest");
+                }
+                AddClient(Path.Combine(apps, "common", "Valheim", "valheim.exe"), "Common Steam path");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
@@ -168,6 +179,7 @@ public static partial class ValheimSetup
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
         return new ValheimDiscoveryResult(installations.OrderBy(i => i.ExecutablePath).ToList(),
+            clients.OrderBy(i => i.ExecutablePath).ToList(),
             worlds.OrderBy(w => w.Name).ThenBy(w => w.SaveRoot).ToList());
 
         void AddWorld(string name, string root, string sourceFolder, string format)
@@ -180,6 +192,12 @@ public static partial class ValheimSetup
         {
             if (File.Exists(path) && !installations.Any(i => PathComparer.Equals(i.ExecutablePath, path)))
                 installations.Add(new ValheimInstallation(path, source));
+        }
+
+        void AddClient(string path, string source)
+        {
+            if (File.Exists(path) && !clients.Any(i => PathComparer.Equals(i.ExecutablePath, path)))
+                clients.Add(new ValheimInstallation(path, source));
         }
     }
 

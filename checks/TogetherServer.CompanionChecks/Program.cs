@@ -9,7 +9,7 @@ using System.Text.Json;
 using TogetherServer;
 
 var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-var appPath = Path.GetFullPath("local-data/release/TogetherServer.exe");
+var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
 if (!File.Exists(appPath) || !File.Exists(fixturePath)) throw new Exception("Run scripts/build.ps1 first.");
 var root = Path.GetFullPath("local-data/companion-checks/" + Guid.NewGuid().ToString("N"));
@@ -221,11 +221,13 @@ try
     var clearPath = await OwnerPost<ClientPathRequest, FriendActionResult>(bLocal,
         "/api/local/friend/client-path", new(""));
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(clearPath.Ok && bView.LocalGameRunning is null, "cleared Friend client path was not Unknown");
+    Require(clearPath.Ok && bView.LocalGameRunning is null && bView.ClientExecutablePath == "",
+        "cleared Friend client path was not Unknown");
     var restorePath = await OwnerPost<ClientPathRequest, FriendActionResult>(bLocal,
         "/api/local/friend/client-path", new(fixturePath));
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(restorePath.Ok && bView.LocalGameRunning == false, "Friend client path did not recover");
+    Require(restorePath.Ok && bView.LocalGameRunning == false && bView.ClientExecutablePath == fixturePath,
+        "Friend client path did not recover");
     Console.WriteLine("PASS immediate companion disable and Friend client-path recovery"); passes++;
 
     StopApp(friendB);

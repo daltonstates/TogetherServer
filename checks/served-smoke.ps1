@@ -53,13 +53,13 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
 
     $discovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
-    if ($null -eq $discovery.installations -or $null -eq $discovery.worlds) { throw 'Valheim discovery route returned no result shape.' }
+    if ($null -eq $discovery.installations -or $null -eq $discovery.clients -or $null -eq $discovery.worlds) { throw 'Valheim discovery route returned no result shape.' }
     Write-Host 'PASS loopback-only Valheim discovery route and bundled setup controls'
 
     $forbidden = $false
@@ -67,6 +67,16 @@ try {
     catch { $forbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     if (!$forbidden) { throw 'A mutation without the local request headers was allowed.' }
     Write-Host 'PASS local mutation gate'
+
+    $incomplete = @{ id = [guid]::NewGuid().ToString(); kind = 'Valheim'; name = 'Needs setup'; serverName = 'Needs setup'; worldId = 'V1release'; worldSource = 'Existing'; worldDirectory = ''; gamePort = $gamePort; executablePath = '' }
+    $incompleteSettings = @{ maxConcurrentServers = 1; idleMinutes = 15; profiles = @($incomplete) }
+    $missingWorld = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($incompleteSettings | ConvertTo-Json -Depth 8)
+    if ($missingWorld.ok -or $missingWorld.code -ne 'InvalidSettings' -or !$missingWorld.message.Contains('copy an existing world')) { throw 'Incomplete world setup was not explained.' }
+    $incomplete.worldDirectory = $worldDirectory
+    $missingServer = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($incompleteSettings | ConvertTo-Json -Depth 8)
+    if ($missingServer.ok -or $missingServer.code -ne 'InvalidSettings' -or !$missingServer.message.Contains('Select an installed server')) { throw 'Missing server executable was not explained.' }
+    if (@((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings.profiles).Count -ne 0) { throw 'Incomplete setup was saved.' }
+    Write-Host 'PASS incomplete setup names the missing world or server without saving'
 
     $profile = @{ id = $profileId; name = 'HTTP fixture'; worldId = 'http-smoke'; worldDirectory = $worldDirectory; gamePort = $gamePort; executablePath = $fixturePath }
     $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; profiles = @($profile) }
@@ -150,6 +160,8 @@ try {
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     $friend = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
     if (!$mode.ok -or $friend.mode -ne 'Friend' -or $friend.state -ne 'Not paired') { throw 'Friend mode switch failed.' }
+    $friendDiscovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
+    if ($null -eq $friendDiscovery.clients) { throw 'Friend mode could not discover its installed Valheim game client.' }
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/host" -Method Post -Headers $headers
     $hostState = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
     if (!$mode.ok -or $hostState.mode -ne 'Host') { throw 'Host mode switch failed.' }

@@ -22,7 +22,8 @@ public sealed record PublicProfile(Guid Id, string Name, string State);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
-    bool? LocalGameRunning, bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles);
+    bool? LocalGameRunning, bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
+    string ClientExecutablePath = "");
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status);
 
 public sealed class FriendService
@@ -43,7 +44,7 @@ public sealed class FriendService
         view = config is null
             ? new("Friend", "Not paired", "Paste a one-time invite from the Host.", "", null, null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
-                null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, []);
+                null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [], config.ClientExecutablePath);
     }
 
     public FriendView View() => view;
@@ -58,6 +59,8 @@ public sealed class FriendService
                 return new(false, "InvalidClientPath", "Choose an installed game client executable by absolute path.", null);
             config.ClientExecutablePath = path.Length == 0 ? "" : Path.GetFullPath(path);
             data.SaveProtected(ConfigFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
+            view = view with { ClientExecutablePath = config.ClientExecutablePath,
+                LocalGameRunning = ClientMonitor.IsRunning(config.ClientExecutablePath) };
             return new(true, "ClientPathSaved", "Game client path saved in Windows protected storage.", null);
         }
         finally { gate.Release(); }
@@ -96,7 +99,8 @@ public sealed class FriendService
                 instanceId = Guid.NewGuid();
                 sequence = 0;
                 view = new FriendView("Friend", "Disconnected/Unknown", "Paired; waiting for an authenticated heartbeat.",
-                    config.Endpoint, null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, []);
+                    config.Endpoint, null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [],
+                    config.ClientExecutablePath);
                 return new(true, "Paired", "Device paired and credential saved in Windows protected storage.", null);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
@@ -149,7 +153,7 @@ public sealed class FriendService
                 view = new FriendView("Friend", status.RemoteControlsEnabled ? "Connected" : "Disabled",
                     status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
                     config.Endpoint, DateTimeOffset.UtcNow, localRunning, status.RemoteControlsEnabled,
-                    status.CanStart, status.CanStop, status.Profiles);
+                    status.CanStart, status.CanStop, status.Profiles, config.ClientExecutablePath);
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)

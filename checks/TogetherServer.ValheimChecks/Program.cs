@@ -35,7 +35,12 @@ try
         "\"libraryfolders\" { \"1\" { \"path\" \"" + secondLibrary.Replace("\\", "\\\\") + "\" } }");
     File.WriteAllText(Path.Combine(secondLibrary, "steamapps", "appmanifest_896660.acf"),
         "\"AppState\" { \"installdir\" \"Valheim dedicated server\" }");
+    File.WriteAllText(Path.Combine(secondLibrary, "steamapps", "appmanifest_892970.acf"),
+        "\"AppState\" { \"installdir\" \"Valheim\" }");
     File.WriteAllText(Path.Combine(installed, "valheim_server.exe"), "synthetic discovery marker; never executed");
+    var gameClient = Path.Combine(secondLibrary, "steamapps", "common", "Valheim", "valheim.exe");
+    Directory.CreateDirectory(Path.GetDirectoryName(gameClient)!);
+    File.WriteAllText(gameClient, "synthetic client discovery marker; never executed");
     var chunkedSource = Path.Combine(sourceWorld, "worlds_local", "chunked-world");
     CreateChunkedWorld(chunkedSource, 7);
     var cloudRoot = Path.Combine(steam, "userdata", "synthetic-account", "892970", "remote");
@@ -44,6 +49,8 @@ try
     var found = ValheimSetup.ScanRoots([steam], [sourceWorld]);
     Require(found.Installations.Single().ExecutablePath == Path.Combine(installed, "valheim_server.exe"),
         "Steam library path on another root was not found");
+    Require(found.Clients.Single().ExecutablePath == gameClient,
+        "Valheim game client in the Steam library was not found");
     Require(found.Worlds.Count == 3 &&
         found.Worlds.Any(item => item.Name == "fixture-world" && item.Format == "Pair") &&
         found.Worlds.Any(item => item.Name == "chunked-world" && item.Format == "Folder") &&
