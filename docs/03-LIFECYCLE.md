@@ -14,7 +14,7 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 
 ### Stop
 
-1. Remote Stop is denied if any required companion heartbeat is fresh `gameRunning: true` or Unknown, unless the owner performs an explicit local override. A successful remote request never means the game already saved.
+1. Remote Stop is denied unless a Ready Valheim run started with an exact permitted-player list for the owner and paired Friends, the list is unchanged, all paired Friends have fresh `gameRunning: false` reports, and the owner's client is closed when the owner is allowed to join. Host rechecks before signaling Stop. The owner can request local Stop independently. A successful remote request never means the game already saved.
 2. Ask Valheim to exit gracefully, wait for actual process exit and save stabilization, then mark Offline. The [official Valheim guide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/) says to stop its Windows dedicated server with Ctrl+C rather than closing its window.
 3. If the graceful stop times out, report Failed/Unknown and preserve the world. Do not automatically force-kill. Any owner-approved force action must warn that the save may be inconsistent.
 4. A restart is a verified stop followed by a new start against the same saved world. Test a recognizable in-world change surviving it before declaring real Valheim support.

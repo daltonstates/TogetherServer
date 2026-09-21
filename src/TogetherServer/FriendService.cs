@@ -18,7 +18,8 @@ public sealed class FriendConfiguration
     public string ClientExecutablePath { get; set; } = "";
 }
 
-public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress);
+public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
+    bool CanStopNow = false, string? StopReason = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
@@ -80,10 +81,8 @@ public sealed class FriendService
             }
             else
             {
-                if (!HostIdentity.TryAddress(hostAddress, out var endpoint))
-                    return new(false, "InvalidHostAddress", "Enter the Host IP, with :port only if it differs from 5131.", null);
-                if (!PairingPassword.TryDecode(invitation, endpoint, out invite))
-                    return new(false, "InvalidInvite", "Pairing password is invalid or expired. Ask the Host for a new password.", null);
+                if (!PairingPassword.TryDecode(invitation, hostAddress, out invite))
+                    return new(false, "InvalidInvite", "Invite is invalid, expired, or has a different Host address. Ask the Host for a new invite.", null);
             }
             if (invite is null || !HostIdentity.TryEndpoint(invite.Endpoint, out _) ||
                 !ValidFingerprint(invite.Fingerprint) || string.IsNullOrWhiteSpace(invite.Code) ||
@@ -196,6 +195,7 @@ public sealed class FriendService
             try
             {
                 using var client = MakeClient(config.Endpoint, config.Fingerprint);
+                if (action == "stop") client.Timeout = TimeSpan.FromSeconds(105);
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
                 using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + action)
                 {

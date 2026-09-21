@@ -6,19 +6,19 @@ Let the owner host a Valheim dedicated server on a Windows PC and let a small, k
 
 ## People and modes
 
-- **Owner / Host mode:** configures the installed Valheim Dedicated Server path, worlds, server name, ports, maximum concurrent managed servers, idle timeout, paired friends, and whether remote controls are enabled. The Host app supervises game processes and shows honest status and errors.
+- **Owner / Host mode:** sets up a world and game password, starts or stops the server, and invites Friends. Installed paths, ports, multiple servers, and remote Stop safety live in secondary settings. The Host app supervises game processes and shows honest status and errors.
 - **Friend mode:** each friend runs the same app on the PC used to play Valheim. It pairs with the Host using a unique invite, sends an authenticated heartbeat with whether that PC's Valheim game is running, displays Host/server reachability, and requests only actions the owner grants.
 - **Owner playing locally:** Host mode must include the owner's own game-running signal in idle decisions. Running the Host app must not imply the owner's Valheim game client is open.
-- **Owner joining another Host:** Hosting and Friend connection are concurrent capabilities in one app process. Opening a Friend connection must not stop the owner's managed server, disable its companion listener, or interrupt existing paired Friends. The visible My server and Friends' servers pages are navigation, not mutually exclusive runtime roles.
+- **Owner joining another Host:** Hosting and Friend connection are concurrent capabilities in one app process. Opening a Friend connection must not stop the owner's managed server, disable its companion listener, or interrupt existing paired Friends. The visible My server and Join a friend pages are navigation, not mutually exclusive runtime roles.
 - V1 requires every potential player to use the companion app. Console players, unpaired players, and multiple devices per person need explicit support before they can participate in automatic idle shutdown decisions.
 
 ## V1 user flow
 
-1. The owner finds an installed Valheim Dedicated Server across common Steam libraries or opens Steam's install flow deliberately and accepts any required game terms personally. For an existing local world, TogetherServer imports a separate copy of its `.db`/`.fwl` pair and records that copy as the server save location; the source is not changed or deleted.
-2. The owner opens the local Host GUI, chooses a server profile and limits, and pairs each Friend device. The app displays connection information for manual sharing; it does not send messages to friends automatically.
-3. A Friend app connects to the Host's public IP and configured control port, verifies the pinned Host identity, and authenticates with its own revocable credential. The Friend GUI shows Connected, Disabled, Revoked, or Unknown/Disconnected distinctly.
+1. In My server, the owner chooses a new world or a copied existing world, enters a game password, then saves and starts. The app finds an installed Valheim Dedicated Server when it can; Steam installation and game terms remain the owner's actions. The original world is not changed or deleted.
+2. The owner creates one invite per Friend PC and copies it privately. This deliberate action enables the companion listener immediately. The app does not send messages to friends automatically.
+3. A Friend pastes that single invite. It includes the Host IP, control port, one-time secret, and full Host TLS fingerprint. The Friend app verifies the pinned identity and saves its own revocable credential. The GUI shows Connected, Disabled, Revoked, or Unknown/Disconnected distinctly.
 4. A permitted friend may request Start. The Host serializes requests, checks configured maximum concurrency and port/world conflicts, starts only the approved local Valheim server program, and reports Starting until it observes real readiness. A duplicate request cannot launch a second process for the same world.
-5. A permitted friend may request Stop when the policy allows it. Remote Stop must be denied while any fresh companion reports the game running or any required companion is Unknown, unless the owner performs an explicit local override. The Host performs a graceful game stop and reports its actual result.
+5. A permitted friend may request Stop when the Valheim permitted-player list matches exactly the owner and paired Friend IDs, was loaded at server start, and every allowed PC reports its game closed. A true, missing, stale, or unknown report denies remote Stop. The Host performs a graceful game stop and reports its actual result. The owner can request local Stop independently.
 6. The owner can turn **remote controls off** without stopping a running game. Host rejects new remote Start/Stop immediately, keeps an authenticated read-only heartbeat/status channel so connected Friend apps can display the disabled notice, and shows it after an offline Friend reconnects. Revoking a Friend device invalidates its credential and is shown as Revoked on its next request.
 
 ## Auto shutdown

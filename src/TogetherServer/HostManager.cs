@@ -8,7 +8,7 @@ namespace TogetherServer;
 public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, bool? OwnerGameRunning, DateTimeOffset OwnerCheckedUtc,
-    IReadOnlyDictionary<Guid, bool> PasswordConfigured);
+    IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot);
 
 public sealed class HostManager(LocalData data)
@@ -49,8 +49,9 @@ public sealed class HostManager(LocalData data)
                     (device.InviteHash is not null || device.CredentialHash is not null))))
                 return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
             if (next.RemoteControlsEnabled &&
-                !data.LoadDevices().Any(device => !device.Revoked && device.CredentialHash is not null))
-                return Result(false, "PairedDeviceRequired", "Activate a paired device before enabling remote controls.");
+                !data.LoadDevices().Any(device => !device.Revoked && (device.InviteHash is not null ||
+                    device.CredentialHash is not null) && (device.CanStart || device.CanStop)))
+                return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
             foreach (var run in runs)
             {
                 var oldProfile = settings.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
@@ -128,7 +129,13 @@ public sealed class HostManager(LocalData data)
                 !Path.GetFileName(profile.ExecutablePath).Equals("valheim_server.exe", StringComparison.OrdinalIgnoreCase))
                 return Result(false, "ValheimExecutableRequired", "Select the installed valheim_server.exe.");
             if (!Directory.Exists(profile.WorldDirectory))
-                return Result(false, "MissingWorldDirectory", "Select an existing save directory. TogetherServer will not create or replace it.");
+            {
+                if (profile.Kind == "Valheim" && profile.WorldSource == "New" &&
+                    Path.GetFullPath(profile.WorldDirectory).Equals(data.NewWorldDirectory(profile.Id), StringComparison.OrdinalIgnoreCase))
+                    Directory.CreateDirectory(profile.WorldDirectory);
+                else
+                    return Result(false, "MissingWorldDirectory", "Choose an existing save directory. TogetherServer will not replace it.");
+            }
             if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
                 !ValheimSetup.HasWorldData(profile.WorldDirectory, profile.WorldId))
                 return Result(false, "MissingWorldData", "Existing world needs a complete .db/.fwl pair or chunked folder in worlds_local. Import a copy before Start; no new seed was created.");
@@ -136,13 +143,16 @@ public sealed class HostManager(LocalData data)
                 !ValheimSetup.IsImportedWorld(data, profile.Id, profile.WorldDirectory))
                 return Result(false, "WorldImportRequired", "Import a separate copy of the existing world before Start. Its original save stays untouched.");
             if (profile.Kind == "Valheim" && profile.WorldSource == "New" &&
-                ValheimSetup.HasAnyWorldFile(profile.WorldDirectory, profile.WorldId))
-                return Result(false, "WorldAlreadyExists", "A world file already exists under this name. Choose a different new-world name.");
+                ValheimSetup.HasAnyWorldFile(profile.WorldDirectory, profile.WorldId) && !data.OwnsNewWorld(profile))
+                return Result(false, "WorldAlreadyExists", "A world file already exists under this name and is not recorded as this server's world. Choose another world or import a copy.");
             var password = profile.Kind == "Valheim" ? data.LoadValheimPassword(profile.Id) : null;
             if (profile.Kind == "Valheim" && string.IsNullOrEmpty(password))
                 return Result(false, "PasswordRequired", "Set a protected Valheim server password before starting.");
             if (!PortsFree(profile.GamePort))
                 return Result(false, "PortInUse", "One of the two UDP game ports is already in use.");
+
+            if (profile.Kind == "Valheim" && profile.WorldSource == "New" && !data.OwnsNewWorld(profile))
+                data.RecordNewWorld(profile);
 
             var run = new ManagedRun
             {
@@ -153,7 +163,8 @@ public sealed class HostManager(LocalData data)
                 WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
                 GamePort = profile.GamePort,
                 ExecutablePath = Path.GetFullPath(profile.ExecutablePath),
-                StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
+                StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N"),
+                PermittedListSha256 = RemoteStopSafety.FingerprintAtStart(profile)
             };
             if (profile.Kind == "Valheim") run.LogPath = data.NewRunLogPath(run.OperationId);
             runs.Add(run);
@@ -202,7 +213,7 @@ public sealed class HostManager(LocalData data)
         finally { gate.Release(); }
     }
 
-    public async Task<ActionResult> StopAsync(Guid profileId)
+    public async Task<ActionResult> StopAsync(Guid profileId, Func<bool>? remoteStillSafe = null)
     {
         await gate.WaitAsync();
         try
@@ -219,6 +230,8 @@ public sealed class HostManager(LocalData data)
                     !Path.GetFullPath(process.MainModule!.FileName).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
                     return Result(false, "IdentityUnknown", "Process identity changed. No stop signal was sent.");
                 var nativeHandle = run.Kind == "Valheim" ? process.Handle : IntPtr.Zero;
+                if (remoteStillSafe is not null && !remoteStillSafe())
+                    return Result(false, "PlayerStateUnknown", "A permitted player's game state changed before Stop. No stop signal was sent.");
                 stopPhase = "stop signal";
                 if (run.Kind == "Valheim") WindowsConsoleProcess.RequestCtrlC(process);
                 else
@@ -308,7 +321,8 @@ public sealed class HostManager(LocalData data)
         return new HostSnapshot(settings, views, "Process identity and Valheim log signal; join/save unverified", "Host",
             ClientMonitor.IsRunning(settings.OwnerClientExecutablePath), DateTimeOffset.UtcNow,
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
-                .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)));
+                .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
+            data.ManagedWorldsRoot);
     }
 
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
@@ -319,6 +333,8 @@ public sealed class HostManager(LocalData data)
         if (next.IdleMinutes < 1 || next.IdleMinutes > 1440) return "Idle minutes must be between 1 and 1440.";
         if (next.AutoShutdownEnabled) return "Auto shutdown is unavailable until real player coverage is verified.";
         if (next.PermittedPlayersVerified) return "Permitted-player coverage requires real Valheim verification.";
+        if (!string.IsNullOrEmpty(next.OwnerPlatformUserId) && !RemoteStopSafety.ValidPlatformUserId(next.OwnerPlatformUserId))
+            return "Enter the owner's Valheim Platform User ID, such as V_123456789.";
         if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
         if (!string.IsNullOrWhiteSpace(next.PublicGameIp) && !GameConnection.IsPublicIpv4(next.PublicGameIp))
             return "The Valheim friend address must be public IPv4; 127.0.0.1, local, shared, and test addresses cannot be used.";

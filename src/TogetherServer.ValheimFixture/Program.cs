@@ -29,5 +29,8 @@ Console.CancelKeyPress += (_, eventArgs) =>
 };
 await File.AppendAllTextAsync(log!, "Game server connected\n");
 await stop.Task;
+if (int.TryParse(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_STOP_DELAY_MS"), out var delayMs) &&
+    delayMs is > 0 and <= 10000)
+    await Task.Delay(delayMs);
 await File.WriteAllTextAsync(Path.Combine(saveDir!, "synthetic-stop.marker"), "Ctrl+C received");
 return 0;

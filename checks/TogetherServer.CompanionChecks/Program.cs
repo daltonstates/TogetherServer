@@ -11,7 +11,9 @@ using TogetherServer;
 var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
-if (!File.Exists(appPath) || !File.Exists(fixturePath)) throw new Exception("Run scripts/build.ps1 first.");
+var valheimFixturePath = Path.GetFullPath("src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe");
+if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
+    throw new Exception("Run scripts/build.ps1 first.");
 var root = Path.GetFullPath("local-data/companion-checks/" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var hostData = Path.Combine(root, "host");
@@ -33,7 +35,9 @@ var joinWorld = Path.Combine(root, "join-world");
 Directory.CreateDirectory(joinWorld);
 var joinProfile = new ServerProfile { Kind = "Valheim", Name = "Friend join example", ServerName = "Friend join example",
     WorldId = "join-example", WorldDirectory = joinWorld, GamePort = gamePort + 4, ExecutablePath = fixturePath };
-Process? host = null, friendA = null, friendB = null, peerHost = null;
+Process? host = null, friendA = null, friendB = null, peerHost = null, stopHost = null, stopFriend = null;
+var stopHostPort = 0;
+var stopProfileId = Guid.Empty;
 var passes = 0;
 try
 {
@@ -47,8 +51,10 @@ try
     var inviteA = await Invite(owner, "Friend A", true, false);
     var inviteB = await Invite(owner, "Friend B", false, true);
     var passwordA = PairingPassword.Encode(inviteA);
-    Require(PairingPassword.TryDecode(passwordA, endpoint, out var decoded) &&
+    Require(passwordA.StartsWith("TS2-", StringComparison.Ordinal) &&
+        PairingPassword.TryDecode(passwordA, null, out var decoded) &&
         decoded!.DeviceId == inviteA.DeviceId && decoded.Code == inviteA.Code &&
+        decoded.Endpoint == endpoint &&
         decoded.Fingerprint == inviteA.Fingerprint &&
         !PairingPassword.TryDecode("wrong-password", endpoint, out _) &&
         !PairingPassword.TryDecode(PairingPassword.Encode(inviteA with { ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }), endpoint, out _),
@@ -58,14 +64,17 @@ try
     Require(!changedPinnedAddress.Ok && changedPinnedAddress.Code == "HostAddressPinned",
         "the Host app address changed after its TLS identity was pinned");
     settings.CompanionEndpoint = endpoint;
+    var enableInvite = await OwnerPost<InviteRequest, JsonElement>(owner, "/api/local/devices/invite",
+        new("Immediate connection", true, false, null, true));
+    Require(enableInvite.GetProperty("ok").GetBoolean() && enableInvite.GetProperty("listenerActive").GetBoolean(),
+        "creating an invite did not start the companion listener immediately");
     settings.CompanionListeningEnabled = true;
-    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "listener setting failed");
-    StopApp(host);
-    host = StartApp(appPath, "--host", hostPort, hostData);
-    await WaitLocal(hostPort);
+    settings.RemoteControlsEnabled = false;
+    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
+        "remote control pause failed");
     var listener = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     Require(listener.GetProperty("listenerActive").GetBoolean(), "companion listener did not start");
-    Console.WriteLine("PASS deliberate loopback HTTPS listener and one-time invites"); passes++;
+    Console.WriteLine("PASS one-step invite starts the loopback HTTPS listener without restart"); passes++;
 
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
@@ -84,14 +93,12 @@ try
     var wrongPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(tampered, webJson), fixturePath));
     Require(!wrongPin.Ok && wrongPin.Code == "Disconnected", "wrong Host pin was accepted");
-    var missingIp = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
+    var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(passwordA, fixturePath));
-    Require(!missingIp.Ok && missingIp.Code == "InvalidHostAddress", "password pairing accepted a missing Host IP");
+    Require(pairedA.Ok, "a current invite did not pair without a separate Host IP");
     var wrongPasswordPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(tampered), fixturePath, $"127.0.0.1:{companionPort}"));
     Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "Disconnected", "password pairing accepted the wrong Host TLS pin");
-    var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(passwordA, fixturePath, $"127.0.0.1:{companionPort}"));
     var pairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(inviteB, webJson), fixturePath));
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");
@@ -315,9 +322,17 @@ try
     {
         disabledStatus.Headers.Add("X-Device-Id", rotatedCredential.DeviceId.ToString());
         disabledStatus.Headers.Authorization = new AuthenticationHeaderValue("Bearer", rotatedCredential.Credential);
-        using var response = await publicClient.SendAsync(disabledStatus);
-        Require(response.StatusCode == HttpStatusCode.Forbidden, "companion requests remained available after listener disable");
+        var rejected = false;
+        try
+        {
+            using var response = await publicClient.SendAsync(disabledStatus);
+            rejected = response.StatusCode == HttpStatusCode.Forbidden;
+        }
+        catch (HttpRequestException) { rejected = true; }
+        Require(rejected, "companion requests remained available after listener disable");
     }
+    Require(!(await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("listenerActive").GetBoolean(),
+        "disabled companion listener remained active");
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(bView.State == "Disconnected/Unknown", "a disabled listener was falsely reported as credential revocation");
     settings.CompanionListeningEnabled = true;
@@ -363,6 +378,61 @@ try
     Require(limited, "companion authentication was not rate limited");
     Console.WriteLine("PASS repeated invalid authentication is rate limited"); passes++;
 
+    var stopHostData = Path.Combine(root, "stop-host");
+    var stopFriendData = Path.Combine(root, "stop-friend");
+    stopHostPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
+    var stopPublicPort = FreeTcpPort(stopHostPort, hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
+    var stopFriendPort = FreeTcpPort(stopHostPort, stopPublicPort, hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
+    var stopEndpoint = $"https://127.0.0.1:{stopPublicPort}";
+    var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
+        ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
+        ExecutablePath = valheimFixturePath, GamePort = gamePort + 20 };
+    stopProfileId = stopProfile.Id;
+    stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
+    stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 7000);
+    stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
+    await WaitLocal(stopHostPort); await WaitLocal(stopFriendPort);
+    using var stopOwner = LocalClient(stopHostPort);
+    using var stopFriendLocal = LocalClient(stopFriendPort);
+    var stopSettings = new HostSettings { Profiles = [stopProfile], CompanionEndpoint = stopEndpoint,
+        CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort };
+    Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
+        "restricted Host settings failed");
+    Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/password", new("fixture-pass-123"))).Ok,
+        "restricted Host password failed");
+    var stopInviteResponse = await OwnerPost<InviteRequest, JsonElement>(stopOwner, "/api/local/devices/invite",
+        new("Stop Friend", true, true, null, true));
+    Require(stopInviteResponse.GetProperty("listenerActive").GetBoolean(), "restricted Host listener did not start");
+    var stopInvite = JsonSerializer.Deserialize<PairingInvite>(stopInviteResponse.GetProperty("invitation").GetString()!, webJson)!;
+    var stopPair = await OwnerPost<FriendPairRequest, FriendActionResult>(stopFriendLocal, "/api/local/friend/pair",
+        new(PairingPassword.Encode(stopInvite), fixturePath));
+    Require(stopPair.Ok, "restricted Friend did not pair from one invite");
+    var setId = await OwnerPut<DevicePlayerIdRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{stopInvite.DeviceId}/player-id", new("V_123456789"));
+    Require(setId.Ok, "restricted Friend player ID was not saved");
+    var listCreated = await OwnerPost<object, StopListResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/permitted-list", new { });
+    Require(listCreated.Ok, "restricted permitted-player list was not created");
+    Require((await OwnerPost<object, ActionResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/start", new { })).Ok, "restricted synthetic start failed");
+    var ready = false;
+    for (var i = 0; i < 60; i++)
+    {
+        var state = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single().State;
+        if (state == "Ready") { ready = true; break; }
+        await Task.Delay(100);
+    }
+    Require(ready, "restricted synthetic server never reached Ready");
+    var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    Require(stopView.Profiles.Single().CanStopNow, "Friend UI did not receive available remote Stop");
+    var remoteStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
+    Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
+        "remote Stop did not use the synthetic console's graceful exit");
+    Console.WriteLine("PASS paired Friend remotely stops restricted synthetic Valheim through HTTPS and Ctrl+C"); passes++;
+
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;
 }
@@ -374,7 +444,19 @@ catch (Exception ex)
 }
 finally
 {
-    StopApp(friendA); StopApp(friendB); StopApp(peerHost);
+    StopApp(friendA); StopApp(friendB); StopApp(peerHost); StopApp(stopFriend);
+    if (stopHost is { HasExited: false })
+    {
+        try
+        {
+            using var stopOwner = LocalClient(stopHostPort);
+            var snapshot = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+            if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == stopProfileId)?.State is "Ready" or "Starting")
+                await OwnerPost<object, ActionResult>(stopOwner, $"/api/local/profiles/{stopProfileId}/stop", new { });
+        }
+        catch { Console.WriteLine("Restricted fixture cleanup via Host failed; inspect the recorded process."); }
+    }
+    StopApp(stopHost);
     if (host is { HasExited: false })
     {
         try
@@ -406,13 +488,15 @@ static int FreeTcpPort(params int[] exclude)
     throw new Exception("No local TCP port available.");
 }
 
-static Process StartApp(string path, string mode, int port, string data)
+static Process StartApp(string path, string mode, int port, string data, int stopDelayMs = 0)
 {
     Directory.CreateDirectory(data);
     var info = new ProcessStartInfo(path) { UseShellExecute = false, CreateNoWindow = true,
         RedirectStandardOutput = true, RedirectStandardError = true };
     info.ArgumentList.Add(mode); info.ArgumentList.Add("--port"); info.ArgumentList.Add(port.ToString());
     info.Environment["TOGETHERSERVER_DATA_DIR"] = data;
+    info.Environment["TOGETHERSERVER_FIXTURE_ROOT"] = data;
+    if (stopDelayMs > 0) info.Environment["TOGETHERSERVER_FIXTURE_STOP_DELAY_MS"] = stopDelayMs.ToString();
     info.Environment["Logging__LogLevel__Default"] = "Warning";
     var process = Process.Start(info) ?? throw new Exception("App did not start.");
     process.BeginOutputReadLine(); process.BeginErrorReadLine();

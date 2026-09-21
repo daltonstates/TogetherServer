@@ -269,6 +269,80 @@ try
             "starting the imported copy changed the source world");
         Console.WriteLine("PASS synthetic restart preserves an unrelated world file"); passes++;
     }
+
+    using (var stopData = new LocalData(Path.Combine(root, "remote-stop-host")))
+    {
+        var host = new HostManager(stopData);
+        var pairing = new PairingService(stopData);
+        var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
+            ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
+            GamePort = FreePort(), ExecutablePath = fixture };
+        stopProfile.WorldDirectory = stopData.NewWorldDirectory(stopProfile.Id);
+        Require((await host.UpdateSettingsAsync(new HostSettings { Profiles = [stopProfile] })).Ok,
+            "restricted synthetic profile was rejected");
+        Require((await host.SetValheimPasswordAsync(stopProfile.Id, "fixture-pass-123")).Ok,
+            "restricted synthetic password was rejected");
+        var invite = pairing.Issue("Known Friend", true, true, "https://127.0.0.1:5131", new string('A', 64));
+        var credential = pairing.Activate(new PairingActivation(invite.DeviceId, invite.Code));
+        Require(credential is not null && pairing.SetPlatformUserId(invite.DeviceId, "V_123456789").Ok,
+            "synthetic Friend ID was not assigned");
+        Require(RemoteStopSafety.CreateList(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing).Ok,
+            "restricted player list was not created in the app-managed save folder");
+        var listPath = Path.Combine(stopProfile.WorldDirectory, "permittedlist.txt");
+        Require(File.ReadAllText(listPath).Trim() == "V_123456789", "permitted list did not contain the sole Friend ID");
+        var originalList = File.ReadAllBytes(listPath);
+        var started = await host.StartAsync(stopProfile.Id);
+        Require(started.Ok, "restricted synthetic server did not start");
+        await WaitForReady(host, stopProfile.Id);
+        try
+        {
+            using (var missing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
+                Require(!missing.Allowed, "remote Stop accepted a missing Friend heartbeat");
+            var auth = pairing.Authenticate(invite.DeviceId, credential!.Credential, out var device);
+            Require(auth.Ok && device is not null, "synthetic Friend credential failed");
+            var instance = Guid.NewGuid();
+            Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(invite.DeviceId, instance, 1, "check", false)).Ok,
+                "closed-game heartbeat failed");
+            using (var ready = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
+            {
+                Require(ready.Allowed, "remote Stop was not offered with a complete list and fresh closed-game report");
+                Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(invite.DeviceId, instance, 2, "check", true)).Ok,
+                    "running-game heartbeat failed");
+                Require(!ready.StillSafe(), "a game-started report after approval did not cancel remote Stop");
+            }
+            using (var playing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
+                Require(!playing.Allowed, "remote Stop accepted a Friend still playing");
+            Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(invite.DeviceId, instance, 3, "check", false)).Ok,
+                "second closed-game heartbeat failed");
+            File.AppendAllText(listPath, "V_unpaired\n");
+            using (var changed = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
+                Require(!changed.Allowed, "remote Stop accepted a changed permitted-player list");
+            File.WriteAllBytes(listPath, originalList);
+            using var permit = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing);
+            Require(permit.Allowed, "restored permitted-player list did not allow remote Stop");
+            var stopped = await host.StopAsync(stopProfile.Id, permit.StillSafe);
+            Require(stopped.Ok && stopped.Code == "ValheimStopped", "safe synthetic remote Stop did not exit through Ctrl+C");
+        }
+        finally
+        {
+            if ((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State != "Offline")
+                await host.StopAsync(stopProfile.Id);
+        }
+        var worldFolder = Path.Combine(stopProfile.WorldDirectory, "worlds_local");
+        Directory.CreateDirectory(worldFolder);
+        File.WriteAllText(Path.Combine(worldFolder, stopProfile.WorldId + ".db"), "synthetic saved world");
+        File.WriteAllText(Path.Combine(worldFolder, stopProfile.WorldId + ".fwl"), "synthetic saved metadata");
+        Require((await host.StartAsync(stopProfile.Id)).Ok,
+            "a TogetherServer-created world could not start again after it gained save files");
+        await WaitForReady(host, stopProfile.Id);
+        Require((await host.StopAsync(stopProfile.Id)).Ok, "restarted app-owned synthetic world did not stop");
+        Require(File.ReadAllText(Path.Combine(worldFolder, stopProfile.WorldId + ".db")) == "synthetic saved world",
+            "restarting an app-owned world changed its disposable saved data");
+        File.AppendAllText(listPath, "V_unpaired\n");
+        Require(RemoteStopSafety.CreateList(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing).Code == "ListExists",
+            "player-only list creation overwrote an existing different list");
+        Console.WriteLine("PASS synthetic remote Stop needs exact list and fresh reports; app-owned world restarts"); passes++;
+    }
     Console.WriteLine($"Synthetic Valheim checks: {passes} passed, 0 failed. Data: {root}");
     return 0;
 }

@@ -14,6 +14,7 @@ public sealed class PairedDevice
     public string Name { get; set; } = "";
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
+    public string PlatformUserId { get; set; } = "";
     public bool Revoked { get; set; }
     public string? InviteHash { get; set; }
     public DateTimeOffset? InviteExpiresUtc { get; set; }
@@ -22,59 +23,101 @@ public sealed class PairedDevice
 }
 
 public sealed record DeviceView(Guid Id, string Name, bool CanStart, bool CanStop, bool Revoked,
-    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning);
+    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning,
+    string PlatformUserId);
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc);
 public sealed record PairingActivation(Guid DeviceId, string Code);
 public sealed record PairingCredential(Guid DeviceId, string Credential, DateTimeOffset ExpiresUtc);
 public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version, bool? GameRunning);
 public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc, bool? GameRunning);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
-public sealed record InviteRequest(string Name, bool CanStart, bool CanStop, Guid? RotateDeviceId);
+public sealed record InviteRequest(string Name, bool CanStart, bool CanStop, Guid? RotateDeviceId,
+    bool EnableConnections = false);
+public sealed record DevicePlayerIdRequest(string PlatformUserId);
+public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
 public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
 public sealed record ClientPathRequest(string Path);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
 
-// A copy/paste password includes the one-time secret and the full Host TLS pin.
-// The Host IP is entered separately; no Friend IP or trust-on-first-use is needed.
+// One invite carries the Host address, one-time secret, and full TLS pin.
+// Keep accepting TS1 invites until they expire so an app update does not strand a Friend.
 public static class PairingPassword
 {
-    private const string Prefix = "TS1-";
-    private const int PayloadLength = 1 + 16 + 32 + 32 + 8;
+    private const string Prefix = "TS2-";
+    private const string LegacyPrefix = "TS1-";
+    private const int PayloadLength = 1 + 4 + 2 + 16 + 32 + 32 + 8;
+    private const int LegacyPayloadLength = 1 + 16 + 32 + 32 + 8;
 
     public static string Encode(PairingInvite invite)
     {
         var fingerprint = Convert.FromHexString(invite.Fingerprint);
         var secret = Convert.FromBase64String(invite.Code);
-        if (fingerprint.Length != 32 || secret.Length != 32 || invite.DeviceId == Guid.Empty)
+        if (!HostIdentity.TryEndpoint(invite.Endpoint, out var endpoint) ||
+            !IPAddress.TryParse(endpoint.Host, out var address) ||
+            address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+            fingerprint.Length != 32 || secret.Length != 32 || invite.DeviceId == Guid.Empty)
             throw new ArgumentException("Pairing invite fields are invalid.");
         Span<byte> bytes = stackalloc byte[PayloadLength];
-        bytes[0] = 1;
-        invite.DeviceId.TryWriteBytes(bytes[1..17]);
-        fingerprint.CopyTo(bytes[17..49]);
-        secret.CopyTo(bytes[49..81]);
-        BinaryPrimitives.WriteInt64BigEndian(bytes[81..], invite.ExpiresUtc.ToUnixTimeSeconds());
+        bytes[0] = 2;
+        address.GetAddressBytes().CopyTo(bytes[1..5]);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes[5..7], checked((ushort)endpoint.Port));
+        invite.DeviceId.TryWriteBytes(bytes[7..23]);
+        fingerprint.CopyTo(bytes[23..55]);
+        secret.CopyTo(bytes[55..87]);
+        BinaryPrimitives.WriteInt64BigEndian(bytes[87..], invite.ExpiresUtc.ToUnixTimeSeconds());
         return Prefix + Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
-    public static bool TryDecode(string? password, string endpoint, out PairingInvite? invite)
+    public static bool TryDecode(string? password, string? hostAddress, out PairingInvite? invite)
     {
         invite = null;
         var value = password?.Trim();
-        if (value is null || value.Length > 160 || !value.StartsWith(Prefix, StringComparison.Ordinal)) return false;
-        var encoded = value[Prefix.Length..].Replace('-', '+').Replace('_', '/');
+        if (value is null || value.Length > 200) return false;
+        var legacy = value.StartsWith(LegacyPrefix, StringComparison.Ordinal);
+        if (!legacy && !value.StartsWith(Prefix, StringComparison.Ordinal)) return false;
+        var encoded = value[(legacy ? LegacyPrefix.Length : Prefix.Length)..].Replace('-', '+').Replace('_', '/');
         byte[] bytes;
         try { bytes = Convert.FromBase64String(encoded.PadRight((encoded.Length + 3) / 4 * 4, '=')); }
         catch (FormatException) { return false; }
-        if (bytes.Length != PayloadLength || bytes[0] != 1) return false;
-        var id = new Guid(bytes.AsSpan(1, 16));
+        if (bytes.Length != (legacy ? LegacyPayloadLength : PayloadLength) || bytes[0] != (legacy ? 1 : 2)) return false;
+        string endpoint;
+        var offset = 1;
+        if (legacy)
+        {
+            if (!TryEnteredEndpoint(hostAddress, out endpoint)) return false;
+        }
+        else
+        {
+            var port = BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(5, 2));
+            if (port < 1024) return false;
+            endpoint = $"https://{new IPAddress(bytes.AsSpan(1, 4))}:{port}";
+            offset = 7;
+            if (!string.IsNullOrWhiteSpace(hostAddress) &&
+                (!TryEnteredEndpoint(hostAddress, out var entered) ||
+                 !string.Equals(entered, endpoint, StringComparison.OrdinalIgnoreCase))) return false;
+        }
+        var id = new Guid(bytes.AsSpan(offset, 16));
         DateTimeOffset expires;
-        try { expires = DateTimeOffset.FromUnixTimeSeconds(BinaryPrimitives.ReadInt64BigEndian(bytes.AsSpan(81, 8))); }
+        try { expires = DateTimeOffset.FromUnixTimeSeconds(BinaryPrimitives.ReadInt64BigEndian(bytes.AsSpan(offset + 80, 8))); }
         catch (ArgumentOutOfRangeException) { return false; }
         if (id == Guid.Empty || expires <= DateTimeOffset.UtcNow) return false;
-        invite = new PairingInvite(endpoint, Convert.ToHexString(bytes.AsSpan(17, 32)), id,
-            Convert.ToBase64String(bytes.AsSpan(49, 32)), expires);
+        invite = new PairingInvite(endpoint, Convert.ToHexString(bytes.AsSpan(offset + 16, 32)), id,
+            Convert.ToBase64String(bytes.AsSpan(offset + 48, 32)), expires);
         return true;
+    }
+
+    private static bool TryEnteredEndpoint(string? address, out string endpoint)
+    {
+        if (HostIdentity.TryAddress(address, out endpoint)) return true;
+        if (HostIdentity.TryEndpoint(address ?? "", out var uri) &&
+            uri.HostNameType == UriHostNameType.IPv4)
+        {
+            endpoint = uri.GetLeftPart(UriPartial.Authority);
+            return true;
+        }
+        endpoint = "";
+        return false;
     }
 }
 
@@ -163,7 +206,8 @@ public sealed class PairingService(LocalData data)
             var fresh = heartbeat is not null && DateTimeOffset.UtcNow - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
             return new DeviceView(device.Id, device.Name, device.CanStart, device.CanStop, device.Revoked,
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
-                fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null);
+                fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null,
+                device.PlatformUserId);
         }).ToList();
     }
 
@@ -272,6 +316,71 @@ public sealed class PairingService(LocalData data)
             return new PairingDecision(true, "Revoked", "Device revoked.");
         }
     }
+
+    public PairingDecision SetPlatformUserId(Guid id, string? platformUserId)
+    {
+        var value = platformUserId?.Trim() ?? "";
+        if (value.Length > 0 && !RemoteStopSafety.ValidPlatformUserId(value))
+            return new PairingDecision(false, "InvalidPlayerId", "Use the Valheim Platform User ID shown in F2, such as V_123456789.");
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(d => d.Id == id && !d.Revoked);
+            if (device is null) return new PairingDecision(false, "UnknownDevice", "Friend PC was not found.");
+            if (devices.Any(d => d.Id != id && !d.Revoked && d.PlatformUserId == value && value.Length > 0))
+                return new PairingDecision(false, "DuplicatePlayerId", "That Valheim player ID belongs to another Friend PC.");
+            device.PlatformUserId = value;
+            data.SaveDevices(devices);
+            data.Audit($"player-id-change {device.Id} {DateTimeOffset.UtcNow:O}");
+            return new PairingDecision(true, "PlayerIdSaved", value.Length == 0 ? "Valheim player ID cleared." : "Valheim player ID saved locally.");
+        }
+    }
+
+    public PairingDecision SetPermissions(Guid id, bool canStart, bool canStop)
+    {
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(d => d.Id == id && !d.Revoked && d.CredentialHash is not null);
+            if (device is null) return new PairingDecision(false, "UnknownDevice", "Pair this Friend PC first.");
+            device.CanStart = canStart;
+            device.CanStop = canStop;
+            data.SaveDevices(devices);
+            data.Audit($"permissions-change {device.Id} {DateTimeOffset.UtcNow:O}");
+            return new PairingDecision(true, "PermissionsSaved", "Friend permissions changed immediately.");
+        }
+    }
+
+    public bool TryAssignedPlayerIds(out string[] ids, out string reason)
+    {
+        lock (sync)
+        {
+            var active = devices.Where(d => !d.Revoked).ToList();
+            ids = [];
+            if (active.Count == 0) { reason = "No Friend PCs are paired."; return false; }
+            if (active.Any(d => d.CredentialHash is null || d.CredentialExpiresUtc <= DateTimeOffset.UtcNow))
+            { reason = "A Friend invite is pending or a device credential expired."; return false; }
+            if (active.Any(d => !ValidPlayerId(d.PlatformUserId)) ||
+                active.Select(d => d.PlatformUserId).Distinct(StringComparer.Ordinal).Count() != active.Count)
+            { reason = "Add a unique Valheim player ID for every paired Friend PC."; return false; }
+            ids = active.Select(d => d.PlatformUserId).ToArray();
+            reason = "Each paired Friend PC has a Valheim player ID.";
+            return true;
+        }
+    }
+
+    public bool TryCoveredPlayerIds(out string[] ids, out string reason)
+    {
+        if (!TryAssignedPlayerIds(out ids, out reason)) return false;
+        lock (sync)
+        {
+            if (!devices.Where(d => !d.Revoked).All(d => heartbeats.TryGetValue(d.Id, out var receipt) &&
+                DateTimeOffset.UtcNow - receipt.ReceivedUtc <= TimeSpan.FromSeconds(45) && receipt.GameRunning == false))
+            { reason = "Every Friend PC must have a fresh, closed-game report."; return false; }
+            reason = "All paired Friend PCs reported their game closed.";
+            return true;
+        }
+    }
+
+    private static bool ValidPlayerId(string? value) => RemoteStopSafety.ValidPlatformUserId(value);
 
     public bool AllKnownNotPlaying()
     {

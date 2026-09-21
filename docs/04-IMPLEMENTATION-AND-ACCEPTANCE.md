@@ -14,6 +14,8 @@ Keep the project small and deliver working vertical slices. Start implementation
 - Add per-device pairing, pinned Host TLS identity, Friend outbound heartbeat, saved Host endpoint, per-friend Start/Stop permissions, and typed remote actions. Use one small HTTPS listener; the Host GUI remains loopback-only.
 - Implement the owner remote-control toggle and notice. Disabled remote Start/Stop must fail server-side immediately; status/heartbeat still communicates Disabled. Revoke one device and prove its credential stops working while another remains valid.
 - Test retry/idempotency, invalid token, wrong certificate, wrong Friend permission, stale/Unknown heartbeat, Host restart, and at least two instances on separate local processes. These tests do not prove public Internet reachability.
+- Test the everyday GUI path: new or copied world, Save and start, one invite with no separate IP entry, immediate listener enable/disable, and action-first Host/Friend cards. A TS1 invite remains readable until expiry.
+- Test remote Stop first with a disposable Valheim console fixture: an exact permitted-player list, assigned player IDs, fresh closed-game reports, denial when reports or the list change, and a permitted Friend Stop over HTTPS. This is process and policy evidence, not proof of a real Valheim join or save.
 
 ## Slice 3 — Real Valheim and friend smoke
 

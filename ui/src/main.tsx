@@ -28,14 +28,15 @@ type Settings = {
   publicGameIp: string
   publicGameIpCheckedUtc: string | null
   ownerClientExecutablePath: string
+  ownerPlatformUserId: string
   permittedPlayersVerified: boolean
   profiles: Profile[]
 }
 type Run = { profileId: string; state: string; detail: string; processId: number | null }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; ownerGameRunning: boolean | null; ownerCheckedUtc: string; passwordConfigured: Record<string, boolean> }
-type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null }
-type Device = { id: string; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null }
-type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[] }
+type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; ownerGameRunning: boolean | null; ownerCheckedUtc: string; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
+type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null }
+type Device = { id: string; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null; platformUserId: string }
+type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
 type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; localGameRunning: boolean | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; clientExecutablePath: string }
 type Snapshot = HostSnapshot | FriendSnapshot
 type BasicResult = { ok: boolean; code: string; message: string }
@@ -74,17 +75,17 @@ async function change<T extends BasicResult>(path: string, method: 'POST' | 'PUT
 function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword: string): string[] {
   const issues: string[] = []
   if (profile.kind === 'Valheim') {
-    if (!profile.serverName.trim()) issues.push('Enter a server name in step 1.')
+    if (!profile.serverName.trim()) issues.push('Name your world.')
     if (profile.worldSource === 'Existing' && (!profile.worldId || !profile.worldDirectory))
-      issues.push('Find and copy a world in step 1.')
+      issues.push('Choose an existing world to copy.')
     if (profile.worldSource === 'New') {
-      if (!profile.worldId.trim()) issues.push('Name the new world in step 1.')
-      if (!profile.worldDirectory.trim()) issues.push('Choose an existing save folder in step 1.')
+      if (!profile.worldId.trim()) issues.push('Name your new world.')
+      if (!profile.worldDirectory.trim()) issues.push('Choose where the new world will be saved.')
     }
-    if (!profile.executablePath.trim()) issues.push('Find and select the installed server in step 2.')
-    if (!hasPassword && !enteredPassword) issues.push('Enter a server password in step 3.')
+    if (!profile.executablePath.trim()) issues.push('Select your installed Valheim Dedicated Server.')
+    if (!hasPassword && !enteredPassword) issues.push('Enter a game password.')
     if (enteredPassword && (enteredPassword.length < 5 || enteredPassword.length > 64 || /[\x00-\x1f\x7f]/.test(enteredPassword)))
-      issues.push('Use a password of 5 to 64 characters in step 3.')
+      issues.push('Use a game password of 5 to 64 characters.')
   } else {
     if (!profile.name.trim()) issues.push('Enter a test profile name in step 1.')
     if (!profile.worldId.trim()) issues.push('Enter a world ID in step 1.')
@@ -92,11 +93,6 @@ function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword:
     if (!profile.executablePath.trim()) issues.push('Select the fixture executable in step 2.')
   }
   return issues
-}
-
-function worldChosen(profile: Profile): boolean {
-  return !!(profile.worldId.trim() && profile.worldDirectory.trim() &&
-    (profile.kind === 'Valheim' ? profile.serverName.trim() : profile.name.trim()))
 }
 
 function App() {
@@ -109,8 +105,9 @@ function App() {
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [detectingPublicIp, setDetectingPublicIp] = useState(false)
-  const [deviceStart, setDeviceStart] = useState(false)
-  const [deviceStop, setDeviceStop] = useState(false)
+  const [deviceStart, setDeviceStart] = useState(true)
+  const [showInvite, setShowInvite] = useState(false)
+  const [playerIds, setPlayerIds] = useState<Record<string, string>>({})
   const [invitation, setInvitation] = useState('')
   const [invitationName, setInvitationName] = useState('')
   const [friendInvite, setFriendInvite] = useState('')
@@ -145,7 +142,15 @@ function App() {
             initialSetupSet.current = true
           }
           const response = await fetch('/api/local/companion', { cache: 'no-store' })
-          if (response.ok && alive) setCompanion(await response.json())
+          if (response.ok && alive) {
+            const current: CompanionInfo = await response.json()
+            setCompanion(current)
+            setPlayerIds(ids => {
+              const next = { ...ids }
+              for (const device of current.devices) if (next[device.id] === undefined) next[device.id] = device.platformUserId
+              return next
+            })
+          }
         }
       } catch (error) {
         if (alive) setLoadError(String(error))
@@ -200,16 +205,16 @@ function App() {
       setNotice({ good: false, text: `Could not copy ${label.toLowerCase()}. Select and copy it instead.` })
     }
   }
-  const copyGamePassword = async (profileId: string) => {
-    setPending(`game-password-${profileId}`)
+  const copyGameDetails = async (profile: Profile, address: string) => {
+    setPending(`game-details-${profile.id}`)
     try {
-      const response = await fetch(`/api/local/profiles/${profileId}/game-password/reveal`, { method: 'POST', headers: localHeaders })
+      const response = await fetch(`/api/local/profiles/${profile.id}/game-password/reveal`, { method: 'POST', headers: localHeaders })
       const result: BasicResult & { password?: string } = await response.json()
       if (!response.ok || !result.ok || !result.password) {
         setNotice({ good: false, text: result.message ?? 'Could not read the saved game password.' })
         return
       }
-      await copyText(result.password, 'Game password')
+      await copyText(`Valheim Join IP: ${address}\nGame password: ${result.password}`, 'Game details')
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
@@ -234,14 +239,16 @@ function App() {
     const timer = window.setInterval(() => void detectPublicIp(), 15 * 60 * 1000)
     return () => window.clearInterval(timer)
   }, [snapshot?.mode])
-  const issueInvite = async (rotateDeviceId?: string, name = 'Friend PC', canStart = deviceStart, canStop = deviceStop) => {
+  const issueInvite = async (rotateDeviceId?: string, name = 'Friend PC', canStart = deviceStart, canStop = false) => {
     setPending('invite')
     setNotice(null)
     try {
       const response = await fetch('/api/local/devices/invite', { method: 'POST', headers: localHeaders,
-        body: JSON.stringify({ name, canStart, canStop, rotateDeviceId: rotateDeviceId ?? null }) })
-      const result: { ok: boolean; code: string; message: string; password?: string; deviceName?: string } = await response.json()
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+        body: JSON.stringify({ name, canStart, canStop, rotateDeviceId: rotateDeviceId ?? null,
+          enableConnections: !rotateDeviceId }) })
+      const result: { ok: boolean; code: string; message: string; password?: string; deviceName?: string; listenerActive?: boolean; listenerWarning?: string } = await response.json()
+      setNotice({ good: result.ok && result.listenerActive !== false,
+        text: result.listenerWarning || result.message })
       if (result.ok && result.password) {
         setInvitation(result.password)
         setInvitationName(result.deviceName ?? 'Friend PC')
@@ -262,22 +269,54 @@ function App() {
     try {
       const response = await fetch(`/api/local/devices/${id}/revoke`, { method: 'POST', headers: localHeaders })
       const result: { ok: boolean; code: string; message: string } = await response.json()
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      setNotice({ good: result.ok, text: result.message })
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const savePlayerId = async (id: string) => {
+    setPending(id)
+    try {
+      const result = await change<BasicResult>(`/api/local/devices/${id}/player-id`, 'PUT',
+        { platformUserId: playerIds[id] ?? '' })
+      setNotice({ good: result.ok, text: result.message })
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const setDevicePermissions = async (device: Device, canStop: boolean) => {
+    setPending(device.id)
+    try {
+      const result = await change<BasicResult>(`/api/local/devices/${device.id}/permissions`, 'PUT',
+        { canStart: device.canStart, canStop })
+      setNotice({ good: result.ok, text: result.message })
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const createPermittedList = async (id: string) => {
+    setPending(id)
+    try {
+      const result = await change<BasicResult>(`/api/local/profiles/${id}/permitted-list`, 'POST')
+      setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
       if (latest.ok) setCompanion(await latest.json())
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
   const pairFriend = async () => {
-    if (!friendHostAddress || !friendInvite) {
-      setNotice({ good: false, text: 'Enter the Host IP and paste the password from the Host PC.' })
+    if (!friendInvite) {
+      setNotice({ good: false, text: 'Paste the invite from your friend.' })
       return
     }
     setPending('pair')
     try {
       const result = await change<BasicResult>('/api/local/friend/pair', 'POST', { invitation: friendInvite,
-        clientExecutablePath: friendClientPath, hostAddress: friendHostAddress })
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+        clientExecutablePath: friendClientPath, hostAddress: friendHostAddress || null })
+      setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
         friendClientEdited.current = false
         setFriendInvite('')
@@ -295,7 +334,7 @@ function App() {
       if (!response.ok) throw new Error(`Local app returned ${response.status}`)
       const next: FriendSnapshot = await response.json()
       setSnapshot(next)
-      setNotice({ good: next.state === 'Connected' || next.state === 'Disabled', text: `${next.state}: ${next.detail}` })
+      setNotice({ good: next.state === 'Connected' || next.state === 'Disabled', text: next.detail })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
@@ -303,7 +342,7 @@ function App() {
     setPending('client-path')
     try {
       const result = await change<BasicResult>('/api/local/friend/client-path', 'POST', { path: friendClientPath })
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
         friendClientEdited.current = false
         await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
@@ -316,12 +355,12 @@ function App() {
     setPending(id)
     try {
       const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      setNotice({ good: result.ok, text: result.message })
       setSnapshot(await readSnapshot())
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const saveSetup = async () => {
+  const saveSetup = async (startAfterSave = false) => {
     if (!draft) return
     const unmet = draft.profiles.flatMap(item => getSetupIssues(item,
       snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[item.id], passwords[item.id] ?? '')
@@ -344,19 +383,24 @@ function App() {
       if (dirty) {
         result = await change<ActionResult>('/api/local/settings', 'PUT', draft)
         setSnapshot(result.snapshot)
-        if (!result.ok) { setNotice({ good: false, text: `${result.code}: ${result.message}` }); return }
+        if (!result.ok) { setNotice({ good: false, text: result.message }); return }
         setDraft(result.snapshot.settings)
         setDirty(false)
       }
       if (profile?.kind === 'Valheim' && password) {
         result = await change<ActionResult>(`/api/local/profiles/${profile.id}/password`, 'POST', { password })
         setSnapshot(result.snapshot)
-        if (!result.ok) { setNotice({ good: false, text: `${result.code}: ${result.message}` }); return }
+        if (!result.ok) { setNotice({ good: false, text: result.message }); return }
         setPasswords(current => ({ ...current, [profile.id]: '' }))
       }
       const passwordWasConfigured = snapshot?.mode === 'Host' && profile ? snapshot.passwordConfigured[profile.id] : false
       const needsPassword = profile?.kind === 'Valheim' && !password && !passwordWasConfigured
-      setNotice({ good: true, text: needsPassword ? 'Settings saved. Add a server password to start Valheim.' : 'Setup saved. Start your server below.' })
+      if (startAfterSave && !needsPassword && profile) {
+        const started = await change<ActionResult>(`/api/local/profiles/${profile.id}/start`, 'POST')
+        setSnapshot(started.snapshot)
+        setNotice({ good: started.ok, text: started.message })
+        if (!started.ok) return
+      } else setNotice({ good: true, text: needsPassword ? 'Add a game password before starting.' : 'Server setup saved.' })
       if (!needsPassword && profile) {
         setShowSetup(false)
         window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -371,7 +415,7 @@ function App() {
     try {
       const response = await fetch(`/api/local/mode/${mode}`, { method: 'POST', headers: localHeaders })
       const result: { ok: boolean; code: string; message: string } = await response.json()
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
         const next = await readSnapshot()
         setSnapshot(next)
@@ -388,7 +432,7 @@ function App() {
     try {
       const result = await change<ActionResult>(path, method, body)
       setSnapshot(result.snapshot)
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      setNotice({ good: result.ok, text: result.message })
       if (result.ok && key === 'save') { setDraft(result.snapshot.settings); setDirty(false) }
     } catch (error) {
       setNotice({ good: false, text: String(error) })
@@ -401,10 +445,11 @@ function App() {
   }
 
   const addProfile = () => {
-    if (!draft) return
+    if (!draft || snapshot?.mode !== 'Host') return
     const id = crypto.randomUUID()
     edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
-      publicListing: false, worldId: '', worldSource: 'Existing', worldDirectory: '', gamePort: 2456, executablePath: '' }] })
+      publicListing: false, worldId: '', worldSource: 'New',
+      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '' }] })
     setActiveProfileId(id)
     setShowSetup(true)
     window.setTimeout(() => setupRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
@@ -416,6 +461,10 @@ function App() {
     setShowSetup(true)
     window.setTimeout(() => setupRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
+  const openInvite = () => {
+    setShowInvite(true)
+    window.setTimeout(() => shareRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
 
   const scanValheim = async () => {
     setPending('scan')
@@ -424,7 +473,6 @@ function App() {
       if (!response.ok) throw new Error(`Discovery returned ${response.status}`)
       const result: Discovery = await response.json()
       setDiscovery(result)
-      setNotice({ good: true, text: `Found ${result.installations.length} server path candidate(s) and ${result.worlds.length} world save(s).` })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
@@ -497,15 +545,14 @@ function App() {
       <div className="brand"><span className="brand-mark">T</span><div><strong>TogetherServer</strong><small>Local companion</small></div></div>
       <div className="topbar-actions"><nav className="mode-switch" aria-label="App pages">
         <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}>My server</button>
-        <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Friends' servers</button>
+        <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join a friend</button>
       </nav><button className="quit-button" disabled={!!pending} onClick={() => void quitApp()}>Quit app</button></div>
     </header>
 
     <main>
-      <div className="eyebrow">{snapshot?.mode === 'Friend' ? "FRIENDS' SERVERS" : 'MY SERVER'} <span>·</span> BOTH STAY ACTIVE</div>
-      <div className={`hero ${connectionView ? 'hero-compact' : ''}`}><div><h1>{snapshot?.mode === 'Friend' ? "Friends' servers" : 'Host your Valheim server'}</h1>
-        <p>{snapshot?.mode === 'Friend' ? 'Connect to a friend who hosts a server. Your own server and invitations keep working on this PC.' : savedProfiles.length === 0 ? 'Add a server to get started. We will guide you through the world, install, and password.' : activeRuns ? 'Your server is running. Share the join address and give friends access below.' : 'Your setup is saved. Start a server, then share the join address or invite friends.'}</p></div>
-        {snapshot?.mode === 'Host' && <div className="hero-badge">{activeRuns} running<small>{savedProfiles.length} saved · limit {snapshot.settings.maxConcurrentServers}</small></div>}
+      <div className={`hero ${connectionView ? 'hero-compact' : ''}`}><div><h1>{snapshot?.mode === 'Friend' ? "Join a friend's server" : 'My Valheim server'}</h1>
+        <p>{snapshot?.mode === 'Friend' ? 'Paste one invite to connect. This does not close a server you host on this PC.' : savedProfiles.length === 0 ? 'Choose a world and password to get started.' : activeRuns ? 'Your server is running.' : 'Your server is ready to start.'}</p></div>
+        {snapshot?.mode === 'Host' && savedProfiles.length > 0 && <div className="hero-badge">{activeRuns ? 'Running' : 'Offline'}<small>{savedProfiles.length > 1 ? `${savedProfiles.length} servers saved` : savedProfiles[0].name}</small></div>}
       </div>
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
@@ -514,84 +561,91 @@ function App() {
 
       {snapshot?.mode === 'Friend' && <>
         <section className="panel friend-panel">
-          <div className="section-heading"><span className="section-icon">↗</span><div><h2>{snapshot.endpoint && !showPairing ? 'Your Host' : 'Connect to a Host'}</h2><p>{snapshot.detail}</p></div></div>
+          <div className="section-heading"><div><h2>{snapshot.endpoint && !showPairing ? 'Your connection' : 'Paste your invite'}</h2><p>{snapshot.endpoint && !showPairing ? snapshot.detail : 'Ask your friend to create one invite for this PC.'}</p></div></div>
           {snapshot.endpoint && !showPairing ? <>
-            <div className="connection-address"><span>Host IP · {snapshot.state}</span><strong>{hostAddress(snapshot.endpoint)}</strong><small>{snapshot.detail} {snapshot.lastConnectedUtc ? `Last verified ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}.` : ''}</small></div>
-            <div className="actions"><button disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? 'Checking…' : 'Check connection now'}</button>
-              <button className="secondary" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite('') }}>Connect to another Host PC</button></div>
+            <div className="compact-status"><span className={`status ${snapshot.state === 'Connected' ? 'running' : 'unknown'}`}>{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state}</span>
+              <span>{snapshot.lastConnectedUtc ? `Last reached ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'Waiting for a reply from the Host'}</span></div>
+            <div className="actions"><button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? 'Checking…' : 'Check connection'}</button>
+              <button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite('') }}>Use another invite</button></div>
           </> : <>
-            <div className="settings-grid">
-              <label>Host IP (port optional)<input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Port 5131 is assumed. Use IP:port if the Host changed it.</small></label>
-              <label>Password<input type="password" autoComplete="off" value={friendInvite} onChange={event => setFriendInvite(event.target.value.trim())} placeholder="Paste the password from the Host" /><small>The Host generates one password per PC. Paste it once; this app saves its own access.</small></label>
-            </div>
-            <div className="save-row"><span>Use the TogetherServer Host IP, not the Valheim game port.</span><button disabled={!!pending} onClick={() => void pairFriend()}>{pending === 'pair' ? 'Connecting…' : 'Connect to Host PC'}</button></div>
+            <label className="invite-input">Invite code<input type="password" autoComplete="off" value={friendInvite} onChange={event => setFriendInvite(event.target.value.trim())} placeholder="Paste the invite here" /></label>
+            <div className="actions"><button disabled={!!pending} onClick={() => void pairFriend()}>{pending === 'pair' ? 'Connecting…' : 'Connect'}</button></div>
+            <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
-          <details className="advanced-block"><summary>Game running check · {snapshot.localGameRunning === null ? 'Unknown' : snapshot.localGameRunning ? 'Running' : 'Closed'}</summary>
-            <p className="helper-text">TogetherServer checks whether Valheim is running on this PC. It never starts your game.</p>
+          {snapshot.endpoint && snapshot.localGameRunning === null && <p className="warning-text">Valheim was not found on this PC. Set its install path below so the Host can safely check when you leave the game.</p>}
+          <details className="advanced-block"><summary>Valheim game check · {snapshot.localGameRunning === null ? 'Unknown' : snapshot.localGameRunning ? 'Running' : 'Closed'}</summary>
+            <p className="helper-text">This app checks whether Valheim is running; it does not open the game.</p>
             <div className="settings-grid"><label>Valheim game client<input value={friendClientPath} onChange={event => { friendClientEdited.current = true; setFriendClientPath(event.target.value) }} placeholder="Auto-detecting Steam installation…" /></label></div>
             {discovery && discovery.clients.length > 1 && <div className="choices"><strong>Valheim installs found</strong>{discovery.clients.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><button className="secondary" onClick={() => { friendClientEdited.current = true; setFriendClientPath(item.executablePath) }}>Use this install</button></div>)}</div>}
             <button className="secondary" disabled={!snapshot.endpoint || !!pending} onClick={() => void saveFriendClientPath()}>Save game check</button>
           </details>
         </section>
-        {snapshot.profiles.length > 0 && <section className="panel">
-          <div className="section-heading"><span className="section-icon">◎</span><div><h2>Host servers</h2><p>Requests name a saved profile only. The Host checks permissions and player state.</p></div></div>
+        {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <section className="panel">
+          <div className="section-heading"><div><h2>Valheim server</h2></div></div>
           {snapshot.profiles.map(profile => <article className="profile-card" key={profile.id}>
-            <div className="profile-top"><div><h3>{profile.name}</h3><p>{profile.state}</p></div><span className={`status ${profile.state === 'Process running' || profile.state === 'Ready' ? 'running' : 'offline'}`}>{profile.state}</span></div>
-            {profile.joinAddress && <div className="join-line"><span>Valheim Join IP: <code>{profile.joinAddress}</code></span><button className="secondary" onClick={() => void copyText(profile.joinAddress!, 'Valheim join address')}>Copy address</button></div>}
-            {!profile.joinAddress && <p className="helper-text">The Host has no fresh public Valheim game address yet.</p>}
-            <div className="actions"><button disabled={!!pending || snapshot.state !== 'Connected' || !snapshot.canStart} onClick={() => void friendAction(profile.id, 'start')}>Request Start</button>
-              <button className="secondary" disabled={!!pending || snapshot.state !== 'Connected' || !snapshot.canStop} onClick={() => void friendAction(profile.id, 'stop')}>Request Stop</button></div>
+            <div className="profile-top"><h3>{profile.name}</h3><span className={`status ${profile.state === 'Ready' ? 'running' : profile.state === 'Offline' ? 'offline' : 'unknown'}`}>{profile.state}</span></div>
+            <div className="actions">
+              {profile.state === 'Offline' && snapshot.state === 'Connected' && snapshot.canStart && <button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}>Start server</button>}
+              {profile.state === 'Ready' && profile.joinAddress && <button className="secondary" onClick={() => void copyText(profile.joinAddress!, 'Game address')}>Copy game address</button>}
+              {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}>Stop server</button>}
+            </div>
+            {snapshot.canStop && profile.state === 'Ready' && !profile.canStopNow && <p className="helper-text">Stop unavailable: {profile.stopReason}</p>}
+            {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
+            {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
           </article>)}
-          <p className="footnote">Remote Stop remains unavailable until all allowed players and game access are verified. A server log signal is not a client join.</p>
         </section>}
       </>}
 
       {snapshot?.mode === 'Host' && draft && <>
         {savedProfiles.length > 0 && <>
         <section className="panel">
-          <div className="section-heading"><span className="section-icon">2</span><div><h2>Start and manage your server</h2><p>Use the server you saved in step 1. Status comes from this app's managed process.</p></div></div>
+          <div className="section-heading"><div><h2>My server</h2></div></div>
           <div className="profile-list">
             {snapshot.settings.profiles.map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
               return <article className="profile-card" key={profile.id}>
-                <div className="profile-top"><div><h3>{profile.name}</h3><p>World {profile.worldId} <span>·</span> UDP {profile.gamePort}–{profile.gamePort + 1}</p></div>
+                <div className="profile-top"><div><h3>{profile.name}</h3><p>World {profile.worldId}</p></div>
                   <span className={`status ${status?.state === 'Process running' || status?.state === 'Ready' ? 'running' : status?.state === 'Offline' ? 'offline' : 'unknown'}`}>{status?.state ?? 'Unknown'}</span></div>
-                <p className="status-detail">{status?.detail}</p>
-                {profile.kind === 'Valheim' && <p className="helper-text">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>. The address to share with friends is in step 3 below.</p>}
+                {status?.state !== 'Offline' && <p className="status-detail">{status?.detail}</p>}
                 <div className="actions">
-                  <button disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}>Start server</button>
-                  <button className="secondary" disabled={!!pending || dirty || !['Process running', 'Starting', 'Ready'].includes(status?.state ?? '')} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}>Stop server</button>
-                  <button className="secondary" onClick={() => shareRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>Invite friends</button>
-                  <button className="text-button" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Health check</button>
-                  <button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</button>
-                  {(status?.state === 'Unknown' || status?.state === 'Failed') && <button className="text-button" disabled={!!pending || dirty} onClick={() => {
-                    if (window.confirm('Clear this unresolved run record only after verifying the original process is stopped?'))
-                      void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
-                  }}>Clear record</button>}
+                  {status?.state === 'Offline' && <button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}>Start server</button>}
+                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}>Stop server</button>}
+                  {profile.kind === 'Valheim' && status?.state === 'Ready' && detectedGameIp && <button className="secondary" disabled={!!pending} onClick={() => void copyGameDetails(profile, `${detectedGameIp}:${profile.gamePort}`)}>Copy game details</button>}
+                  <button className="secondary" onClick={openInvite}>Invite friend</button>
                 </div>
+                {profile.kind === 'Valheim' && status?.state === 'Ready' && !detectedGameIp && <p className="helper-text">Your public game address is not available yet. Check Network in Settings.</p>}
+                <details className="advanced-block"><summary>More server options</summary>
+                  <p className="helper-text">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>
+                  <div className="actions"><button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</button>
+                    <button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</button>
+                    {(status?.state === 'Unknown' || status?.state === 'Failed') && <button className="text-button" disabled={!!pending || dirty} onClick={() => {
+                      if (window.confirm('Clear this unresolved run record only after verifying the original process is stopped?'))
+                        void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
+                    }}>Clear unresolved record</button>}</div>
+                </details>
               </article>
             })}
           </div>
-          {dirty && <p className="warning-text">Save your changes below before starting or stopping a server.</p>}
-          <div className="setup-tools"><button className="secondary" disabled={!!pending || dirty} onClick={addProfile}>Add another server</button></div>
-          <p className="footnote">Owner game client: {snapshot.ownerGameRunning === null ? 'Unknown' : snapshot.ownerGameRunning ? 'Running' : 'Closed'}. Valheim Ready means its server-connected log was seen; a client join is still needed.</p>
+          {dirty && <p className="warning-text">Save your setup changes before starting or stopping a server.</p>}
+          {companion?.devices.some(device => device.paired && !device.revoked) && <div className="compact-status"><span>Remote control: {draft.remoteControlsEnabled ? 'On' : 'Paused'}</span>
+            <button className="secondary" disabled={!!pending || dirty} onClick={() => void run('save', '/api/local/settings', 'PUT', { ...draft, remoteControlsEnabled: !draft.remoteControlsEnabled })}>{draft.remoteControlsEnabled ? 'Pause remote controls' : 'Allow remote controls'}</button></div>}
+          <details className="advanced-block"><summary>More hosting settings</summary><button className="secondary" disabled={!!pending || dirty} onClick={addProfile}>Add another server</button>
+            <p className="helper-text">Limit: {draft.maxConcurrentServers} managed server{draft.maxConcurrentServers === 1 ? '' : 's'}. A Ready signal is not a verified game join.</p></details>
         </section>
         </>}
 
         {(showSetup || savedProfiles.length === 0) && <section ref={setupRef} className="panel settings-panel">
-          <div className="section-heading"><span className="section-icon">1</span><div><h2>Add a server</h2><p>Choose a world, select your installed server, and save its game password.</p></div></div>
+          <div className="section-heading"><div><h2>{savedProfiles.length ? 'Edit server setup' : 'Set up your server'}</h2><p>Choose a world and game password. TogetherServer will find the installed server when it can.</p></div></div>
           <div className="setup-header">
             {draft.profiles.length > 1 && <label>Editing server<select value={editedProfile?.id ?? ''} onChange={event => setActiveProfileId(event.target.value)}>{draft.profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name || profile.serverName || profile.worldId || 'New server'}</option>)}</select></label>}
-            {savedProfiles.length > 0 && !dirty && <button className="secondary" onClick={() => setShowSetup(false)}>Done editing</button>}
+            {savedProfiles.length > 0 && !dirty && <button className="secondary" onClick={() => setShowSetup(false)}>Done</button>}
           </div>
-          {!editedProfile && <div className="empty"><p>Choose your world and installed Valheim server in a few steps.</p><div className="actions"><button onClick={addProfile}>Add Valheim server</button></div></div>}
-          {editedProfile && <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void scanValheim()}>{pending === 'scan' ? 'Searching…' : 'Find installed server and worlds'}</button><small>Searches Steam libraries and local saves on this PC.</small></div>}
+          {!editedProfile && <div className="empty"><p>Start with one Valheim world.</p><div className="actions"><button onClick={addProfile}>Set up a server</button></div></div>}
           {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-            <div className="form-head"><strong>{profile.name || profile.serverName || 'New server'}</strong><button className="text-button danger" onClick={() => edit({ ...draft, profiles: draft.profiles.filter(item => item.id !== profile.id) })}>Remove server</button></div>
-            <div className="setup-step"><h3><span>1</span> Choose a world</h3>
-              {profile.kind === 'Valheim' && <div className="settings-grid">
-                <label>Server name<input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} placeholder="My Valheim server" /></label>
-                <label>World<select value={profile.worldSource} onChange={event => updateProfile(profile.id, { worldSource: event.target.value as Profile['worldSource'], worldDirectory: '', worldId: '' })}><option value="Existing">Use an existing save</option><option value="New">Create a new world</option></select></label>
+            <div className="setup-step"><h3>World</h3>
+              {profile.kind === 'Valheim' && <div className="choice-pills">
+                <button className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>Create new</button>
+                <button className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</button>
               </div>}
               {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <>
                 {profile.worldId && profile.worldDirectory && <p className="selection-summary">Copy ready: <strong>{profile.worldId}</strong>. Your original save stays separate.</p>}
@@ -604,74 +658,88 @@ function App() {
                   <button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => void importWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</button>
                 </details>
               </>}
-              {profile.kind === 'Valheim' && profile.worldSource === 'New' && <div className="settings-grid"><label>New world name<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="MyNewWorld" /></label><label>Save directory<input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} placeholder="C:\\...\\Valheim" /><small>Choose an existing empty directory. An existing world with this name blocks Start.</small></label></div>}
+              {profile.kind === 'Valheim' && profile.worldSource === 'New' && <label className="invite-input">World name<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value, name: event.target.value, serverName: event.target.value })} placeholder="My Valheim world" /><small>Saved in TogetherServer's private data. An existing world with this name will never be replaced.</small></label>}
               {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test profile name<input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
             </div>
-            {!worldChosen(profile) && <p className="helper-text">Complete the world choice above to continue to the server install.</p>}
-            {worldChosen(profile) && <div className="setup-step"><h3><span>2</span> Select the server app</h3>
+            <div className="setup-step"><h3>Valheim Dedicated Server</h3>
               {profile.kind === 'Valheim' ? <>
-                {profile.executablePath && <p className="selection-summary">Selected: <code>{profile.executablePath}</code></p>}
-                {discovery && <div className="choices"><strong>Dedicated Server installs found</strong>{discovery.installations.length === 0 ? <p>None found. Browse to an installed copy or open Steam below.</p> : discovery.installations.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><button className="secondary" onClick={() => updateProfile(profile.id, { executablePath: item.executablePath })}>Use this install</button></div>)}</div>}
-                <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void browseServer(profile)}>{pending === profile.id ? 'Browsing…' : 'Browse for valheim_server.exe'}</button>{(!discovery || discovery.installations.length === 0) && <a href="steam://install/896660">Open install in Steam</a>}</div>
-                <p className="helper-text">Steam handles installation and any terms after you choose to open it.</p>
+                {profile.executablePath ? <p className="selection-summary">Installed server found. <small>{profile.executablePath}</small></p> : <>
+                  {discovery && <div className="choices">{discovery.installations.length === 0 ? <p>Valheim Dedicated Server was not found.</p> : discovery.installations.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><button className="secondary" onClick={() => updateProfile(profile.id, { executablePath: item.executablePath })}>Use this install</button></div>)}</div>}
+                  <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void scanValheim()}>{pending === 'scan' ? 'Searching…' : 'Search this PC'}</button><button className="secondary" disabled={!!pending} onClick={() => void browseServer(profile)}>Browse for server</button>{discovery?.installations.length === 0 && <a href="steam://install/896660">Open install in Steam</a>}</div>
+                  <p className="helper-text">Steam handles installation and any terms when you open it.</p>
+                </>}
               </> : <label>Fixture executable path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}
+            </div>
+            {profile.kind === 'Valheim' && <div className="setup-step"><h3>Game password</h3>
+              <div className="password-row"><label>Password<input type="password" autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /></label></div>
             </div>}
-            {profile.kind === 'Valheim' && worldChosen(profile) && !!profile.executablePath && <div className="setup-step"><h3><span>3</span> Set a server password</h3>
-              <div className="password-row"><label>Server password<input type="password" autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Password already saved; leave blank to keep it' : '5 or more characters'} /></label></div>
-            </div>}
-            <details className="advanced-block"><summary>Advanced server options</summary>
-              <div className="settings-grid"><label>Game type<select value={profile.kind} onChange={event => updateProfile(profile.id, { kind: event.target.value as Profile['kind'] })}><option value="Valheim">Valheim</option><option value="Fixture">Synthetic test fixture</option></select></label><label>Game UDP start port<input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label>{profile.kind === 'Valheim' && <label className="wide">Installed server path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label>}</div>
+            <details className="advanced-block"><summary>Advanced server settings</summary>
+              <div className="settings-grid"><label>Game type<select value={profile.kind} onChange={event => updateProfile(profile.id, { kind: event.target.value as Profile['kind'] })}><option value="Valheim">Valheim</option><option value="Fixture">Synthetic test fixture</option></select></label><label>Game UDP start port<input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label>{profile.kind === 'Valheim' && <><label>Server listing name<input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
               {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
               {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
             </details>
           </div>)}
-          {editedProfile && <><details className="advanced-block"><summary>Host limits and idle settings</summary><div className="settings-grid"><label>Maximum managed servers<input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /></label><label>Idle minutes<input type="number" min="1" max="1440" value={draft.idleMinutes} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Automatic shutdown remains unavailable until player coverage is verified.</small></label></div></details>
-          {setupIssues.length > 0 && <div className="setup-needs" role="status"><strong>Finish these choices before saving:</strong><ul>{setupIssues.map((issue, index) => <li key={`${issue.id}-${index}`}>{draft.profiles.length > 1 ? `${issue.name}: ` : ''}{issue.message}</li>)}</ul></div>}
-          <div className="save-row"><span>{setupIssues.length ? 'Choose the items above to finish this server.' : dirty || passwords[editedProfile.id] ? 'Ready to save this setup.' : 'Settings saved locally.'}</span><button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup()}>{pending === 'save' ? 'Saving…' : 'Save setup'}</button></div></>}
+          {editedProfile && <><details className="advanced-block"><summary>More setup options</summary><div className="settings-grid"><label>Maximum managed servers<input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /></label></div><button className="text-button danger" onClick={() => edit({ ...draft, profiles: draft.profiles.filter(item => item.id !== editedProfile.id) })}>Remove this server</button></details>
+          {setupIssues.length > 0 && <p className="helper-text" role="status">To continue: {setupIssues[0].message}</p>}
+          <div className="save-row"><span>{setupIssues.length ? 'Finish the choice above to continue.' : 'Your setup stays on this PC.'}</span><div className="actions"><button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup()}>Save for later</button><button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup(true)}>{pending === 'save' ? 'Saving…' : 'Save and start'}</button></div></div></>}
         </section>}
         {savedProfiles.length > 0 && <>
-        <section ref={shareRef} className="panel">
-          <div className="section-heading"><span className="section-icon">3</span><div><h2>Share and invite friends</h2><p>Copy the game address for joining. Give each Friend PC the app address and its own password.</p></div></div>
-          <div className="connection-grid">
-            <div className="connection-address"><span>Valheim game · UDP</span>{snapshot.settings.profiles.filter(profile => profile.kind === 'Valheim').map(profile => {
-              const ready = snapshot.runs.some(run => run.profileId === profile.id && run.state === 'Ready')
-              return <div className="connection-game" key={profile.id}><small>{profile.name}</small><strong>{detectedGameIp ? `${detectedGameIp}:${profile.gamePort}` : 'Unavailable'}</strong><small>{ready ? 'Ready signal received. A friend join is still unverified.' : 'Start this server and wait for Ready before joining.'}</small><div className="actions"><button className="secondary" disabled={!detectedGameIp} onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Valheim join address')}>Copy Join IP</button><button className="secondary" disabled={!!pending || !snapshot.passwordConfigured[profile.id]} onClick={() => void copyGamePassword(profile.id)}>Copy game password</button></div></div>
-            })}{!snapshot.settings.profiles.some(profile => profile.kind === 'Valheim') && <small>Set up a Valheim server to show its game Join IP.</small>}</div>
-            <div className="connection-address"><span>TogetherServer app · TCP {draft.companionPort}</span><strong>{friendAppAddress || (detectingPublicIp ? 'Checking…' : 'Unavailable')}</strong><small>Use this IP in Friend mode. Port 5131 is assumed unless you changed it.</small><button className="secondary" disabled={!friendAppAddress} onClick={() => void copyText(friendAppAddress, 'Host app address')}>Copy Host address</button></div>
-          </div>
-          <button className="text-button" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking address…' : 'Refresh detected IP'}</button>
-          {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
-          <p className="footnote">The app detects the outbound public IP. A Friend on another network must test whether either port is reachable. TogetherServer does not change router or firewall settings.</p>
-        </section>
+        {showInvite && <section ref={shareRef} className="panel">
+          <div className="section-heading"><div><h2>Invite a friend</h2><p>Make one private invite for each PC. Your friend pastes it into TogetherServer.</p></div></div>
+          <label className="check-row"><input type="checkbox" checked={deviceStart} onChange={event => setDeviceStart(event.target.checked)} /> Let this PC start my server</label>
+          <p className="helper-text">Creating an invite allows Friend app connections on this PC. If Start is checked, PCs already granted Start can also use remote control. You can pause it anytime.</p>
+          <div className="actions"><button disabled={!!pending || dirty || !friendAppAddress} onClick={() => void issueInvite()}>{pending === 'invite' ? 'Creating…' : 'Create invite and allow connections'}</button>
+            <button className="secondary" onClick={() => setShowInvite(false)}>Done</button></div>
+          {!friendAppAddress && <p className="warning-text">No Host address is available yet. Check your Internet connection or set a custom address in Settings.</p>}
+          {invitation && <div className="invite-box"><strong>Invite for {invitationName}</strong><p>Share this code privately. It expires in 30 minutes and works once. {companion?.listenerActive ? 'Your app is listening; your friend still needs to test the connection from another network.' : 'Friend connections are not listening yet; check Settings.'}</p>
+            <div className="actions"><button onClick={() => void copyText(invitation, 'Invite')}>Copy invite</button><button className="secondary" onClick={() => setInvitation('')}>Hide code</button></div><details><summary>Show code to copy manually</summary><textarea readOnly rows={3} value={invitation} /></details></div>}
+        </section>}
         <section className="panel">
-          <div className="section-heading"><span className="section-icon">↗</span><div><h2>Give a Friend access</h2><p>Your Friend opens this app on their PC and enters your Host IP and a password. You never enter their IP.</p></div></div>
-          <div className="device-options"><label className="check-row"><input type="checkbox" checked={deviceStart} onChange={event => setDeviceStart(event.target.checked)} /> May request Start</label><label className="check-row"><input type="checkbox" checked={deviceStop} onChange={event => setDeviceStop(event.target.checked)} /> May request Stop</label></div>
-          <div className="save-row"><span>{dirty ? 'Save your other settings first.' : !friendAppAddress ? 'Wait for the Host address check.' : 'Make a separate password for each PC. It expires in 30 minutes.'}</span><button disabled={!!pending || dirty || !friendAppAddress} onClick={() => void issueInvite()}>{pending === 'invite' ? 'Creating…' : 'Generate password'}</button></div>
-          {invitation && <div className="invite-box"><strong>One-time password for {invitationName}</strong><p>Privately share the Host IP and this password. {companion?.listenerActive ? 'Your Friend can connect now.' : 'Enable Friend app connections, save, and reopen this app before your Friend clicks Connect.'}</p><div className="actions"><button onClick={() => void copyText(invitation, 'Password')}>Copy password</button><button className="secondary" onClick={() => setInvitation('')}>Hide</button></div><details><summary>Show password to copy manually</summary><textarea readOnly rows={3} value={invitation} /></details></div>}
-          {(draft.companionListeningEnabled || companion?.devices.some(device => !device.revoked)) && <div className="policy-line"><div><strong>Allow Friend app connections</strong><p>Requires this app to restart after saving. No router or firewall changes are made.</p></div><label className="check-row"><input type="checkbox" checked={draft.companionListeningEnabled} onChange={event => edit({ ...draft, companionListeningEnabled: event.target.checked })} /> Allow</label></div>}
-          {(draft.remoteControlsEnabled || companion?.devices.some(device => device.paired && !device.revoked)) && <div className="policy-line"><div><strong>Remote Start and Stop</strong><p>Turning this off blocks requests immediately without stopping a running server.</p></div><label className="check-row"><input type="checkbox" checked={draft.remoteControlsEnabled} onChange={event => edit({ ...draft, remoteControlsEnabled: event.target.checked })} /> Allow</label></div>}
-          {!companion?.devices.some(device => device.paired && !device.revoked) && companion?.devices.some(device => !device.revoked) && <p className="helper-text">Remote controls can be enabled after a Friend PC pairs.</p>}
-          {snapshot.settings.companionListeningEnabled && !companion?.listenerActive && <p className="warning-text">Friend access is saved but not listening yet. Quit and reopen TogetherServer to activate it.</p>}
-          {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
-          {(dirty || draft.companionListeningEnabled || companion?.devices.some(device => !device.revoked)) && <div className="save-row"><span>{dirty ? 'Changes need saving.' : companion?.listenerActive ? 'Friend app connection is active.' : 'Friend app connection is off.'}</span><button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>{pending === 'save' ? 'Saving…' : 'Save access settings'}</button></div>}
-          <details className="advanced-block"><summary>Advanced address, port, and game check</summary>
-            <div className="settings-grid companion-fields">
-              <label>Friend app TCP port<input type="number" min="1024" max="65535" value={draft.companionPort} onChange={event => {
-                const port = Number(event.target.value)
-                let endpoint = draft.companionEndpoint
-                if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
-                edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
-              }} /><small>Standard port: 5131. Choose a different port before creating the first pairing code.</small></label>
-              <label>Custom HTTPS endpoint<input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /><small>Only needed for local testing or a custom IP.</small></label>
-              <label>Bind IP<input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
-              <label>Owner Valheim client<input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="Auto-detected game install" /><small>Unknown until the owner's game client is found.</small></label>
+          <details className="advanced-block main-settings"><summary>Settings and safety</summary>
+            <div className="settings-content">
+              <h3>Connection checks</h3>
+              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {companion?.listenerActive ? 'listening on this PC, public route untested' : 'off'}.</p>
+              {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
+              {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
+              <div className="actions"><button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking…' : 'Refresh public address'}</button>
+                {detectedGameIp && <button className="secondary" onClick={() => void copyText(`${detectedGameIp}:${savedProfiles[0].gamePort}`, 'Game address')}>Copy game address</button>}</div>
+              <p className="helper-text">A Friend on another network must test the app connection and Valheim game join separately. Router and firewall changes remain yours to approve.</p>
+              <label className="check-row"><input type="checkbox" checked={draft.companionListeningEnabled} onChange={event => edit({ ...draft, companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /> Allow Friend app connections</label>
+
+              <h3>Safe remote Stop</h3>
+              <p>Valheim must admit only the owner and paired Friend PCs. Set their Valheim player IDs, then create a player-only access list while the server is off. Stop works only when every allowed PC reports its game closed.</p>
+              <label>My Valheim player ID (only if I play)<input value={draft.ownerPlatformUserId} onChange={event => edit({ ...draft, ownerPlatformUserId: event.target.value.trim() })} placeholder="V_123456789" /><small>Find it in Valheim's F2 panel. Leave blank if this PC never joins the server.</small></label>
+              {companion?.devices.filter(device => !device.revoked).map(device => <div className="device" key={device.id}>
+                <div><strong>{device.name}</strong><small>{device.paired ? device.gameRunning === null ? 'Game check unknown' : device.gameRunning ? 'Game running' : 'Game closed' : 'Invite pending'} · Start {device.canStart ? 'allowed' : 'off'} · Stop {device.canStop ? 'allowed' : 'off'}</small>
+                  <label>Valheim player ID<input value={playerIds[device.id] ?? ''} onChange={event => setPlayerIds(current => ({ ...current, [device.id]: event.target.value }))} placeholder="V_123456789" /></label></div>
+                <div className="actions"><button className="secondary" disabled={!!pending} onClick={() => void savePlayerId(device.id)}>Save ID</button>
+                  {device.paired && <button className="secondary" disabled={!!pending || (!device.canStop && !Object.values(companion?.stopSafety ?? {}).some(item => item.available))} onClick={() => void setDevicePermissions(device, !device.canStop)}>{device.canStop ? 'Remove Stop access' : 'Allow Stop'}</button>}</div>
+              </div>)}
+              {savedProfiles.filter(profile => profile.kind === 'Valheim').map(profile => <div className="safety-status" key={profile.id}><strong>{profile.name}: {companion?.stopSafety?.[profile.id]?.available ? 'Remote Stop ready' : 'Remote Stop waiting'}</strong>
+                <p>{companion?.stopSafety?.[profile.id]?.reason ?? 'Checking player coverage…'}</p>
+                <button className="secondary" disabled={!!pending || dirty || snapshot.runs.find(run => run.profileId === profile.id)?.state !== 'Offline'} onClick={() => void createPermittedList(profile.id)}>Create player-only access list</button>
+                <small>Existing lists are never overwritten. Start or restart the server after creating one.</small></div>)}
+
+              <h3>Advanced network and game paths</h3>
+              <div className="settings-grid companion-fields">
+                <label>Friend app TCP port<input type="number" min="1024" max="65535" value={draft.companionPort} onChange={event => {
+                  const port = Number(event.target.value)
+                  let endpoint = draft.companionEndpoint
+                  if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
+                  edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
+                }} /></label>
+                <label>Custom HTTPS endpoint<input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /></label>
+                <label>Bind IP<input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
+                <label>Owner Valheim game path<input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="Auto-detected game install" /></label>
+              </div>
+              {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
+              <div className="actions"><button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</button></div>
+              {companion?.devices.length ? <details className="advanced-block"><summary>Manage Friend PCs ({companion.devices.length})</summary><div className="profile-list device-list">{companion.devices.map(device => <div className="device" key={device.id}>
+                <div><strong>{device.name}</strong><small>{device.revoked ? 'Revoked' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Invite pending'}</small></div>
+                <div className="actions"><button className="secondary" disabled={!!pending || device.revoked} onClick={() => void issueInvite(device.id, device.name, device.canStart, device.canStop)}>Rotate invite</button><button className="text-button danger" disabled={!!pending || device.revoked} onClick={() => void revokeDevice(device.id)}>Revoke</button></div>
+              </div>)}</div></details> : null}
             </div>
-            {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
           </details>
-          {companion?.devices.length ? <details className="advanced-block"><summary>Paired PCs and pending codes ({companion.devices.length})</summary><div className="profile-list device-list">{companion.devices.map(device => <div className="device" key={device.id}>
-            <div><strong>{device.name}</strong><small>{device.revoked ? 'Revoked' : device.lastHeartbeatUtc ? `Heartbeat ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()} · Game ${device.gameRunning === null ? 'Unknown' : device.gameRunning ? 'running' : 'closed'}` : device.paired ? 'Heartbeat Unknown' : 'Invite pending'} · {device.canStart ? 'Start allowed' : 'Start denied'} · {device.canStop ? 'Stop allowed' : 'Stop denied'}</small></div>
-            <div className="actions"><button className="secondary" disabled={!!pending || device.revoked} onClick={() => void issueInvite(device.id, device.name, device.canStart, device.canStop)}>Rotate</button><button className="text-button danger" disabled={!!pending || device.revoked} onClick={() => void revokeDevice(device.id)}>Revoke</button></div>
-          </div>)}</div></details> : null}
         </section>
         </>}
       </>}

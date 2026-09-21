@@ -18,10 +18,10 @@ The native window embeds the bundled React UI with WebView2 and talks to the sam
 
 ## Host internals
 
-The Host and Friend capabilities may run concurrently in the same process. My server and Friends' servers select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Friends' servers. Quit remains blocked by any managed game run from either page.
+The Host and Friend capabilities may run concurrently in the same process. My server and Join a friend select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Join a friend. Quit remains blocked by any managed game run from either page.
 
 - A local loopback GUI listener serves bundled React files and local-owner API actions. It must not become the public management interface.
-- An optional public-IP companion listener accepts only authenticated heartbeat, status, Start, and Stop requests. It is off by default and cannot start without pairing and TLS configuration. It is distinct from Valheim's game port.
+- An optional HTTPS companion listener accepts only pairing, authenticated heartbeat, status, Start, and Stop requests. It is off by default and cannot start without pairing and TLS configuration. The owner can start or stop it immediately in the same process; the local GUI remains on loopback. It is distinct from Valheim's game port.
 - The process supervisor has fixed `start`, `stop`, and `health` actions for an owner-approved Valheim installation/profile. Implement them as small reviewed host-local scripts or typed .NET code; never execute a script, path, argument, environment key, or shell expression supplied by a Friend request.
 - Serialize lifecycle actions with one in-process gate and durable state. On app restart, verify the recorded PID, start time, executable path, and managed world before reattaching. If identity cannot be proven, show Unknown and refuse another start for that world until the owner resolves it. Never kill by process name alone.
 - Local settings and pairing metadata live under the user's `%LOCALAPPDATA%\TogetherServer` directory. A small atomically replaced JSON store is enough for v1's single Host process; secrets must be protected with Windows facilities, and only credential hashes should be stored on Host. Do not store worlds under the source checkout.

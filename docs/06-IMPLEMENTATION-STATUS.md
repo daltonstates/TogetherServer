@@ -343,3 +343,27 @@ Starting Git HEAD: `e21d787`, clean `main` worktree. The owner asked why the app
 | Real Valheim client join/public Friend connection | Not run; no claim of game or public network acceptance follows from compression checks. |
 
 Once the owner closes the running window, copy the candidate EXE to `local-data\release\TogetherServer.exe`, verify matching SHA-256, then run the exact next command `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1` against the normal no-argument launch. No terms, firewall/router/DNS setting, credential, or real world was changed.
+
+## 2026-09-20 - Slice 18 simpler daily flow and guarded remote Stop
+
+Starting Git HEAD: `7a4a626`, clean `main` worktree. The Host page now puts Start or Stop, Copy game details, and Invite friend on the saved server card. Initial setup asks for a new or copied world and a game password, with automatic server discovery and **Save and start**; paths and network options are collapsed. A new world defaults to an app-managed save folder. TogetherServer records the exact new world it created so its save files do not prevent a later Start, while an unrecorded existing world remains protected. The Friend page asks for one current invite and shows the available action. Current `TS2` invites contain the Host IP, port, one-time secret, and full TLS pin. Older `TS1` invites remain readable with a separate Host IP until expiry. Creating an invite can enable the HTTPS companion listener in the running app, with no save/reopen step. Disabling it stops the listener immediately. The local GUI stays on loopback.
+
+Remote Stop can now be granted per paired Friend PC after the owner assigns unique Valheim Platform User IDs. While offline, TogetherServer can create `permittedlist.txt` in an app-managed new world or imported copy; it will not overwrite an existing list. A Ready run must have loaded that exact list at Start. The Host checks the list fingerprint and exact enrolled IDs, fresh closed-game reports from all paired Friends, and the owner's local client before sending Ctrl+C. The check is repeated immediately before the signal. Missing or changed coverage denies remote Stop. Local Stop remains available to the owner. Auto shutdown remains off.
+
+| Final check | Result |
+| --- | --- |
+| `scripts/build.ps1 release-candidate`: React/TypeScript, fixtures, compressed Windows x64 single EXE | Pass; 0 errors; existing `MSB3277` WebView2 WPF reference warning |
+| `TogetherServer.Checks` | Pass: 7 process groups, 0 failures |
+| `TogetherServer.ValheimChecks` | Pass: 8 synthetic groups, 0 failures; exact list, false/true heartbeat, changed list denial, Ctrl+C Stop, app-owned new-world restart |
+| `TogetherServer.CompanionChecks` against normal release EXE | Pass: 12 groups, 0 failures; single-invite pairing, immediate listener enable/disable, permissions, stale Unknown, and a paired Friend's HTTPS Stop of a restricted synthetic Valheim process delayed for 7 seconds |
+| `checks/served-smoke.ps1` against candidate | Pass: 14 groups, 0 failures; bundled simplified labels, local API, synthetic game lifecycle |
+| `checks/desktop-smoke.ps1` against normal no-argument EXE | Pass: 8 groups, 0 failures; visible native React window, pickers, synthetic Stop/restart, mode persistence, Quit |
+| Normal installed EXE | Pass: `local-data\release\TogetherServer.exe`, 64,110,601 bytes; SHA-256 `C991BA9A806455F734E72D12443D730BCE7AA9CC512C795CF92ECFE6D2656265` matches candidate |
+| In-app browser visual interaction | Not run: the Browser runtime reported no available browser; the desktop smoke checked a visible native window and rendered React |
+| Real Valheim Friend join, recognizable world change, public-IP reachability, real permitted-list enforcement | Not run; local fixtures and an outbound public-IP lookup do not prove these paths |
+
+During development, the first restricted fixture run used a server name that the synthetic console intentionally rejects; the fixture was changed to its required test name. A test then restored a list using a different line ending, and the production fingerprint correctly denied Stop; restoring the original bytes made the check pass. One exploratory fixture run had a transient unrelated-process start failure and passed on rerun. No real game binary, world, router/firewall/DNS setting, credential, or game terms were changed in this slice. The normal EXE was not running when it was replaced.
+
+The Friend request timeout for Stop is now 105 seconds, longer than the Host's 90-second graceful Valheim exit wait. The synthetic console deliberately delays its exit by 7 seconds in the HTTPS Stop check, so the Friend must receive the completed result rather than timing out at its former six-second default.
+
+Double-click `local-data\release\TogetherServer.exe`. The next acceptance work needs a real Friend PC on a separate network and an owner-approved disposable Valheim world: pair, join, leave, request Stop, restart, and verify a recognizable in-world change. The app's restricted-list and heartbeat policy is implemented, but real-game and public-network acceptance remain open.

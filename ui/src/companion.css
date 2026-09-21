@@ -92,3 +92,28 @@
 @media (max-width: 700px) {
   .device { align-items: flex-start; flex-direction: column; }
 }
+
+/* Keep the ordinary Host and Friend actions visually ahead of setup details. */
+.compact-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: #a9b9aa; font-size: 12px; margin: 0 0 16px; }
+.compact-status .status { display: inline-block; }
+.choice-pills { display: flex; gap: 9px; flex-wrap: wrap; margin: 12px 0 17px; }
+.choice-pills button { padding: 9px 16px; border: 1px solid #718d68; border-radius: 8px; background: transparent; color: #d8e7d1; font-size: 13px; font-weight: 700; }
+.choice-pills button.selected { background: #acd889; border-color: #acd889; color: #172019; }
+.invite-input { display: block; max-width: 610px; color: #d6dfd4; font-size: 13px; font-weight: 650; margin: 14px 0; }
+.invite-input input, .settings-content > label:not(.check-row) input, .device label input { display: block; width: 100%; background: #101813; border: 1px solid #475749; color: #e8ede8; border-radius: 7px; padding: 11px; margin-top: 7px; outline: none; font-size: 13px; }
+.invite-input input:focus, .settings-content > label input:focus, .device label input:focus { border-color: #b0d998; box-shadow: 0 0 0 3px #7cb56733; }
+.invite-input small, .settings-content > label small { display: block; color: #9bab9b; font-weight: 400; margin-top: 7px; line-height: 1.5; }
+.friend-panel .invite-input { margin-bottom: 19px; }
+.main-settings { margin: -5px; padding: 5px; }
+.main-settings > summary { padding: 8px 4px; font-size: 13px; color: #d3e4cd; cursor: pointer; font-weight: 700; }
+.settings-content { border-top: 1px solid #354036; margin-top: 14px; padding-top: 8px; }
+.settings-content h3 { font-size: 14px; margin: 24px 0 8px; }
+.settings-content > p { color: #aab9aa; font-size: 12px; line-height: 1.6; }
+.settings-content > label:not(.check-row) { display: block; max-width: 610px; color: #d6dfd4; font-size: 12px; font-weight: 650; margin: 15px 0; }
+.safety-status { border: 1px solid #3d4d3f; border-radius: 9px; padding: 14px 16px; margin: 12px 0; background: #1f2922; }
+.safety-status strong { font-size: 13px; }
+.safety-status p, .safety-status small { display: block; color: #aab9aa; font-size: 12px; line-height: 1.5; margin: 7px 0; }
+.safety-status button { margin: 7px 0; }
+.settings-content .device label { display: block; margin-top: 10px; font-size: 12px; color: #d6dfd4; }
+.settings-content .device { margin-top: 9px; }
+@media (max-width: 700px) { .choice-pills button { flex: 1; } .compact-status { align-items: flex-start; } }

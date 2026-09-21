@@ -19,6 +19,7 @@ public sealed class HostSettings
     public string PublicGameIp { get; set; } = "";
     public DateTimeOffset? PublicGameIpCheckedUtc { get; set; }
     public string OwnerClientExecutablePath { get; set; } = "";
+    public string OwnerPlatformUserId { get; set; } = "";
     public List<ServerProfile> Profiles { get; set; } = [];
 }
 
@@ -50,7 +51,10 @@ public sealed class ManagedRun
     public string LogPath { get; set; } = "";
     public int? ProcessId { get; set; }
     public long? StartTimeUtcTicks { get; set; }
+    public string PermittedListSha256 { get; set; } = "";
 }
+
+public sealed record NewWorldOwnership(Guid ProfileId, string WorldId, string WorldDirectory);
 
 public sealed class LocalData : IDisposable
 {
@@ -59,6 +63,21 @@ public sealed class LocalData : IDisposable
     private readonly string root;
     private readonly object auditSync = new();
     public string WorldImportsRoot => Path.Combine(root, "world-imports");
+    public string ManagedWorldsRoot => Path.Combine(root, "worlds");
+    public string NewWorldDirectory(Guid profileId) => Path.Combine(ManagedWorldsRoot, profileId.ToString("N"));
+    public bool OwnsNewWorld(ServerProfile profile) =>
+        Load("new-world-ownership.json", new List<NewWorldOwnership>()).Any(item =>
+            item.ProfileId == profile.Id &&
+            item.WorldId.Equals(profile.WorldId, StringComparison.OrdinalIgnoreCase) &&
+            item.WorldDirectory.Equals(Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase));
+
+    public void RecordNewWorld(ServerProfile profile)
+    {
+        var known = Load("new-world-ownership.json", new List<NewWorldOwnership>());
+        known.RemoveAll(item => item.ProfileId == profile.Id);
+        known.Add(new NewWorldOwnership(profile.Id, profile.WorldId, Path.GetFullPath(profile.WorldDirectory)));
+        Save("new-world-ownership.json", known);
+    }
 
     public LocalData(string root)
     {
