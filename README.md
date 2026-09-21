@@ -4,7 +4,9 @@ TogetherServer is one Windows app for hosting a Valheim server and connecting to
 
 ## Open the app
 
-Double-click `local-data\release\TogetherServer.exe`. **My server** and **Join a friend** are pages in the same running app. Switching pages does not stop hosting or a Friend connection. Keep the app open while hosting or playing. Closing it asks you to stop managed servers first.
+Double-click `local-data\release\TogetherServer.exe`. **My server** and **Join a friend** are pages in the same running app. Switching pages does not stop hosting or a Friend connection. Keep the app running while hosting or playing.
+
+Use the gear in the app header to enable **Open at Windows sign-in** and **Close to tray**. Sign-in launches quietly in the Windows tray under your account. With Close to tray enabled, the window's X hides it while hosting and Friend checks continue. Double-click the TogetherServer tray icon to reopen it, or right-click it for **Open** and **Quit**. A normal manual launch also reopens the running app. Quit still asks you to stop or resolve managed servers first. Both options are off until you enable them; Windows startup follows the EXE at its current location, so move it to its intended location before enabling startup.
 
 Build a fresh EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1`.
 
@@ -12,7 +14,7 @@ Build a fresh EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scri
 
 The published Windows app checks the [TogetherServer GitHub Releases](https://github.com/daltonstates/TogetherServer/releases) page when it opens and about every six hours afterward. The small version button checks again on demand. When a newer stable release is available, **Update and restart** downloads its `TogetherServer-win-x64.exe` asset and checks the SHA-256 digest reported by GitHub. Stop any hosted server first; the app refuses to quit for an update while a managed run is active or unresolved. After a verified download, a short-lived copy of the new EXE waits for the old app to exit, replaces it, keeps `TogetherServer.exe.previous` beside it, and reopens the app. Local settings, credentials, and worlds stay in their existing data directory. The update uses the current Windows account and cannot elevate into a protected install directory.
 
-There is no published Release yet, so the updater currently reports that state and leaves the app alone. To prepare the first one, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1`, review the candidate, then publish a GitHub Release tagged `v0.1.0` with the prepared `TogetherServer-win-x64.exe` asset. Increase `<Version>` in `TogetherServer.csproj` for later stable releases and use the matching `vMAJOR.MINOR.PATCH` tag. GitHub's [release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release) supplies the version and asset digest. Existing copies that predate the updater need this version installed once by hand; future published versions can update through the app.
+To prepare a stable release, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1`, review the candidate, then publish a GitHub Release whose `vMAJOR.MINOR.PATCH` tag matches `<Version>` in `TogetherServer.csproj`. Attach the prepared `TogetherServer-win-x64.exe` asset without renaming it. GitHub's [release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release) supplies the version and asset digest. Existing copies that predate the updater need an updater-enabled version installed once by hand; future published versions can update through the app.
 
 ## Host a server
 

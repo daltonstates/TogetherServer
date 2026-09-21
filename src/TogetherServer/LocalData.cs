@@ -88,6 +88,8 @@ public sealed class LocalData : IDisposable
     }
 
     public HostSettings LoadSettings() => Load("host.json", new HostSettings());
+    public DesktopPreferences LoadDesktopPreferences() => Load("desktop.json", new DesktopPreferences());
+    public void SaveDesktopPreferences(DesktopPreferences preferences) => Save("desktop.json", preferences);
     public string LoadPreferredMode() => Load("mode.json", "Host");
     public void SavePreferredMode(string mode) => Save("mode.json", mode);
     public List<ManagedRun> LoadRuns() => Load("runs.json", new List<ManagedRun>());

@@ -226,6 +226,57 @@ main { padding-top: 24px; }
 .settings-panel .save-row { margin-top: 10px; padding-top: 10px; }
 .update-check { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #a6bca8; padding: 7px 4px; font-size: 11px; white-space: nowrap; }
 .update-check:hover, .update-check:focus-visible { color: #d5efbf; }
+.topbar { position: relative; z-index: 20; }
+.header-tools { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.app-menu { position: relative; flex: 0 0 auto; }
+.app-menu > summary {
+  list-style: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #354439;
+  border-radius: 8px;
+  color: #c6d9c2;
+  cursor: pointer;
+}
+.app-menu > summary::-webkit-details-marker { display: none; }
+.app-menu > summary:hover, .app-menu > summary:focus-visible { border-color: #acd889; color: #e5f5da; }
+.app-menu-panel {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  width: min(290px, calc(100vw - 28px));
+  padding: 16px;
+  border: 1px solid #506b50;
+  border-radius: 10px;
+  background: #1b281e;
+  box-shadow: 0 16px 38px #0009;
+  color: #e8ede8;
+}
+.app-menu-panel strong { display: block; font-size: 14px; }
+.app-menu-panel .check-row { margin: 14px 0 3px; font-size: 13px; cursor: pointer; }
+.app-menu-panel small { display: block; margin-left: 24px; color: #a7b8a5; font-size: 11px; line-height: 1.4; }
+.app-menu-quit {
+  margin-top: 16px;
+  padding: 9px 11px;
+  width: 100%;
+  border: 1px solid #617164;
+  border-radius: 8px;
+  background: transparent;
+  color: #d9e8d3;
+  text-align: left;
+  font-size: 12px;
+}
+.app-menu-quit:hover { border-color: #acd889; }
+@media (max-width: 700px) {
+  .topbar .topbar-actions { position: relative; }
+  .app-menu { position: static; }
+  .app-menu-panel { top: calc(100% + 8px); right: 0; }
+}
+@media (max-width: 360px) {
+  .topbar .topbar-actions { grid-template-columns: 1fr; }
+}
 .update-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; margin: -6px 0 16px; padding: 11px 14px; border: 1px solid #4b704c; border-radius: 9px; background: #203127; }
 .update-notice strong { display: block; color: #d9f2c8; font-size: 13px; }
 .update-notice span { display: block; color: #aac2ab; font-size: 11px; margin-top: 3px; }

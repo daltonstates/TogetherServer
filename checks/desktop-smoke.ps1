@@ -2,7 +2,7 @@ param([string]$AppPath = '', [int]$Port = 5127)
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release/TogetherServer.exe' }
-$appPath = $AppPath
+$appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $fixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
 if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath)) { throw 'Run scripts/build.ps1 first.' }
 
@@ -31,6 +31,9 @@ $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $first = $null
 $second = $null
 $reopened = $null
+$login = $null
+$loginDuplicate = $null
+$loginSecond = $null
 $valheimRun = $null
 Add-Type -TypeDefinition @'
 using System;
@@ -48,8 +51,34 @@ public static class TogetherServerWindowCheck
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsZoomed(IntPtr window);
+    public delegate bool EnumWindow(IntPtr window, IntPtr value);
     [DllImport("user32.dll")]
-    public static extern IntPtr GetWindow(IntPtr window, uint command);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindow callback, IntPtr value);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr window, System.Text.StringBuilder text, int capacity);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr window, System.Text.StringBuilder text, int capacity);
+    public static IntPtr FindDialog(int processId)
+    {
+        IntPtr dialog = IntPtr.Zero;
+        EnumWindows((window, _) => {
+            uint owner;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner != processId || !IsWindowVisible(window)) return true;
+            var kind = new System.Text.StringBuilder(128);
+            GetClassName(window, kind, kind.Capacity);
+            if (kind.ToString() != "#32770") return true;
+            dialog = window;
+            return false;
+        }, IntPtr.Zero);
+        return dialog;
+    }
 }
 '@
 Add-Type -AssemblyName UIAutomationClient
@@ -158,17 +187,23 @@ try {
             for ($i = 0; $i -lt 100; $i++) {
                 $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
                 $first.Refresh()
-                $popup = [TogetherServerWindowCheck]::GetWindow($first.MainWindowHandle, 6)
+                $popup = [TogetherServerWindowCheck]::FindDialog($first.Id)
                 if ($windowState.fileDialogOpen -and $popup -ne [IntPtr]::Zero -and $popup -ne $first.MainWindowHandle) { break }
                 Start-Sleep -Milliseconds 100
             }
             if (!$windowState.fileDialogOpen -or $popup -eq [IntPtr]::Zero -or $popup -eq $first.MainWindowHandle) {
                 throw "Browse $pickerKind did not open a native file picker."
             }
+            $popupTitle = [System.Text.StringBuilder]::new(256)
+            $popupClass = [System.Text.StringBuilder]::new(256)
+            [TogetherServerWindowCheck]::GetWindowText($popup, $popupTitle, $popupTitle.Capacity) | Out-Null
+            [TogetherServerWindowCheck]::GetClassName($popup, $popupClass, $popupClass.Capacity) | Out-Null
             if (![TogetherServerWindowCheck]::PostMessage($popup, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) {
                 throw 'Could not cancel the native file picker.'
             }
-            if (!(Wait-Job -Job $picker -Timeout 10)) { throw 'Canceled file picker did not return.' }
+            if (!(Wait-Job -Job $picker -Timeout 10)) {
+                throw "Canceled $pickerKind picker did not return (popup class=$popupClass title=$popupTitle)."
+            }
             $choice = Receive-Job -Job $picker
             if ($choice.code -ne 'Canceled') { throw "Canceled picker returned $($choice.code)." }
             Write-Host "PASS Browse $pickerKind opens and cancels a native Windows file picker"
@@ -195,6 +230,25 @@ try {
     $blockedUpdate = Invoke-RestMethod -Uri "$baseUrl/api/local/update/install" -Method Post -Headers $headers
     if ($blockedUpdate.ok -or $blockedUpdate.code -ne 'ManagedRunPresent') { throw 'Updater tried to close the app while a managed game was running.' }
     Write-Host 'PASS updater refuses to replace the desktop EXE while a managed game is running'
+
+    $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":true}'
+    if (!$preference.ok -or !$preference.preferences.closeToTray) { throw 'Close-to-tray preference was not saved.' }
+    Invoke-ChromeButton $first 'Close TogetherServer'
+    $hidden = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+        if (!$windowState.visible) { $hidden = $true; break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (!$hidden -or $first.HasExited) { throw 'Closing to tray stopped the app instead of hiding the window.' }
+    $stillHosting = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
+    if (@($stillHosting.runs | Where-Object profileId -EQ $profileId).Count -ne 1) { throw 'The managed server disappeared after closing to tray.' }
+    $trayQuitBlocked = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+    if ($trayQuitBlocked.ok -or $trayQuitBlocked.code -ne 'ManagedRunPresent') { throw 'Quit bypassed the managed-server safety check while hidden.' }
+    $shownAgain = Invoke-RestMethod -Uri "$baseUrl/api/local/show" -Method Post -Headers $headers
+    if (!$shownAgain.ok) { throw 'The hidden app did not reopen.' }
+    Wait-ForWindow $first
+    Write-Host 'PASS Close hides to tray while hosting; reopen and guarded Quit keep the managed server safe'
     $valheimRun = (Get-Content (Join-Path $caseRoot 'runs.json') -Raw | ConvertFrom-Json) | Where-Object profileId -EQ $profileId
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
@@ -244,6 +298,8 @@ try {
     if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
         throw 'Friend mode selection failed.'
     }
+    $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
+    if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }
     Invoke-ChromeButton $first 'Close TogetherServer'
     if (!$first.WaitForExit(10000)) {
         $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
@@ -257,6 +313,30 @@ try {
     $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
     if (!$closed.ok -or !$reopened.WaitForExit(10000)) { throw 'Quit app did not close the Friend instance.' }
     Write-Host 'PASS Friend mode persists; custom title-bar close and local Quit both exit'
+
+    $login = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
+    $state = Wait-ForGui $login
+    if ($state.mode -ne 'Friend') { throw 'Windows startup launch lost the saved Friend page.' }
+    $created = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        if ($login.HasExited) { throw 'The Windows startup app exited unexpectedly.' }
+        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+        if ($windowState.visible) { throw 'Windows startup opened a visible window instead of starting in the tray.' }
+        if ($windowState.customChrome) { $created = $true }
+        Start-Sleep -Milliseconds 100
+    }
+    if (!$created) { throw 'Windows startup did not create a native window for later reopening.' }
+    $loginDuplicate = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
+    if (!$loginDuplicate.WaitForExit(10000) -or $login.HasExited -or
+        (Invoke-RestMethod -Uri "$baseUrl/api/local/window").visible) {
+        throw 'A duplicate Windows startup launch opened the existing hidden window.'
+    }
+    $loginSecond = Start-Gui
+    if (!$loginSecond.WaitForExit(10000) -or $login.HasExited) { throw 'A manual launch did not return to the app started in the tray.' }
+    Wait-ForWindow $login
+    $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+    if (!$closed.ok -or !$login.WaitForExit(10000)) { throw 'Quit app did not close the login-started instance.' }
+    Write-Host 'PASS Windows startup stays in tray; manual launch opens that same running app'
     Write-Host "Desktop smoke data: $caseRoot"
 }
 finally {
@@ -267,7 +347,7 @@ finally {
             Stop-Process -Id $remaining.Id # Exact disposable synthetic fixture only.
         }
     }
-    foreach ($started in @($first, $second, $reopened)) {
+    foreach ($started in @($first, $second, $reopened, $login, $loginDuplicate, $loginSecond)) {
         if ($null -eq $started -or $started.HasExited) { continue }
         $running = Get-Process -Id $started.Id -ErrorAction SilentlyContinue
         if ($running -and $running.Path -eq $appPath -and $running.StartTime -eq $started.StartTime) {

@@ -18,6 +18,8 @@ This is **one codebase and one TogetherServer process per PC**. The game client 
 
 The borderless native window supplies app-styled drag, resize, minimize, maximize/restore, and close controls. It embeds the bundled React UI with WebView2 and talks to the same process's loopback API. WebView2 may start its normal renderer child processes; there is still only one TogetherServer app process and no second web-server process. The Evergreen WebView2 Runtime is a shared Windows component; the app shows a native setup message if it is absent.
 
+The optional per-user Windows Run entry starts this same EXE at sign-in with `--startup`, which opens it in the tray. Close to tray hides the window while the Host supervisor, Friend heartbeat, and loopback GUI continue in the same process. Tray Quit uses the existing guarded local quit action, so an active or unresolved managed server still blocks process exit.
+
 ## Host internals
 
 The Host and Friend capabilities may run concurrently in the same process. My server and Join a friend select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Join a friend. Quit remains blocked by any managed game run from either page.

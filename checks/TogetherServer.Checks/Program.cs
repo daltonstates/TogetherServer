@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Win32;
 using TogetherServer;
 
 var fixture = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
@@ -210,6 +211,37 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, []);
     Require(diagnostics.Games.Single().State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
         "a missing UDP port or absent Friend route was claimed as open");
+    await Task.CompletedTask;
+});
+
+await Check("Windows startup and tray preference stay scoped to this user", async () =>
+{
+    var keyPath = @"Software\TogetherServer\Checks\" + Guid.NewGuid().ToString("N");
+    var appDirectory = Path.Combine(root, "desktop preferences with spaces");
+    Directory.CreateDirectory(appDirectory);
+    var appPath = Path.Combine(appDirectory, "TogetherServer.exe");
+    File.WriteAllText(appPath, "disposable startup path");
+    var startup = new WindowsStartup(appPath, keyPath);
+    try
+    {
+        Require(!startup.IsEnabled(), "startup was enabled before the user opted in");
+        startup.SetEnabled(true);
+        using (var key = Registry.CurrentUser.OpenSubKey(keyPath))
+            Require(key?.GetValue("TogetherServer") as string == $"\"{appPath}\" --startup",
+                "Windows startup did not quote the exact EXE path and tray argument");
+        Require(startup.IsEnabled(), "saved startup entry was not recognized");
+        var missing = new WindowsStartup(Path.Combine(appDirectory, "missing", "TogetherServer.exe"), keyPath);
+        try { missing.SetEnabled(true); throw new Exception("a missing EXE was registered at sign-in"); }
+        catch (InvalidOperationException) { }
+        Require(startup.IsEnabled(), "an invalid path replaced the existing startup entry");
+        startup.SetEnabled(false);
+        Require(!startup.IsEnabled(), "disabling startup left its entry behind");
+        using var data = Data("desktop-preferences");
+        Require(!data.LoadDesktopPreferences().CloseToTray, "close-to-tray was enabled by default");
+        data.SaveDesktopPreferences(new DesktopPreferences { CloseToTray = true });
+        Require(data.LoadDesktopPreferences().CloseToTray, "close-to-tray did not persist");
+    }
+    finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false); }
     await Task.CompletedTask;
 });
 

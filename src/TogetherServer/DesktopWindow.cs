@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -14,19 +15,24 @@ internal sealed class DesktopWindow
     private readonly Uri address;
     private readonly string browserDataDirectory;
     private readonly Action stopApplication;
+    private readonly bool startInTray;
     private readonly TaskCompletionSource<bool> shown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Form? form;
     private bool closing;
     private bool requestingQuit;
+    private bool trayHintShown;
+    private volatile bool closeToTray;
     private int started;
     private int fileDialogOpen;
     private volatile bool rendered;
     private volatile bool visible;
 
-    public DesktopWindow(Uri address, string dataDirectory, Action stopApplication)
+    public DesktopWindow(Uri address, string dataDirectory, Action stopApplication, bool closeToTray, bool startInTray)
     {
         this.address = address;
         this.stopApplication = stopApplication;
+        this.closeToTray = closeToTray;
+        this.startInTray = startInTray;
         browserDataDirectory = Path.Combine(dataDirectory, "webview2");
     }
 
@@ -34,6 +40,7 @@ internal sealed class DesktopWindow
     public bool Rendered => rendered;
     public bool FileDialogOpen => Volatile.Read(ref fileDialogOpen) != 0;
     public bool CustomChrome => form is ChromeForm;
+    public void SetCloseToTray(bool enabled) => closeToTray = enabled;
 
     public void Start()
     {
@@ -49,18 +56,27 @@ internal sealed class DesktopWindow
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { return false; }
         var target = form;
         if (target is null || target.IsDisposed) return false;
+        var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
             target.BeginInvoke(new Action(() =>
             {
-                if (target.WindowState == FormWindowState.Minimized) target.WindowState = FormWindowState.Normal;
-                target.Show();
-                target.BringToFront();
-                target.Activate();
+                if (target.IsDisposed) { completed.TrySetResult(false); return; }
+                try
+                {
+                    if (target.WindowState == FormWindowState.Minimized) target.WindowState = FormWindowState.Normal;
+                    target.ShowInTaskbar = true;
+                    target.Opacity = 1;
+                    target.Show();
+                    target.BringToFront();
+                    target.Activate();
+                    completed.TrySetResult(true);
+                }
+                catch (InvalidOperationException) { completed.TrySetResult(false); }
             }));
-            return true;
+            return await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        catch (InvalidOperationException) { return false; }
+        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException) { return false; }
     }
 
     public async Task<string?> PickFileAsync(string title, string filter, string? initialDirectory = null)
@@ -161,21 +177,45 @@ internal sealed class DesktopWindow
                 MinimumSize = new Size(800, 600),
                 BackColor = Color.FromArgb(40, 51, 44),
                 FormBorderStyle = FormBorderStyle.None,
-                Padding = new Padding(1)
+                Padding = new Padding(1),
+                Opacity = startInTray ? 0 : 1,
+                ShowInTaskbar = !startInTray
             };
             form = window;
             var content = BuildChrome(window);
+            using var trayIconImage = CreateTrayIcon();
+            using var trayMenu = new ContextMenuStrip();
+            using var tray = new NotifyIcon
+            {
+                Icon = trayIconImage,
+                Text = "TogetherServer",
+                ContextMenuStrip = trayMenu,
+                Visible = true
+            };
+            trayMenu.Items.Add("Open TogetherServer", null, (_, _) => _ = ShowAsync());
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add("Quit TogetherServer", null, (_, _) =>
+            {
+                if (!requestingQuit) _ = RequestQuitAsync(window);
+            });
+            tray.DoubleClick += (_, _) => _ = ShowAsync();
             window.FormClosing += (_, eventArgs) =>
             {
                 if (closing || eventArgs.CloseReason == CloseReason.WindowsShutDown) return;
                 eventArgs.Cancel = true;
-                if (!requestingQuit) _ = RequestQuitAsync(window);
+                if (closeToTray) HideToTray(window, tray);
+                else if (!requestingQuit) _ = RequestQuitAsync(window);
             };
             window.Shown += (_, _) =>
             {
-                visible = true;
                 shown.TrySetResult(true);
                 _ = LoadGuiAsync(window, content);
+                if (startInTray)
+                {
+                    window.Hide();
+                    window.Opacity = 1;
+                }
+                visible = window.Visible;
             };
             window.VisibleChanged += (_, _) => visible = window.Visible;
             Application.Run(window);
@@ -239,7 +279,7 @@ internal sealed class DesktopWindow
         maximize.MouseLeave += ChromeLeave;
         minimize.Click += (_, _) => window.WindowState = FormWindowState.Minimized;
         maximize.Click += (_, _) => ToggleMaximize(window, maximize);
-        close.Click += (_, _) => { if (!requestingQuit) _ = RequestQuitAsync(window); };
+        close.Click += (_, _) => window.Close();
 
         void BeginDrag(object? _, MouseEventArgs eventArgs)
         {
@@ -409,6 +449,34 @@ internal sealed class DesktopWindow
         { DesktopLaunch.ShowError("Steam could not open its installation page.\n\n" + ex.Message); }
     }
 
+    private void HideToTray(Form window, NotifyIcon tray)
+    {
+        window.Hide();
+        window.ShowInTaskbar = false;
+        if (trayHintShown) return;
+        trayHintShown = true;
+        tray.ShowBalloonTip(4000, "TogetherServer is still running",
+            "Open it from the tray icon. Right-click the icon to quit.", ToolTipIcon.Info);
+    }
+
+    private static Icon CreateTrayIcon()
+    {
+        using var bitmap = new Bitmap(32, 32);
+        using (var graphics = Graphics.FromImage(bitmap))
+        using (var background = new SolidBrush(Color.FromArgb(172, 216, 137)))
+        using (var foreground = new SolidBrush(Color.FromArgb(19, 33, 23)))
+        using (var font = new Font("Segoe UI", 20, FontStyle.Bold, GraphicsUnit.Pixel))
+        using (var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.FillEllipse(background, 1, 1, 30, 30);
+            graphics.DrawString("T", font, foreground, new RectangleF(0, 1, 32, 30), centered);
+        }
+        var handle = bitmap.GetHicon();
+        try { return (Icon)Icon.FromHandle(handle).Clone(); }
+        finally { DestroyIcon(handle); }
+    }
+
     private async Task RequestQuitAsync(Form window)
     {
         requestingQuit = true;
@@ -423,19 +491,29 @@ internal sealed class DesktopWindow
             if (result.RootElement.GetProperty("ok").GetBoolean()) return;
             var message = result.RootElement.GetProperty("message").GetString();
             if (!closing && !window.IsDisposed)
+            {
+                await ShowAsync();
                 MessageBox.Show(window, message, "TogetherServer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
         }
         catch (Exception ex)
         {
             if (!closing && !window.IsDisposed)
+            {
+                await ShowAsync();
                 MessageBox.Show(window, "TogetherServer could not close yet.\n\n" + ex.Message,
                     "TogetherServer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
         finally { requestingQuit = false; }
     }
 
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr icon);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);

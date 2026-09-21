@@ -49,6 +49,8 @@ type ImportResult = BasicResult & { worldDirectory: string | null }
 type ServerBrowseResult = BasicResult & { executablePath?: string }
 type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
 type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string }
+type DesktopPreferences = { available: boolean; launchAtLogin: boolean; closeToTray: boolean; startupAvailable: boolean }
+type DesktopPreferenceResult = BasicResult & { preferences: DesktopPreferences }
 
 function hostAddress(endpoint: string): string {
   try {
@@ -107,6 +109,8 @@ function App() {
   const [loadError, setLoadError] = useState('')
   const [update, setUpdate] = useState<UpdateView | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
+  const [desktopPreferences, setDesktopPreferences] = useState<DesktopPreferences | null>(null)
+  const [desktopBusy, setDesktopBusy] = useState(false)
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [portDiagnostics, setPortDiagnostics] = useState<PortDiagnostics | null>(null)
@@ -130,6 +134,32 @@ function App() {
   const dirtyRef = useRef(false)
   const setupRef = useRef<HTMLElement | null>(null)
   const friendClientEdited = useRef(false)
+
+  useEffect(() => {
+    let alive = true
+    void fetch('/api/local/desktop/preferences', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() as Promise<DesktopPreferences> : null)
+      .then(result => { if (alive && result) setDesktopPreferences(result) })
+      .catch(() => { /* The server and Friend controls remain usable. */ })
+    return () => { alive = false }
+  }, [])
+
+  const saveDesktopPreference = async (preference: { launchAtLogin: boolean } | { closeToTray: boolean }) => {
+    setDesktopBusy(true)
+    try {
+      const result = await change<DesktopPreferenceResult>('/api/local/desktop/preferences', 'PUT', preference)
+      setDesktopPreferences(result.preferences)
+      setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setDesktopBusy(false) }
+  }
+
+  const quitApp = async () => {
+    try {
+      const result = await change<BasicResult>('/api/local/quit', 'POST')
+      if (!result.ok) setNotice({ good: false, text: result.message })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+  }
 
   useEffect(() => {
     let alive = true
@@ -614,7 +644,7 @@ function App() {
   return <div className="shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><div><strong>TogetherServer</strong><small>Local companion</small></div></div>
-      <div className="topbar-actions"><button className="update-check" aria-label="Check for updates" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()} title={update?.message ?? 'Check for updates'}><Icon name="refresh" />{update?.state === 'Available' ? `v${update.latestVersion} ready` : `v${update?.currentVersion ?? '...'}`}</button><nav className="mode-switch" aria-label="App pages">
+      <div className="topbar-actions"><div className="header-tools"><button className="update-check" aria-label="Check for updates" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()} title={update?.message ?? 'Check for updates'}><Icon name="refresh" />{update?.state === 'Available' ? `v${update.latestVersion} ready` : `v${update?.currentVersion ?? '...'}`}</button><details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong><label className="check-row"><input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>Starts quietly in the tray.</small><label className="check-row"><input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} />Close to tray</label><small>Hosting and Friend checks keep running.</small><button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit TogetherServer</button></div></details></div><nav className="mode-switch" aria-label="App pages">
         <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}>My server</button>
         <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join a friend</button>
       </nav></div>
@@ -821,7 +851,7 @@ function App() {
         </section>
         </>}
       </>}
-      <p className="footnote">Minimize the app to keep hosting. The title-bar close button exits after managed servers stop.</p>
+      <p className="footnote">{desktopPreferences?.closeToTray ? 'Closing the window keeps TogetherServer running in the tray. Use Quit to exit after stopping managed servers.' : 'Minimize the app to keep hosting. The title-bar close button exits after managed servers stop.'}</p>
     </main>
   </div>
 }

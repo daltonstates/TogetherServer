@@ -99,6 +99,16 @@ try {
     if ($headlessUpdate.ok -or $headlessUpdate.code -ne 'WindowUnavailable') { throw 'A headless app was allowed to update its EXE.' }
     Write-Host 'PASS bundled update controls and local-only desktop update action'
 
+    $desktopPreferences = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences"
+    if ($desktopPreferences.available -or $desktopPreferences.closeToTray) { throw 'Headless desktop preferences reported a visible app or default tray opt-in.' }
+    $preferenceForbidden = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -ContentType 'application/json' -Body '{"closeToTray":true}' -UseBasicParsing | Out-Null }
+    catch { $preferenceForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$preferenceForbidden) { throw 'Desktop preferences bypassed the local mutation gate.' }
+    $headlessPreference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"launchAtLogin":true}'
+    if ($headlessPreference.ok -or $headlessPreference.code -ne 'WindowUnavailable') { throw 'A headless process changed Windows startup.' }
+    Write-Host 'PASS desktop preferences require the local desktop app and mutation gate'
+
     $incomplete = @{ id = [guid]::NewGuid().ToString(); kind = 'Valheim'; name = 'Needs setup'; serverName = 'Needs setup'; worldId = 'V1release'; worldSource = 'Existing'; worldDirectory = ''; gamePort = $gamePort; executablePath = '' }
     $incompleteSettings = @{ maxConcurrentServers = 1; idleMinutes = 15; profiles = @($incomplete) }
     $missingWorld = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($incompleteSettings | ConvertTo-Json -Depth 8)

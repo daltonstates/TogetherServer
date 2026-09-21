@@ -11,9 +11,10 @@ if (args.Length > 0 && args[0] == "--apply-update")
 
 var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase);
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
+var startupLaunch = args.Contains("--startup", StringComparer.OrdinalIgnoreCase);
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
-var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase);
+var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase) || startupLaunch;
 DesktopLaunch.EnsureConsoleForGameStop(openWindow);
 var portIndex = Array.IndexOf(args, "--port");
 var port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
@@ -26,11 +27,13 @@ LocalData data;
 try { data = new LocalData(root); }
 catch (IOException ex) when (openWindow)
 {
-    if (await DesktopLaunch.TryShowExistingAsync(port)) return;
+    if (await DesktopLaunch.TryShowExistingAsync(port, showWindow: !startupLaunch)) return;
     DesktopLaunch.ShowError("TogetherServer could not open its local data. Another instance may be starting.\n\n" + ex.Message);
     return;
 }
 using var ownedData = data;
+var desktopPreferences = data.LoadDesktopPreferences();
+var startupRegistration = new WindowsStartup(Environment.ProcessPath ?? "");
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
 var games = new GameServerRegistry(data);
 var manager = new HostManager(data, games);
@@ -49,7 +52,8 @@ var companionServer = new CompanionServer(data, manager, pairing, games, modeGat
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
-var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"), root, app.Lifetime.StopApplication) : null;
+var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"), root,
+    app.Lifetime.StopApplication, desktopPreferences.CloseToTray, startupLaunch) : null;
 app.Use(async (context, next) =>
 {
     var localGui = context.Connection.LocalPort == port;
@@ -85,6 +89,51 @@ app.MapGet("/api/local/window", () => Results.Json(new
     fileDialogOpen = desktop?.FileDialogOpen ?? false,
     customChrome = desktop?.CustomChrome ?? false
 }));
+object DesktopPreferenceView()
+{
+    bool startupAvailable;
+    bool launchAtLogin;
+    try
+    {
+        launchAtLogin = startupRegistration.IsEnabled();
+        startupAvailable = true;
+    }
+    catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+    {
+        launchAtLogin = false;
+        startupAvailable = false;
+    }
+    return new { available = desktop is not null, launchAtLogin,
+        closeToTray = desktopPreferences.CloseToTray, startupAvailable };
+}
+app.MapGet("/api/local/desktop/preferences", () => Results.Json(DesktopPreferenceView()));
+app.MapPut("/api/local/desktop/preferences", (DesktopPreferenceChange change) =>
+{
+    if (desktop is null) return Results.Json(new { ok = false, code = "WindowUnavailable",
+        message = "Open the desktop app to change its startup and tray settings.", preferences = DesktopPreferenceView() });
+    if (change.LaunchAtLogin.HasValue == change.CloseToTray.HasValue)
+        return Results.Json(new { ok = false, code = "InvalidPreference",
+            message = "Change one desktop preference at a time.", preferences = DesktopPreferenceView() });
+    try
+    {
+        if (change.LaunchAtLogin is { } launchAtLogin) startupRegistration.SetEnabled(launchAtLogin);
+        if (change.CloseToTray is { } closeToTray)
+        {
+            var next = new DesktopPreferences { CloseToTray = closeToTray };
+            data.SaveDesktopPreferences(next);
+            desktopPreferences = next;
+            desktop.SetCloseToTray(closeToTray);
+        }
+    }
+    catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or
+        IOException or InvalidOperationException)
+    {
+        return Results.Json(new { ok = false, code = "PreferenceFailed", message = ex.Message,
+            preferences = DesktopPreferenceView() });
+    }
+    return Results.Json(new { ok = true, code = "PreferenceSaved", message = "App preference saved.",
+        preferences = DesktopPreferenceView() });
+});
 app.MapGet("/api/local/update", async () => Results.Json(await updater.CheckAsync()));
 app.MapPost("/api/local/update/check", async () => Results.Json(await updater.CheckAsync(true)));
 app.MapPost("/api/local/update/install", async (HttpContext context) =>
