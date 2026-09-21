@@ -498,3 +498,16 @@ Starting Git HEAD: `ba968e7`. The Host page now shows **Add new server** directl
 | Real game or Friend network acceptance | Not run; this change only affects the local setup draft and Host controls. |
 
 One exploratory browser run reached setup before its Cancel button was enabled while startup discovery was pending. A later run intermittently left Add new server disabled after Cancel; delayed path detection was a plausible cause. The check now waits for enabled controls, and automatic path filling runs only while setup is open. Two final browser runs passed. The previously running TogetherServer process was left untouched; validation used isolated data and a free local port.
+
+## 2026-09-21 - Server grid and settings dialogs
+
+Starting Git HEAD: `d7cee04`. Saved Host servers now form a responsive two-column grid on desktop and stack at smaller widths. Each card keeps Start/Stop and Invite visible, with a Settings button that opens the existing server setup in a native modal dialog. Add new server opens the same dialog. Settings and safety opens a separate modal from the grid header. Cancel, Escape, and closing after a successful save use the existing draft and persistence rules. A second Cancel button sits beside Save and Start so long Minecraft forms can be exited after scrolling to the bottom.
+
+| Final check | Result |
+| --- | --- |
+| TypeScript/Vite and Windows x64 publish | Pass. `local-data/release/TogetherServer.exe`, 64,172,830 bytes, SHA-256 `CB1CD8000EC7F737E2ACF1ABB1C7B6D58620BB7112B2E286C94022DECF201357`. The existing WebView2/WindowsBase `MSB3277` warning remains. |
+| Rendered Edge interaction and screenshots | Pass: two saved servers side by side at 1280 px; first-run setup, per-server setup, Add new server, and Settings and safety opened as dialogs; Cancel and Escape closed them; canceled global changes and a third unsaved server were absent from the saved snapshot. Save only persisted an edited server name and closed its dialog. At 1280, 768, and 390 px there was no horizontal overflow. The long Minecraft Java setup scrolled to Save/Start/Cancel at 390 px. Disposable evidence: `local-data/grid-modal-ui-test/92a142a8d8c3430c93eddcb238ab31ff`. |
+| Served and native desktop smoke on the final EXE | Pass: 19 and 15 groups, 0 failures. Disposable data: `local-data/served-smoke/3ee9f149e7814c3eb1aafc4efc79b045` and `local-data/desktop-smoke/14e79c7e1a6b4b3f98dc52001aa98d97`. |
+| Real game and public Friend network acceptance | Not run. This UI change was tested with disposable profiles and synthetic game processes. |
+
+The first exploratory grid check ran before setting a desktop browser viewport and saw the browser's narrower default width; the corrected 1280 px run and the final rerun passed. No game terms were accepted, real world files changed, or public network settings modified.

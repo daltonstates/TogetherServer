@@ -294,3 +294,37 @@ main { padding-top: 24px; }
   .readiness-row > .icon-button { grid-column: auto; grid-row: auto; width: 100%; }
   .readiness-item { padding: 8px; }
 }
+
+/* Saved Host servers are cards; setup and safety controls open above the page. */
+.server-heading { align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.server-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.server-toolbar button, .modal-heading button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; border: 1px solid #acd889; border-radius: 8px; padding: 8px 13px; background: #acd889; color: #172019; font-size: 12px; font-weight: 750; }
+.server-toolbar button.secondary, .modal-heading button.secondary { border-color: #627760; background: transparent; color: #d3e4cd; }
+.server-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); align-items: stretch; }
+.server-grid > .profile-card { display: flex; flex-direction: column; min-width: 0; }
+.server-grid .profile-top h3, .server-grid .profile-top p { overflow-wrap: anywhere; }
+.server-grid .readiness-row { grid-template-columns: repeat(2, minmax(0, 1fr)) 34px; }
+.server-grid .readiness-row > .icon-button { grid-column: 3; grid-row: 1 / span 2; width: 34px; height: auto; }
+.server-grid .server-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: auto; padding-top: 13px; }
+.server-grid .server-actions button { min-width: 0; width: 100%; }
+.server-grid .server-actions button:last-child:nth-child(3) { grid-column: 1 / -1; }
+.modal-dialog { position: fixed; width: min(960px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); margin: auto; overflow: auto; color: #e8ede8; }
+.modal-dialog::backdrop { background: #080e0bd9; }
+.modal-dialog .section-heading { margin-bottom: 12px; }
+.modal-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid #354036; }
+.modal-heading h2 { margin: 0 0 4px; font-size: 18px; }
+.modal-heading p { margin: 0; color: #9baa9c; font-size: 13px; }
+.host-settings-dialog .settings-content { border: 0; margin-top: 0; padding-top: 0; }
+.host-settings-dialog .settings-content h3:first-child { margin-top: 18px; }
+.server-step-content > label { display: block; color: #d6dfd4; font-size: 12px; font-weight: 650; }
+.server-step-content > label input { display: block; width: 100%; min-width: 0; margin-top: 7px; border: 1px solid #475749; border-radius: 7px; padding: 10px 11px; background: #101813; color: #e8ede8; font-size: 13px; }
+@media (max-width: 700px) {
+  .server-heading, .modal-heading { align-items: flex-start; flex-direction: column; }
+  .server-toolbar { justify-content: flex-start; }
+  .modal-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); padding: 18px; }
+  .server-grid .readiness-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .server-grid .readiness-row > .icon-button { grid-column: 2; grid-row: auto; justify-self: end; width: 34px; min-height: 34px; }
+}
+@media (max-width: 480px) {
+  .server-grid .server-actions { grid-template-columns: 1fr; }
+}
