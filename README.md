@@ -8,6 +8,12 @@ Double-click `local-data\release\TogetherServer.exe`. **My server** and **Join a
 
 Build a fresh EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1`.
 
+## App updates
+
+The published Windows app checks the [TogetherServer GitHub Releases](https://github.com/daltonstates/TogetherServer/releases) page when it opens and about every six hours afterward. The small version button checks again on demand. When a newer stable release is available, **Update and restart** downloads its `TogetherServer-win-x64.exe` asset and checks the SHA-256 digest reported by GitHub. Stop any hosted server first; the app refuses to quit for an update while a managed run is active or unresolved. After a verified download, a short-lived copy of the new EXE waits for the old app to exit, replaces it, keeps `TogetherServer.exe.previous` beside it, and reopens the app. Local settings, credentials, and worlds stay in their existing data directory. The update uses the current Windows account and cannot elevate into a protected install directory.
+
+There is no published Release yet, so the updater currently reports that state and leaves the app alone. To prepare the first one, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1`, review the candidate, then publish a GitHub Release tagged `v0.1.0` with the prepared `TogetherServer-win-x64.exe` asset. Increase `<Version>` in `TogetherServer.csproj` for later stable releases and use the matching `vMAJOR.MINOR.PATCH` tag. GitHub's [release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release) supplies the version and asset digest. Existing copies that predate the updater need this version installed once by hand; future published versions can update through the app.
+
 ## Host a server
 
 1. On first use, **My server** opens the setup form immediately. Choose **Create new** and name the world, or **Use existing** and copy a world found on this PC. An existing world is copied to a separate app-managed save folder. The source is never moved or overwritten. Browse for a world folder if the scan misses it.

@@ -48,6 +48,7 @@ type Discovery = { installations: { executablePath: string; source: string }[]; 
 type ImportResult = BasicResult & { worldDirectory: string | null }
 type ServerBrowseResult = BasicResult & { executablePath?: string }
 type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
+type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string }
 
 function hostAddress(endpoint: string): string {
   try {
@@ -104,6 +105,8 @@ function App() {
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [update, setUpdate] = useState<UpdateView | null>(null)
+  const [updateBusy, setUpdateBusy] = useState(false)
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [portDiagnostics, setPortDiagnostics] = useState<PortDiagnostics | null>(null)
@@ -127,6 +130,41 @@ function App() {
   const dirtyRef = useRef(false)
   const setupRef = useRef<HTMLElement | null>(null)
   const friendClientEdited = useRef(false)
+
+  useEffect(() => {
+    let alive = true
+    const check = async () => {
+      try {
+        const response = await fetch('/api/local/update', { cache: 'no-store' })
+        if (response.ok && alive) setUpdate(await response.json())
+      } catch { /* An update check must not interrupt hosting or joining. */ }
+    }
+    void check()
+    const timer = window.setInterval(() => void check(), 6 * 60 * 60 * 1000)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [])
+
+  const checkUpdate = async () => {
+    setUpdateBusy(true)
+    try {
+      const response = await fetch('/api/local/update/check', { method: 'POST', headers: localHeaders })
+      if (!response.ok) throw new Error(`Update check returned ${response.status}`)
+      const result: UpdateView = await response.json()
+      setUpdate(result)
+      if (result.state !== 'Available') setNotice({ good: result.state === 'Current' || result.state === 'NoRelease', text: result.message })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setUpdateBusy(false) }
+  }
+
+  const installUpdate = async () => {
+    setUpdateBusy(true)
+    setNotice(null)
+    try {
+      const result = await change<BasicResult>('/api/local/update/install', 'POST')
+      setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setUpdateBusy(false) }
+  }
 
   useEffect(() => {
     let alive = true
@@ -576,7 +614,7 @@ function App() {
   return <div className="shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><div><strong>TogetherServer</strong><small>Local companion</small></div></div>
-      <div className="topbar-actions"><nav className="mode-switch" aria-label="App pages">
+      <div className="topbar-actions"><button className="update-check" aria-label="Check for updates" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()} title={update?.message ?? 'Check for updates'}><Icon name="refresh" />{update?.state === 'Available' ? `v${update.latestVersion} ready` : `v${update?.currentVersion ?? '...'}`}</button><nav className="mode-switch" aria-label="App pages">
         <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}>My server</button>
         <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join a friend</button>
       </nav></div>
@@ -587,6 +625,8 @@ function App() {
         <p>{snapshot?.mode === 'Friend' ? 'Paste one invite to connect. This does not close a server you host on this PC.' : savedProfiles.length === 0 ? 'Choose a world and password to get started.' : activeRuns ? 'Your server is running.' : 'Your server is ready to start.'}</p></div>
         {snapshot?.mode === 'Host' && savedProfiles.length > 0 && <div className="hero-badge">{activeRuns ? 'Running' : 'Offline'}<small>{savedProfiles.length > 1 ? `${savedProfiles.length} servers saved` : savedProfiles[0].name}</small></div>}
       </div>
+
+      {update?.state === 'Available' && <div className="update-notice" role="status"><div><strong>Update available · v{update.latestVersion}</strong><span>Download from the TogetherServer GitHub release, verify it, then restart. Stop hosted servers first.</span></div><button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? 'Preparing update…' : 'Update and restart'}</button></div>}
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
       {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}

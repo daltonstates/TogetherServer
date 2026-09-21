@@ -224,6 +224,12 @@ main { padding-top: 24px; }
 .server-step .selection-summary small { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #91a092; }
 .settings-panel .advanced-block { margin-top: 10px; }
 .settings-panel .save-row { margin-top: 10px; padding-top: 10px; }
+.update-check { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #a6bca8; padding: 7px 4px; font-size: 11px; white-space: nowrap; }
+.update-check:hover, .update-check:focus-visible { color: #d5efbf; }
+.update-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; margin: -6px 0 16px; padding: 11px 14px; border: 1px solid #4b704c; border-radius: 9px; background: #203127; }
+.update-notice strong { display: block; color: #d9f2c8; font-size: 13px; }
+.update-notice span { display: block; color: #aac2ab; font-size: 11px; margin-top: 3px; }
+.update-notice button { border: 1px solid #acd889; border-radius: 8px; background: #acd889; color: #172019; padding: 8px 12px; font-size: 12px; font-weight: 750; }
 
 @media (max-width: 900px) {
   .readiness-row { grid-template-columns: repeat(2, minmax(120px, 1fr)) auto; }

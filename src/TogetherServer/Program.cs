@@ -3,6 +3,12 @@ using System.Reflection;
 using System.Text.Json;
 using TogetherServer;
 
+if (args.Length > 0 && args[0] == "--apply-update")
+{
+    Environment.ExitCode = await UpdateInstaller.RunAsync(args);
+    return;
+}
+
 var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase);
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
 if (requestedFriend && requestedHost)
@@ -32,10 +38,14 @@ var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 var identity = new HostIdentity(data);
 var friend = new FriendService(data);
+using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "",
+    Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0));
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
 var modeGate = new SemaphoreSlim(1, 1);
-var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port);
+var updatePending = false;
+var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port, () => updatePending);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
@@ -75,13 +85,51 @@ app.MapGet("/api/local/window", () => Results.Json(new
     fileDialogOpen = desktop?.FileDialogOpen ?? false,
     customChrome = desktop?.CustomChrome ?? false
 }));
+app.MapGet("/api/local/update", async () => Results.Json(await updater.CheckAsync()));
+app.MapPost("/api/local/update/check", async () => Results.Json(await updater.CheckAsync(true)));
+app.MapPost("/api/local/update/install", async (HttpContext context) =>
+{
+    if (desktop is null) return Results.Json(new UpdateResult(false, "WindowUnavailable", "Open the published app window to update."));
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Json(new UpdateResult(false, "AlreadyUpdating", "The app is already restarting."));
+        if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+            return Results.Json(new UpdateResult(false, "ManagedRunPresent",
+                "Stop or resolve every hosted server before installing the update."));
+    }
+    finally { modeGate.Release(); }
+    var prepared = await updater.PrepareAsync();
+    if (!prepared.Ok) return Results.Json(prepared);
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Json(new UpdateResult(false, "AlreadyUpdating", "The app is already restarting."));
+        if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+            return Results.Json(new UpdateResult(false, "ManagedRunPresent",
+                "Stop or resolve every hosted server before installing the update."));
+        var started = updater.StartReplacement();
+        if (started.Ok)
+        {
+            updatePending = true;
+            context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
+        }
+        return Results.Json(started);
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
     ? Results.Json(new { ok = true, code = "WindowShown" })
     : Results.Conflict(new { ok = false, code = "WindowUnavailable" }));
 async Task<IResult> HostOnly(Func<Task<ActionResult>> action)
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." }) : Results.Json(await action()); }
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+        return Results.Json(await action());
+    }
     finally { modeGate.Release(); }
 }
 app.MapPut("/api/local/settings", async (HostSettings settings) =>

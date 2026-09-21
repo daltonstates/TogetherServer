@@ -90,6 +90,14 @@ try {
     catch { $forbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     if (!$forbidden) { throw 'A mutation without the local request headers was allowed.' }
     Write-Host 'PASS local mutation gate'
+    if (!$js.Content.Contains('Update and restart') -or !$js.Content.Contains('Check for updates')) { throw 'The update controls were not bundled.' }
+    $updateForbidden = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/update/install" -Method Post -UseBasicParsing | Out-Null }
+    catch { $updateForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$updateForbidden) { throw 'The update action bypassed the local mutation gate.' }
+    $headlessUpdate = Invoke-RestMethod -Uri "$baseUrl/api/local/update/install" -Method Post -Headers $headers
+    if ($headlessUpdate.ok -or $headlessUpdate.code -ne 'WindowUnavailable') { throw 'A headless app was allowed to update its EXE.' }
+    Write-Host 'PASS bundled update controls and local-only desktop update action'
 
     $incomplete = @{ id = [guid]::NewGuid().ToString(); kind = 'Valheim'; name = 'Needs setup'; serverName = 'Needs setup'; worldId = 'V1release'; worldSource = 'Existing'; worldDirectory = ''; gamePort = $gamePort; executablePath = '' }
     $incompleteSettings = @{ maxConcurrentServers = 1; idleMinutes = 15; profiles = @($incomplete) }

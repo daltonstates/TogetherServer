@@ -9,7 +9,7 @@ namespace TogetherServer;
 // It starts only after the owner enables Friend connections and pairing/TLS
 // material is ready; the local GUI remains bound to loopback.
 public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
-    GameServerRegistry games, SemaphoreSlim modeGate, int localPort)
+    GameServerRegistry games, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -195,6 +195,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             await modeGate.WaitAsync();
             try
             {
+                if (isUpdating?.Invoke() == true)
+                    return Results.Json(new FriendActionResult(false, "UpdatePending", "The Host is restarting for an update.", null),
+                        statusCode: 503);
                 if (!Authenticate(context, out var device, out var decision))
                     return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
                         statusCode: decision.Code == "Revoked" ? 403 : 401);

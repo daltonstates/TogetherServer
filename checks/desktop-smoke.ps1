@@ -192,6 +192,9 @@ try {
     if (!$password.ok) { throw 'Desktop synthetic Valheim password failed.' }
     $started = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/start" -Method Post -Headers $headers
     if (!$started.ok) { throw "Desktop synthetic Valheim launch failed: $($started.message)" }
+    $blockedUpdate = Invoke-RestMethod -Uri "$baseUrl/api/local/update/install" -Method Post -Headers $headers
+    if ($blockedUpdate.ok -or $blockedUpdate.code -ne 'ManagedRunPresent') { throw 'Updater tried to close the app while a managed game was running.' }
+    Write-Host 'PASS updater refuses to replace the desktop EXE while a managed game is running'
     $valheimRun = (Get-Content (Join-Path $caseRoot 'runs.json') -Raw | ConvertFrom-Json) | Where-Object profileId -EQ $profileId
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
