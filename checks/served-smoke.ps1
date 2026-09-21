@@ -53,7 +53,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Host IP (port optional)') -or !$js.Content.Contains('Connect to Host PC') -or !$js.Content.Contains('Generate password') -or !$js.Content.Contains('Copy Host address') -or !$js.Content.Contains('Copy Join IP') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Add a server') -or !$js.Content.Contains('Start and manage your server') -or !$js.Content.Contains('Share and invite friends') -or !$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Host IP (port optional)') -or !$js.Content.Contains('Connect to Host PC') -or !$js.Content.Contains('Generate password') -or !$js.Content.Contains('Copy Host address') -or !$js.Content.Contains('Copy Join IP') -or !$js.Content.Contains('Copy game password') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -121,6 +121,13 @@ try {
     $password = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/password" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"password":"fixture-pass-123"}'
     if (!$password.ok -or !$password.snapshot.passwordConfigured.$valheimId) { throw 'Protected Valheim password route failed.' }
     if ((Get-Content (Join-Path $caseRoot 'host.json') -Raw).Contains('fixture-pass-123')) { throw 'Valheim password leaked into Host settings.' }
+    $copyWithoutLocalHeaders = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$valheimId/game-password/reveal" -Method Post -UseBasicParsing | Out-Null }
+    catch { $copyWithoutLocalHeaders = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$copyWithoutLocalHeaders) { throw 'Game password was revealed without local mutation headers.' }
+    $copiedPassword = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/game-password/reveal" -Method Post -Headers $headers
+    if (!$copiedPassword.ok -or $copiedPassword.password -ne 'fixture-pass-123') { throw 'Host could not copy its protected game password.' }
+    Write-Host 'PASS Host-only game password copy route and local request gate (synthetic secret)'
     $missing = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/start" -Method Post -Headers $headers
     if ($missing.code -ne 'MissingWorldData') { throw 'Missing world data did not block synthetic Valheim launch.' }
     $sourceSave = Join-Path $caseRoot 'source-save'
@@ -175,6 +182,10 @@ try {
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     $friend = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
     if (!$mode.ok -or $friend.mode -ne 'Friend' -or $friend.state -ne 'Not paired') { throw 'Friend mode switch failed.' }
+    $friendReadGamePassword = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$valheimId/game-password/reveal" -Method Post -Headers $headers -UseBasicParsing | Out-Null }
+    catch { $friendReadGamePassword = [int]$_.Exception.Response.StatusCode -eq 409 }
+    if (!$friendReadGamePassword) { throw 'Friend mode revealed the Host game password.' }
     $friendDiscovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
     if ($null -eq $friendDiscovery.clients) { throw 'Friend mode could not discover its installed Valheim game client.' }
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/host" -Method Post -Headers $headers

@@ -156,6 +156,22 @@ app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => 
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
+app.MapPost("/api/local/profiles/{id:guid}/game-password/reveal", async (Guid id) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+        var snapshot = await manager.SnapshotAsync();
+        if (!snapshot.Settings.Profiles.Any(profile => profile.Id == id && profile.Kind == "Valheim"))
+            return Results.NotFound(new { ok = false, code = "ProfileNotFound", message = "Saved Valheim server was not found." });
+        var password = data.LoadValheimPassword(id);
+        return string.IsNullOrEmpty(password)
+            ? Results.NotFound(new { ok = false, code = "PasswordRequired", message = "Save a game password first." })
+            : Results.Json(new { ok = true, password });
+    }
+    finally { modeGate.Release(); }
+});
 app.MapGet("/api/local/valheim/discover", async () => Results.Json(friendMode
     ? ValheimSetup.Scan()
     : ValheimSetup.Scan((await manager.SnapshotAsync()).Settings.Profiles
