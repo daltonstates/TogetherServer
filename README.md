@@ -24,7 +24,7 @@ The GUI is bound to loopback. You can change between My server and Friends' serv
 
 To try the local fixture, create an empty disposable directory under ignored `local-data/`. In Host mode, click **Add Valheim server** and choose **Synthetic test fixture** under **Advanced server options**, with that existing directory, a unique world ID and UDP port pair, and the absolute path to `src\TogetherServer.Fixture\bin\Release\net10.0\TogetherServer.Fixture.exe`. Save setup, then use Start, Health check, and Stop on the same Host page. The fixture never reads or writes a world. Host settings and run identity are stored under `%LOCALAPPDATA%\TogetherServer` by default. `TOGETHERSERVER_DATA_DIR` can override that location for isolated development.
 
-The `local-data\release` folder has just the self-contained app EXE with the React assets embedded. Both test fixtures are separate development binaries and are not part of that folder.
+The `local-data\release` folder has just the self-contained app EXE with the React assets embedded. The compressed Windows x64 build measured 61.13 MiB on September 20, 2026; its React assets were about 270 KiB. Most of the EXE is the bundled .NET, ASP.NET Core, and Windows desktop runtime needed to open it without installing .NET separately. WebView2 uses the Windows Runtime described above and is not bundled into the EXE. Both test fixtures are separate development binaries and are not part of that folder.
 
 ## Valheim profile
 

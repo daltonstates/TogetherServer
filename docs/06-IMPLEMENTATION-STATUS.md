@@ -328,3 +328,18 @@ Starting Git HEAD: `382c236`, clean `main` worktree. The owner found that openin
 Two intermediate companion checks failed while the now-replaced exclusive-mode behavior was being tested: a generic 403 initially appeared as Revoked, and a test then expected 403 after the paused response was changed to 503. The owner clarified that Host and Friend must be concurrent; the exclusive-mode path and those temporary expectations were removed. Final checks above passed. No public firewall/router/DNS setting, real credential, or real world was changed. The app currently remembers one other Host connection per PC; pairing a different Host replaces it, so several saved Host PCs need a separate slice if wanted.
 
 Double-click `local-data\release\TogetherServer.exe`. Use **My server** to start/stop and invite friends; use **Friends' servers** to connect to another Host without interrupting your own. The exact next developer recheck command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. Real public Friend/client acceptance remains the next external gate.
+
+## 2026-09-20 - Slice 17 smaller self-contained EXE
+
+Starting Git HEAD: `e21d787`, clean `main` worktree. The owner asked why the app was large. The prior EXE measured 145,387,017 bytes (138.65 MiB); the React assets measured about 270 KiB. The self-contained .NET, ASP.NET Core, and Windows desktop runtime accounts for most of the binary. The publish command now enables .NET single-file compression while retaining one Windows x64 EXE and the same no-.NET-install launch flow. The compressed EXE measured 64,098,317 bytes (61.13 MiB), about 56% smaller. WebView2 still uses its existing Windows Runtime.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1 -ReleaseName release-candidate` | Pass: React/TypeScript and compressed self-contained Windows x64 EXE, 0 errors; existing `MSB3277` WebView2/WPF reference warning. The direct compressed publish and script-built candidate had identical SHA-256. |
+| `checks/served-smoke.ps1` against compressed EXE | Pass: 14 groups, 0 failures; bundled GUI and synthetic process lifecycle. |
+| `checks/desktop-smoke.ps1 -AppPath .\local-data\publish-compressed\TogetherServer.exe -Port 0` | Pass: 8 groups, 0 failures; native window, pickers, synthetic stop/restart, and Quit. |
+| `TogetherServer.CompanionChecks` against compressed EXE | Pass: 11 groups, 0 failures; local pairing, pinned TLS, Host/Friend concurrency, disable/revoke, and stale heartbeat. |
+| Replacement of normal `local-data\release\TogetherServer.exe` | Pending: the owner's normal EXE was running in a visible window, so the tested candidate was kept at `local-data\release-candidate\TogetherServer.exe`. Do not overwrite the running app or discard its form. |
+| Real Valheim client join/public Friend connection | Not run; no claim of game or public network acceptance follows from compression checks. |
+
+Once the owner closes the running window, copy the candidate EXE to `local-data\release\TogetherServer.exe`, verify matching SHA-256, then run the exact next command `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1` against the normal no-argument launch. No terms, firewall/router/DNS setting, credential, or real world was changed.
