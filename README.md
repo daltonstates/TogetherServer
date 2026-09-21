@@ -2,13 +2,13 @@
 
 TogetherServer is a small, Windows-first Valheim hosting app for one owner and a known group of friends. This folder is a **new project**. It does not depend on or modify `G:\repo\LetsServive`.
 
-The same app will run in **Host** mode on the owner's PC and **Friend** mode on each player's PC. One app process on each PC serves its own bundled React interface; the Valheim dedicated server remains a separate game process managed by Host mode. Friends use the companion to report whether their Valheim game is running and, when the owner permits it, request start and stop actions over a public-IP connection.
+The same app runs on the owner's PC and each player's PC. One app process on each PC serves its own bundled React interface; the Valheim dedicated server remains a separate game process managed by the owner. A PC can host its own server and connect to another Host at the same time. Friends use the companion to report whether their Valheim game is running and, when the owner permits it, request start and stop actions over a public-IP connection.
 
 The Host launches the Steam-installed `valheim_server.exe` directly with the selected world and settings, watches its unique log for the server-connected signal, and requests Ctrl+C in its isolated Windows console to stop it. Steam remains the source for installation and updates; TogetherServer does not start the Valheim game client. Real startup, graceful save, and restart have been verified on a separate copy of `V1release`; an actual Valheim client join and world change are still pending. Pairing, pinned HTTPS, heartbeat, permissions, and remote-control notices work in local tests. A real public-IP route and auto shutdown remain unverified or unavailable.
 
 ## Open the app on Windows
 
-Double-click `local-data\release\TogetherServer.exe`. It opens the React GUI in its own TogetherServer window. Choose **Host** or **Friend** inside the app; it remembers your choice for the next launch. Double-clicking again restores the running window. Minimize it to keep Host monitoring or Friend heartbeat active. Closing the window or using **Quit app** exits after managed servers stop. Friends use the same EXE on their own PCs. No terminal, .NET SDK, Node install, or separate web server is needed to run the published EXE.
+Double-click `local-data\release\TogetherServer.exe`. It opens the React GUI in its own TogetherServer window. **My server** manages this PC's hosted game and invitations; **Friends' servers** connects this PC to another Host. These are pages of the same running app: opening Friends' servers does not stop your game, close your companion listener, or pause a paired Friend's heartbeat. The app remembers the last page for the next launch. Double-clicking again restores the running window. Minimize it to keep hosting and Friend heartbeat active. Closing the window or using **Quit app** exits only after managed servers stop. Friends use the same EXE on their own PCs. No terminal, .NET SDK, Node install, or separate web server is needed to run the published EXE.
 
 The window uses Microsoft's WebView2 Runtime. It is present on Windows 11 and many Windows 10 PCs; if missing, TogetherServer shows an in-window link to Microsoft's installer. It never installs the Runtime without your click. [Microsoft's distribution guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution) explains this shared Windows component.
 
@@ -20,7 +20,7 @@ To build the EXE from source, developers need the .NET 10 SDK and Node:
 .\scripts\build.ps1
 ```
 
-The GUI is bound to loopback. The GUI can switch modes when no managed run or companion listener is active. An unpaired Friend makes no network request. Command-line mode, desktop, and port flags exist only for isolated developer checks.
+The GUI is bound to loopback. You can change between My server and Friends' servers while your own managed game and companion listener are active. The app refuses to quit while a managed server still runs. An unpaired Friend makes no network request. Command-line mode, desktop, and port flags exist only for isolated developer checks.
 
 To try the local fixture, create an empty disposable directory under ignored `local-data/`. In Host mode, click **Add Valheim server** and choose **Synthetic test fixture** under **Advanced server options**, with that existing directory, a unique world ID and UDP port pair, and the absolute path to `src\TogetherServer.Fixture\bin\Release\net10.0\TogetherServer.Fixture.exe`. Save setup, then use Start, Health check, and Stop on the same Host page. The fixture never reads or writes a world. Host settings and run identity are stored under `%LOCALAPPDATA%\TogetherServer` by default. `TOGETHERSERVER_DATA_DIR` can override that location for isolated development.
 

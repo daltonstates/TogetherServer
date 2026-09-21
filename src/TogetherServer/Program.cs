@@ -40,7 +40,7 @@ var startupSettings = data.LoadSettings();
 var companionUri = HostIdentity.TryEndpoint(startupSettings.CompanionEndpoint, out var configuredUri) ? configuredUri : null;
 X509Certificate2? companionCertificate = null;
 string? companionWarning = null;
-if (!friendMode && startupSettings.CompanionListeningEnabled)
+if (startupSettings.CompanionListeningEnabled)
 {
     try
     {
@@ -239,14 +239,11 @@ app.MapPost("/api/local/mode/{mode}", async (string mode) =>
     {
         if (!mode.Equals("host", StringComparison.OrdinalIgnoreCase) && !mode.Equals("friend", StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new { ok = false, code = "InvalidMode", message = "Choose Host or Friend." });
-        if (mode.Equals("friend", StringComparison.OrdinalIgnoreCase) &&
-            (await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
-            return Results.Conflict(new { ok = false, code = "ManagedRunPresent", message = "Stop or resolve every managed run before switching to Friend mode." });
-        if (mode.Equals("friend", StringComparison.OrdinalIgnoreCase) && companionActive)
-            return Results.Conflict(new { ok = false, code = "CompanionListenerActive", message = "Disable the companion listener and restart before switching to Friend mode." });
         data.SavePreferredMode(mode.Equals("friend", StringComparison.OrdinalIgnoreCase) ? "Friend" : "Host");
         friendMode = mode.Equals("friend", StringComparison.OrdinalIgnoreCase);
-        return Results.Json(new { ok = true, code = "ModeChanged", message = $"Switched to {(friendMode ? "Friend" : "Host")} mode." });
+        return Results.Json(new { ok = true, code = "ModeChanged", message = friendMode
+            ? "Showing your connected Hosts. Your own server and Friend access keep running."
+            : "Showing your server. Connections to other Hosts keep running." });
     }
     finally { modeGate.Release(); }
 });
@@ -255,7 +252,7 @@ app.MapPost("/api/local/quit", async (HttpContext context) =>
     await modeGate.WaitAsync();
     try
     {
-        if (!friendMode && (await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+        if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
             return Results.Json(new { ok = false, code = "ManagedRunPresent",
                 message = "Stop or resolve every managed server before quitting TogetherServer." });
         context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
@@ -453,16 +450,10 @@ var pollTask = Task.Run(async () =>
 {
     while (!pollStop.IsCancellationRequested)
     {
-        if (friendMode)
-        {
-            try { await friend.PollAsync(); }
-            catch (Exception ex) { Console.Error.WriteLine("Friend poll failed: " + ex.GetType().Name); }
-        }
-        else
-        {
-            try { await manager.SnapshotAsync(); }
-            catch (Exception ex) { Console.Error.WriteLine("Host client check failed: " + ex.GetType().Name); }
-        }
+        try { await friend.PollAsync(); }
+        catch (Exception ex) { Console.Error.WriteLine("Friend poll failed: " + ex.GetType().Name); }
+        try { await manager.SnapshotAsync(); }
+        catch (Exception ex) { Console.Error.WriteLine("Host client check failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(15), pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }

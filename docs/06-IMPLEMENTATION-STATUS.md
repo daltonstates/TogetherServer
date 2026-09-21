@@ -310,3 +310,21 @@ Starting Git HEAD: `43a969e`, clean `main` worktree. The owner wanted fewer tabs
 | Real Friend PC public-IP route, Valheim join, world change, idle/Unknown, and recovery | Not run; still needs an owner-approved public route and a real Friend PC. Synthetic evidence does not satisfy the v1 acceptance gate. |
 
 Double-click `local-data\release\TogetherServer.exe`. On Host, click **Add Valheim server** and follow the visible steps, then click **Start server** and use the share controls on the same page. On a Friend PC, choose **Friend**, enter the Host IP and that PC's password, and click **Connect to Host PC**. The exact next developer recheck command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. No public firewall/router/DNS setting, real credential, or world was changed.
+
+## 2026-09-20 - Slice 16 Host and Friend connections together
+
+Starting Git HEAD: `382c236`, clean `main` worktree. The owner found that opening Friend after a server stopped failed with `CompanionListenerActive`, then clarified that joining another Host must also work while this PC is hosting. **My server** and **Friends' servers** are now views of one running app. Changing views no longer stops a managed game or closes the authenticated Host listener. The app polls its own game process and its paired remote Host in the background regardless of the visible view. Quit checks managed runs from either view. The Host server card always offers **Invite friends**, so the owner does not need to open Friends' servers to manage invitations. A generic HTTP 403 from a disabled listener now shows Disconnected/Unknown instead of incorrectly claiming the Friend credential was revoked.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1 -ReleaseName release-candidate` | Pass: bundled React/TypeScript and self-contained Windows x64 EXE, 0 errors; existing `MSB3277` WebView2/WPF reference warning. |
+| `TogetherServer.CompanionChecks` against candidate | Pass: 11 groups, 0 failures. Two separate local Host processes were used: the first kept a synthetic server and its paired Friend connection active while it paired with the second Host. A switch of views did not bypass Quit's managed-run guard; reopening on Friends' servers restored the Host listener. Disabled-listener 403 became Unknown; actual revocation remained Revoked. |
+| `checks/served-smoke.ps1` against candidate | Pass: 14 groups, 0 failures; bundled page labels, synthetic Start/Health/Stop, switching views with a running process, and Quit guard. |
+| `checks/desktop-smoke.ps1` against candidate and installed no-argument EXE | Pass: 8 groups each, 0 failures; native window, React, pickers, synthetic launch/stop/restart, mode-view persistence, and Quit. |
+| Headless Edge render of saved synthetic Host page | Pass: visually reviewed the My server page, its Friends' servers navigation, and the Invite friends button beside a stopped server. Screenshot remains in ignored local test data. |
+| Candidate and installed EXE SHA-256 | Pass: both `E1087068335045D752CA247BC23888DA3381E77EAAA460FB4E40B3A2A16AED7C`. |
+| Real public Friend PC, game client join/world change, idle/Unknown, and recovery | Not run. Requires a real Friend PC/public route and the separate owner approvals described in `docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md`. |
+
+Two intermediate companion checks failed while the now-replaced exclusive-mode behavior was being tested: a generic 403 initially appeared as Revoked, and a test then expected 403 after the paused response was changed to 503. The owner clarified that Host and Friend must be concurrent; the exclusive-mode path and those temporary expectations were removed. Final checks above passed. No public firewall/router/DNS setting, real credential, or real world was changed. The app currently remembers one other Host connection per PC; pairing a different Host replaces it, so several saved Host PCs need a separate slice if wanted.
+
+Double-click `local-data\release\TogetherServer.exe`. Use **My server** to start/stop and invite friends; use **Friends' servers** to connect to another Host without interrupting your own. The exact next developer recheck command is `powershell -NoProfile -ExecutionPolicy Bypass -File .\checks\desktop-smoke.ps1`. Real public Friend/client acceptance remains the next external gate.

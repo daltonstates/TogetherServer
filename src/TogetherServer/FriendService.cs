@@ -153,7 +153,12 @@ public sealed class FriendService
                 using var response = await client.SendAsync(request);
                 if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    view = view with { State = "Revoked", Detail = "Host revoked this device.", LocalGameRunning = localRunning,
+                    PairingDecision? denial = null;
+                    try { denial = JsonSerializer.Deserialize<PairingDecision>(await response.Content.ReadAsStringAsync(), Json); }
+                    catch (JsonException) { /* A generic 403 is not evidence of revocation. */ }
+                    var revoked = denial?.Code == "Revoked";
+                    view = view with { State = revoked ? "Revoked" : "Disconnected/Unknown",
+                        Detail = revoked ? "Host revoked this device." : "Host access is unavailable or denied.", LocalGameRunning = localRunning,
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return view;
                 }
@@ -201,11 +206,18 @@ public sealed class FriendService
                 using var response = await client.SendAsync(request);
                 if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    var denied = await response.Content.ReadFromJsonAsync<FriendActionResult>(Json);
+                    FriendActionResult? denied = null;
+                    try { denied = JsonSerializer.Deserialize<FriendActionResult>(await response.Content.ReadAsStringAsync(), Json); }
+                    catch (JsonException) { /* A generic 403 has no action result. */ }
                     if (denied?.Code == "Revoked") view = view with { State = "Revoked", Detail = "Host revoked this device.",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                    return denied ?? new(false, "Forbidden", "Host denied this action.", null);
+                    else if (denied is null) view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.",
+                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                    return denied ?? new(false, "Disconnected", "Host access is unavailable or denied.", null);
                 }
+                if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+                    view = view with { State = "Disconnected/Unknown", Detail = "Host companion access is paused.",
+                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                     view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };

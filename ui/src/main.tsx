@@ -365,7 +365,7 @@ function App() {
     finally { setPending('') }
   }
   const switchMode = async (mode: 'host' | 'friend') => {
-    if (dirty && !window.confirm('Discard unsaved Host settings and switch mode?')) return
+    if (dirty && !window.confirm('Discard unsaved server settings and change pages?')) return
     setPending('mode')
     setNotice(null)
     try {
@@ -495,16 +495,16 @@ function App() {
   return <div className="shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><div><strong>TogetherServer</strong><small>Local companion</small></div></div>
-      <div className="topbar-actions"><nav className="mode-switch" aria-label="Application mode">
-        <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}>Host</button>
-        <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Friend</button>
+      <div className="topbar-actions"><nav className="mode-switch" aria-label="App pages">
+        <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}>My server</button>
+        <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Friends' servers</button>
       </nav><button className="quit-button" disabled={!!pending} onClick={() => void quitApp()}>Quit app</button></div>
     </header>
 
     <main>
-      <div className="eyebrow">{snapshot?.mode === 'Friend' ? 'FRIEND MODE' : 'HOST MODE'} <span>·</span> THIS PC ONLY</div>
-      <div className={`hero ${connectionView ? 'hero-compact' : ''}`}><div><h1>{snapshot?.mode === 'Friend' ? snapshot.endpoint ? 'Your Host PC' : 'Connect to your Host' : 'Host your Valheim server'}</h1>
-        <p>{snapshot?.mode === 'Friend' ? snapshot.endpoint ? 'Check the connection, see your game server, and request actions the Host allows.' : 'Enter the Host IP and password once to connect this PC.' : savedProfiles.length === 0 ? 'Add a server to get started. We will guide you through the world, install, and password.' : activeRuns ? 'Your server is running. Share the join address and give friends access below.' : 'Your setup is saved. Start a server, then share the join address or invite friends.'}</p></div>
+      <div className="eyebrow">{snapshot?.mode === 'Friend' ? "FRIENDS' SERVERS" : 'MY SERVER'} <span>·</span> BOTH STAY ACTIVE</div>
+      <div className={`hero ${connectionView ? 'hero-compact' : ''}`}><div><h1>{snapshot?.mode === 'Friend' ? "Friends' servers" : 'Host your Valheim server'}</h1>
+        <p>{snapshot?.mode === 'Friend' ? 'Connect to a friend who hosts a server. Your own server and invitations keep working on this PC.' : savedProfiles.length === 0 ? 'Add a server to get started. We will guide you through the world, install, and password.' : activeRuns ? 'Your server is running. Share the join address and give friends access below.' : 'Your setup is saved. Start a server, then share the join address or invite friends.'}</p></div>
         {snapshot?.mode === 'Host' && <div className="hero-badge">{activeRuns} running<small>{savedProfiles.length} saved · limit {snapshot.settings.maxConcurrentServers}</small></div>}
       </div>
 
@@ -561,7 +561,7 @@ function App() {
                 <div className="actions">
                   <button disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}>Start server</button>
                   <button className="secondary" disabled={!!pending || dirty || !['Process running', 'Starting', 'Ready'].includes(status?.state ?? '')} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}>Stop server</button>
-                  {profile.kind === 'Valheim' && status?.state === 'Ready' && <button className="secondary" onClick={() => shareRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>Share with friends</button>}
+                  <button className="secondary" onClick={() => shareRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>Invite friends</button>
                   <button className="text-button" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Health check</button>
                   <button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</button>
                   {(status?.state === 'Unknown' || status?.state === 'Failed') && <button className="text-button" disabled={!!pending || dirty} onClick={() => {

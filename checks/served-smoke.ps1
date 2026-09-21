@@ -53,7 +53,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Add a server') -or !$js.Content.Contains('Start and manage your server') -or !$js.Content.Contains('Share and invite friends') -or !$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Host IP (port optional)') -or !$js.Content.Contains('Connect to Host PC') -or !$js.Content.Contains('Generate password') -or !$js.Content.Contains('Copy Host address') -or !$js.Content.Contains('Copy Join IP') -or !$js.Content.Contains('Copy game password') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Add a server') -or !$js.Content.Contains('Start and manage your server') -or !$js.Content.Contains('Share and invite friends') -or !$js.Content.Contains('My server') -or !$js.Content.Contains("Friends' servers") -or !$js.Content.Contains('Invite friends') -or !$js.Content.Contains('Find installed server and worlds') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Browse for valheim_server.exe') -or !$js.Content.Contains('Finish these choices before saving') -or !$js.Content.Contains('Save setup') -or !$js.Content.Contains('Host IP (port optional)') -or !$js.Content.Contains('Connect to Host PC') -or !$js.Content.Contains('Generate password') -or !$js.Content.Contains('Copy Host address') -or !$js.Content.Contains('Copy Join IP') -or !$js.Content.Contains('Copy game password') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -102,16 +102,16 @@ try {
     $fixtureStarted = $true
     $health = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/health" -Method Post -Headers $headers
     if (!$health.ok -or $health.code -ne 'FixtureProcessRunning') { throw "Health failed: $($health.message)" }
-    $blocked = $false
-    try { Invoke-WebRequest -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers -UseBasicParsing | Out-Null }
-    catch { $blocked = [int]$_.Exception.Response.StatusCode -eq 409 }
-    if (!$blocked) { throw 'Friend mode was allowed while a managed process was active.' }
+    $friendView = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
+    if (!$friendView.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') { throw 'Joining another Host view stopped a managed server.' }
     $quitBlocked = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
-    if ($quitBlocked.code -ne 'ManagedRunPresent') { throw 'The app quit while a managed server was running.' }
+    if ($quitBlocked.code -ne 'ManagedRunPresent') { throw 'Friend view let the app quit while its server was running.' }
+    $hostView = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/host" -Method Post -Headers $headers
+    if (!$hostView.ok) { throw 'Could not return to the Host dashboard while its server was running.' }
     $stopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/stop" -Method Post -Headers $headers
     if (!$stopped.ok) { throw "Stop failed: $($stopped.message)" }
     $fixtureStarted = $false
-    Write-Host 'PASS served settings, Start, Health, Stop, and mode guard'
+    Write-Host 'PASS served settings, Start, Health, Stop, and simultaneous Host/Friend views'
 
     $valheimId = [guid]::NewGuid().ToString()
     $valheimProfile = @{ id = $valheimId; kind = 'Valheim'; name = 'Synthetic Valheim settings'; serverName = 'Fixture Valheim'; worldId = 'not-started'; worldDirectory = $worldDirectory; gamePort = ($gamePort + 10); executablePath = $valheimFixturePath }

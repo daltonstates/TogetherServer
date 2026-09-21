@@ -9,6 +9,7 @@ Let the owner host a Valheim dedicated server on a Windows PC and let a small, k
 - **Owner / Host mode:** configures the installed Valheim Dedicated Server path, worlds, server name, ports, maximum concurrent managed servers, idle timeout, paired friends, and whether remote controls are enabled. The Host app supervises game processes and shows honest status and errors.
 - **Friend mode:** each friend runs the same app on the PC used to play Valheim. It pairs with the Host using a unique invite, sends an authenticated heartbeat with whether that PC's Valheim game is running, displays Host/server reachability, and requests only actions the owner grants.
 - **Owner playing locally:** Host mode must include the owner's own game-running signal in idle decisions. Running the Host app must not imply the owner's Valheim game client is open.
+- **Owner joining another Host:** Hosting and Friend connection are concurrent capabilities in one app process. Opening a Friend connection must not stop the owner's managed server, disable its companion listener, or interrupt existing paired Friends. The visible My server and Friends' servers pages are navigation, not mutually exclusive runtime roles.
 - V1 requires every potential player to use the companion app. Console players, unpaired players, and multiple devices per person need explicit support before they can participate in automatic idle shutdown decisions.
 
 ## V1 user flow

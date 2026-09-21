@@ -23,6 +23,8 @@ var hostPort = FreeTcpPort();
 var companionPort = FreeTcpPort(hostPort);
 var friendAPort = FreeTcpPort(hostPort, companionPort);
 var friendBPort = FreeTcpPort(hostPort, companionPort, friendAPort);
+var peerHostPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort);
+var peerCompanionPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort, peerHostPort);
 var gamePort = Random.Shared.Next(36000, 43000);
 var endpoint = $"https://127.0.0.1:{companionPort}";
 var profile = new ServerProfile { Name = "Fixture world", WorldId = "companion-fixture", WorldDirectory = world,
@@ -31,7 +33,7 @@ var joinWorld = Path.Combine(root, "join-world");
 Directory.CreateDirectory(joinWorld);
 var joinProfile = new ServerProfile { Kind = "Valheim", Name = "Friend join example", ServerName = "Friend join example",
     WorldId = "join-example", WorldDirectory = joinWorld, GamePort = gamePort + 4, ExecutablePath = fixturePath };
-Process? host = null, friendA = null, friendB = null;
+Process? host = null, friendA = null, friendB = null, peerHost = null;
 var passes = 0;
 try
 {
@@ -215,6 +217,43 @@ try
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "re-enable failed");
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(bView.State == "Connected", "second device lost authorization");
+    var peerData = Path.Combine(root, "peer-host");
+    var peerEndpoint = $"https://127.0.0.1:{peerCompanionPort}";
+    peerHost = StartApp(appPath, "--host", peerHostPort, peerData);
+    await WaitLocal(peerHostPort);
+    using var peerOwner = LocalClient(peerHostPort);
+    var peerSettings = new HostSettings { CompanionEndpoint = peerEndpoint, CompanionPort = peerCompanionPort,
+        CompanionBindAddress = "127.0.0.1" };
+    Require((await OwnerPut<HostSettings, ActionResult>(peerOwner, "/api/local/settings", peerSettings)).Ok,
+        "second Host settings failed");
+    var peerInvite = await Invite(peerOwner, "Owner PC", false, false);
+    peerSettings.CompanionListeningEnabled = true;
+    Require((await OwnerPut<HostSettings, ActionResult>(peerOwner, "/api/local/settings", peerSettings)).Ok,
+        "second Host listener settings failed");
+    StopApp(peerHost);
+    peerHost = StartApp(appPath, "--host", peerHostPort, peerData);
+    await WaitLocal(peerHostPort);
+    var blockedMode = await owner.PostAsync("/api/local/mode/friend", new StringContent("{}", Encoding.UTF8, "application/json"));
+    Require(blockedMode.StatusCode == HttpStatusCode.Forbidden,
+        "mode change without local owner headers was accepted");
+    var runningMode = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/friend", new { });
+    var ownFriendLink = await OwnerPost<FriendPairRequest, FriendActionResult>(owner, "/api/local/friend/pair",
+        new(PairingPassword.Encode(peerInvite), fixturePath, $"127.0.0.1:{peerCompanionPort}"));
+    var joinedPeer = await OwnerPost<object, FriendView>(owner, "/api/local/friend/poll", new { });
+    var hostWhileJoining = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(runningMode.GetProperty("ok").GetBoolean() && ownFriendLink.Ok &&
+        joinedPeer.State == "Disabled" && joinedPeer.Endpoint == peerEndpoint &&
+        hostWhileJoining.GetProperty("listenerActive").GetBoolean() && bView.State == "Connected" &&
+        (await owner.GetFromJsonAsync<JsonElement>("/api/local/snapshot")).GetProperty("mode").GetString() == "Friend",
+        "linking a second Host interrupted this PC's running server or companion listener");
+    var quitWhileJoining = await OwnerPost<object, JsonElement>(owner, "/api/local/quit", new { });
+    Require(!quitWhileJoining.GetProperty("ok").GetBoolean() && quitWhileJoining.GetProperty("code").GetString() == "ManagedRunPresent",
+        "Friend view let the owner quit while a managed server was running");
+    var duplicateWhileJoining = await PublicAction(publicClient, credentialC, profile.Id, Guid.NewGuid(), "start");
+    Require(duplicateWhileJoining.Code == "AlreadyManaged", "remote Host actions stopped working while the owner joined another Host");
+    Require((await OwnerPost<object, JsonElement>(owner, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
+        "owner could not return to Host view with a managed server running");
     var localStop = await OwnerPost<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { });
     Require(localStop.Ok, "local fixture stop failed");
     Require((await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.OwnerGameRunning == false,
@@ -222,6 +261,31 @@ try
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(bView.LocalGameRunning == false, "synthetic client-closed transition was missed");
     Console.WriteLine("PASS isolated revocation and synthetic false signal"); passes++;
+
+    var friendViewAfterStop = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/friend", new { });
+    var listenerAfterStop = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
+    Require(friendViewAfterStop.GetProperty("ok").GetBoolean() && listenerAfterStop.GetProperty("listenerActive").GetBoolean(),
+        "opening connected Hosts after Stop disabled this PC's companion listener");
+    using (var activeStatus = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status"))
+    {
+        activeStatus.Headers.Add("X-Device-Id", credentialC.DeviceId.ToString());
+        activeStatus.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentialC.Credential);
+        using var response = await publicClient.SendAsync(activeStatus);
+        Require(response.StatusCode == HttpStatusCode.OK, "Friend view interrupted authenticated Host status");
+    }
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(bView.State == "Connected", "a Friend lost connection when the owner opened connected Hosts");
+    StopApp(host);
+    host = StartApp(appPath, "--friend", hostPort, hostData);
+    await WaitLocal(hostPort);
+    var restartedAsFriend = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(restartedAsFriend.GetProperty("listenerActive").GetBoolean() && bView.State == "Connected" &&
+        (await owner.GetFromJsonAsync<JsonElement>("/api/local/snapshot")).GetProperty("mode").GetString() == "Friend",
+        "restarting on Friends' servers page failed to restore this PC's Host listener");
+    var hostModeResult = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/host", new { });
+    Require(hostModeResult.GetProperty("ok").GetBoolean(), "owner could not return to the Host dashboard after Stop");
+    Console.WriteLine("PASS two Host PCs link while the first keeps serving its game and paired Friend"); passes++;
 
     var rotationResult = await OwnerPost<InviteRequest, JsonElement>(owner, "/api/local/devices/invite",
         new("Retry device", true, false, inviteC.DeviceId));
@@ -254,6 +318,8 @@ try
         using var response = await publicClient.SendAsync(disabledStatus);
         Require(response.StatusCode == HttpStatusCode.Forbidden, "companion requests remained available after listener disable");
     }
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(bView.State == "Disconnected/Unknown", "a disabled listener was falsely reported as credential revocation");
     settings.CompanionListeningEnabled = true;
     settings.RemoteControlsEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
@@ -308,7 +374,7 @@ catch (Exception ex)
 }
 finally
 {
-    StopApp(friendA); StopApp(friendB);
+    StopApp(friendA); StopApp(friendB); StopApp(peerHost);
     if (host is { HasExited: false })
     {
         try

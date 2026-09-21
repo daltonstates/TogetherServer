@@ -18,6 +18,8 @@ The native window embeds the bundled React UI with WebView2 and talks to the sam
 
 ## Host internals
 
+The Host and Friend capabilities may run concurrently in the same process. My server and Friends' servers select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Friends' servers. Quit remains blocked by any managed game run from either page.
+
 - A local loopback GUI listener serves bundled React files and local-owner API actions. It must not become the public management interface.
 - An optional public-IP companion listener accepts only authenticated heartbeat, status, Start, and Stop requests. It is off by default and cannot start without pairing and TLS configuration. It is distinct from Valheim's game port.
 - The process supervisor has fixed `start`, `stop`, and `health` actions for an owner-approved Valheim installation/profile. Implement them as small reviewed host-local scripts or typed .NET code; never execute a script, path, argument, environment key, or shell expression supplied by a Friend request.
