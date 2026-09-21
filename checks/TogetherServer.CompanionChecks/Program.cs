@@ -48,33 +48,36 @@ try
         PublicGameIp = "1.2.3.4", PublicGameIpCheckedUtc = DateTimeOffset.UtcNow.AddHours(-2),
         CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1", OwnerClientExecutablePath = fixturePath };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
-    var inviteA = await Invite(owner, "Friend A", true, false);
-    var inviteB = await Invite(owner, "Friend B", false, true);
+    var inviteA = await ServerInvite(owner, profile.Id, true, enableConnections: true);
+    var inviteB = await ServerInvite(owner, joinProfile.Id, false);
     var passwordA = PairingPassword.Encode(inviteA);
-    Require(passwordA.StartsWith("TS2-", StringComparison.Ordinal) &&
+    Require(passwordA.StartsWith("TS3-", StringComparison.Ordinal) &&
         PairingPassword.TryDecode(passwordA, null, out var decoded) &&
-        decoded!.DeviceId == inviteA.DeviceId && decoded.Code == inviteA.Code &&
+        decoded!.ServerScope && decoded.DeviceId == profile.Id && decoded.Code == inviteA.Code &&
         decoded.Endpoint == endpoint &&
         decoded.Fingerprint == inviteA.Fingerprint &&
         !PairingPassword.TryDecode("wrong-password", endpoint, out _) &&
         !PairingPassword.TryDecode(PairingPassword.Encode(inviteA with { ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }), endpoint, out _),
-        "generated password did not preserve the device secret and full TLS pin or reject invalid values");
+        "generated server code did not preserve its server scope, secret, and full TLS pin or reject invalid values");
+    var currentInvite = await OwnerPost<object, JsonElement>(owner,
+        $"/api/local/servers/{profile.Id}/invite/current", new { });
+    var currentJoinInvite = await OwnerPost<object, JsonElement>(owner,
+        $"/api/local/servers/{joinProfile.Id}/invite/current", new { });
+    Require(currentInvite.GetProperty("exists").GetBoolean() && currentInvite.GetProperty("password").GetString() == passwordA &&
+        currentInvite.GetProperty("canStart").GetBoolean() && !currentJoinInvite.GetProperty("canStart").GetBoolean(),
+        "the Host did not return the same current code and saved Start default for each server");
     settings.CompanionEndpoint = $"https://127.0.0.2:{companionPort}";
     var changedPinnedAddress = await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings);
     Require(!changedPinnedAddress.Ok && changedPinnedAddress.Code == "HostAddressPinned",
         "the Host app address changed after its TLS identity was pinned");
     settings.CompanionEndpoint = endpoint;
-    var enableInvite = await OwnerPost<InviteRequest, JsonElement>(owner, "/api/local/devices/invite",
-        new("Immediate connection", true, false, null, true));
-    Require(enableInvite.GetProperty("ok").GetBoolean() && enableInvite.GetProperty("listenerActive").GetBoolean(),
-        "creating an invite did not start the companion listener immediately");
     settings.CompanionListeningEnabled = true;
     settings.RemoteControlsEnabled = false;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "remote control pause failed");
     var listener = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     Require(listener.GetProperty("listenerActive").GetBoolean(), "companion listener did not start");
-    Console.WriteLine("PASS one-step invite starts the loopback HTTPS listener without restart"); passes++;
+    Console.WriteLine("PASS one persistent code per server starts the loopback HTTPS listener without restart"); passes++;
 
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
@@ -100,28 +103,33 @@ try
         new(PairingPassword.Encode(tampered), fixturePath, $"127.0.0.1:{companionPort}"));
     Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "Disconnected", "password pairing accepted the wrong Host TLS pin");
     var pairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
-        new(JsonSerializer.Serialize(inviteB, webJson), fixturePath));
+        new(passwordA, fixturePath));
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");
-    var secondUse = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(passwordA, fixturePath, $"127.0.0.1:{companionPort}"));
-    Require(!secondUse.Ok, "one-time invite was reused");
+    var pairedDevices = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
+        .Where(device => device.GetProperty("profileId").GetGuid() == profile.Id).ToArray();
+    Require(pairedDevices.Length == 2 && pairedDevices.Select(device => device.GetProperty("id").GetGuid()).Distinct().Count() == 2,
+        "the reusable server code did not issue separate device credentials");
+    var deviceAId = pairedDevices[0].GetProperty("id").GetGuid();
+    var deviceBId = pairedDevices[1].GetProperty("id").GetGuid();
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/permissions", new(false, true))).Ok,
+        "second Friend permissions were not saved");
     var aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     var bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
-    Require(aView.Profiles.Single(item => item.Id == joinProfile.Id).JoinAddress is null,
-        "paired Friend received a stale Valheim join address");
+    Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
+        "a server code exposed a different server profile");
     settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "fresh Host address update failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
-    Require(aView.Profiles.Single(item => item.Id == joinProfile.Id).JoinAddress == $"1.2.3.4:{joinProfile.GamePort}" &&
-        aView.Profiles.Single(item => item.Id == profile.Id).JoinAddress is null,
-        "paired Friend did not receive only the Valheim join address while controls were disabled");
-    Console.WriteLine("PASS two Friend processes, wrong pin, one-time invite, disabled notice"); passes++;
+    Require(aView.Profiles.Single().JoinAddress is null,
+        "a fixture server exposed a Valheim join address");
+    Console.WriteLine("PASS two Friend processes share one server code but receive isolated credentials"); passes++;
 
     using var publicClient = PinnedClient(endpoint, inviteA.Fingerprint);
     using var invalid = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
-    invalid.Headers.Add("X-Device-Id", inviteB.DeviceId.ToString());
+    invalid.Headers.Add("X-Device-Id", deviceBId.ToString());
     invalid.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "invalid-token");
     using var invalidResponse = await publicClient.SendAsync(invalid);
     Require(invalidResponse.StatusCode == HttpStatusCode.Unauthorized, "invalid token was accepted");
@@ -129,11 +137,19 @@ try
     Require(publicGui.StatusCode == HttpStatusCode.Forbidden, "public GUI route was exposed");
     Console.WriteLine("PASS invalid credential and public GUI isolation"); passes++;
 
-    // A third activated device gives this check a credential for exact HTTP retry tests.
-    var inviteC = await Invite(owner, "Retry device", true, false);
-    var activation = await publicClient.PostAsJsonAsync("/api/companion/pair", new PairingActivation(inviteC.DeviceId, inviteC.Code), webJson);
+    // The same code creates a third, distinct credential for exact HTTP retry tests.
+    var activation = await publicClient.PostAsJsonAsync("/api/companion/pair",
+        new PairingActivation(inviteA.DeviceId, inviteA.Code, true), webJson);
     Require(activation.IsSuccessStatusCode, "retry device activation failed");
     var credentialC = await activation.Content.ReadFromJsonAsync<PairingCredential>(webJson) ?? throw new Exception("empty activation");
+    var joinActivation = await publicClient.PostAsJsonAsync("/api/companion/pair",
+        new PairingActivation(inviteB.DeviceId, inviteB.Code, true), webJson);
+    Require(joinActivation.IsSuccessStatusCode, "second server code activation failed");
+    var joinCredential = await joinActivation.Content.ReadFromJsonAsync<PairingCredential>(webJson) ?? throw new Exception("empty second-server activation");
+    var joinStatus = await PublicStatus(publicClient, joinCredential);
+    Require(joinStatus.Profiles.Count == 1 && joinStatus.Profiles.Single().Id == joinProfile.Id &&
+        joinStatus.Profiles.Single().JoinAddress == $"1.2.3.4:{joinProfile.GamePort}",
+        "a credential did not remain scoped to its server and current join address");
     var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check", false);
     async Task<HttpStatusCode> SendHeartbeat()
     {
@@ -213,7 +229,7 @@ try
 
     StopApp(friendA);
     friendA = null;
-    var revoked = await OwnerPost<object, PairingDecision>(owner, $"/api/local/devices/{inviteA.DeviceId}/revoke", new { });
+    var revoked = await OwnerPost<object, PairingDecision>(owner, $"/api/local/devices/{deviceAId}/revoke", new { });
     Require(revoked.Ok, "revoke failed");
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
     await WaitLocal(friendAPort);
@@ -226,14 +242,18 @@ try
     Require(bView.State == "Connected", "second device lost authorization");
     var peerData = Path.Combine(root, "peer-host");
     var peerEndpoint = $"https://127.0.0.1:{peerCompanionPort}";
+    var peerWorld = Path.Combine(root, "peer-world");
+    Directory.CreateDirectory(peerWorld);
+    var peerProfile = new ServerProfile { Name = "Peer fixture", WorldId = "peer-fixture",
+        WorldDirectory = peerWorld, GamePort = gamePort + 10, ExecutablePath = fixturePath };
     peerHost = StartApp(appPath, "--host", peerHostPort, peerData);
     await WaitLocal(peerHostPort);
     using var peerOwner = LocalClient(peerHostPort);
     var peerSettings = new HostSettings { CompanionEndpoint = peerEndpoint, CompanionPort = peerCompanionPort,
-        CompanionBindAddress = "127.0.0.1" };
+        CompanionBindAddress = "127.0.0.1", Profiles = [peerProfile] };
     Require((await OwnerPut<HostSettings, ActionResult>(peerOwner, "/api/local/settings", peerSettings)).Ok,
         "second Host settings failed");
-    var peerInvite = await Invite(peerOwner, "Owner PC", false, false);
+    var peerInvite = await ServerInvite(peerOwner, peerProfile.Id, false);
     peerSettings.CompanionListeningEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(peerOwner, "/api/local/settings", peerSettings)).Ok,
         "second Host listener settings failed");
@@ -294,14 +314,13 @@ try
     Require(hostModeResult.GetProperty("ok").GetBoolean(), "owner could not return to the Host dashboard after Stop");
     Console.WriteLine("PASS two Host PCs link while the first keeps serving its game and paired Friend"); passes++;
 
-    var rotationResult = await OwnerPost<InviteRequest, JsonElement>(owner, "/api/local/devices/invite",
-        new("Retry device", true, false, inviteC.DeviceId));
-    Require(rotationResult.GetProperty("ok").GetBoolean(), "rotation invite failed");
-    var rotationInvite = JsonSerializer.Deserialize<PairingInvite>(rotationResult.GetProperty("invitation").GetString()!, webJson)!;
+    var rotationInvite = await ServerInvite(owner, profile.Id, true, refresh: true);
     using var rotationResponse = await publicClient.PostAsJsonAsync("/api/companion/pair",
-        new PairingActivation(rotationInvite.DeviceId, rotationInvite.Code), webJson);
+        new PairingActivation(rotationInvite.DeviceId, rotationInvite.Code, true), webJson);
     Require(rotationResponse.IsSuccessStatusCode, "rotation activation failed");
     var rotatedCredential = await rotationResponse.Content.ReadFromJsonAsync<PairingCredential>(webJson) ?? throw new Exception("empty rotation");
+    using var oldCodeResponse = await publicClient.PostAsJsonAsync("/api/companion/pair",
+        new PairingActivation(inviteA.DeviceId, inviteA.Code, true), webJson);
     using var oldTokenRequest = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
     oldTokenRequest.Headers.Add("X-Device-Id", credentialC.DeviceId.ToString());
     oldTokenRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentialC.Credential);
@@ -310,9 +329,22 @@ try
     newTokenRequest.Headers.Add("X-Device-Id", rotatedCredential.DeviceId.ToString());
     newTokenRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", rotatedCredential.Credential);
     using var newTokenResponse = await publicClient.SendAsync(newTokenRequest);
-    Require(oldTokenResponse.StatusCode == HttpStatusCode.Unauthorized && newTokenResponse.IsSuccessStatusCode,
-        "rotation did not replace the old credential");
-    Console.WriteLine("PASS credential rotation invalidates old token"); passes++;
+    using var otherServerRequest = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
+    otherServerRequest.Headers.Add("X-Device-Id", joinCredential.DeviceId.ToString());
+    otherServerRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", joinCredential.Credential);
+    using var otherServerResponse = await publicClient.SendAsync(otherServerRequest);
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(oldCodeResponse.StatusCode == HttpStatusCode.Unauthorized &&
+        oldTokenResponse.StatusCode == HttpStatusCode.Forbidden && newTokenResponse.IsSuccessStatusCode &&
+        otherServerResponse.IsSuccessStatusCode && bView.State == "Revoked",
+        "refresh did not revoke the old server code and access while preserving the other server");
+    var repairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
+        new(PairingPassword.Encode(rotationInvite), fixturePath));
+    Require(repairedB.Ok, "Friend could not reconnect with the refreshed server code");
+    deviceBId = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
+        .Where(device => device.GetProperty("profileId").GetGuid() == profile.Id && !device.GetProperty("revoked").GetBoolean())
+        .Select(device => device.GetProperty("id").GetGuid()).Single(id => id != rotatedCredential.DeviceId);
+    Console.WriteLine("PASS refreshing one server code revokes its old code and devices but preserves another server"); passes++;
 
     settings.RemoteControlsEnabled = false;
     settings.CompanionListeningEnabled = false;
@@ -356,7 +388,7 @@ try
     await Task.Delay(TimeSpan.FromSeconds(47));
     var staleInfo = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     var staleDevice = staleInfo.GetProperty("devices").EnumerateArray()
-        .Single(device => device.GetProperty("id").GetGuid() == inviteB.DeviceId);
+        .Single(device => device.GetProperty("id").GetGuid() == deviceBId);
     Require(staleDevice.GetProperty("lastHeartbeatUtc").ValueKind == JsonValueKind.Null &&
         staleDevice.GetProperty("gameRunning").ValueKind == JsonValueKind.Null,
         "missed Friend heartbeat was treated as a fresh false signal");
@@ -370,7 +402,7 @@ try
     for (var i = 0; i < 75; i++)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
-        request.Headers.Add("X-Device-Id", inviteB.DeviceId.ToString());
+        request.Headers.Add("X-Device-Id", deviceBId.ToString());
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "invalid-token");
         using var response = await publicClient.SendAsync(request);
         if (response.StatusCode == HttpStatusCode.TooManyRequests) limited = true;
@@ -401,15 +433,17 @@ try
     Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/password", new("fixture-pass-123"))).Ok,
         "restricted Host password failed");
-    var stopInviteResponse = await OwnerPost<InviteRequest, JsonElement>(stopOwner, "/api/local/devices/invite",
-        new("Stop Friend", true, true, null, true));
-    Require(stopInviteResponse.GetProperty("listenerActive").GetBoolean(), "restricted Host listener did not start");
-    var stopInvite = JsonSerializer.Deserialize<PairingInvite>(stopInviteResponse.GetProperty("invitation").GetString()!, webJson)!;
+    var stopInvite = await ServerInvite(stopOwner, stopProfile.Id, true, enableConnections: true);
     var stopPair = await OwnerPost<FriendPairRequest, FriendActionResult>(stopFriendLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(stopInvite), fixturePath));
-    Require(stopPair.Ok, "restricted Friend did not pair from one invite");
+    Require(stopPair.Ok, "restricted Friend did not pair from the server code");
+    var stopDeviceId = (await stopOwner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
+        .Single(device => device.GetProperty("profileId").GetGuid() == stopProfile.Id).GetProperty("id").GetGuid();
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{stopDeviceId}/permissions", new(true, true))).Ok,
+        "restricted Friend Stop permission was not saved");
     var setId = await OwnerPut<DevicePlayerIdRequest, PairingDecision>(stopOwner,
-        $"/api/local/devices/{stopInvite.DeviceId}/player-id", new("V_123456789"));
+        $"/api/local/devices/{stopDeviceId}/player-id", new("V_123456789"));
     Require(setId.Ok, "restricted Friend player ID was not saved");
     var listCreated = await OwnerPost<object, StopListResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/permitted-list", new { });
@@ -544,14 +578,27 @@ async Task<TResponse> OwnerPut<TRequest, TResponse>(HttpClient client, string pa
     return await response.Content.ReadFromJsonAsync<TResponse>(webJson) ?? throw new Exception($"Empty local PUT {path}: {(int)response.StatusCode}");
 }
 
-async Task<PairingInvite> Invite(HttpClient owner, string name, bool start, bool stop)
+async Task<PairingInvite> ServerInvite(HttpClient owner, Guid profileId, bool start, bool refresh = false,
+    bool enableConnections = false)
 {
-    var result = await OwnerPost<InviteRequest, JsonElement>(owner, "/api/local/devices/invite", new(name, start, stop, null));
-    Require(result.GetProperty("ok").GetBoolean(), "invite creation failed: " + result.GetProperty("message").GetString());
-    var invite = JsonSerializer.Deserialize<PairingInvite>(result.GetProperty("invitation").GetString()!, webJson)!;
-    Require(result.GetProperty("password").GetString() == PairingPassword.Encode(invite),
-        "Host did not return the generated copy/paste password");
-    return invite;
+    var result = await OwnerPost<ServerInviteRequest, JsonElement>(owner, $"/api/local/servers/{profileId}/invite",
+        new(refresh, start, enableConnections));
+    Require(result.GetProperty("ok").GetBoolean(), "server code creation failed: " + result.GetProperty("message").GetString());
+    var password = result.GetProperty("password").GetString();
+    Require(PairingPassword.TryDecode(password, null, out var invite) && invite!.ServerScope && invite.DeviceId == profileId,
+        "Host did not return a valid server-scoped copy/paste code");
+    if (enableConnections)
+        Require(result.GetProperty("listenerActive").GetBoolean(), "server code did not start the companion listener immediately");
+    return invite!;
+}
+
+async Task<CompanionStatus> PublicStatus(HttpClient client, PairingCredential credential)
+{
+    using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
+    request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
+    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
+    using var response = await client.SendAsync(request);
+    return await response.Content.ReadFromJsonAsync<CompanionStatus>(webJson) ?? throw new Exception("Empty public status response.");
 }
 
 static HttpClient PinnedClient(string endpoint, string fingerprint)

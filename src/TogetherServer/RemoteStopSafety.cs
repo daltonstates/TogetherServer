@@ -42,7 +42,7 @@ public static class RemoteStopSafety
         var importedCopy = ValheimSetup.IsImportedWorld(data, profile.Id, profile.WorldDirectory);
         if (!managedNewWorld && !importedCopy)
             return new(false, "CustomSavePath", "Create the permitted-player list manually for a custom save folder.");
-        if (!pairing.TryAssignedPlayerIds(out var friendIds, out var reason))
+        if (!pairing.TryAssignedPlayerIds(profileId, out var friendIds, out var reason))
             return new(false, "PlayerIdsMissing", reason);
         var ownerId = snapshot.Settings.OwnerPlatformUserId ?? "";
         if (ownerId.Length > 0 && !ValidPlatformUserId(ownerId))
@@ -81,7 +81,7 @@ public static class RemoteStopSafety
         var recorded = data.LoadRuns().SingleOrDefault(item => item.ProfileId == profileId);
         if (recorded is null || string.IsNullOrEmpty(recorded.PermittedListSha256))
             return StopPermit.Denied("Start this server with a complete permittedlist.txt before allowing remote Stop.");
-        if (!pairing.TryCoveredPlayerIds(out var friendIds, out var reason)) return StopPermit.Denied(reason);
+        if (!pairing.TryCoveredPlayerIds(profileId, out var friendIds, out var reason)) return StopPermit.Denied(reason);
         var ownerId = snapshot.Settings.OwnerPlatformUserId ?? "";
         if (ownerId.Length > 0 && !ValidPlatformUserId(ownerId))
             return StopPermit.Denied("Enter the owner's Valheim player ID in Stop safety settings.");
@@ -102,7 +102,7 @@ public static class RemoteStopSafety
                 return StopPermit.Denied("permittedlist.txt changed after this server started. Restart it locally before remote Stop.");
             if (!list.Value.Ids.ToHashSet(StringComparer.Ordinal).SetEquals(expected))
                 return StopPermit.Denied("permittedlist.txt must contain exactly the owner and paired Friend player IDs.");
-            var permit = new StopPermit(file, pairing, snapshot.Settings.OwnerClientExecutablePath, ownerId.Length > 0);
+            var permit = new StopPermit(file, pairing, profileId, snapshot.Settings.OwnerClientExecutablePath, ownerId.Length > 0);
             file = null;
             return permit;
         }
@@ -140,13 +140,15 @@ public sealed class StopPermit : IDisposable
 {
     private readonly FileStream? list;
     private readonly PairingService? pairing;
+    private readonly Guid profileId;
     private readonly string ownerClientPath;
     private readonly bool ownerAllowed;
 
-    internal StopPermit(FileStream list, PairingService pairing, string ownerClientPath, bool ownerAllowed)
+    internal StopPermit(FileStream list, PairingService pairing, Guid profileId, string ownerClientPath, bool ownerAllowed)
     {
         this.list = list;
         this.pairing = pairing;
+        this.profileId = profileId;
         this.ownerClientPath = ownerClientPath;
         this.ownerAllowed = ownerAllowed;
         Allowed = true;
@@ -162,7 +164,7 @@ public sealed class StopPermit : IDisposable
     public bool Allowed { get; }
     public string Reason { get; }
     public static StopPermit Denied(string reason) => new(reason);
-    public bool StillSafe() => Allowed && pairing!.AllKnownNotPlaying() &&
+    public bool StillSafe() => Allowed && pairing!.AllKnownNotPlaying(profileId) &&
         (ownerAllowed ? ClientMonitor.IsRunning(ownerClientPath) == false : ClientMonitor.IsRunning(ownerClientPath) != true);
     public void Dispose() => list?.Dispose();
 }

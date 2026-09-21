@@ -282,9 +282,9 @@ try
             "restricted synthetic profile was rejected");
         Require((await host.SetValheimPasswordAsync(stopProfile.Id, "fixture-pass-123")).Ok,
             "restricted synthetic password was rejected");
-        var invite = pairing.Issue("Known Friend", true, true, "https://127.0.0.1:5131", new string('A', 64));
-        var credential = pairing.Activate(new PairingActivation(invite.DeviceId, invite.Code));
-        Require(credential is not null && pairing.SetPlatformUserId(invite.DeviceId, "V_123456789").Ok,
+        var invite = pairing.IssueServer(stopProfile.Id, true, true, "https://127.0.0.1:5131", new string('A', 64), false);
+        var credential = pairing.Activate(new PairingActivation(invite.DeviceId, invite.Code, true));
+        Require(credential is not null && pairing.SetPlatformUserId(credential.DeviceId, "V_123456789").Ok,
             "synthetic Friend ID was not assigned");
         Require(RemoteStopSafety.CreateList(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing).Ok,
             "restricted player list was not created in the app-managed save folder");
@@ -298,15 +298,15 @@ try
         {
             using (var missing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
                 Require(!missing.Allowed, "remote Stop accepted a missing Friend heartbeat");
-            var auth = pairing.Authenticate(invite.DeviceId, credential!.Credential, out var device);
+            var auth = pairing.Authenticate(credential!.DeviceId, credential.Credential, out var device);
             Require(auth.Ok && device is not null, "synthetic Friend credential failed");
             var instance = Guid.NewGuid();
-            Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(invite.DeviceId, instance, 1, "check", false)).Ok,
+            Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(credential.DeviceId, instance, 1, "check", false)).Ok,
                 "closed-game heartbeat failed");
             using (var ready = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
             {
                 Require(ready.Allowed, "remote Stop was not offered with a complete list and fresh closed-game report");
-                Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(invite.DeviceId, instance, 2, "check", true)).Ok,
+                Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(credential.DeviceId, instance, 2, "check", true)).Ok,
                     "running-game heartbeat failed");
                 Require(!ready.StillSafe(), "a game-started report after approval did not cancel remote Stop");
             }

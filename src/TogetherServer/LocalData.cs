@@ -109,6 +109,14 @@ public sealed class LocalData : IDisposable
     }
     public List<PairedDevice> LoadDevices() => Load("devices.json", new List<PairedDevice>());
     public void SaveDevices(List<PairedDevice> devices) => Save("devices.json", devices);
+    public List<ServerInviteState> LoadServerInvites()
+    {
+        var bytes = LoadProtected("server-invites.protected");
+        return bytes is null ? [] : JsonSerializer.Deserialize<List<ServerInviteState>>(bytes, Json)
+            ?? throw new InvalidDataException("Invalid protected server invites");
+    }
+    public void SaveServerInvites(List<ServerInviteState> invites) =>
+        SaveProtected("server-invites.protected", JsonSerializer.SerializeToUtf8Bytes(invites, Json));
     public bool HasProtected(string name) => File.Exists(Path.Combine(root, name));
     public string? LoadIdentityEndpoint() => Load("host-identity-endpoint.json", (string?)null);
     public void SaveIdentityEndpoint(string endpoint) => Save("host-identity-endpoint.json", endpoint);

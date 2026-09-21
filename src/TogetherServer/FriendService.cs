@@ -43,7 +43,7 @@ public sealed class FriendService
         this.data = data;
         config = LoadConfig(data);
         view = config is null
-            ? new("Friend", "Not paired", "Enter the Host IP and password from the Host PC.", "", null, null, false, false, false, [])
+            ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
                 null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [], config.ClientExecutablePath);
     }
@@ -82,7 +82,7 @@ public sealed class FriendService
             else
             {
                 if (!PairingPassword.TryDecode(invitation, hostAddress, out invite))
-                    return new(false, "InvalidInvite", "Invite is invalid, expired, or has a different Host address. Ask the Host for a new invite.", null);
+                    return new(false, "InvalidInvite", "Invite is invalid, expired, no longer current, or has a different Host address. Ask the Host for the current server code.", null);
             }
             if (invite is null || !HostIdentity.TryEndpoint(invite.Endpoint, out _) ||
                 !ValidFingerprint(invite.Fingerprint) || string.IsNullOrWhiteSpace(invite.Code) ||
@@ -98,14 +98,15 @@ public sealed class FriendService
             {
                 using var client = MakeClient(invite.Endpoint, invite.Fingerprint);
                 var response = await client.PostAsync("api/companion/pair", new StringContent(
-                    JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code), Json), Encoding.UTF8, "application/json"));
-                if (!response.IsSuccessStatusCode) return new(false, "PairingRejected", "Host did not accept this one-time invite.", null);
+                    JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope), Json), Encoding.UTF8, "application/json"));
+                if (!response.IsSuccessStatusCode) return new(false, "PairingRejected", "Host did not accept this invite. Ask for the current server code.", null);
                 var credential = await response.Content.ReadFromJsonAsync<PairingCredential>(Json);
-                if (credential is null || credential.DeviceId != invite.DeviceId || credential.Credential.Length < 32)
+                if (credential is null || credential.DeviceId == Guid.Empty ||
+                    (!invite.ServerScope && credential.DeviceId != invite.DeviceId) || credential.Credential.Length < 32)
                     return new(false, "PairingRejected", "Host returned an invalid credential.", null);
                 config = new FriendConfiguration
                 {
-                    Endpoint = invite.Endpoint, Fingerprint = invite.Fingerprint, DeviceId = invite.DeviceId,
+                    Endpoint = invite.Endpoint, Fingerprint = invite.Fingerprint, DeviceId = credential.DeviceId,
                     Credential = credential.Credential, CredentialExpiresUtc = credential.ExpiresUtc,
                     ClientExecutablePath = clientExecutablePath
                 };
@@ -135,7 +136,7 @@ public sealed class FriendService
             var localRunning = ClientMonitor.IsRunning(config.ClientExecutablePath);
             if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
             {
-                view = view with { State = "Disconnected/Unknown", Detail = "Device credential expired; ask the Host to rotate it.",
+                view = view with { State = "Disconnected/Unknown", Detail = "Device credential expired; ask the Host for the current server code.",
                     LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return view;
             }
@@ -157,7 +158,7 @@ public sealed class FriendService
                     catch (JsonException) { /* A generic 403 is not evidence of revocation. */ }
                     var revoked = denial?.Code == "Revoked";
                     view = view with { State = revoked ? "Revoked" : "Disconnected/Unknown",
-                        Detail = revoked ? "Host revoked this device." : "Host access is unavailable or denied.", LocalGameRunning = localRunning,
+                        Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code." : "Host access is unavailable or denied.", LocalGameRunning = localRunning,
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return view;
                 }
@@ -209,7 +210,7 @@ public sealed class FriendService
                     FriendActionResult? denied = null;
                     try { denied = JsonSerializer.Deserialize<FriendActionResult>(await response.Content.ReadAsStringAsync(), Json); }
                     catch (JsonException) { /* A generic 403 has no action result. */ }
-                    if (denied?.Code == "Revoked") view = view with { State = "Revoked", Detail = "Host revoked this device.",
+                    if (denied?.Code == "Revoked") view = view with { State = "Revoked", Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     else if (denied is null) view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };

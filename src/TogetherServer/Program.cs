@@ -28,6 +28,7 @@ using var ownedData = data;
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
 var manager = new HostManager(data);
 var pairing = new PairingService(data);
+pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 var identity = new HostIdentity(data);
 var friend = new FriendService(data);
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -91,7 +92,11 @@ app.MapPut("/api/local/settings", async (HostSettings settings) =>
         result = await manager.UpdateSettingsAsync(settings);
     }
     finally { modeGate.Release(); }
-    if (result.Ok) await companionServer.SyncAsync();
+    if (result.Ok)
+    {
+        pairing.ReconcileProfiles(result.Snapshot.Settings.Profiles.Select(profile => profile.Id));
+        await companionServer.SyncAsync();
+    }
     return Results.Json(result);
 });
 app.MapPost("/api/local/network/detect-public-ip", async () =>
@@ -237,20 +242,29 @@ app.MapGet("/api/local/companion", async () =>
         endpoint = snapshot.Settings.CompanionEndpoint, fingerprint, devices = pairing.Views(),
         stopSafety = companionServer.StopSafety(snapshot) });
 });
-app.MapPost("/api/local/devices/invite", async (InviteRequest request) =>
+app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid profileId) =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+    var snapshot = await manager.SnapshotAsync();
+    if (!snapshot.Settings.Profiles.Any(profile => profile.Id == profileId))
+        return Results.NotFound(new { ok = false, code = "UnknownServer" });
+    var current = pairing.CurrentServerInvite(profileId);
+    return Results.Json(new { ok = true, exists = current is not null,
+        password = current is null ? null : PairingPassword.Encode(current.Invitation),
+        canStart = current?.CanStart ?? true });
+});
+app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId, ServerInviteRequest request) =>
 {
     var password = "";
-    var invitation = "";
-    var deviceName = "";
     await modeGate.WaitAsync();
     try
     {
         if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
         var settings = data.LoadSettings();
+        if (!settings.Profiles.Any(profile => profile.Id == profileId))
+            return Results.NotFound(new { ok = false, code = "UnknownServer", message = "Choose a saved server." });
         if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
         {
-            if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 80)
-                return Results.BadRequest(new { ok = false, code = "InvalidName", message = "Enter a device name up to 80 characters." });
             if (settings.PublicGameIpCheckedUtc is not { } checkedUtc ||
                 DateTimeOffset.UtcNow - checkedUtc > TimeSpan.FromHours(1) ||
                 !GameConnection.IsPublicIpv4(settings.PublicGameIp))
@@ -265,15 +279,14 @@ app.MapPost("/api/local/devices/invite", async (InviteRequest request) =>
         try
         {
             using var certificate = identity.Ensure(settings.CompanionEndpoint);
-            var invite = pairing.Issue(request.Name, request.CanStart, request.CanStop,
-                settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.RotateDeviceId);
+            var invite = pairing.IssueServer(profileId, request.CanStart, false,
+                settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh);
             password = PairingPassword.Encode(invite);
-            invitation = JsonSerializer.Serialize(invite, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-            deviceName = pairing.Views().Single(device => device.Id == invite.DeviceId).Name;
             if (request.EnableConnections)
             {
                 settings.CompanionListeningEnabled = true;
-                if (request.CanStart || request.CanStop) settings.RemoteControlsEnabled = true;
+                if (data.LoadServerInvites().Any(state => state.ProfileId == profileId && state.CanStart))
+                    settings.RemoteControlsEnabled = true;
                 var saved = await manager.UpdateSettingsAsync(settings);
                 if (!saved.Ok)
                     return Results.BadRequest(new { ok = false, code = saved.Code, message = saved.Message });
@@ -286,8 +299,9 @@ app.MapPost("/api/local/devices/invite", async (InviteRequest request) =>
     }
     finally { modeGate.Release(); }
     if (request.EnableConnections) await companionServer.SyncAsync();
-    return Results.Json(new { ok = true, code = "InviteCreated", message = "Copy this one-time invite privately. It expires in 30 minutes.",
-        password, deviceName, invitation,
+    return Results.Json(new { ok = true, code = request.Refresh ? "InviteRefreshed" : "InviteReady",
+        message = request.Refresh ? "Server code refreshed. Previous code and paired access for this server were revoked." : "This server code can be shared with Friend PCs until you refresh it.",
+        password,
         listenerActive = companionServer.Active, listenerWarning = companionServer.Warning });
 });
 app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>

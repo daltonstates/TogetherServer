@@ -152,7 +152,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var address = snapshot.Settings.PublicGameIpCheckedUtc is { } checkedUtc &&
                 DateTimeOffset.UtcNow - checkedUtc <= TimeSpan.FromHours(1) ? snapshot.Settings.PublicGameIp : null;
             var own = pairing.Views().SingleOrDefault(view => view.Id == deviceId);
-            var profiles = snapshot.Settings.Profiles.Select(profile =>
+            var profiles = snapshot.Settings.Profiles.Where(profile => own?.ProfileId == Guid.Empty ||
+                profile.Id == own?.ProfileId).Select(profile =>
             {
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, pairing);
                 return new PublicProfile(profile.Id, profile.Name,
@@ -199,6 +200,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         statusCode: decision.Code == "Revoked" ? 403 : 401);
                 if (request.DeviceId != device!.Id || request.ProfileId == Guid.Empty)
                     return Results.BadRequest(new FriendActionResult(false, "InvalidRequest", "Device or profile ID is invalid.", null));
+                if (device.ProfileId != Guid.Empty && device.ProfileId != request.ProfileId)
+                    return Results.Json(new FriendActionResult(false, "PermissionDenied", "This PC is paired with a different server.", null),
+                        statusCode: 403);
                 if (!Guid.TryParse(context.Request.Headers["Idempotency-Key"], out var key) || key == Guid.Empty)
                     return Results.BadRequest(new FriendActionResult(false, "IdempotencyKeyRequired", "A request ID is required.", null));
                 var snapshot = await manager.SnapshotAsync();

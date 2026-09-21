@@ -10,10 +10,10 @@ Build a fresh EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scri
 
 ## Host a server
 
-1. In **My server**, choose **Set up a server**. Choose **Create new** and name the world, or **Use existing** and copy a world found on this PC. An existing world is copied to a separate app-managed save folder. The source is never moved or overwritten. Browse for a world folder if the scan misses it.
+1. On first use, **My server** opens the setup form immediately. Choose **Create new** and name the world, or **Use existing** and copy a world found on this PC. An existing world is copied to a separate app-managed save folder. The source is never moved or overwritten. Browse for a world folder if the scan misses it.
 2. Select your installed Valheim Dedicated Server if it was not found automatically. Enter a game password, then choose **Save and start**. The game server is installed and updated through Steam by you; TogetherServer does not install it or accept game terms.
 3. The everyday server card has **Start server** or **Stop server**, **Copy game details**, and **Invite friend**. Additional paths, ports, health checks, and multi-server settings are under **More server options** or **Settings and safety**.
-4. To invite a Friend PC, choose **Invite friend**, then **Create invite and allow connections**. Copy the one-time invite through a private channel. It includes the Host address, TLS fingerprint, and pairing secret; it expires after 30 minutes. The companion HTTPS listener starts immediately when the owner enables it through this action. It is off by default. Each Friend PC gets its own revocable credential and Start/Stop permissions.
+4. To invite Friend PCs, choose **Invite friend**, then **Create code and allow connections**. Each saved server has one current code, which can be copied privately to every Friend PC joining that server. Each PC receives its own revocable credential after connecting. **Refresh code** invalidates the previous code and every credential issued through it for that server; codes and credentials for other saved servers remain valid. The companion HTTPS listener starts immediately when the owner creates the code and is off by default.
 
 The Host detects an outbound public IPv4 address to fill the game and app addresses. This is an address hint, not a reachability test. A Friend on another network must test the app connection and Valheim join separately. Valheim's game UDP ports and TogetherServer's companion TCP port are separate. TogetherServer does not change firewall, router, or DNS settings. A custom HTTPS IP endpoint and bind IP are available in **Settings and safety** for local testing or deliberate network setup.
 
@@ -21,7 +21,7 @@ The Host detects an outbound public IPv4 address to fill the game and app addres
 
 On your own PC, open the same EXE and choose **Join a friend**. Paste the invite into the single field and choose **Connect**. The app pins the Host certificate and saves a separate credential for this PC. After connecting, use the server card to request **Start server**, copy the game address, or request **Stop server** when the Host allows it. The app checks whether your Valheim game client is running; it does not launch the game. If the client path cannot be found, set it under **Valheim game check**.
 
-An older `TS1` invite still works until it expires, but needs the Host IP under **Using an older invite?**. Current `TS2` invites include the address.
+Current `TS3` server codes include the address. Older `TS1` and `TS2` per-device invites remain readable until their original expiry; `TS1` also needs the Host IP under **Using an older invite?**.
 
 ## Stop and player safety
 

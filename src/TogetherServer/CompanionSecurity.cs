@@ -11,6 +11,8 @@ namespace TogetherServer;
 public sealed class PairedDevice
 {
     public Guid Id { get; set; }
+    public Guid ProfileId { get; set; }
+    public Guid InviteGeneration { get; set; }
     public string Name { get; set; } = "";
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
@@ -22,17 +24,30 @@ public sealed class PairedDevice
     public DateTimeOffset? CredentialExpiresUtc { get; set; }
 }
 
-public sealed record DeviceView(Guid Id, string Name, bool CanStart, bool CanStop, bool Revoked,
+public sealed class ServerInviteState
+{
+    public Guid ProfileId { get; set; }
+    public Guid Generation { get; set; }
+    public string Code { get; set; } = "";
+    public string Endpoint { get; set; } = "";
+    public string Fingerprint { get; set; } = "";
+    public bool CanStart { get; set; }
+    public bool CanStop { get; set; }
+    public bool Rotated { get; set; }
+}
+
+public sealed record DeviceView(Guid Id, Guid ProfileId, string Name, bool CanStart, bool CanStop, bool Revoked,
     bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning,
     string PlatformUserId);
-public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc);
-public sealed record PairingActivation(Guid DeviceId, string Code);
+public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
+    bool ServerScope = false);
+public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart);
+public sealed record PairingActivation(Guid DeviceId, string Code, bool ServerScope = false);
 public sealed record PairingCredential(Guid DeviceId, string Credential, DateTimeOffset ExpiresUtc);
 public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version, bool? GameRunning);
 public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc, bool? GameRunning);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
-public sealed record InviteRequest(string Name, bool CanStart, bool CanStop, Guid? RotateDeviceId,
-    bool EnableConnections = false);
+public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
 public sealed record DevicePlayerIdRequest(string PlatformUserId);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
 public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
@@ -40,10 +55,11 @@ public sealed record ClientPathRequest(string Path);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
 
-// One invite carries the Host address, one-time secret, and full TLS pin.
-// Keep accepting TS1 invites until they expire so an app update does not strand a Friend.
+// A TS3 server code carries the Host address, server profile, shared pairing secret,
+// and full TLS pin. TS1/TS2 per-device invites remain readable until they expire.
 public static class PairingPassword
 {
+    private const string ServerPrefix = "TS3-";
     private const string Prefix = "TS2-";
     private const string LegacyPrefix = "TS1-";
     private const int PayloadLength = 1 + 4 + 2 + 16 + 32 + 32 + 8;
@@ -59,14 +75,14 @@ public static class PairingPassword
             fingerprint.Length != 32 || secret.Length != 32 || invite.DeviceId == Guid.Empty)
             throw new ArgumentException("Pairing invite fields are invalid.");
         Span<byte> bytes = stackalloc byte[PayloadLength];
-        bytes[0] = 2;
+        bytes[0] = invite.ServerScope ? (byte)3 : (byte)2;
         address.GetAddressBytes().CopyTo(bytes[1..5]);
         BinaryPrimitives.WriteUInt16BigEndian(bytes[5..7], checked((ushort)endpoint.Port));
         invite.DeviceId.TryWriteBytes(bytes[7..23]);
         fingerprint.CopyTo(bytes[23..55]);
         secret.CopyTo(bytes[55..87]);
         BinaryPrimitives.WriteInt64BigEndian(bytes[87..], invite.ExpiresUtc.ToUnixTimeSeconds());
-        return Prefix + Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return (invite.ServerScope ? ServerPrefix : Prefix) + Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
     public static bool TryDecode(string? password, string? hostAddress, out PairingInvite? invite)
@@ -75,12 +91,14 @@ public static class PairingPassword
         var value = password?.Trim();
         if (value is null || value.Length > 200) return false;
         var legacy = value.StartsWith(LegacyPrefix, StringComparison.Ordinal);
-        if (!legacy && !value.StartsWith(Prefix, StringComparison.Ordinal)) return false;
+        var serverScope = value.StartsWith(ServerPrefix, StringComparison.Ordinal);
+        if (!legacy && !serverScope && !value.StartsWith(Prefix, StringComparison.Ordinal)) return false;
         var encoded = value[(legacy ? LegacyPrefix.Length : Prefix.Length)..].Replace('-', '+').Replace('_', '/');
         byte[] bytes;
         try { bytes = Convert.FromBase64String(encoded.PadRight((encoded.Length + 3) / 4 * 4, '=')); }
         catch (FormatException) { return false; }
-        if (bytes.Length != (legacy ? LegacyPayloadLength : PayloadLength) || bytes[0] != (legacy ? 1 : 2)) return false;
+        if (bytes.Length != (legacy ? LegacyPayloadLength : PayloadLength) ||
+            bytes[0] != (legacy ? 1 : serverScope ? 3 : 2)) return false;
         string endpoint;
         var offset = 1;
         if (legacy)
@@ -103,7 +121,7 @@ public static class PairingPassword
         catch (ArgumentOutOfRangeException) { return false; }
         if (id == Guid.Empty || expires <= DateTimeOffset.UtcNow) return false;
         invite = new PairingInvite(endpoint, Convert.ToHexString(bytes.AsSpan(offset + 16, 32)), id,
-            Convert.ToBase64String(bytes.AsSpan(offset + 48, 32)), expires);
+            Convert.ToBase64String(bytes.AsSpan(offset + 48, 32)), expires, serverScope);
         return true;
     }
 
@@ -196,7 +214,80 @@ public sealed class PairingService(LocalData data)
 {
     private readonly object sync = new();
     private readonly List<PairedDevice> devices = data.LoadDevices();
+    private readonly List<ServerInviteState> serverInvites = data.LoadServerInvites();
     private readonly ConcurrentDictionary<Guid, HeartbeatReceipt> heartbeats = new();
+
+    private bool IsRevoked(PairedDevice device) => device.Revoked ||
+        (device.ProfileId == Guid.Empty
+            ? serverInvites.Any(invite => invite.Rotated)
+            : serverInvites.SingleOrDefault(invite => invite.ProfileId == device.ProfileId)?.Generation != device.InviteGeneration);
+
+    public ServerInviteView? CurrentServerInvite(Guid profileId)
+    {
+        lock (sync)
+        {
+            var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
+            return state is null ? null : new(new PairingInvite(state.Endpoint, state.Fingerprint, profileId,
+                state.Code, DateTimeOffset.MaxValue, true), state.CanStart);
+        }
+    }
+
+    public void ReconcileProfiles(IEnumerable<Guid> profileIds)
+    {
+        var known = profileIds.ToHashSet();
+        lock (sync)
+        {
+            var removed = serverInvites.RemoveAll(invite => !known.Contains(invite.ProfileId));
+            var changedDevices = false;
+            foreach (var device in devices.Where(device => device.ProfileId != Guid.Empty && !known.Contains(device.ProfileId)))
+            {
+                if (device.Revoked) continue;
+                device.Revoked = true;
+                heartbeats.TryRemove(device.Id, out _);
+                changedDevices = true;
+            }
+            if (removed > 0) data.SaveServerInvites(serverInvites);
+            if (changedDevices) data.SaveDevices(devices);
+        }
+    }
+
+    public PairingInvite IssueServer(Guid profileId, bool canStart, bool canStop, string endpoint,
+        string fingerprint, bool refresh)
+    {
+        if (profileId == Guid.Empty) throw new ArgumentException("Choose a saved server.");
+        lock (sync)
+        {
+            var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
+            if (state is not null && !refresh)
+                return new(state.Endpoint, state.Fingerprint, profileId, state.Code, DateTimeOffset.MaxValue, true);
+            var next = new ServerInviteState
+            {
+                ProfileId = profileId, Generation = Guid.NewGuid(),
+                Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                Endpoint = endpoint, Fingerprint = fingerprint,
+                CanStart = canStart, CanStop = canStop,
+                Rotated = refresh
+            };
+            if (state is not null) serverInvites.Remove(state);
+            serverInvites.Add(next);
+            // Generation is the authorization gate. Persist it before updating device views,
+            // so even an interrupted rotation cannot leave an old credential usable.
+            data.SaveServerInvites(serverInvites);
+            if (refresh)
+            {
+                foreach (var device in devices.Where(device => device.ProfileId == profileId || device.ProfileId == Guid.Empty))
+                {
+                    device.Revoked = true;
+                    device.InviteHash = null;
+                    device.InviteExpiresUtc = null;
+                    heartbeats.TryRemove(device.Id, out _);
+                }
+                data.SaveDevices(devices);
+            }
+            data.Audit($"server-invite {(refresh ? "refresh" : "create")} {profileId} {DateTimeOffset.UtcNow:O}");
+            return new(endpoint, fingerprint, profileId, next.Code, DateTimeOffset.MaxValue, true);
+        }
+    }
 
     public IReadOnlyList<DeviceView> Views()
     {
@@ -204,7 +295,7 @@ public sealed class PairingService(LocalData data)
         {
             heartbeats.TryGetValue(device.Id, out var heartbeat);
             var fresh = heartbeat is not null && DateTimeOffset.UtcNow - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
-            return new DeviceView(device.Id, device.Name, device.CanStart, device.CanStop, device.Revoked,
+            return new DeviceView(device.Id, device.ProfileId, device.Name, device.CanStart, device.CanStop, IsRevoked(device),
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
                 fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null,
                 device.PlatformUserId);
@@ -213,7 +304,8 @@ public sealed class PairingService(LocalData data)
 
     public bool HasInviteOrCredential()
     {
-        lock (sync) return devices.Any(d => !d.Revoked && (d.InviteHash is not null || d.CredentialHash is not null));
+        lock (sync) return serverInvites.Count > 0 ||
+            devices.Any(d => !IsRevoked(d) && (d.InviteHash is not null || d.CredentialHash is not null));
     }
 
     public PairingInvite Issue(string name, bool canStart, bool canStop, string endpoint, string fingerprint, Guid? rotatingId = null)
@@ -253,8 +345,25 @@ public sealed class PairingService(LocalData data)
         if (request.Code is null || request.Code.Length > 128) return null;
         lock (sync)
         {
+            if (request.ServerScope)
+            {
+                var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == request.DeviceId);
+                if (state is null || !Matches(request.Code, Hash(state.Code))) return null;
+                var id = Guid.NewGuid();
+                var serverToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+                var expires = DateTimeOffset.UtcNow.AddDays(90);
+                devices.Add(new PairedDevice
+                {
+                    Id = id, ProfileId = state.ProfileId, InviteGeneration = state.Generation,
+                    Name = $"Friend PC {id.ToString("N")[..6]}", CanStart = state.CanStart,
+                    CanStop = state.CanStop, CredentialHash = Hash(serverToken), CredentialExpiresUtc = expires
+                });
+                data.SaveDevices(devices);
+                data.Audit($"activate {id} {state.ProfileId} {DateTimeOffset.UtcNow:O}");
+                return new PairingCredential(id, serverToken, expires);
+            }
             var device = devices.SingleOrDefault(d => d.Id == request.DeviceId);
-            if (device is null || device.Revoked || device.InviteHash is null ||
+            if (device is null || IsRevoked(device) || device.InviteHash is null ||
                 device.InviteExpiresUtc <= DateTimeOffset.UtcNow || !Matches(request.Code, device.InviteHash)) return null;
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             device.CredentialHash = Hash(token);
@@ -279,7 +388,7 @@ public sealed class PairingService(LocalData data)
                 device = null;
                 return new PairingDecision(false, "Unauthorized", "Device credential was not accepted.");
             }
-            if (device.Revoked) return new PairingDecision(false, "Revoked", "This device has been revoked.");
+            if (IsRevoked(device)) return new PairingDecision(false, "Revoked", "This server's invite was refreshed or this device was revoked.");
             if (device.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
                 return new PairingDecision(false, "Expired", "This device credential has expired.");
             return new PairingDecision(true, "Authenticated", "Device authenticated.");
@@ -292,7 +401,7 @@ public sealed class PairingService(LocalData data)
             return new PairingDecision(false, "InvalidHeartbeat", "Heartbeat fields are invalid.");
         lock (sync)
         {
-            if (device.Revoked) return new PairingDecision(false, "Revoked", "This device has been revoked.");
+            if (IsRevoked(device)) return new PairingDecision(false, "Revoked", "This server's invite was refreshed or this device was revoked.");
             if (heartbeats.TryGetValue(device.Id, out var prior) && prior.InstanceId == request.InstanceId &&
                 request.Sequence <= prior.Sequence)
                 return new PairingDecision(false, "Replay", "Heartbeat sequence did not advance.");
@@ -324,9 +433,9 @@ public sealed class PairingService(LocalData data)
             return new PairingDecision(false, "InvalidPlayerId", "Use the Valheim Platform User ID shown in F2, such as V_123456789.");
         lock (sync)
         {
-            var device = devices.SingleOrDefault(d => d.Id == id && !d.Revoked);
+            var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d));
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Friend PC was not found.");
-            if (devices.Any(d => d.Id != id && !d.Revoked && d.PlatformUserId == value && value.Length > 0))
+            if (devices.Any(d => d.Id != id && !IsRevoked(d) && d.ProfileId == device.ProfileId && d.PlatformUserId == value && value.Length > 0))
                 return new PairingDecision(false, "DuplicatePlayerId", "That Valheim player ID belongs to another Friend PC.");
             device.PlatformUserId = value;
             data.SaveDevices(devices);
@@ -339,7 +448,7 @@ public sealed class PairingService(LocalData data)
     {
         lock (sync)
         {
-            var device = devices.SingleOrDefault(d => d.Id == id && !d.Revoked && d.CredentialHash is not null);
+            var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Pair this Friend PC first.");
             device.CanStart = canStart;
             device.CanStop = canStop;
@@ -349,11 +458,11 @@ public sealed class PairingService(LocalData data)
         }
     }
 
-    public bool TryAssignedPlayerIds(out string[] ids, out string reason)
+    public bool TryAssignedPlayerIds(Guid profileId, out string[] ids, out string reason)
     {
         lock (sync)
         {
-            var active = devices.Where(d => !d.Revoked).ToList();
+            var active = devices.Where(d => !IsRevoked(d) && (d.ProfileId == profileId || d.ProfileId == Guid.Empty)).ToList();
             ids = [];
             if (active.Count == 0) { reason = "No Friend PCs are paired."; return false; }
             if (active.Any(d => d.CredentialHash is null || d.CredentialExpiresUtc <= DateTimeOffset.UtcNow))
@@ -367,12 +476,12 @@ public sealed class PairingService(LocalData data)
         }
     }
 
-    public bool TryCoveredPlayerIds(out string[] ids, out string reason)
+    public bool TryCoveredPlayerIds(Guid profileId, out string[] ids, out string reason)
     {
-        if (!TryAssignedPlayerIds(out ids, out reason)) return false;
+        if (!TryAssignedPlayerIds(profileId, out ids, out reason)) return false;
         lock (sync)
         {
-            if (!devices.Where(d => !d.Revoked).All(d => heartbeats.TryGetValue(d.Id, out var receipt) &&
+            if (!devices.Where(d => !IsRevoked(d) && (d.ProfileId == profileId || d.ProfileId == Guid.Empty)).All(d => heartbeats.TryGetValue(d.Id, out var receipt) &&
                 DateTimeOffset.UtcNow - receipt.ReceivedUtc <= TimeSpan.FromSeconds(45) && receipt.GameRunning == false))
             { reason = "Every Friend PC must have a fresh, closed-game report."; return false; }
             reason = "All paired Friend PCs reported their game closed.";
@@ -382,11 +491,11 @@ public sealed class PairingService(LocalData data)
 
     private static bool ValidPlayerId(string? value) => RemoteStopSafety.ValidPlatformUserId(value);
 
-    public bool AllKnownNotPlaying()
+    public bool AllKnownNotPlaying(Guid profileId)
     {
         lock (sync)
         {
-            var active = devices.Where(d => !d.Revoked).ToList();
+            var active = devices.Where(d => !IsRevoked(d) && (d.ProfileId == profileId || d.ProfileId == Guid.Empty)).ToList();
             return active.Count > 0 && active.All(d => d.CredentialHash is not null &&
                 d.CredentialExpiresUtc > DateTimeOffset.UtcNow &&
                 heartbeats.TryGetValue(d.Id, out var receipt) &&

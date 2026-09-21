@@ -43,14 +43,20 @@ public sealed class HostManager(LocalData data)
             if (pinnedEndpoint is not null &&
                 !string.Equals(next.CompanionEndpoint, pinnedEndpoint, StringComparison.OrdinalIgnoreCase))
                 return Result(false, "HostAddressPinned", "The Friend app address is pinned by the Host identity. Keep the address used for pairing.");
+            var profileIds = next.Profiles.Select(profile => profile.Id).ToHashSet();
+            var serverInvites = data.LoadServerInvites()
+                .Where(invite => profileIds.Contains(invite.ProfileId)).ToList();
+            var devices = data.LoadDevices().Where(device => !device.Revoked &&
+                (device.ProfileId == Guid.Empty || profileIds.Contains(device.ProfileId))).ToList();
             if (next.CompanionListeningEnabled &&
                 (!data.HasProtected("host-certificate.protected") ||
-                 !data.LoadDevices().Any(device => !device.Revoked &&
-                    (device.InviteHash is not null || device.CredentialHash is not null))))
+                 !(serverInvites.Count > 0 || devices.Any(device =>
+                    (device.InviteHash is not null || device.CredentialHash is not null)))))
                 return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
             if (next.RemoteControlsEnabled &&
-                !data.LoadDevices().Any(device => !device.Revoked && (device.InviteHash is not null ||
-                    device.CredentialHash is not null) && (device.CanStart || device.CanStop)))
+                !(serverInvites.Any(invite => invite.CanStart || invite.CanStop) ||
+                    devices.Any(device => (device.InviteHash is not null ||
+                    device.CredentialHash is not null) && (device.CanStart || device.CanStop))))
                 return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
             foreach (var run in runs)
             {
