@@ -53,13 +53,6 @@ function hostAddress(endpoint: string): string {
   } catch { return '' }
 }
 
-function invitedHostAddress(invitation: string): string {
-  try {
-    const parsed: { endpoint?: string } = JSON.parse(invitation)
-    return hostAddress(parsed.endpoint ?? '')
-  } catch { return '' }
-}
-
 const localHeaders = { 'Content-Type': 'application/json', 'X-TogetherServer-Local': '1' }
 
 async function readSnapshot(): Promise<Snapshot> {
@@ -111,7 +104,6 @@ function App() {
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [detectingPublicIp, setDetectingPublicIp] = useState(false)
-  const [deviceName, setDeviceName] = useState('')
   const [deviceStart, setDeviceStart] = useState(false)
   const [deviceStop, setDeviceStop] = useState(false)
   const [invitation, setInvitation] = useState('')
@@ -222,17 +214,17 @@ function App() {
     const timer = window.setInterval(() => void detectPublicIp(), 15 * 60 * 1000)
     return () => window.clearInterval(timer)
   }, [snapshot?.mode])
-  const issueInvite = async (rotateDeviceId?: string, name = deviceName, canStart = deviceStart, canStop = deviceStop) => {
+  const issueInvite = async (rotateDeviceId?: string, name = 'Friend PC', canStart = deviceStart, canStop = deviceStop) => {
     setPending('invite')
     setNotice(null)
     try {
       const response = await fetch('/api/local/devices/invite', { method: 'POST', headers: localHeaders,
         body: JSON.stringify({ name, canStart, canStop, rotateDeviceId: rotateDeviceId ?? null }) })
-      const result: { ok: boolean; code: string; message: string; invitation?: string } = await response.json()
+      const result: { ok: boolean; code: string; message: string; password?: string; deviceName?: string } = await response.json()
       setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
-      if (result.ok && result.invitation) {
-        setInvitation(result.invitation)
-        setInvitationName(name)
+      if (result.ok && result.password) {
+        setInvitation(result.password)
+        setInvitationName(result.deviceName ?? 'Friend PC')
         const latest = await fetch('/api/local/companion')
         if (latest.ok) setCompanion(await latest.json())
         const host = await readSnapshot()
@@ -257,6 +249,10 @@ function App() {
     finally { setPending('') }
   }
   const pairFriend = async () => {
+    if (!friendHostAddress || !friendInvite) {
+      setNotice({ good: false, text: 'Enter the Host IP and paste the password from the Host PC.' })
+      return
+    }
     setPending('pair')
     try {
       const result = await change<BasicResult>('/api/local/friend/pair', 'POST', { invitation: friendInvite,
@@ -269,6 +265,17 @@ function App() {
         await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
         setSnapshot(await readSnapshot())
       }
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const checkFriendConnection = async () => {
+    setPending('poll')
+    try {
+      const response = await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
+      if (!response.ok) throw new Error(`Local app returned ${response.status}`)
+      const next: FriendSnapshot = await response.json()
+      setSnapshot(next)
+      setNotice({ good: next.state === 'Connected' || next.state === 'Disabled', text: `${next.state}: ${next.detail}` })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
@@ -464,7 +471,7 @@ function App() {
     <main>
       <div className="eyebrow">{snapshot?.mode === 'Friend' ? 'FRIEND MODE' : 'HOST MODE'} <span>·</span> THIS PC ONLY</div>
       <div className={`hero ${connectionView ? 'hero-compact' : ''}`}><div><h1>{snapshot?.mode === 'Friend' ? 'Connect to your Host' : hostView === 'friends' ? 'Friends' : 'Your server, in your hands.'}</h1>
-        <p>{snapshot?.mode === 'Friend' ? 'Enter the Host IP and your one-time code. Then you can see servers and request permitted actions.' : hostView === 'friends' ? 'Share the address, pair each PC, and choose who can control servers.' : 'Set up a Valheim server, manage it here, and invite friends when you are ready.'}</p></div>
+        <p>{snapshot?.mode === 'Friend' ? 'Enter the Host IP and password once. Then you can see servers and request permitted actions.' : hostView === 'friends' ? 'Share your IP and a separate password for each Friend PC.' : 'Set up a Valheim server, manage it here, and invite friends when you are ready.'}</p></div>
         {snapshot?.mode === 'Host' && hostView !== 'friends' && <div className="hero-badge">Local Host<small>127.0.0.1 only</small></div>}
       </div>
 
@@ -482,17 +489,14 @@ function App() {
           <div className="section-heading"><span className="section-icon">↗</span><div><h2>{snapshot.endpoint && !showPairing ? 'Your Host' : 'Connect to a Host'}</h2><p>{snapshot.detail}</p></div></div>
           {snapshot.endpoint && !showPairing ? <>
             <div className="connection-address"><span>Host IP</span><strong>{hostAddress(snapshot.endpoint)}</strong><small>Saved on this PC · {snapshot.state}</small></div>
-            <button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite('') }}>Pair with another Host</button>
+            <div className="actions"><button disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? 'Checking…' : 'Check connection now'}</button>
+              <button className="secondary" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite('') }}>Connect to another Host PC</button></div>
           </> : <>
             <div className="settings-grid">
               <label>Host IP (port optional)<input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Port 5131 is assumed. Use IP:port if the Host changed it.</small></label>
-              <label>One-time pairing code<textarea rows={3} value={friendInvite} onChange={event => {
-                setFriendInvite(event.target.value)
-                const address = invitedHostAddress(event.target.value)
-                if (address && !friendHostAddress) setFriendHostAddress(address)
-              }} placeholder="Paste the code from the Host" /><small>Get a separate code for each PC. It pins the Host identity and saves this PC's access.</small></label>
+              <label>Password<input type="password" autoComplete="off" value={friendInvite} onChange={event => setFriendInvite(event.target.value.trim())} placeholder="Paste the password from the Host" /><small>The Host generates one password per PC. Paste it once; this app saves its own access.</small></label>
             </div>
-            <div className="save-row"><span>Enter the Host IP and paste your code once.</span><button disabled={!friendInvite || !friendHostAddress || !!pending} onClick={() => void pairFriend()}>{pending === 'pair' ? 'Connecting…' : 'Connect this PC'}</button></div>
+            <div className="save-row"><span>Use the TogetherServer Host IP, not the Valheim game port.</span><button disabled={!!pending} onClick={() => void pairFriend()}>{pending === 'pair' ? 'Connecting…' : 'Connect to Host PC'}</button></div>
           </>}
           <details className="advanced-block"><summary>Game running check</summary>
             <p className="helper-text">TogetherServer checks whether Valheim is running on this PC. It never starts your game.</p>
@@ -617,13 +621,10 @@ function App() {
           <p className="footnote">The app detects the outbound public IP. A Friend on another network must test whether either port is reachable. TogetherServer does not change router or firewall settings.</p>
         </section>
         <section className="panel">
-          <div className="section-heading"><span className="section-icon">↗</span><div><h2>Invite a friend</h2><p>One code pairs one player's PC. You choose whether that PC may request Start or Stop.</p></div></div>
-          <div className="settings-grid">
-            <label>Friend's PC name<input value={deviceName} onChange={event => setDeviceName(event.target.value)} placeholder="Alex's PC" /></label>
-            <div className="device-options"><label className="check-row"><input type="checkbox" checked={deviceStart} onChange={event => setDeviceStart(event.target.checked)} /> May request Start</label><label className="check-row"><input type="checkbox" checked={deviceStop} onChange={event => setDeviceStop(event.target.checked)} /> May request Stop</label></div>
-          </div>
-          <div className="save-row"><span>{dirty ? 'Save your other settings first.' : !friendAppAddress ? 'Wait for the Host address check.' : !deviceName.trim() ? 'Name this PC to make a code.' : 'The code works once and expires after 30 minutes.'}</span><button disabled={!!pending || dirty || !deviceName.trim() || !friendAppAddress} onClick={() => void issueInvite()}>{pending === 'invite' ? 'Creating…' : 'Create pairing code'}</button></div>
-          {invitation && <div className="invite-box"><strong>Pairing code for {invitationName}</strong><p>Copy it before restarting this app, then send it privately to that friend. Their app can paste it once.</p><div className="actions"><button onClick={() => void copyText(invitation, 'Pairing code')}>Copy pairing code</button><button className="secondary" onClick={() => setInvitation('')}>Hide</button></div><details><summary>Show code to copy manually</summary><textarea readOnly rows={4} value={invitation} /></details></div>}
+          <div className="section-heading"><span className="section-icon">↗</span><div><h2>Give a Friend access</h2><p>Your Friend opens this app on their PC and enters your Host IP and a password. You never enter their IP.</p></div></div>
+          <div className="device-options"><label className="check-row"><input type="checkbox" checked={deviceStart} onChange={event => setDeviceStart(event.target.checked)} /> May request Start</label><label className="check-row"><input type="checkbox" checked={deviceStop} onChange={event => setDeviceStop(event.target.checked)} /> May request Stop</label></div>
+          <div className="save-row"><span>{dirty ? 'Save your other settings first.' : !friendAppAddress ? 'Wait for the Host address check.' : 'Make a separate password for each PC. It expires in 30 minutes.'}</span><button disabled={!!pending || dirty || !friendAppAddress} onClick={() => void issueInvite()}>{pending === 'invite' ? 'Creating…' : 'Generate password'}</button></div>
+          {invitation && <div className="invite-box"><strong>One-time password for {invitationName}</strong><p>Privately share the Host IP and this password. {companion?.listenerActive ? 'Your Friend can connect now.' : 'Enable Friend app connections, save, and reopen this app before your Friend clicks Connect.'}</p><div className="actions"><button onClick={() => void copyText(invitation, 'Password')}>Copy password</button><button className="secondary" onClick={() => setInvitation('')}>Hide</button></div><details><summary>Show password to copy manually</summary><textarea readOnly rows={3} value={invitation} /></details></div>}
           <div className="policy-line"><div><strong>Allow Friend app connections</strong><p>Requires this app to restart after saving. No router or firewall changes are made.</p></div><label className="check-row"><input type="checkbox" checked={draft.companionListeningEnabled} disabled={!draft.companionListeningEnabled && !companion?.devices.some(device => !device.revoked)} onChange={event => edit({ ...draft, companionListeningEnabled: event.target.checked })} /> Allow</label></div>
           <div className="policy-line"><div><strong>Remote Start and Stop</strong><p>Turning this off blocks requests immediately without stopping a running server.</p></div><label className="check-row"><input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!draft.remoteControlsEnabled && !companion?.devices.some(device => device.paired && !device.revoked)} onChange={event => edit({ ...draft, remoteControlsEnabled: event.target.checked })} /> Allow</label></div>
           {!companion?.devices.some(device => device.paired && !device.revoked) && <p className="helper-text">Remote controls can be enabled after a Friend PC pairs.</p>}

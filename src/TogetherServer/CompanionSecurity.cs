@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -33,6 +34,49 @@ public sealed record FriendPairRequest(string Invitation, string ClientExecutabl
 public sealed record ClientPathRequest(string Path);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
+
+// A copy/paste password includes the one-time secret and the full Host TLS pin.
+// The Host IP is entered separately; no Friend IP or trust-on-first-use is needed.
+public static class PairingPassword
+{
+    private const string Prefix = "TS1-";
+    private const int PayloadLength = 1 + 16 + 32 + 32 + 8;
+
+    public static string Encode(PairingInvite invite)
+    {
+        var fingerprint = Convert.FromHexString(invite.Fingerprint);
+        var secret = Convert.FromBase64String(invite.Code);
+        if (fingerprint.Length != 32 || secret.Length != 32 || invite.DeviceId == Guid.Empty)
+            throw new ArgumentException("Pairing invite fields are invalid.");
+        Span<byte> bytes = stackalloc byte[PayloadLength];
+        bytes[0] = 1;
+        invite.DeviceId.TryWriteBytes(bytes[1..17]);
+        fingerprint.CopyTo(bytes[17..49]);
+        secret.CopyTo(bytes[49..81]);
+        BinaryPrimitives.WriteInt64BigEndian(bytes[81..], invite.ExpiresUtc.ToUnixTimeSeconds());
+        return Prefix + Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    public static bool TryDecode(string? password, string endpoint, out PairingInvite? invite)
+    {
+        invite = null;
+        var value = password?.Trim();
+        if (value is null || value.Length > 160 || !value.StartsWith(Prefix, StringComparison.Ordinal)) return false;
+        var encoded = value[Prefix.Length..].Replace('-', '+').Replace('_', '/');
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(encoded.PadRight((encoded.Length + 3) / 4 * 4, '=')); }
+        catch (FormatException) { return false; }
+        if (bytes.Length != PayloadLength || bytes[0] != 1) return false;
+        var id = new Guid(bytes.AsSpan(1, 16));
+        DateTimeOffset expires;
+        try { expires = DateTimeOffset.FromUnixTimeSeconds(BinaryPrimitives.ReadInt64BigEndian(bytes.AsSpan(81, 8))); }
+        catch (ArgumentOutOfRangeException) { return false; }
+        if (id == Guid.Empty || expires <= DateTimeOffset.UtcNow) return false;
+        invite = new PairingInvite(endpoint, Convert.ToHexString(bytes.AsSpan(17, 32)), id,
+            Convert.ToBase64String(bytes.AsSpan(49, 32)), expires);
+        return true;
+    }
+}
 
 public sealed class HostIdentity(LocalData data)
 {
@@ -146,7 +190,10 @@ public sealed class PairingService(LocalData data)
             }
             else
             {
-                device = new PairedDevice { Id = Guid.NewGuid(), Name = name, CanStart = canStart, CanStop = canStop };
+                var newDeviceId = Guid.NewGuid();
+                device = new PairedDevice { Id = newDeviceId,
+                    Name = name == "Friend PC" ? $"Friend PC {newDeviceId.ToString("N")[..6]}" : name,
+                    CanStart = canStart, CanStop = canStop };
                 devices.Add(device);
             }
             device.InviteHash = Hash(code);

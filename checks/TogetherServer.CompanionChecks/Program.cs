@@ -44,6 +44,13 @@ try
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
     var inviteA = await Invite(owner, "Friend A", true, false);
     var inviteB = await Invite(owner, "Friend B", false, true);
+    var passwordA = PairingPassword.Encode(inviteA);
+    Require(PairingPassword.TryDecode(passwordA, endpoint, out var decoded) &&
+        decoded!.DeviceId == inviteA.DeviceId && decoded.Code == inviteA.Code &&
+        decoded.Fingerprint == inviteA.Fingerprint &&
+        !PairingPassword.TryDecode("wrong-password", endpoint, out _) &&
+        !PairingPassword.TryDecode(PairingPassword.Encode(inviteA with { ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }), endpoint, out _),
+        "generated password did not preserve the device secret and full TLS pin or reject invalid values");
     settings.CompanionEndpoint = $"https://127.0.0.2:{companionPort}";
     var changedPinnedAddress = await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings);
     Require(!changedPinnedAddress.Ok && changedPinnedAddress.Code == "HostAddressPinned",
@@ -75,13 +82,19 @@ try
     var wrongPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(tampered, webJson), fixturePath));
     Require(!wrongPin.Ok && wrongPin.Code == "Disconnected", "wrong Host pin was accepted");
+    var missingIp = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
+        new(passwordA, fixturePath));
+    Require(!missingIp.Ok && missingIp.Code == "InvalidHostAddress", "password pairing accepted a missing Host IP");
+    var wrongPasswordPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
+        new(PairingPassword.Encode(tampered), fixturePath, $"127.0.0.1:{companionPort}"));
+    Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "Disconnected", "password pairing accepted the wrong Host TLS pin");
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(JsonSerializer.Serialize(inviteA, webJson), fixturePath, $"127.0.0.1:{companionPort}"));
+        new(passwordA, fixturePath, $"127.0.0.1:{companionPort}"));
     var pairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(inviteB, webJson), fixturePath));
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");
     var secondUse = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(JsonSerializer.Serialize(inviteA, webJson), fixturePath));
+        new(passwordA, fixturePath, $"127.0.0.1:{companionPort}"));
     Require(!secondUse.Ok, "one-time invite was reused");
     var aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     var bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
@@ -385,7 +398,10 @@ async Task<PairingInvite> Invite(HttpClient owner, string name, bool start, bool
 {
     var result = await OwnerPost<InviteRequest, JsonElement>(owner, "/api/local/devices/invite", new(name, start, stop, null));
     Require(result.GetProperty("ok").GetBoolean(), "invite creation failed: " + result.GetProperty("message").GetString());
-    return JsonSerializer.Deserialize<PairingInvite>(result.GetProperty("invitation").GetString()!, webJson)!;
+    var invite = JsonSerializer.Deserialize<PairingInvite>(result.GetProperty("invitation").GetString()!, webJson)!;
+    Require(result.GetProperty("password").GetString() == PairingPassword.Encode(invite),
+        "Host did not return the generated copy/paste password");
+    return invite;
 }
 
 static HttpClient PinnedClient(string endpoint, string fingerprint)

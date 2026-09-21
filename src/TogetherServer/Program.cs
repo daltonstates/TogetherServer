@@ -285,7 +285,9 @@ app.MapPost("/api/local/devices/invite", async (InviteRequest request) =>
             using var certificate = identity.Ensure(settings.CompanionEndpoint);
             var invite = pairing.Issue(request.Name, request.CanStart, request.CanStop,
                 settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.RotateDeviceId);
-            return Results.Json(new { ok = true, code = "InviteCreated", message = "Copy this one-time invite through a trusted channel. It expires in 30 minutes.",
+            return Results.Json(new { ok = true, code = "InviteCreated", message = "Copy this one-time password through a trusted channel. It expires in 30 minutes.",
+                password = PairingPassword.Encode(invite),
+                deviceName = pairing.Views().Single(device => device.Id == invite.DeviceId).Name,
                 invitation = JsonSerializer.Serialize(invite, new JsonSerializerOptions(JsonSerializerDefaults.Web)) });
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.Security.Cryptography.CryptographicException)

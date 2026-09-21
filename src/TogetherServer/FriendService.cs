@@ -42,7 +42,7 @@ public sealed class FriendService
         this.data = data;
         config = LoadConfig(data);
         view = config is null
-            ? new("Friend", "Not paired", "Enter the Host IP and one-time pairing code.", "", null, null, false, false, false, [])
+            ? new("Friend", "Not paired", "Enter the Host IP and password from the Host PC.", "", null, null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
                 null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [], config.ClientExecutablePath);
     }
@@ -72,8 +72,19 @@ public sealed class FriendService
         try
         {
             PairingInvite? invite;
-            try { invite = JsonSerializer.Deserialize<PairingInvite>(invitation, Json); }
-            catch (JsonException) { return new(false, "InvalidInvite", "Pairing code is invalid. Paste the whole code from the Host.", null); }
+            if (invitation?.TrimStart().StartsWith('{') == true)
+            {
+                // Existing invitations remain usable until their normal expiry.
+                try { invite = JsonSerializer.Deserialize<PairingInvite>(invitation, Json); }
+                catch (JsonException) { return new(false, "InvalidInvite", "Pairing password is invalid.", null); }
+            }
+            else
+            {
+                if (!HostIdentity.TryAddress(hostAddress, out var endpoint))
+                    return new(false, "InvalidHostAddress", "Enter the Host IP, with :port only if it differs from 5131.", null);
+                if (!PairingPassword.TryDecode(invitation, endpoint, out invite))
+                    return new(false, "InvalidInvite", "Pairing password is invalid or expired. Ask the Host for a new password.", null);
+            }
             if (invite is null || !HostIdentity.TryEndpoint(invite.Endpoint, out _) ||
                 !ValidFingerprint(invite.Fingerprint) || string.IsNullOrWhiteSpace(invite.Code) ||
                 invite.DeviceId == Guid.Empty || invite.ExpiresUtc <= DateTimeOffset.UtcNow ||
@@ -83,7 +94,7 @@ public sealed class FriendService
             if (!string.IsNullOrWhiteSpace(hostAddress) &&
                 (!HostIdentity.TryAddress(hostAddress, out var enteredEndpoint) ||
                  !string.Equals(enteredEndpoint, invite.Endpoint, StringComparison.OrdinalIgnoreCase)))
-                return new(false, "HostAddressMismatch", "Host IP or port differs from the pairing code. Check the address with the Host.", null);
+                return new(false, "HostAddressMismatch", "Host IP or port differs from this pairing invitation. Check the address with the Host.", null);
             try
             {
                 using var client = MakeClient(invite.Endpoint, invite.Fingerprint);
