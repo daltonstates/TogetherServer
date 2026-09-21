@@ -524,3 +524,13 @@ Starting Git HEAD: `927e952`. Each saved Host card now places Start/Stop, Invite
 | Real game and public Friend network acceptance | Not run for this layout change. The rendered test used disposable fixture profiles in an isolated loopback Host process. |
 
 The normal `local-data/release/TogetherServer.exe` was in use by an existing TogetherServer process, so Windows refused to replace it. The running app was left untouched; launch the new build after ending that session safely.
+
+## 2026-09-21 - Prepared v0.1.2 GitHub upload
+
+The installed EXE reported `0.1.1.0`, so the app and UI package versions were raised to `0.1.2` before preparing the next update. The public GitHub repository showed no Releases; `git ls-remote --tags origin` showed only `v0.1.0`. The release preparation script built the current sources without publishing anything.
+
+| Final check | Result |
+| --- | --- |
+| Prepared asset | `local-data/github-release/v0.1.2/TogetherServer-win-x64.exe`, 64,172,965 bytes, file version `0.1.2.0`, SHA-256 `375DDAEB29EB8527E518CD12907B4680FE504A293BB791074EE4EAA59C4655D5`. The adjacent `.sha256` file and release candidate matched. |
+| Build and exact asset smoke | Pass: `scripts/prepare-github-release.ps1`, 19 served groups, and 15 native desktop groups, 0 failures. Disposable smoke data: `local-data/served-smoke/3115221d63b34079a756f16f1a222c4a` and `local-data/desktop-smoke/81b2d6d7780242e495e3835240ee6ba9`. The existing WebView2/WindowsBase `MSB3277` warning remains. |
+| GitHub publishing and live update | Not run. The asset is ready for owner review and upload as the `v0.1.2` release. |
