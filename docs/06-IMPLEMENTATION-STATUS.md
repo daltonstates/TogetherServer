@@ -511,3 +511,16 @@ Starting Git HEAD: `d7cee04`. Saved Host servers now form a responsive two-colum
 | Real game and public Friend network acceptance | Not run. This UI change was tested with disposable profiles and synthetic game processes. |
 
 The first exploratory grid check ran before setting a desktop browser viewport and saw the browser's narrower default width; the corrected 1280 px run and the final rerun passed. No game terms were accepted, real world files changed, or public network settings modified.
+
+## 2026-09-21 - Compact server card actions
+
+Starting Git HEAD: `927e952`. Each saved Host card now places Start/Stop, Invite friends, and an icon-only settings gear in one row, with the gear at the right. When available, Game details or Game address stays on a separate row below. The gear has a server-specific accessible label and still opens that server's setup dialog. Labels wrap inside the buttons at narrow phone widths.
+
+| Final check | Result |
+| --- | --- |
+| TypeScript/Vite and Windows x64 publish | Pass. `local-data/action-row-final/TogetherServer.exe`, 64,172,958 bytes, SHA-256 `B4D4B6DD058256A2DBB704848C65A188B89F957EDD835C99CA1EDDB9005F35B2`. The existing WebView2/WindowsBase `MSB3277` warning remains. |
+| Rendered Edge interaction on the published EXE | Pass: two saved cards and the action row at 1280, 390, and 320 px; no horizontal overflow at 1280, 768, 390, or 320 px; the gear opened the selected server's modal; Cancel, Escape, Save only, global settings, and the scrollable Minecraft setup path passed. Disposable screenshots and data: `local-data/action-row-ui-test/6b52008f68c34eca9f179c1affafd60f`. |
+| Native Windows desktop smoke | Pass: 15 groups, 0 failures, including visible WebView rendering, native window controls and pickers, and synthetic lifecycle actions. Disposable data: `local-data/desktop-smoke/7e155f8e88864a5fa25aae5774dfec90`. |
+| Real game and public Friend network acceptance | Not run for this layout change. The rendered test used disposable fixture profiles in an isolated loopback Host process. |
+
+The normal `local-data/release/TogetherServer.exe` was in use by an existing TogetherServer process, so Windows refused to replace it. The running app was left untouched; launch the new build after ending that session safely.

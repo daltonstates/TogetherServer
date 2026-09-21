@@ -305,9 +305,12 @@ main { padding-top: 24px; }
 .server-grid .profile-top h3, .server-grid .profile-top p { overflow-wrap: anywhere; }
 .server-grid .readiness-row { grid-template-columns: repeat(2, minmax(0, 1fr)) 34px; }
 .server-grid .readiness-row > .icon-button { grid-column: 3; grid-row: 1 / span 2; width: 34px; height: auto; }
-.server-grid .server-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: auto; padding-top: 13px; }
-.server-grid .server-actions button { min-width: 0; width: 100%; }
-.server-grid .server-actions button:last-child:nth-child(3) { grid-column: 1 / -1; }
+.server-grid .server-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) 36px; margin-top: auto; padding-top: 13px; }
+.server-grid .server-actions button { min-width: 0; width: 100%; padding: 8px 6px; white-space: normal; line-height: 1.15; }
+.server-grid .server-actions .server-invite-button { grid-column: 2; }
+.server-grid .server-actions .server-settings-button { grid-column: 3; width: 36px; min-width: 36px; height: 36px; padding: 0; border: 1px solid #627760; background: transparent; color: #d3e4cd; }
+.server-grid .server-actions .server-settings-button:hover { border-color: #acd889; color: #e8f4e2; }
+.server-grid .server-actions .server-share-button { grid-column: 1 / -1; }
 .modal-dialog { position: fixed; width: min(960px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); margin: auto; overflow: auto; color: #e8ede8; }
 .modal-dialog::backdrop { background: #080e0bd9; }
 .modal-dialog .section-heading { margin-bottom: 12px; }
@@ -326,5 +329,6 @@ main { padding-top: 24px; }
   .server-grid .readiness-row > .icon-button { grid-column: 2; grid-row: auto; justify-self: end; width: 34px; min-height: 34px; }
 }
 @media (max-width: 480px) {
-  .server-grid .server-actions { grid-template-columns: 1fr; }
+  .server-grid .server-actions button { gap: 4px; padding: 6px 4px; font-size: 11px; }
+  .server-grid .server-actions .server-settings-button { padding: 0; }
 }
