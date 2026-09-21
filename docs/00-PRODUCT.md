@@ -6,7 +6,7 @@ Let the owner host a dedicated game server on a Windows PC and let a small, know
 
 ## People and modes
 
-- **Owner / Host mode:** configures a prepared game server and its world, starts or stops it, and invites Friends. Valheim setup includes a protected game password. Installed paths, ports, multiple servers, and remote Stop safety live in secondary settings. The Host app supervises game processes and shows honest status and errors.
+- **Owner / Host mode:** configures a game server and its world, starts or stops it, and invites Friends. Minecraft setup can find an existing server or install a fresh official server after the owner accepts its terms in the app. Valheim setup includes a protected game password. Installed paths, ports, multiple servers, and remote Stop safety live in secondary settings. The Host app supervises game processes and shows honest status and errors.
 - **Friend mode:** each friend runs the same app on the PC used to play. Each saved server invite has a distinct credential and client-path check. The app sends authenticated heartbeats, displays Host/server reachability, and requests only actions the owner grants. Minecraft remote Stop remains unavailable until player coverage can be proven.
 - **Owner playing locally:** Host mode must include the owner's own game-running signal in idle decisions. Running the Host app must not imply the owner's Valheim game client is open.
 - **Owner joining another Host:** Hosting and Friend connection are concurrent capabilities in one app process. Opening a Friend connection must not stop the owner's managed server, disable its companion listener, or interrupt existing paired Friends. The visible My server and Join a friend pages are navigation, not mutually exclusive runtime roles.

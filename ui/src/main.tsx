@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { Icon } from './Icon'
 import { ServerReadiness, type PortDiagnostics } from './ServerReadiness'
 import { gameLabel, type Profile } from './GameProfile'
-import { MinecraftWorldSetup, MinecraftServerSetup, minecraftSetupIssues } from './MinecraftSetup'
+import { MinecraftWorldSetup, MinecraftServerSetup, minecraftSetupIssues, type MinecraftDiscovery, type MinecraftInstallation } from './MinecraftSetup'
 import './style.css'
 import './companion.css'
 
@@ -37,6 +37,7 @@ type Discovery = { installations: { executablePath: string; source: string }[]; 
 type ImportResult = BasicResult & { worldDirectory: string | null }
 type ServerBrowseResult = BasicResult & { executablePath?: string }
 type MinecraftBrowseResult = BasicResult & { path?: string }
+type MinecraftInstallResult = BasicResult & { installation?: MinecraftInstallation }
 type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
 type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string }
 type DesktopPreferences = { available: boolean; launchAtLogin: boolean; closeToTray: boolean; startupAvailable: boolean }
@@ -117,6 +118,8 @@ function App() {
   const [friendClientPath, setFriendClientPath] = useState('')
   const [passwords, setPasswords] = useState<Record<string, string>>({})
   const [discovery, setDiscovery] = useState<Discovery | null>(null)
+  const [minecraftDiscovery, setMinecraftDiscovery] = useState<MinecraftDiscovery | null>(null)
+  const [minecraftTerms, setMinecraftTerms] = useState<Record<string, boolean>>({})
   const [sourceRoots, setSourceRoots] = useState<Record<string, string>>({})
   const [showSetup, setShowSetup] = useState(false)
   const [activeProfileId, setActiveProfileId] = useState('')
@@ -258,6 +261,31 @@ function App() {
       setDirty(true)
     }
   }, [snapshot?.mode, discovery, draft])
+
+  useEffect(() => {
+    if (snapshot?.mode !== 'Host' || !draft?.profiles.some(profile => profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') || minecraftDiscovery) return
+    let alive = true
+    void fetch('/api/local/minecraft/discover', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() as Promise<MinecraftDiscovery> : null)
+      .then(result => { if (alive && result) setMinecraftDiscovery(result) })
+      .catch(() => { /* Manual browsing and installation remain available. */ })
+    return () => { alive = false }
+  }, [snapshot?.mode, draft?.profiles, minecraftDiscovery])
+
+  useEffect(() => {
+    if (snapshot?.mode !== 'Host' || !draft || !minecraftDiscovery) return
+    const profiles = draft.profiles.map(profile => {
+      if (profile.kind !== 'MinecraftJava' && profile.kind !== 'MinecraftBedrock') return profile
+      if (profile.worldDirectory || profile.minecraft?.serverJarPath || profile.executablePath) return profile
+      const found = minecraftDiscovery.installations.filter(item => item.kind === profile.kind)
+      return found.length === 1 ? minecraftProfile(profile, found[0]) : profile
+    })
+    if (profiles.some((profile, index) => profile !== draft.profiles[index])) {
+      setDraft({ ...draft, profiles })
+      dirtyRef.current = true
+      setDirty(true)
+    }
+  }, [snapshot?.mode, draft, minecraftDiscovery])
 
   useEffect(() => {
     if (snapshot?.mode !== 'Friend' || friendClientEdited.current) return
@@ -545,9 +573,55 @@ function App() {
     edit({ ...draft, profiles: draft.profiles.map(profile => profile.id === id ? { ...profile, ...patch } : profile) })
   }
 
+  const minecraftProfile = (profile: Profile, item: MinecraftInstallation): Profile => ({
+    ...profile,
+    name: profile.name || `${item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'} server`,
+    worldId: item.worldName,
+    worldDirectory: item.serverDirectory,
+    gamePort: item.gamePort,
+    executablePath: item.executablePath || profile.executablePath,
+    minecraft: item.kind === 'MinecraftJava' ? { serverJarPath: item.artifactPath } : null
+  })
+
+  const useMinecraft = (profile: Profile, item: MinecraftInstallation, announce = true) => {
+    setDraft(current => current ? { ...current, profiles: current.profiles.map(saved =>
+      saved.id === profile.id ? minecraftProfile(saved, item) : saved) } : current)
+    dirtyRef.current = true
+    setDirty(true)
+    if (announce) setNotice({ good: true, text: `${item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'} server selected. Save setup or Start server.` })
+  }
+
+  const scanMinecraft = async (folder?: string) => {
+    try {
+      const path = '/api/local/minecraft/discover' + (folder ? `?folder=${encodeURIComponent(folder)}` : '')
+      const response = await fetch(path, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`Minecraft search returned ${response.status}`)
+      setMinecraftDiscovery(await response.json() as MinecraftDiscovery)
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+  }
+
+  const installMinecraft = async (profile: Profile) => {
+    setPending('install-minecraft')
+    setNotice(null)
+    try {
+      const result = await change<MinecraftInstallResult>('/api/local/minecraft/install', 'POST', {
+        kind: profile.kind, worldName: profile.worldId.trim() || 'world', gamePort: profile.gamePort,
+        acceptedTerms: !!minecraftTerms[profile.id]
+      })
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok && result.installation) {
+        useMinecraft(profile, result.installation, false)
+        setMinecraftTerms(current => ({ ...current, [profile.id]: false }))
+        void scanMinecraft(result.installation.serverDirectory)
+      }
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+
   const changeGameKind = (profile: Profile, kind: Profile['kind']) => {
     if (profile.kind === kind || snapshot?.mode !== 'Host') return
     setPasswords(current => ({ ...current, [profile.id]: '' }))
+    setMinecraftTerms(current => ({ ...current, [profile.id]: false }))
     updateProfile(profile.id, { kind, name: '', serverName: '', crossplay: false, publicListing: false,
       worldId: '', worldSource: kind === 'Valheim' ? 'New' : 'Existing',
       worldDirectory: kind === 'Valheim' ? `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` : '',
@@ -638,12 +712,13 @@ function App() {
     try {
       const result = await change<MinecraftBrowseResult>('/api/local/minecraft/browse', 'POST', { kind: profile.kind, target })
       if (result.ok && result.path) {
-        if (target === 'folder') updateProfile(profile.id, { worldDirectory: result.path })
+        if (target === 'folder') { updateProfile(profile.id, { worldDirectory: result.path }); void scanMinecraft(result.path) }
         if (target === 'executable') updateProfile(profile.id, { executablePath: result.path,
           worldDirectory: profile.kind === 'MinecraftBedrock' && !profile.worldDirectory
             ? result.path.slice(0, result.path.lastIndexOf('\\')) : profile.worldDirectory })
         if (target === 'jar') updateProfile(profile.id, { minecraft: { serverJarPath: result.path },
           worldDirectory: profile.worldDirectory || result.path.slice(0, result.path.lastIndexOf('\\')) })
+        if (target === 'jar') void scanMinecraft(result.path.slice(0, result.path.lastIndexOf('\\')))
       }
       if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
@@ -833,7 +908,11 @@ function App() {
                 </>}
               </> : profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock' ?
                 <MinecraftServerSetup profile={profile} busy={!!pending} onChange={patch => updateProfile(profile.id, patch)}
-                  onBrowse={target => void browseMinecraft(profile, target)} />
+                  onBrowse={target => void browseMinecraft(profile, target)} discovery={minecraftDiscovery}
+                  onSelect={item => useMinecraft(profile, item)} onScan={() => void scanMinecraft(profile.worldDirectory)}
+                  onInstall={() => void installMinecraft(profile)} acceptedTerms={!!minecraftTerms[profile.id]}
+                  onTermsChange={accepted => setMinecraftTerms(current => ({ ...current, [profile.id]: accepted }))}
+                  installBusy={pending === 'install-minecraft'} />
               : <label>Fixture executable path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
             </div>
             <details className="advanced-block"><summary>Advanced server settings</summary>

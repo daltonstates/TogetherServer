@@ -443,10 +443,12 @@ internal sealed class DesktopWindow
 
     private static void OpenApprovedExternal(string? target)
     {
-        if (!string.Equals(target, "steam://install/896660", StringComparison.OrdinalIgnoreCase)) return;
-        try { Process.Start(new ProcessStartInfo("steam://install/896660") { UseShellExecute = true }); }
+        if (target is null || !new[] { "steam://install/896660", "https://www.minecraft.net/en-us/eula",
+                "https://www.microsoft.com/en-us/privacy/privacystatement" }
+            .Contains(target, StringComparer.OrdinalIgnoreCase)) return;
+        try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-        { DesktopLaunch.ShowError("Steam could not open its installation page.\n\n" + ex.Message); }
+        { DesktopLaunch.ShowError("Could not open the selected page.\n\n" + ex.Message); }
     }
 
     private void HideToTray(Form window, NotifyIcon tray)

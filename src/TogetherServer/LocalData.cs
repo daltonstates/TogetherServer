@@ -72,6 +72,8 @@ public sealed class LocalData : IDisposable
     private readonly object auditSync = new();
     public string WorldImportsRoot => Path.Combine(root, "world-imports");
     public string ManagedWorldsRoot => Path.Combine(root, "worlds");
+    public string MinecraftInstallRoot => Path.Combine(root, "minecraft-servers");
+    public string MinecraftRuntimeRoot => Path.Combine(root, "minecraft-runtimes");
     public string NewWorldDirectory(Guid profileId) => Path.Combine(ManagedWorldsRoot, profileId.ToString("N"));
     public bool OwnsNewWorld(ServerProfile profile) =>
         Load("new-world-ownership.json", new List<NewWorldOwnership>()).Any(item =>

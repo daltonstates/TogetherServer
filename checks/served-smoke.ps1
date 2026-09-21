@@ -72,7 +72,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Set up a server') -or !$js.Content.Contains('My server') -or !$js.Content.Contains('Minecraft Java Edition') -or !$js.Content.Contains('Minecraft Bedrock Edition') -or !$js.Content.Contains('Saved connections') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Start server') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Invite friend') -or !$js.Content.Contains('Refresh access') -or !$js.Content.Contains('Game details') -or !$js.Content.Contains('Game ports') -or !$js.Content.Contains('Friend route') -or !$js.Content.Contains('Remote Stop waiting') -or !$js.Content.Contains('steam://install/896660')) {
+    if (!$js.Content.Contains('Set up a server') -or !$js.Content.Contains('My server') -or !$js.Content.Contains('Minecraft Java Edition') -or !$js.Content.Contains('Minecraft Bedrock Edition') -or !$js.Content.Contains('Install Java server') -or !$js.Content.Contains('Install Bedrock server') -or !$js.Content.Contains('Servers found on this PC') -or !$js.Content.Contains('Saved connections') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Start server') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Invite friend') -or !$js.Content.Contains('Refresh access') -or !$js.Content.Contains('Game details') -or !$js.Content.Contains('Game ports') -or !$js.Content.Contains('Friend route') -or !$js.Content.Contains('Remote Stop waiting') -or !$js.Content.Contains('steam://install/896660')) {
         throw 'The published GUI is missing game setup or Friend connection controls.'
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -81,6 +81,16 @@ try {
     $discovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
     if ($null -eq $discovery.installations -or $null -eq $discovery.clients -or $null -eq $discovery.worlds) { throw 'Valheim discovery route returned no result shape.' }
     Write-Host 'PASS loopback-only Valheim discovery route and bundled setup controls'
+    $minecraftDiscovery = Invoke-RestMethod -Uri "$baseUrl/api/local/minecraft/discover"
+    if ($null -eq $minecraftDiscovery.installations -or $null -eq $minecraftDiscovery.javaRuntimePath) { throw 'Minecraft discovery route returned no result shape.' }
+    $installBody = '{"kind":"MinecraftJava","worldName":"world","gamePort":25565,"acceptedTerms":false}'
+    $installForbidden = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/minecraft/install" -Method Post -ContentType 'application/json' -Body $installBody -UseBasicParsing | Out-Null }
+    catch { $installForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$installForbidden) { throw 'Minecraft install bypassed the local mutation gate.' }
+    $installDenied = Invoke-RestMethod -Uri "$baseUrl/api/local/minecraft/install" -Method Post -Headers $headers -ContentType 'application/json' -Body $installBody
+    if ($installDenied.ok -or $installDenied.code -ne 'TermsRequired' -or (Test-Path -LiteralPath (Join-Path $caseRoot 'minecraft-servers'))) { throw 'Minecraft install ran without consent.' }
+    Write-Host 'PASS Minecraft discovery and in-app install consent gate without a game download'
     $gameTypes = @(Invoke-RestMethod -Uri "$baseUrl/api/local/game-types")
     if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Fixture,MinecraftBedrock,MinecraftJava,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
     Write-Host 'PASS explicit game-driver catalog exposes Valheim, Minecraft Java, Minecraft Bedrock, and the fixture'
@@ -238,6 +248,10 @@ try {
     if (!$friendReadGamePassword) { throw 'Friend mode revealed the Host game password.' }
     $friendDiscovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
     if ($null -eq $friendDiscovery.clients) { throw 'Friend mode could not discover its installed Valheim game client.' }
+    $friendInstallDenied = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/minecraft/install" -Method Post -Headers $headers -ContentType 'application/json' -Body $installBody -UseBasicParsing | Out-Null }
+    catch { $friendInstallDenied = [int]$_.Exception.Response.StatusCode -eq 409 }
+    if (!$friendInstallDenied) { throw 'Friend mode accessed Minecraft install.' }
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/host" -Method Post -Headers $headers
     $hostState = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
     if (!$mode.ok -or $hostState.mode -ne 'Host') { throw 'Host mode switch failed.' }

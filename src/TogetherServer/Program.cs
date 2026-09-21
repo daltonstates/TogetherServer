@@ -46,6 +46,8 @@ var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "",
     Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0));
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
+using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+var minecraftInstaller = new MinecraftInstaller(minecraftClient, data);
 var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port, () => updatePending);
@@ -252,6 +254,16 @@ app.MapGet("/api/local/valheim/discover", async () => Results.Json(friendMode
     ? ValheimSetup.Scan()
     : ValheimSetup.Scan((await manager.SnapshotAsync()).Settings.Profiles
         .Where(profile => profile.Kind == "Valheim").Select(profile => profile.WorldDirectory))));
+app.MapGet("/api/local/minecraft/discover", async (string? folder) =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    var profiles = (await manager.SnapshotAsync()).Settings.Profiles;
+    return Results.Json(MinecraftSetup.Scan(data, profiles, folder));
+});
+app.MapPost("/api/local/minecraft/install", async (MinecraftInstallRequest request, CancellationToken ct) =>
+    friendMode
+        ? Results.Conflict(new MinecraftInstallResult(false, "FriendMode", "Switch to Host mode first."))
+        : Results.Json(await minecraftInstaller.InstallAsync(request, ct)));
 app.MapPost("/api/local/valheim/browse-server", async () =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });

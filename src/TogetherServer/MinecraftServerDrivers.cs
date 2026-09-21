@@ -44,7 +44,7 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
         if (!Path.GetFileName(profile.ExecutablePath).Equals(expectedExe, StringComparison.OrdinalIgnoreCase))
             return new("MinecraftExecutableRequired", $"Select an installed {expectedExe}.");
         if (!Directory.Exists(profile.WorldDirectory))
-            return new("MinecraftServerFolderMissing", "Choose a prepared Minecraft server folder. TogetherServer does not install or create one.");
+            return new("MinecraftServerFolderMissing", "Choose or install a Minecraft server folder.");
         var root = Path.GetFullPath(profile.WorldDirectory);
         if (!java && !Path.GetDirectoryName(Path.GetFullPath(profile.ExecutablePath))!
                 .Equals(root, StringComparison.OrdinalIgnoreCase))
