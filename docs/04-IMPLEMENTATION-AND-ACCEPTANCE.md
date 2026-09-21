@@ -32,3 +32,7 @@ V1 is accepted only when the owner can run the bundled Host app; every Friend us
 ## External gates and data protection
 
 The owner must handle game terms and installation, public router/firewall approval, credential exchange, and the real Friend/client test. Continue independent code and local fixture testing while those are pending. Never delete or overwrite a real world for a test. Create isolated synthetic data under ignored `local-data/` and leave the owner's existing game install and worlds alone.
+
+## Minecraft extension gate
+
+Java and Bedrock have separate built-in drivers. Their current fixture checks cover validated owner-prepared settings, TCP/UDP local status responses, concurrent profiles with separate save folders, and fixed graceful console Stop. Before claiming real support for either edition, test an owner-installed server, local status response, actual Friend join, recognizable world change after Stop/restart, and the intended network route. Keep Minecraft remote Stop and auto shutdown unavailable until that edition has a verified player-coverage rule.

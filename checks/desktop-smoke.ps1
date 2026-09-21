@@ -211,6 +211,38 @@ try {
         finally { Stop-Job -Job $picker -ErrorAction SilentlyContinue; Remove-Job -Job $picker -Force -ErrorAction SilentlyContinue }
     }
 
+    foreach ($browse in @(
+        @{ kind = 'MinecraftJava'; target = 'jar' },
+        @{ kind = 'MinecraftJava'; target = 'folder' },
+        @{ kind = 'MinecraftBedrock'; target = 'executable' }
+    )) {
+        $picker = Start-Job -ArgumentList $baseUrl, $browse.kind, $browse.target -ScriptBlock {
+            param($url, $kind, $target)
+            Invoke-RestMethod -Uri "$url/api/local/minecraft/browse" -Method Post -ContentType 'application/json' -Body (@{ kind = $kind; target = $target } | ConvertTo-Json) -Headers @{ Origin = $url; 'X-TogetherServer-Local' = '1' } -TimeoutSec 30
+        }
+        try {
+            $popup = [IntPtr]::Zero
+            for ($i = 0; $i -lt 100; $i++) {
+                $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
+                $first.Refresh()
+                $popup = [TogetherServerWindowCheck]::FindDialog($first.Id)
+                if ($windowState.fileDialogOpen -and $popup -ne [IntPtr]::Zero -and $popup -ne $first.MainWindowHandle) { break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (!$windowState.fileDialogOpen -or $popup -eq [IntPtr]::Zero -or $popup -eq $first.MainWindowHandle) {
+                throw "Minecraft $($browse.kind) $($browse.target) did not open a native picker."
+            }
+            if (![TogetherServerWindowCheck]::PostMessage($popup, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) {
+                throw 'Could not cancel the Minecraft file picker.'
+            }
+            if (!(Wait-Job -Job $picker -Timeout 10)) { throw 'Canceled Minecraft picker did not return.' }
+            $choice = Receive-Job -Job $picker
+            if ($choice.code -ne 'Canceled') { throw "Canceled Minecraft picker returned $($choice.code)." }
+            Write-Host "PASS Minecraft $($browse.kind) $($browse.target) opens and cancels a native Windows picker"
+        }
+        finally { Stop-Job -Job $picker -ErrorAction SilentlyContinue; Remove-Job -Job $picker -Force -ErrorAction SilentlyContinue }
+    }
+
     $saveRoot = Join-Path $caseRoot 'source-save'
     $saveFiles = Join-Path $saveRoot 'worlds_local'
     New-Item -ItemType Directory -Path $saveFiles -Force | Out-Null

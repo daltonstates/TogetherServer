@@ -9,7 +9,7 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 1. Authorize the local owner or authenticated Friend action. Reject remote requests while controls are disabled.
 2. Serialize starts/stops in the Host process. Recheck maximum concurrent managed servers, one writer per world, configured game-port conflicts, executable identity, save path, and available local ports immediately before launch.
 3. Record an operation ID and its intended world/profile before launching. A repeated request with the same idempotency key returns the same result and never creates another server process.
-4. Start only the owner-approved installed Valheim Dedicated Server with validated arguments and an explicit world/save location. Do not modify Valve/Iron Gate's installed script in place. Capture logs without storing passwords or personal identifiers in Git.
+4. Start only the owner-approved installed server selected by the saved built-in game profile, with validated fixed arguments and an explicit world/save location. Do not modify installed game files or accept game terms. Capture logs without storing passwords or personal identifiers in Git.
 5. Show Starting until an actual readiness signal is observed. A fixture script or process-exists result is labeled Fixture/Process running; only a real client join can certify Join verified.
 
 ### Stop
@@ -19,13 +19,15 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 3. If the graceful stop times out, report Failed/Unknown and preserve the world. Do not automatically force-kill. Any owner-approved force action must warn that the save may be inconsistent.
 4. A restart is a verified stop followed by a new start against the same saved world. Test a recognizable in-world change surviving it before declaring real Valheim support.
 
+Minecraft Java and Bedrock use a fixed `stop` console command sent only after exact process and isolated-console checks. Their local status probes and disposable stop markers do not establish real save integrity. Remote Stop and auto shutdown remain unavailable for both editions.
+
 ### Host app restart
 
 Persist enough identity to check whether a previously managed server process still exists. Reattach only when PID, process creation time, executable path, and world/profile identity agree. If uncertain, show Unknown, keep the world blocked from another start, and require owner reconciliation. Never search for a name and kill the first matching process.
 
 ## Companion heartbeat
 
-- Friend mode runs while the game is closed. It sends an authenticated outbound heartbeat about every 15 seconds with device ID, version, monotonic sequence, and a boolean for whether that PC's verified Valheim game client executable is running. The Host uses **its receipt time** for freshness, not the Friend PC's clock.
+- Friend mode runs while the game is closed. Each saved invite sends an authenticated outbound heartbeat about every 15 seconds with device ID, version, monotonic sequence, and a boolean for whether that PC's configured game client executable is running. The Host uses **its receipt time** for freshness, not the Friend PC's clock. Minecraft client-process checks are informational until game-specific player coverage is verified.
 - A heartbeat older than roughly 45 seconds is Stale/Unknown. Retries are bounded. Host reachability and game-running status are separate fields in the GUI.
 - Host mode performs the same local Valheim-client check for the owner's PC. Minimizing the Host window must not stop this check while the Host app is running.
 - If a Friend app is revoked or a required device is missing, its status is Unknown for idle decisions until the owner explicitly changes the allowed-player set. Do not assume offline equals not playing.

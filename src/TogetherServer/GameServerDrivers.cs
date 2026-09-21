@@ -8,10 +8,12 @@ namespace TogetherServer;
 public static class GameKinds
 {
     public const string Valheim = "Valheim";
+    public const string MinecraftJava = "MinecraftJava";
+    public const string MinecraftBedrock = "MinecraftBedrock";
     public const string Fixture = "Fixture";
 }
 
-public sealed record GamePort(string Protocol, int Port, string Label);
+public sealed record GamePort(string Protocol, int Port, string Label, string Family = "Any");
 public sealed record GameValidation(string Code, string Message);
 public sealed record GameLaunchResult(string Code, string Message, int ProcessId);
 public sealed record GameHealthResult(bool Ok, string Code, string State, string Detail);
@@ -43,6 +45,8 @@ public sealed class GameServerRegistry
         var registered = new IGameServerDriver[]
         {
             new ValheimServerDriver(data),
+            new MinecraftJavaServerDriver(),
+            new MinecraftBedrockServerDriver(),
             new FixtureServerDriver()
         };
         drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
@@ -61,8 +65,10 @@ public sealed class GameServerRegistry
                 var protocol = port.Protocol.Equals("TCP", StringComparison.OrdinalIgnoreCase)
                     ? ProtocolType.Tcp : ProtocolType.Udp;
                 var type = protocol == ProtocolType.Tcp ? SocketType.Stream : SocketType.Dgram;
-                var socket = new Socket(AddressFamily.InterNetwork, type, protocol) { ExclusiveAddressUse = true };
-                socket.Bind(new IPEndPoint(IPAddress.Any, port.Port));
+                var family = port.Family == "IPv6" ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
+                var socket = new Socket(family, type, protocol) { ExclusiveAddressUse = true };
+                if (family == AddressFamily.InterNetworkV6) socket.DualMode = false;
+                socket.Bind(new IPEndPoint(family == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any, port.Port));
                 if (protocol == ProtocolType.Tcp) socket.Listen(1);
                 sockets.Add(socket);
             }

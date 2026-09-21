@@ -71,11 +71,29 @@ await Check("one writer per world", async () =>
     var manager = new HostManager(data);
     var port = FreePort();
     var a = Profile("world-a", "same-world", port);
-    var b = Profile("world-b", "same-world", port + 10);
+    var b = Profile("world-b", "same-world", port + 10, a.WorldDirectory);
     Require((await manager.UpdateSettingsAsync(Settings(a, b))).Ok, "settings failed");
     Require((await manager.StartAsync(a.Id)).Ok, "first start failed");
     try { Require((await manager.StartAsync(b.Id)).Code == "WorldConflict", "second world writer was allowed"); }
     finally { Require((await manager.StopAsync(a.Id)).Ok, "fixture cleanup failed"); }
+});
+
+await Check("separate save folders can use the same world name", async () =>
+{
+    using var data = Data("same-name-separate-folders");
+    var manager = new HostManager(data);
+    var port = FreePort();
+    var a = Profile("same-name-a", "same-name", port);
+    var b = Profile("same-name-b", "same-name", port + 10);
+    Require((await manager.UpdateSettingsAsync(Settings(a, b))).Ok, "settings failed");
+    Require((await manager.StartAsync(a.Id)).Ok, "first start failed");
+    try { Require((await manager.StartAsync(b.Id)).Ok, "independent save folder was blocked by its world name"); }
+    finally
+    {
+        Require((await manager.StopAsync(a.Id)).Ok, "first fixture cleanup failed");
+        if (data.LoadRuns().Any(run => run.ProfileId == b.Id))
+            Require((await manager.StopAsync(b.Id)).Ok, "second fixture cleanup failed");
+    }
 });
 
 await Check("managed maximum", async () =>
@@ -175,8 +193,9 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
 {
     using var data = Data("drivers");
     var registry = new GameServerRegistry(data);
-    Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[] { GameKinds.Fixture, GameKinds.Valheim }),
-        "Valheim and the fixture were not separate registered drivers");
+    Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[]
+        { GameKinds.Fixture, GameKinds.MinecraftBedrock, GameKinds.MinecraftJava, GameKinds.Valheim }),
+        "The built-in games and fixture were not separately registered");
     var profile = Profile("unknown-game", "unknown-game", FreePort());
     profile.Kind = "UnregisteredGame";
     var manager = new HostManager(data, registry);

@@ -76,7 +76,10 @@ public static class RemoteStopSafety
     {
         var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
         var run = snapshot.Runs.SingleOrDefault(item => item.ProfileId == profileId);
-        if (profile?.Kind != "Valheim" || run?.State != "Ready")
+        if (profile is null) return StopPermit.Denied("The saved server is unavailable.");
+        if (profile.Kind != GameKinds.Valheim)
+            return StopPermit.Denied("Remote Stop is unavailable for this game until player coverage and safe Stop are verified.");
+        if (run?.State != "Ready")
             return StopPermit.Denied("Remote Stop needs a running, ready Valheim server.");
         var recorded = data.LoadRuns().SingleOrDefault(item => item.ProfileId == profileId);
         if (recorded is null || string.IsNullOrEmpty(recorded.PermittedListSha256))

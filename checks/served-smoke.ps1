@@ -72,8 +72,8 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Start a Valheim server') -or !$js.Content.Contains('My Valheim server') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Start server') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Invite friend') -or !$js.Content.Contains('Refresh access') -or !$js.Content.Contains('Game details') -or !$js.Content.Contains('Game ports') -or !$js.Content.Contains('Friend route') -or !$js.Content.Contains('Remote Stop waiting') -or !$js.Content.Contains('steam://install/896660')) {
-        throw 'The published GUI is missing the Valheim setup controls.'
+    if (!$js.Content.Contains('Set up a server') -or !$js.Content.Contains('My server') -or !$js.Content.Contains('Minecraft Java Edition') -or !$js.Content.Contains('Minecraft Bedrock Edition') -or !$js.Content.Contains('Saved connections') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Start server') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Invite friend') -or !$js.Content.Contains('Refresh access') -or !$js.Content.Contains('Game details') -or !$js.Content.Contains('Game ports') -or !$js.Content.Contains('Friend route') -or !$js.Content.Contains('Remote Stop waiting') -or !$js.Content.Contains('steam://install/896660')) {
+        throw 'The published GUI is missing game setup or Friend connection controls.'
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
@@ -82,8 +82,8 @@ try {
     if ($null -eq $discovery.installations -or $null -eq $discovery.clients -or $null -eq $discovery.worlds) { throw 'Valheim discovery route returned no result shape.' }
     Write-Host 'PASS loopback-only Valheim discovery route and bundled setup controls'
     $gameTypes = @(Invoke-RestMethod -Uri "$baseUrl/api/local/game-types")
-    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Fixture,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
-    Write-Host 'PASS explicit game-driver catalog exposes Valheim and the isolated fixture'
+    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Fixture,MinecraftBedrock,MinecraftJava,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
+    Write-Host 'PASS explicit game-driver catalog exposes Valheim, Minecraft Java, Minecraft Bedrock, and the fixture'
 
     $forbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/mode/friend" -Method Post -UseBasicParsing | Out-Null }

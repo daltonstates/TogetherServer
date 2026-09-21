@@ -11,7 +11,8 @@ internal static class WindowsConsoleProcess
     private const uint CreateUnicodeEnvironment = 0x00000400;
     private const int StartUseShowWindow = 0x00000001;
 
-    public static int Start(string executable, IReadOnlyList<string> arguments, string? steamAppId = null)
+    public static int Start(string executable, IReadOnlyList<string> arguments, string? steamAppId = null,
+        string? workingDirectory = null)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console launch is required.");
         // Windows inherits the parent's Ctrl+C ignore flag into a child even
@@ -37,7 +38,7 @@ internal static class WindowsConsoleProcess
             }
             if (!CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, false,
                     CreateNewConsole | (environment == IntPtr.Zero ? 0 : CreateUnicodeEnvironment),
-                    environment, Path.GetDirectoryName(executable)!, ref startup, out var created))
+                    environment, workingDirectory ?? Path.GetDirectoryName(executable)!, ref startup, out var created))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not launch the selected server executable.");
             CloseHandle(created.Thread);
             CloseHandle(created.Process);
@@ -82,6 +83,47 @@ internal static class WindowsConsoleProcess
         {
             if (previous != 0) AttachConsole((uint)previous);
         }
+    }
+
+    // Minecraft servers expose a fixed `stop` console action. Send only that
+    // literal to the console containing the exact managed process.
+    public static void RequestStopCommand(Process process)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console stop is required.");
+        var previous = ConsoleMembers().FirstOrDefault(id => id != Environment.ProcessId);
+        FreeConsole();
+        try
+        {
+            if (!AttachConsole((uint)process.Id))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not attach to the managed server console.");
+            try
+            {
+                var members = ConsoleMembers();
+                if (members.Length != 2 || !members.Contains(process.Id) || !members.Contains(Environment.ProcessId))
+                    throw new InvalidOperationException("Server console contains another process; no stop command was sent.");
+                var input = CreateFileW("CONIN$", 0x40000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+                if (input == new IntPtr(-1))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not open the managed server console input.");
+                try
+                {
+                    var keys = "stop\r".SelectMany(character => new[]
+                    {
+                        new ConsoleInputRecord { EventType = 1, Key = new ConsoleKeyEvent
+                            { KeyDown = true, RepeatCount = 1, VirtualKeyCode = character == '\r' ? (ushort)13 : (ushort)char.ToUpperInvariant(character), UnicodeChar = character } },
+                        new ConsoleInputRecord { EventType = 1, Key = new ConsoleKeyEvent
+                            { KeyDown = false, RepeatCount = 1, VirtualKeyCode = character == '\r' ? (ushort)13 : (ushort)char.ToUpperInvariant(character), UnicodeChar = character } }
+                    }).ToArray();
+                    if (!WriteConsoleInputW(input, keys, (uint)keys.Length, out var written) || written != keys.Length)
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not send the managed server stop command.");
+                    if (!process.WaitForExit(90000))
+                        throw new TimeoutException("Server did not exit after its stop command; no force stop was sent.");
+                    Thread.Sleep(250);
+                }
+                finally { CloseHandle(input); }
+            }
+            finally { FreeConsole(); }
+        }
+        finally { if (previous != 0) AttachConsole((uint)previous); }
     }
 
     public static uint ExitCode(IntPtr processHandle)
@@ -136,6 +178,24 @@ internal static class WindowsConsoleProcess
         public int ProcessId, ThreadId;
     }
 
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+    private struct ConsoleInputRecord
+    {
+        [FieldOffset(0)] public ushort EventType;
+        [FieldOffset(4)] public ConsoleKeyEvent Key;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ConsoleKeyEvent
+    {
+        [MarshalAs(UnmanagedType.Bool)] public bool KeyDown;
+        public ushort RepeatCount;
+        public ushort VirtualKeyCode;
+        public ushort VirtualScanCode;
+        public char UnicodeChar;
+        public uint ControlKeyState;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateProcessW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CreateProcessW(string application, StringBuilder commandLine, IntPtr processAttributes,
@@ -145,6 +205,14 @@ internal static class WindowsConsoleProcess
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
+    private static extern IntPtr CreateFileW(string name, uint access, uint shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flags, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "WriteConsoleInputW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WriteConsoleInputW(IntPtr input, ConsoleInputRecord[] records, uint length, out uint written);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

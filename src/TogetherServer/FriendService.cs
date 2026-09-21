@@ -19,29 +19,30 @@ public sealed class FriendConfiguration
 }
 
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
-    bool CanStopNow = false, string? StopReason = null);
+    bool CanStopNow = false, string? StopReason = null, string Kind = "");
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool? LocalGameRunning, bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
-    string ClientExecutablePath = "");
+    string ClientExecutablePath = "", Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status);
 
-public sealed class FriendService
+internal sealed class FriendLink
 {
-    private const string ConfigFile = "friend.protected";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly LocalData data;
+    private readonly string configFile;
     private FriendConfiguration? config;
     private FriendView view;
     private Guid instanceId = Guid.NewGuid();
     private long sequence;
 
-    public FriendService(LocalData data)
+    public FriendLink(LocalData data, string configFile)
     {
         this.data = data;
-        config = LoadConfig(data);
+        this.configFile = configFile;
+        config = LoadConfig(data, configFile);
         view = config is null
             ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
@@ -59,7 +60,7 @@ public sealed class FriendService
             if (path is null || (path.Length > 0 && (!Path.IsPathFullyQualified(path) || !File.Exists(path))))
                 return new(false, "InvalidClientPath", "Choose an installed game client executable by absolute path.", null);
             config.ClientExecutablePath = path.Length == 0 ? "" : Path.GetFullPath(path);
-            data.SaveProtected(ConfigFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
+            data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
             view = view with { ClientExecutablePath = config.ClientExecutablePath,
                 LocalGameRunning = ClientMonitor.IsRunning(config.ClientExecutablePath) };
             return new(true, "ClientPathSaved", "Game client path saved in Windows protected storage.", null);
@@ -110,7 +111,7 @@ public sealed class FriendService
                     Credential = credential.Credential, CredentialExpiresUtc = credential.ExpiresUtc,
                     ClientExecutablePath = clientExecutablePath
                 };
-                data.SaveProtected(ConfigFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
+                data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
                 instanceId = Guid.NewGuid();
                 sequence = 0;
                 view = new FriendView("Friend", "Disconnected/Unknown", "Paired; waiting for an authenticated heartbeat.",
@@ -235,9 +236,9 @@ public sealed class FriendService
         finally { gate.Release(); }
     }
 
-    private static FriendConfiguration? LoadConfig(LocalData data)
+    private static FriendConfiguration? LoadConfig(LocalData data, string configFile)
     {
-        var bytes = data.LoadProtected(ConfigFile);
+        var bytes = data.LoadProtected(configFile);
         return bytes is null ? null : JsonSerializer.Deserialize<FriendConfiguration>(bytes, Json);
     }
 

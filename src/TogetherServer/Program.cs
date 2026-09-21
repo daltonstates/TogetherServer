@@ -267,6 +267,35 @@ app.MapPost("/api/local/valheim/browse-server", async () =>
     }
     catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message }); }
 });
+app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request) =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
+    if (request.Kind is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock) ||
+        request.Target is not ("folder" or "executable" or "jar") ||
+        request.Target == "jar" && request.Kind != GameKinds.MinecraftJava)
+        return Results.BadRequest(new { ok = false, code = "InvalidBrowseTarget", message = "Choose a supported Minecraft file or folder." });
+    try
+    {
+        string? path;
+        if (request.Target == "folder") path = await desktop.PickFolderAsync("Choose prepared Minecraft server folder");
+        else
+        {
+            var expected = request.Target == "jar" ? ".jar" : request.Kind == GameKinds.MinecraftJava ? "java.exe" : "bedrock_server.exe";
+            var filter = request.Target == "jar" ? "Minecraft server JAR (*.jar)|*.jar" :
+                $"{expected}|{expected}|Applications (*.exe)|*.exe";
+            path = await desktop.PickFileAsync("Choose " + expected, filter);
+            if (path is not null && (!File.Exists(path) || (request.Target == "jar"
+                    ? !Path.GetExtension(path).Equals(".jar", StringComparison.OrdinalIgnoreCase)
+                    : !Path.GetFileName(path).Equals(expected, StringComparison.OrdinalIgnoreCase))))
+                return Results.Json(new { ok = false, code = "InvalidFile", message = "Choose the requested server file." });
+        }
+        return Results.Json(path is null
+            ? new { ok = false, code = "Canceled", message = "No path selected.", path = (string?)null }
+            : new { ok = true, code = "PathSelected", message = "Path selected. Save setup before starting.", path = (string?)path });
+    }
+    catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows picker: " + ex.Message }); }
+});
 app.MapPost("/api/local/valheim/browse-world", async () =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
@@ -432,7 +461,9 @@ app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePer
 });
 app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>
     friendMode ? Results.Json(await friend.PairAsync(request.Invitation, request.ClientExecutablePath, request.HostAddress))
-        : Results.Conflict(new { ok = false, code = "HostMode" }));
+    : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPost("/api/local/friend/connections/{id:guid}/select", (Guid id) =>
+    friendMode ? Results.Json(friend.Select(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/client-path", async (ClientPathRequest request) =>
     friendMode ? Results.Json(await friend.SetClientPathAsync(request.Path))
         : Results.Conflict(new { ok = false, code = "HostMode" }));

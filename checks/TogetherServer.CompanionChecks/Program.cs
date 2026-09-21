@@ -119,13 +119,26 @@ try
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
     Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
         "a server code exposed a different server profile");
+    var pairedSecondGame = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
+        new(PairingPassword.Encode(inviteB), fixturePath));
+    Require(pairedSecondGame.Ok, "second server pairing replaced the first or failed");
+    var multiple = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(multiple.Connections?.Count == 2 && multiple.Profiles.Single().Kind == GameKinds.Valheim &&
+        multiple.Connections.Any(connection => connection.Profiles.SingleOrDefault()?.Id == profile.Id),
+        "Friend did not retain both independently scoped saved connections and game kinds");
+    var firstConnection = multiple.Connections!.Single(connection => connection.Profiles.Single().Id == profile.Id);
+    Require((await OwnerPost<object, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{firstConnection.ConnectionId}/select", new { })).Ok,
+        "Friend could not select the earlier saved connection");
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(aView.Profiles.Single().Id == profile.Id, "selecting the earlier server lost its pairing");
     settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "fresh Host address update failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.Profiles.Single().JoinAddress is null,
         "a fixture server exposed a Valheim join address");
-    Console.WriteLine("PASS two Friend processes share one server code but receive isolated credentials"); passes++;
+    Console.WriteLine("PASS separate Friend credentials, saved connections, and game kinds"); passes++;
 
     using var publicClient = PinnedClient(endpoint, inviteA.Fingerprint);
     using var invalid = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
@@ -341,6 +354,10 @@ try
     var repairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(rotationInvite), fixturePath));
     Require(repairedB.Ok, "Friend could not reconnect with the refreshed server code");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(bView.State == "Connected" && bView.Connections?.Count == 2,
+        "new pairing did not keep both saved connections or select the working one");
+    var selectedBConnection = bView.ConnectionId;
     deviceBId = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
         .Where(device => device.GetProperty("profileId").GetGuid() == profile.Id && !device.GetProperty("revoked").GetBoolean())
         .Select(device => device.GetProperty("id").GetGuid()).Single(id => id != rotatedCredential.DeviceId);
@@ -395,7 +412,8 @@ try
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
     await WaitLocal(friendBPort);
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(bView.State == "Connected", "Friend did not recover after a stale heartbeat");
+    Require(bView.State == "Connected" && bView.ConnectionId == selectedBConnection,
+        "Friend did not restore its selected connection after a stale heartbeat and app restart");
     Console.WriteLine("PASS stale heartbeat becomes Unknown and fresh reconnect recovers"); passes++;
 
     var limited = false;

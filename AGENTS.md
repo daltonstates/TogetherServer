@@ -2,7 +2,7 @@
 
 ## Scope
 
-Build one small Windows-first Valheim hosting application. The same .NET app is installed on the Host PC and every Friend PC, with Host and Friend modes. Bundle a React/TypeScript interface into the app so Node and a separate web server are not runtime dependencies. The Valheim dedicated server is an external process controlled by Host mode. V1 has no Docker, PostgreSQL, cloud service, billing, Paper/Minecraft, or commercial hosting.
+Build one small Windows-first game hosting application. The same .NET app is installed on the Host PC and every Friend PC, with Host and Friend modes. Bundle a React/TypeScript interface into the app so Node and a separate web server are not runtime dependencies. Valheim, Minecraft Java, and Minecraft Bedrock dedicated servers are external processes controlled by reviewed built-in Host drivers. Minecraft support is fixture-tested until real owner-installed game acceptance is recorded. V1 has no Docker, PostgreSQL, cloud service, billing, Paper/modded servers, or commercial hosting.
 
 Read `README.md`, `docs/00-PRODUCT.md`, `docs/01-ARCHITECTURE.md`, `docs/02-NETWORK-AND-SECURITY.md`, `docs/03-LIFECYCLE.md`, and `docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md` before implementation. The user's current-chat instructions override these files. Preserve data and unrelated changes.
 

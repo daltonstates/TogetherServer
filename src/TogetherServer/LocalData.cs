@@ -36,6 +36,12 @@ public sealed class ServerProfile
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; } = 2456;
     public string ExecutablePath { get; set; } = "";
+    public MinecraftOptions? Minecraft { get; set; }
+}
+
+public sealed class MinecraftOptions
+{
+    public string ServerJarPath { get; set; } = "";
 }
 
 public sealed class ManagedRun
@@ -46,7 +52,9 @@ public sealed class ManagedRun
     public string WorldId { get; set; } = "";
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; }
+    public List<GamePort> DeclaredPorts { get; set; } = [];
     public string ExecutablePath { get; set; } = "";
+    public string ServerArtifactPath { get; set; } = "";
     public string StopPipeName { get; set; } = "";
     public string LogPath { get; set; } = "";
     public int? ProcessId { get; set; }

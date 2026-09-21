@@ -3,7 +3,8 @@ using System.Net;
 
 namespace TogetherServer;
 
-public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId);
+public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId,
+    IReadOnlyList<GamePort>? DeclaredPorts = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, bool? OwnerGameRunning, DateTimeOffset OwnerCheckedUtc,
     IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
@@ -134,18 +135,22 @@ public sealed class HostManager
                 return Result(false, "AlreadyManaged", "This profile already has a managed or unresolved run.");
             if (runs.Any(r => WorldConflict(r, profile)))
                 return Result(false, "WorldConflict", "Another managed run owns this world or save directory.");
-            var requestedPorts = driver.Ports(profile).Select(port => (port.Protocol, port.Port)).ToHashSet();
-            if (runs.Any(run => games.TryGet(run.Kind, out var runningDriver) &&
-                runningDriver.Ports(new ServerProfile { GamePort = run.GamePort })
-                    .Any(port => requestedPorts.Contains((port.Protocol, port.Port)))))
-                return Result(false, "PortConflict", "Another managed run owns one of these game ports.");
             if (runs.Count >= settings.MaxConcurrentServers)
                 return Result(false, "MaxConcurrent", "The managed server limit has been reached.");
             if (!File.Exists(profile.ExecutablePath))
                 return Result(false, "ExecutableMissing", "Selected server executable does not exist.");
             var validation = driver.ValidateForStart(profile);
             if (validation is not null) return Result(false, validation.Code, validation.Message);
-            if (!GameServerRegistry.PortsAvailable(driver.Ports(profile)))
+            var declaredPorts = driver.Ports(profile).ToList();
+            foreach (var existing in runs)
+            {
+                var ownedPorts = PortsForRun(existing);
+                if (ownedPorts is null)
+                    return Result(false, "PortOwnershipUnknown", "A managed run's game ports cannot be verified. Resolve that run before starting another server.");
+                if (ownedPorts.Any(owned => declaredPorts.Any(requested => PortOverlap(owned, requested))))
+                    return Result(false, "PortConflict", "Another managed run owns one of these game ports.");
+            }
+            if (!GameServerRegistry.PortsAvailable(declaredPorts))
                 return Result(false, "PortInUse", "One or more configured game ports are already in use.");
 
             var run = new ManagedRun
@@ -156,7 +161,9 @@ public sealed class HostManager
                 WorldId = profile.WorldId,
                 WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
                 GamePort = profile.GamePort,
+                DeclaredPorts = declaredPorts,
                 ExecutablePath = Path.GetFullPath(profile.ExecutablePath),
+                ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
                 StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
             };
             driver.PrepareStart(profile, run);
@@ -262,23 +269,23 @@ public sealed class HostManager
             if (run is null) return new RunView(profile.Id, "Offline", "No managed process", null);
             var identity = Identity(run);
             if (!games.TryGet(run.Kind, out var driver))
-                return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId);
+                return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId, run.DeclaredPorts);
             return identity switch
             {
-                "Matched" => DriverView(profile.Id, run.ProcessId, driver.Health(run)),
-                "Missing" => new RunView(profile.Id, "Failed", "Recorded process exited; owner can clear the record", run.ProcessId),
-                _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId)
+                "Matched" => DriverView(profile.Id, run, driver.Health(run)),
+                "Missing" => new RunView(profile.Id, "Failed", "Recorded process exited; owner can clear the record", run.ProcessId, run.DeclaredPorts),
+                _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId, run.DeclaredPorts)
             };
         }).ToList();
-        return new HostSnapshot(settings, views, "Process identity and Valheim log signal; join/save unverified", "Host",
+        return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
             ClientMonitor.IsRunning(settings.OwnerClientExecutablePath), DateTimeOffset.UtcNow,
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
                 .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
             data.ManagedWorldsRoot);
     }
 
-    private static RunView DriverView(Guid profileId, int? processId, GameHealthResult health) =>
-        new(profileId, health.State, health.Detail, processId);
+    private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
+        new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts);
 
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
 
@@ -321,7 +328,8 @@ public sealed class HostManager
             if (profile.Kind == "Valheim" && (string.IsNullOrWhiteSpace(profile.ServerName) ||
                 profile.ServerName.Length > 80 || profile.ServerName.Any(char.IsControl)))
                 return "Valheim server name must be 1 to 80 characters without control characters.";
-            if (profile.GamePort < 1024 || profile.GamePort > 65534) return "Game port must be between 1024 and 65534.";
+            if (profile.GamePort < 1024 || profile.GamePort > (profile.Kind == GameKinds.Valheim ? 65534 : 65535))
+                return "Game port is outside the valid range for this game.";
             if (string.IsNullOrWhiteSpace(profile.WorldDirectory))
                 return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
                     ? "Choose and copy an existing world in Setup step 1."
@@ -340,12 +348,24 @@ public sealed class HostManager
         a.Kind == b.Kind && a.Name == b.Name && a.ServerName == b.ServerName &&
         a.Crossplay == b.Crossplay && a.PublicListing == b.PublicListing &&
         a.WorldId == b.WorldId && a.WorldSource == b.WorldSource && a.GamePort == b.GamePort &&
+        (a.Minecraft?.ServerJarPath ?? "") == (b.Minecraft?.ServerJarPath ?? "") &&
         Path.GetFullPath(a.WorldDirectory).Equals(Path.GetFullPath(b.WorldDirectory), StringComparison.OrdinalIgnoreCase) &&
         Path.GetFullPath(a.ExecutablePath).Equals(Path.GetFullPath(b.ExecutablePath), StringComparison.OrdinalIgnoreCase);
 
     private static bool WorldConflict(ManagedRun run, ServerProfile profile) =>
-        run.WorldId.Equals(profile.WorldId, StringComparison.OrdinalIgnoreCase) ||
         Path.GetFullPath(run.WorldDirectory).Equals(Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyList<GamePort>? PortsForRun(ManagedRun run)
+    {
+        if (run.DeclaredPorts is { Count: > 0 }) return run.DeclaredPorts;
+        // Runs saved before declared ports were recorded still have their full saved profile.
+        var profile = settings.Profiles.SingleOrDefault(item => item.Id == run.ProfileId && item.Kind == run.Kind);
+        return profile is not null && games.TryGet(run.Kind, out var driver) ? driver.Ports(profile) : null;
+    }
+
+    private static bool PortOverlap(GamePort left, GamePort right) =>
+        left.Port == right.Port && left.Protocol.Equals(right.Protocol, StringComparison.OrdinalIgnoreCase) &&
+        (left.Family == "Any" || right.Family == "Any" || left.Family == right.Family);
 
     private static string Identity(ManagedRun run)
     {
