@@ -248,7 +248,7 @@ function App() {
   }, [snapshot?.mode, discovery])
 
   useEffect(() => {
-    if (snapshot?.mode !== 'Host' || !draft || !discovery) return
+    if (snapshot?.mode !== 'Host' || !showSetup || !draft || !discovery) return
     const serverPath = discovery.installations.length === 1 ? discovery.installations[0].executablePath : ''
     const clientPath = draft.profiles.some(profile => profile.kind === 'Valheim') && discovery.clients.length === 1
       ? discovery.clients[0].executablePath : ''
@@ -260,7 +260,7 @@ function App() {
       dirtyRef.current = true
       setDirty(true)
     }
-  }, [snapshot?.mode, discovery, draft])
+  }, [snapshot?.mode, showSetup, discovery, draft])
 
   useEffect(() => {
     if (snapshot?.mode !== 'Host' || !draft?.profiles.some(profile => profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') || minecraftDiscovery) return
@@ -273,7 +273,7 @@ function App() {
   }, [snapshot?.mode, draft?.profiles, minecraftDiscovery])
 
   useEffect(() => {
-    if (snapshot?.mode !== 'Host' || !draft || !minecraftDiscovery) return
+    if (snapshot?.mode !== 'Host' || !showSetup || !draft || !minecraftDiscovery) return
     const profiles = draft.profiles.map(profile => {
       if (profile.kind !== 'MinecraftJava' && profile.kind !== 'MinecraftBedrock') return profile
       if (profile.worldDirectory || profile.minecraft?.serverJarPath || profile.executablePath) return profile
@@ -285,7 +285,7 @@ function App() {
       dirtyRef.current = true
       setDirty(true)
     }
-  }, [snapshot?.mode, draft, minecraftDiscovery])
+  }, [snapshot?.mode, showSetup, draft, minecraftDiscovery])
 
   useEffect(() => {
     if (snapshot?.mode !== 'Friend' || friendClientEdited.current) return
@@ -547,7 +547,7 @@ function App() {
         const next = await readSnapshot()
         setSnapshot(next)
         setDraft(next.mode === 'Host' ? next.settings : null)
-        if (next.mode === 'Host') setShowSetup(next.settings.profiles.length === 0)
+        if (next.mode === 'Host') setShowSetup(next.settings.profiles.length === 0 && !initialSetupSet.current)
         dirtyRef.current = false
         setDirty(false)
       }
@@ -639,6 +639,19 @@ function App() {
     setShowSetup(true)
     window.setTimeout(() => setupRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
     if (!discovery) void scanValheim()
+  }
+
+  const cancelSetup = () => {
+    if (snapshot?.mode !== 'Host' || pending) return
+    setDraft(snapshot.settings)
+    setActiveProfileId(snapshot.settings.profiles[0]?.id ?? '')
+    setPasswords({})
+    setMinecraftTerms({})
+    setSourceRoots({})
+    dirtyRef.current = false
+    setDirty(false)
+    setShowSetup(false)
+    setNotice(null)
   }
 
   const openSetup = (id: string) => {
@@ -861,16 +874,18 @@ function App() {
           {dirty && <p className="warning-text">Save your setup changes before starting or stopping a server.</p>}
           {companion?.devices.some(device => device.paired && !device.revoked) && <div className="compact-status"><span>Remote control: {draft.remoteControlsEnabled ? 'On' : 'Paused'}</span>
             <button className="secondary" disabled={!!pending || dirty} onClick={() => void run('save', '/api/local/settings', 'PUT', { ...draft, remoteControlsEnabled: !draft.remoteControlsEnabled })}>{draft.remoteControlsEnabled ? 'Pause remote controls' : 'Allow remote controls'}</button></div>}
-          <details className="advanced-block"><summary>More hosting settings</summary><button className="secondary" disabled={!!pending || dirty} onClick={addProfile}>Add another server</button>
-            <p className="helper-text">Limit: {draft.maxConcurrentServers} managed server{draft.maxConcurrentServers === 1 ? '' : 's'}. A Ready signal is not a verified game join.</p></details>
+          <div className="setup-tools"><button className="secondary" disabled={!!pending || dirty} onClick={addProfile}>Add new server</button></div>
         </section>
         </>}
 
-        {(showSetup || savedProfiles.length === 0) && <section ref={setupRef} className="panel settings-panel">
-          <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2>{savedProfiles.length ? 'Edit server setup' : 'Set up a server'}</h2><p>Choose the game, then connect its prepared server files and world.</p></div></div>
+        {savedProfiles.length === 0 && !showSetup && <section className="panel"><div className="section-heading"><div><h2>My server</h2><p>No servers saved yet.</p></div></div>
+          <div className="actions"><button disabled={!!pending} onClick={addProfile}>Add new server</button></div></section>}
+
+        {showSetup && <section ref={setupRef} className="panel settings-panel">
+          <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2>{savedProfiles.length ? 'Edit server setup' : 'Set up a server'}</h2><p>Choose the game, world, and server files.</p></div></div>
           <div className="setup-header">
             {draft.profiles.length > 1 && <label>Editing server<select value={editedProfile?.id ?? ''} onChange={event => setActiveProfileId(event.target.value)}>{draft.profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name || profile.serverName || profile.worldId || 'New server'}</option>)}</select></label>}
-            {savedProfiles.length > 0 && !dirty && <button className="secondary" onClick={() => setShowSetup(false)}>Done</button>}
+            <button className="secondary" disabled={!!pending} onClick={cancelSetup}>Cancel</button>
           </div>
           {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><button onClick={addProfile}>Set up a server</button></div></div>}
           {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
@@ -921,11 +936,11 @@ function App() {
               {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
             </details>
           </div>)}
-          {editedProfile && <>{savedProfiles.length > 0 && <details className="advanced-block"><summary>More setup options</summary><div className="settings-grid"><label>Maximum managed servers<input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /></label></div><button className="text-button danger" onClick={() => {
+          {editedProfile && <>{savedProfiles.length > 0 && <details className="advanced-block"><summary>More setup options</summary><div className="settings-grid"><label>Maximum managed servers<input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /></label></div>{savedProfiles.some(saved => saved.id === editedProfile.id) && <button className="text-button danger" onClick={() => {
             const profiles = draft.profiles.filter(item => item.id !== editedProfile.id)
             edit({ ...draft, profiles, companionListeningEnabled: profiles.length > 0 && draft.companionListeningEnabled,
               remoteControlsEnabled: profiles.length > 0 && draft.remoteControlsEnabled })
-          }}>Remove this server</button></details>}
+          }}>Remove this server</button>}</details>}
           {setupIssues.length > 0 && <p className="helper-text" role="status">To continue: {setupIssues[0].message}</p>}
           <div className="save-row"><span>{setupIssues.length ? 'Finish the highlighted setup item.' : 'Ready to start.'}</span><div className="actions"><button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup()}>Save only</button><button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Start server'}</button></div></div></>}
         </section>}

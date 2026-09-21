@@ -485,3 +485,16 @@ An owner-only local action now installs the current official Java or Bedrock ded
 | Real installation, Minecraft client join, saved world restart, visual setup layout, and public Friend route | Not run. No browser control tool was available for viewport inspection. Real binaries and terms-gated downloads were not used during agent validation. |
 
 The normal candidate copy was in use by an existing TogetherServer process, so the first build's final copy step failed after publish; the final EXE was published and copied to a separate directory. The desktop smoke's default port was also occupied by that existing process, so the final desktop run used a free isolated port and passed. The existing process was not stopped or replaced. No EULA was accepted by the agent, and no real world or network setting was changed.
+
+## 2026-09-21 - Cancel setup and direct Add new server
+
+Starting Git HEAD: `ba968e7`. The Host page now shows **Add new server** directly below saved servers in place of the More hosting settings dropdown. **Cancel** is available while setting up a new or existing server and restores the last saved settings. Canceling the first unsaved server leaves a clear empty Host page with an Add new server button. It does not save a partial profile or change an existing saved server. The setup-only More setup options section still owns the maximum managed-server setting.
+
+| Final check | Result |
+| --- | --- |
+| TypeScript/Vite and Windows x64 publish | Pass. Artifact: `local-data/cancel-final/TogetherServer.exe`, 64,172,300 bytes, SHA-256 `033B490370710BE30099267B0D5DCB9CB20442EDBC1E4E63C44E2CEA594FB823`. |
+| Rendered Edge interaction | Pass in two final runs: first-run Cancel, repeat add/Cancel, canceled setup staying closed across page switches, second-server Cancel while one saved profile remains, and desktop/phone layout with no horizontal overflow. Final disposable data and screenshots: `local-data/cancel-ui-test/4f4b24522f274ec89b69db403ba15961`. |
+| Served and native desktop smoke on the final EXE | Pass: 19 and 15 groups, 0 failures. Disposable data: `local-data/served-smoke/254f789b6f184295bbacf3e672742458` and `local-data/desktop-smoke/cf87a0e939fd44a7a20363a2ccea1300`. |
+| Real game or Friend network acceptance | Not run; this change only affects the local setup draft and Host controls. |
+
+One exploratory browser run reached setup before its Cancel button was enabled while startup discovery was pending. A later run intermittently left Add new server disabled after Cancel; delayed path detection was a plausible cause. The check now waits for enabled controls, and automatic path filling runs only while setup is open. Two final browser runs passed. The previously running TogetherServer process was left untouched; validation used isolated data and a free local port.
