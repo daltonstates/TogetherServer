@@ -26,7 +26,8 @@ catch (IOException ex) when (openWindow)
 }
 using var ownedData = data;
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
-var manager = new HostManager(data);
+var games = new GameServerRegistry(data);
+var manager = new HostManager(data, games);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 var identity = new HostIdentity(data);
@@ -34,7 +35,7 @@ var friend = new FriendService(data);
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
 var modeGate = new SemaphoreSlim(1, 1);
-var companionServer = new CompanionServer(data, manager, pairing, modeGate, port);
+var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
@@ -71,7 +72,8 @@ app.MapGet("/api/local/window", () => Results.Json(new
     available = desktop is not null,
     visible = desktop?.Visible ?? false,
     rendered = desktop?.Rendered ?? false,
-    fileDialogOpen = desktop?.FileDialogOpen ?? false
+    fileDialogOpen = desktop?.FileDialogOpen ?? false,
+    customChrome = desktop?.CustomChrome ?? false
 }));
 app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
     ? Results.Json(new { ok = true, code = "WindowShown" })
@@ -113,6 +115,13 @@ app.MapPost("/api/local/network/detect-public-ip", async () =>
     }
     finally { modeGate.Release(); }
 });
+app.MapGet("/api/local/network/ports", async () => Results.Json(PortDiagnostics.Read(
+    await manager.SnapshotAsync(), games, companionServer.Active, pairing.Views())));
+app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => new
+{
+    game.Kind,
+    game.DisplayName
+})));
 app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => manager.StartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));

@@ -1,6 +1,6 @@
 # TogetherServer
 
-TogetherServer is one Windows app for hosting a Valheim server and connecting to a friend's server. The same EXE runs on every PC. It opens a native window with a bundled interface; Node and the .NET SDK are needed only to build it.
+TogetherServer is one Windows app for hosting a Valheim server and connecting to a friend's server. The same EXE runs on every PC. It opens a borderless native window with app-styled minimize, maximize, and close controls around its bundled interface; Node and the .NET SDK are needed only to build it.
 
 ## Open the app
 
@@ -11,11 +11,11 @@ Build a fresh EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scri
 ## Host a server
 
 1. On first use, **My server** opens the setup form immediately. Choose **Create new** and name the world, or **Use existing** and copy a world found on this PC. An existing world is copied to a separate app-managed save folder. The source is never moved or overwritten. Browse for a world folder if the scan misses it.
-2. Select your installed Valheim Dedicated Server if it was not found automatically. Enter a game password, then choose **Save and start**. The game server is installed and updated through Steam by you; TogetherServer does not install it or accept game terms.
-3. The everyday server card has **Start server** or **Stop server**, **Copy game details**, and **Invite friend**. Additional paths, ports, health checks, and multi-server settings are under **More server options** or **Settings and safety**.
-4. To invite Friend PCs, choose **Invite friend**, then **Create code and allow connections**. Each saved server has one current code, which can be copied privately to every Friend PC joining that server. Each PC receives its own revocable credential after connecting. **Refresh code** invalidates the previous code and every credential issued through it for that server; codes and credentials for other saved servers remain valid. The companion HTTPS listener starts immediately when the owner creates the code and is off by default.
+2. Select your installed Valheim Dedicated Server if it was not found automatically. World name and game password stay together in the short setup form. Choose **Start server**; **Save only** is available when you want to finish later. The game server is installed and updated through Steam by you; TogetherServer does not install it or accept game terms.
+3. The everyday server card keeps **Start server** or **Stop server** and **Invite friend** on one line. Four small checks show server state, game ports, the Friend-control listener, and whether a Friend has reached it. Additional paths, health actions, multi-server controls, and safety settings remain collapsed.
+4. Choose **Invite friend** once. TogetherServer creates the server's code when needed, starts its authenticated listener, and copies the code. **Copy again** reuses that same code. **Refresh access** invalidates the previous code and every device credential issued through it for that server; codes and credentials for other saved servers remain valid.
 
-The Host detects an outbound public IPv4 address to fill the game and app addresses. This is an address hint, not a reachability test. A Friend on another network must test the app connection and Valheim join separately. Valheim's game UDP ports and TogetherServer's companion TCP port are separate. TogetherServer does not change firewall, router, or DNS settings. A custom HTTPS IP endpoint and bind IP are available in **Settings and safety** for local testing or deliberate network setup.
+The Host detects an outbound public IPv4 address to fill the game and app addresses. This is an address hint, not a reachability test. **Open on PC** means Windows sees a local listener; **Friend reached** requires a fresh authenticated heartbeat. A Friend on another network must still test the app connection and Valheim join separately. Valheim's game UDP ports and TogetherServer's companion TCP port are separate. TogetherServer does not change firewall, router, or DNS settings. Valheim Crossplay uses its relay, so the game-port card reports relay readiness instead of claiming router forwarding. A custom HTTPS IP endpoint and bind IP are available in **Settings and safety** for local testing or deliberate network setup.
 
 ## Join a friend's server
 
@@ -42,5 +42,7 @@ dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.Compan
 powershell -NoProfile -ExecutionPolicy Bypass -File checks/served-smoke.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File checks/desktop-smoke.ps1
 ```
+
+The Host lifecycle is organized as a small registry of built-in game drivers. Valheim is the only user-facing game today; the synthetic driver exists only for isolated checks. See [adding a game](docs/07-ADDING-A-GAME.md) for the required process, port, readiness, stop, and security contract.
 
 See [implementation status](docs/06-IMPLEMENTATION-STATUS.md) for the latest test evidence and remaining real-world acceptance checks.

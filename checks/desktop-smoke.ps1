@@ -46,9 +46,48 @@ public static class TogetherServerWindowCheck
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsZoomed(IntPtr window);
+    [DllImport("user32.dll")]
     public static extern IntPtr GetWindow(IntPtr window, uint command);
 }
 '@
+Add-Type -AssemblyName UIAutomationClient
+
+function Get-ChromeButton($process, [string]$name) {
+    $process.Refresh()
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty, $name)
+    return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Invoke-ChromeButton($process, [string]$name) {
+    $button = Get-ChromeButton $process $name
+    if ($null -eq $button) { throw "Custom title-bar control was not found: $name" }
+    $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $pattern.Invoke()
+}
+
+function Get-FreeUdpPair {
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        $candidate = Get-Random -Minimum 35000 -Maximum 45000
+        $one = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
+            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
+        $two = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
+            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
+        try {
+            $one.ExclusiveAddressUse = $true
+            $two.ExclusiveAddressUse = $true
+            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate))
+            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate + 1))
+            return $candidate
+        }
+        catch [Net.Sockets.SocketException] { }
+        finally { $one.Dispose(); $two.Dispose() }
+    }
+    throw 'Could not reserve a free UDP port pair for the desktop smoke.'
+}
 
 function Start-Gui {
     if ($launchArguments.Count -eq 0) { return Start-Process -FilePath $appPath -PassThru }
@@ -70,7 +109,10 @@ function Wait-ForWindow($process) {
         try {
             $window = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
             $process.Refresh()
-            if ($window.visible -and $window.rendered -and $process.MainWindowHandle -ne [IntPtr]::Zero) { return }
+            if ($window.visible -and $window.rendered -and $process.MainWindowHandle -ne [IntPtr]::Zero) {
+                if (!$window.customChrome) { throw 'The desktop app did not use its custom borderless window frame.' }
+                return
+            }
         }
         catch { }
         Start-Sleep -Milliseconds 100
@@ -83,7 +125,28 @@ try {
     $state = Wait-ForGui $first
     if ($state.mode -ne 'Host') { throw 'First desktop launch did not default to Host mode.' }
     Wait-ForWindow $first
-    Write-Host "PASS $launchLabel opens a visible native window with rendered React"
+    Write-Host "PASS $launchLabel opens a visible native window with custom chrome and rendered React"
+
+    foreach ($control in @('Minimize TogetherServer', 'Maximize TogetherServer', 'Close TogetherServer')) {
+        if ($null -eq (Get-ChromeButton $first $control)) { throw "Missing accessible title-bar control: $control" }
+    }
+    Invoke-ChromeButton $first 'Maximize TogetherServer'
+    for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom maximize did not maximize.' }
+    Invoke-ChromeButton $first 'Restore TogetherServer'
+    for ($i = 0; $i -lt 30 -and [TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
+        Start-Sleep -Milliseconds 100
+    }
+    if ([TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom restore did not restore.' }
+    Invoke-ChromeButton $first 'Minimize TogetherServer'
+    for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle); $i++) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { throw 'Custom minimize did not minimize.' }
+    [TogetherServerWindowCheck]::ShowWindow($first.MainWindowHandle, 9) | Out-Null
+    Write-Host 'PASS custom minimize, maximize, and restore controls are accessible and functional'
 
     foreach ($pickerKind in @('world', 'world-folder', 'server')) {
         $picker = Start-Job -ArgumentList $baseUrl, $pickerKind -ScriptBlock {
@@ -121,7 +184,7 @@ try {
     $profileId = [guid]::NewGuid().ToString()
     $import = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body (@{ profileId = $profileId; sourceSaveRoot = $saveRoot; worldId = 'fixture-world' } | ConvertTo-Json)
     if (!$import.ok) { throw 'Desktop synthetic world import failed.' }
-    $profile = @{ id = $profileId; kind = 'Valheim'; name = 'Desktop fixture'; serverName = 'Fixture "Valheim"'; worldId = 'fixture-world'; worldDirectory = $import.worldDirectory; gamePort = (Get-Random -Minimum 35000 -Maximum 45000); executablePath = $fixturePath }
+    $profile = @{ id = $profileId; kind = 'Valheim'; name = 'Desktop fixture'; serverName = 'Fixture "Valheim"'; worldId = 'fixture-world'; worldDirectory = $import.worldDirectory; gamePort = (Get-FreeUdpPair); executablePath = $fixturePath }
     $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; profiles = @($profile) }
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw 'Desktop synthetic Valheim settings failed.' }
@@ -178,9 +241,7 @@ try {
     if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
         throw 'Friend mode selection failed.'
     }
-    $first.Refresh()
-    $posted = [TogetherServerWindowCheck]::PostMessage($first.MainWindowHandle, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
-    if (!$posted) { throw "Could not send close to the native window: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    Invoke-ChromeButton $first 'Close TogetherServer'
     if (!$first.WaitForExit(10000)) {
         $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
         throw "Closing the native window did not exit: visible=$($windowState.visible), rendered=$($windowState.rendered), title=$($first.MainWindowTitle)"
@@ -192,7 +253,7 @@ try {
     if ($state.mode -ne 'Friend') { throw 'Friend mode was not restored after a relaunch.' }
     $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
     if (!$closed.ok -or !$reopened.WaitForExit(10000)) { throw 'Quit app did not close the Friend instance.' }
-    Write-Host 'PASS Friend mode persists; window close and Quit app both exit'
+    Write-Host 'PASS Friend mode persists; custom title-bar close and local Quit both exit'
     Write-Host "Desktop smoke data: $caseRoot"
 }
 finally {

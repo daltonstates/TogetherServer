@@ -16,7 +16,26 @@ $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,
 $probe.Start()
 $port = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
 $probe.Stop()
-$gamePort = Get-Random -Minimum 35000 -Maximum 45000
+function Get-FreeUdpPair {
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        $candidate = Get-Random -Minimum 35000 -Maximum 45000
+        $one = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
+            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
+        $two = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
+            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
+        try {
+            $one.ExclusiveAddressUse = $true
+            $two.ExclusiveAddressUse = $true
+            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate))
+            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate + 1))
+            return $candidate
+        }
+        catch [Net.Sockets.SocketException] { }
+        finally { $one.Dispose(); $two.Dispose() }
+    }
+    throw 'Could not reserve a free UDP port pair for the served smoke.'
+}
+$gamePort = Get-FreeUdpPair
 $baseUrl = "http://127.0.0.1:$port"
 $profileId = [guid]::NewGuid().ToString()
 $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
@@ -53,7 +72,7 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Set up your server') -or !$js.Content.Contains('My Valheim server') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Save and start') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Create code and allow connections') -or !$js.Content.Contains('Refresh code') -or !$js.Content.Contains('Copy game details') -or !$js.Content.Contains('Remote Stop waiting') -or !$js.Content.Contains('steam://install/896660') -or !$js.Content.Contains('Quit app')) {
+    if (!$js.Content.Contains('Start a Valheim server') -or !$js.Content.Contains('My Valheim server') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Start server') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Invite friend') -or !$js.Content.Contains('Refresh access') -or !$js.Content.Contains('Game details') -or !$js.Content.Contains('Game ports') -or !$js.Content.Contains('Friend route') -or !$js.Content.Contains('Remote Stop waiting') -or !$js.Content.Contains('steam://install/896660')) {
         throw 'The published GUI is missing the Valheim setup controls.'
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -62,6 +81,9 @@ try {
     $discovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
     if ($null -eq $discovery.installations -or $null -eq $discovery.clients -or $null -eq $discovery.worlds) { throw 'Valheim discovery route returned no result shape.' }
     Write-Host 'PASS loopback-only Valheim discovery route and bundled setup controls'
+    $gameTypes = @(Invoke-RestMethod -Uri "$baseUrl/api/local/game-types")
+    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Fixture,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
+    Write-Host 'PASS explicit game-driver catalog exposes Valheim and the isolated fixture'
 
     $forbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/mode/friend" -Method Post -UseBasicParsing | Out-Null }
@@ -176,6 +198,12 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (!$ready) { throw 'Published EXE did not see the synthetic server-connected log.' }
+    $ports = Invoke-RestMethod -Uri "$baseUrl/api/local/network/ports"
+    $gameCheck = @($ports.games) | Where-Object profileId -EQ $valheimId
+    if ($gameCheck.state -ne 'Open on PC' -or @($gameCheck.ports).Count -ne 2 -or $ports.control.state -ne 'Off' -or $ports.control.remoteState -ne 'Not verified') {
+        throw 'Local game or Friend control port diagnostics overstated or missed their evidence.'
+    }
+    Write-Host 'PASS local UDP game-port check and honest unverified Friend route'
     $valheimStop = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/stop" -Method Post -Headers $headers -TimeoutSec 15
     if (!$valheimStop.ok -or !(Test-Path -LiteralPath (Join-Path $imported.worldDirectory 'synthetic-stop.marker'))) {
         throw "Published EXE did not stop the synthetic Valheim process with Ctrl+C: $($valheimStop.message)"

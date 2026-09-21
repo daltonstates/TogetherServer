@@ -1,7 +1,5 @@
 using System.Diagnostics;
-using System.IO.Pipes;
 using System.Net;
-using System.Net.Sockets;
 
 namespace TogetherServer;
 
@@ -11,11 +9,23 @@ public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> 
     IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot);
 
-public sealed class HostManager(LocalData data)
+public sealed class HostManager
 {
     private readonly SemaphoreSlim gate = new(1, 1);
-    private HostSettings settings = data.LoadSettings();
-    private readonly List<ManagedRun> runs = data.LoadRuns();
+    private readonly LocalData data;
+    private readonly GameServerRegistry games;
+    private HostSettings settings;
+    private readonly List<ManagedRun> runs;
+
+    public HostManager(LocalData data) : this(data, new GameServerRegistry(data)) { }
+
+    public HostManager(LocalData data, GameServerRegistry games)
+    {
+        this.data = data;
+        this.games = games;
+        settings = data.LoadSettings();
+        runs = data.LoadRuns();
+    }
 
     public bool CompanionListeningEnabled => Volatile.Read(ref settings).CompanionListeningEnabled;
 
@@ -101,7 +111,7 @@ public sealed class HostManager(LocalData data)
         await gate.WaitAsync();
         try
         {
-            if (settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Kind != "Valheim")
+            if (settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Kind != GameKinds.Valheim)
                 return Result(false, "InvalidProfile", "Choose a saved Valheim profile first.");
             if (password is null || password.Length is < 5 or > 64 || password.Any(char.IsControl))
                 return Result(false, "InvalidPassword", "Enter a server password of 5 to 64 characters without control characters.");
@@ -118,47 +128,25 @@ public sealed class HostManager(LocalData data)
         {
             var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
             if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+            if (!games.TryGet(profile.Kind, out var driver))
+                return Result(false, "UnsupportedGame", "This game type is not installed in TogetherServer.");
             if (runs.Any(r => r.ProfileId == profileId))
                 return Result(false, "AlreadyManaged", "This profile already has a managed or unresolved run.");
             if (runs.Any(r => WorldConflict(r, profile)))
                 return Result(false, "WorldConflict", "Another managed run owns this world or save directory.");
-            if (runs.Any(r => PortsOverlap(r.GamePort, profile.GamePort)))
+            var requestedPorts = driver.Ports(profile).Select(port => (port.Protocol, port.Port)).ToHashSet();
+            if (runs.Any(run => games.TryGet(run.Kind, out var runningDriver) &&
+                runningDriver.Ports(new ServerProfile { GamePort = run.GamePort })
+                    .Any(port => requestedPorts.Contains((port.Protocol, port.Port)))))
                 return Result(false, "PortConflict", "Another managed run owns one of these game ports.");
             if (runs.Count >= settings.MaxConcurrentServers)
                 return Result(false, "MaxConcurrent", "The managed server limit has been reached.");
             if (!File.Exists(profile.ExecutablePath))
                 return Result(false, "ExecutableMissing", "Selected server executable does not exist.");
-            if (profile.Kind == "Fixture" &&
-                !Path.GetFileName(profile.ExecutablePath).Equals("TogetherServer.Fixture.exe", StringComparison.OrdinalIgnoreCase))
-                return Result(false, "FixtureRequired", "Select a built TogetherServer.Fixture.exe.");
-            if (profile.Kind == "Valheim" &&
-                !Path.GetFileName(profile.ExecutablePath).Equals("valheim_server.exe", StringComparison.OrdinalIgnoreCase))
-                return Result(false, "ValheimExecutableRequired", "Select the installed valheim_server.exe.");
-            if (!Directory.Exists(profile.WorldDirectory))
-            {
-                if (profile.Kind == "Valheim" && profile.WorldSource == "New" &&
-                    Path.GetFullPath(profile.WorldDirectory).Equals(data.NewWorldDirectory(profile.Id), StringComparison.OrdinalIgnoreCase))
-                    Directory.CreateDirectory(profile.WorldDirectory);
-                else
-                    return Result(false, "MissingWorldDirectory", "Choose an existing save directory. TogetherServer will not replace it.");
-            }
-            if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
-                !ValheimSetup.HasWorldData(profile.WorldDirectory, profile.WorldId))
-                return Result(false, "MissingWorldData", "Existing world needs a complete .db/.fwl pair or chunked folder in worlds_local. Import a copy before Start; no new seed was created.");
-            if (profile.Kind == "Valheim" && profile.WorldSource == "Existing" &&
-                !ValheimSetup.IsImportedWorld(data, profile.Id, profile.WorldDirectory))
-                return Result(false, "WorldImportRequired", "Import a separate copy of the existing world before Start. Its original save stays untouched.");
-            if (profile.Kind == "Valheim" && profile.WorldSource == "New" &&
-                ValheimSetup.HasAnyWorldFile(profile.WorldDirectory, profile.WorldId) && !data.OwnsNewWorld(profile))
-                return Result(false, "WorldAlreadyExists", "A world file already exists under this name and is not recorded as this server's world. Choose another world or import a copy.");
-            var password = profile.Kind == "Valheim" ? data.LoadValheimPassword(profile.Id) : null;
-            if (profile.Kind == "Valheim" && string.IsNullOrEmpty(password))
-                return Result(false, "PasswordRequired", "Set a protected Valheim server password before starting.");
-            if (!PortsFree(profile.GamePort))
-                return Result(false, "PortInUse", "One of the two UDP game ports is already in use.");
-
-            if (profile.Kind == "Valheim" && profile.WorldSource == "New" && !data.OwnsNewWorld(profile))
-                data.RecordNewWorld(profile);
+            var validation = driver.ValidateForStart(profile);
+            if (validation is not null) return Result(false, validation.Code, validation.Message);
+            if (!GameServerRegistry.PortsAvailable(driver.Ports(profile)))
+                return Result(false, "PortInUse", "One or more configured game ports are already in use.");
 
             var run = new ManagedRun
             {
@@ -169,42 +157,19 @@ public sealed class HostManager(LocalData data)
                 WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
                 GamePort = profile.GamePort,
                 ExecutablePath = Path.GetFullPath(profile.ExecutablePath),
-                StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N"),
-                PermittedListSha256 = RemoteStopSafety.FingerprintAtStart(profile)
+                StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
             };
-            if (profile.Kind == "Valheim") run.LogPath = data.NewRunLogPath(run.OperationId);
+            driver.PrepareStart(profile, run);
             runs.Add(run);
             data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
             try
             {
-                if (run.Kind == "Valheim")
-                {
-                    var arguments = new List<string> { "-nographics", "-batchmode", "-name", profile.ServerName,
-                        "-port", profile.GamePort.ToString(), "-world", profile.WorldId, "-password", password!,
-                        "-savedir", run.WorldDirectory, "-public", profile.PublicListing ? "1" : "0", "-logFile", run.LogPath };
-                    if (profile.Crossplay) arguments.Add("-crossplay");
-                    run.ProcessId = WindowsConsoleProcess.Start(run.ExecutablePath, arguments, "892970");
-                }
-                else
-                {
-                    using var process = new Process();
-                    process.StartInfo = new ProcessStartInfo(run.ExecutablePath)
-                    {
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WorkingDirectory = Path.GetDirectoryName(run.ExecutablePath)!
-                    };
-                    process.StartInfo.ArgumentList.Add("--stop-pipe");
-                    process.StartInfo.ArgumentList.Add(run.StopPipeName);
-                    if (!process.Start()) throw new InvalidOperationException("The fixture did not start.");
-                    run.ProcessId = process.Id;
-                }
+                var launch = driver.Start(profile, run);
+                run.ProcessId = launch.ProcessId;
                 using (var started = Process.GetProcessById(run.ProcessId.Value))
                     run.StartTimeUtcTicks = started.StartTime.ToUniversalTime().Ticks;
                 data.SaveRuns(runs);
-                return run.Kind == "Valheim"
-                    ? Result(true, "ValheimStarting", "Valheim process launched. Waiting for its server-connected log signal; join and save are unverified.")
-                    : Result(true, "FixtureStarted", "Fixture process started. Game readiness and world saving are unverified.");
+                return Result(true, launch.Code, launch.Message);
             }
             catch (Exception ex)
             {
@@ -226,44 +191,27 @@ public sealed class HostManager(LocalData data)
         {
             var run = runs.SingleOrDefault(r => r.ProfileId == profileId);
             if (run is null) return Result(false, "NotManaged", "This profile has no managed process.");
+            if (!games.TryGet(run.Kind, out var driver))
+                return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
             if (Identity(run) != "Matched")
                 return Result(false, "IdentityUnknown", "Process identity is unverified. No stop signal was sent.");
-            var stopPhase = "process recheck";
             try
             {
                 using var process = Process.GetProcessById(run.ProcessId!.Value);
                 if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != run.StartTimeUtcTicks ||
                     !Path.GetFullPath(process.MainModule!.FileName).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
                     return Result(false, "IdentityUnknown", "Process identity changed. No stop signal was sent.");
-                var nativeHandle = run.Kind == "Valheim" ? process.Handle : IntPtr.Zero;
                 if (remoteStillSafe is not null && !remoteStillSafe())
                     return Result(false, "PlayerStateUnknown", "A permitted player's game state changed before Stop. No stop signal was sent.");
-                stopPhase = "stop signal";
-                if (run.Kind == "Valheim") WindowsConsoleProcess.RequestCtrlC(process);
-                else
-                {
-                    using var pipe = new NamedPipeClientStream(".", run.StopPipeName, PipeDirection.Out, PipeOptions.Asynchronous);
-                    using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-                    await pipe.ConnectAsync(connectTimeout.Token);
-                    using var writer = new StreamWriter(pipe) { AutoFlush = true };
-                    await writer.WriteLineAsync("stop");
-                }
-                stopPhase = "exit wait";
-                using var exitTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(run.Kind == "Valheim" ? 90 : 8));
-                await process.WaitForExitAsync(exitTimeout.Token);
-                stopPhase = "exit code";
-                var exitCode = run.Kind == "Valheim" ? WindowsConsoleProcess.ExitCode(nativeHandle) : (uint)process.ExitCode;
-                if (exitCode != 0)
-                    return Result(false, "StopFailed", "Server exited with a nonzero status. Run remains recorded for review.");
+                var stopped = await driver.StopAsync(process, run);
+                if (stopped.ExitCode != 0) return Result(false, stopped.Code, stopped.Message);
                 runs.Remove(run);
                 data.SaveRuns(runs);
-                return run.Kind == "Valheim"
-                    ? Result(true, "ValheimStopped", "Valheim exited after Ctrl+C. Save integrity still needs a real join and restart check.")
-                    : Result(true, "FixtureStopped", "Fixture exited cleanly. This is not a Valheim save check.");
+                return Result(true, stopped.Code, stopped.Message);
             }
             catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
             {
-                return Result(false, "StopUnconfirmed", "Stop was not confirmed during " + stopPhase + ": " + ex.Message);
+                return Result(false, "StopUnconfirmed", "The game driver could not confirm a graceful stop: " + ex.Message);
             }
         }
         finally { gate.Release(); }
@@ -276,19 +224,19 @@ public sealed class HostManager(LocalData data)
         {
             var run = runs.SingleOrDefault(r => r.ProfileId == profileId);
             if (run is null) return Result(false, "NotManaged", "No managed process is recorded.");
+            if (!games.TryGet(run.Kind, out var driver))
+                return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
             return Identity(run) switch
             {
-                "Matched" when run.Kind == "Valheim" && ValheimLogReady(run.LogPath) =>
-                    Result(true, "ValheimLogReady", "Server-connected log signal found. A real client join remains unverified."),
-                "Matched" when run.Kind == "Valheim" =>
-                    Result(false, "ValheimStarting", "Process identity matches; waiting for the server-connected log signal."),
-                "Matched" => Result(true, "FixtureProcessRunning", "Fixture identity matches. Game readiness is unverified."),
+                "Matched" => DriverHealth(driver.Health(run)),
                 "Missing" => Result(false, "ProcessExited", "The recorded process is no longer running."),
                 _ => Result(false, "IdentityUnknown", "The recorded process identity cannot be verified.")
             };
         }
         finally { gate.Release(); }
     }
+
+    private ActionResult DriverHealth(GameHealthResult health) => Result(health.Ok, health.Code, health.Detail);
 
     public async Task<ActionResult> ForgetAsync(Guid profileId)
     {
@@ -313,13 +261,11 @@ public sealed class HostManager(LocalData data)
             var run = runs.SingleOrDefault(r => r.ProfileId == profile.Id);
             if (run is null) return new RunView(profile.Id, "Offline", "No managed process", null);
             var identity = Identity(run);
+            if (!games.TryGet(run.Kind, out var driver))
+                return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId);
             return identity switch
             {
-                "Matched" when run.Kind == "Valheim" && ValheimLogReady(run.LogPath) =>
-                    new RunView(profile.Id, "Ready", "Valheim server-connected log observed; client join and save still unverified", run.ProcessId),
-                "Matched" when run.Kind == "Valheim" =>
-                    new RunView(profile.Id, "Starting", "Valheim process matches; waiting for server-connected log", run.ProcessId),
-                "Matched" => new RunView(profile.Id, "Process running", "Synthetic fixture only; no game readiness signal", run.ProcessId),
+                "Matched" => DriverView(profile.Id, run.ProcessId, driver.Health(run)),
                 "Missing" => new RunView(profile.Id, "Failed", "Recorded process exited; owner can clear the record", run.ProcessId),
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId)
             };
@@ -331,9 +277,12 @@ public sealed class HostManager(LocalData data)
             data.ManagedWorldsRoot);
     }
 
+    private static RunView DriverView(Guid profileId, int? processId, GameHealthResult health) =>
+        new(profileId, health.State, health.Detail, processId);
+
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
 
-    private static string? Validate(HostSettings next)
+    private string? Validate(HostSettings next)
     {
         if (next.MaxConcurrentServers < 1 || next.MaxConcurrentServers > 16) return "Maximum servers must be between 1 and 16.";
         if (next.IdleMinutes < 1 || next.IdleMinutes > 1440) return "Idle minutes must be between 1 and 1440.";
@@ -364,7 +313,7 @@ public sealed class HostManager(LocalData data)
                 return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
                     ? "Choose and copy an existing world in Setup step 1."
                     : "Enter a world name in Setup step 1.";
-            if (profile.Kind is not ("Fixture" or "Valheim")) return "Choose Fixture or Valheim for the profile type.";
+            if (!games.TryGet(profile.Kind, out _)) return "Choose a supported game type for the server.";
             if (!ValheimSetup.ValidWorldId(profile.WorldId))
                 return "World ID must be a valid file name of at most 64 characters.";
             if (profile.Kind == "Valheim" && profile.WorldSource is not ("Existing" or "New"))
@@ -397,35 +346,6 @@ public sealed class HostManager(LocalData data)
     private static bool WorldConflict(ManagedRun run, ServerProfile profile) =>
         run.WorldId.Equals(profile.WorldId, StringComparison.OrdinalIgnoreCase) ||
         Path.GetFullPath(run.WorldDirectory).Equals(Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase);
-
-    private static bool PortsOverlap(int a, int b) => a == b || a == b + 1 || a + 1 == b;
-
-    private static bool ValheimLogReady(string path)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            stream.Seek(Math.Max(0, stream.Length - 65536), SeekOrigin.Begin);
-            using var reader = new StreamReader(stream);
-            return reader.ReadToEnd().Contains("Game server connected", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (IOException) { return false; }
-        catch (UnauthorizedAccessException) { return false; }
-    }
-
-    private static bool PortsFree(int port)
-    {
-        try
-        {
-            using var first = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            using var second = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            first.Bind(new IPEndPoint(IPAddress.Any, port));
-            second.Bind(new IPEndPoint(IPAddress.Any, port + 1));
-            return true;
-        }
-        catch (SocketException) { return false; }
-    }
 
     private static string Identity(ManagedRun run)
     {

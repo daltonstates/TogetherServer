@@ -151,3 +151,89 @@ main { padding-top: 24px; }
   .mode-switch button { min-width: 0; }
   .settings-panel input, .settings-panel select { min-width: 0; max-width: 100%; }
 }
+
+/* Compact, icon-led daily controls and connection evidence. */
+.icon { display: inline-block; flex: 0 0 auto; vertical-align: -3px; }
+.actions button, .save-row button, .server-actions button, .setup-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  white-space: nowrap;
+}
+.server-actions { margin-top: 13px; align-items: stretch; }
+.server-actions button { min-width: 126px; }
+.icon-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid #465548;
+  border-radius: 8px;
+  background: transparent;
+  color: #b9c8ba;
+  padding: 0;
+}
+.icon-button:hover { color: #e3f4d8; border-color: #71906a; }
+.readiness-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  gap: 7px;
+  align-items: stretch;
+  margin: 13px 0 2px;
+}
+.readiness-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #3b4b3d;
+  border-radius: 8px;
+  background: #19231c;
+}
+.readiness-icon { width: 25px; height: 25px; border-radius: 7px; display: grid; place-items: center; background: #2d3a30; color: #aebcaf; }
+.readiness-item span:last-child { min-width: 0; }
+.readiness-item small, .readiness-item strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.readiness-item small { color: #819082; font-size: 9px; text-transform: uppercase; letter-spacing: .7px; font-weight: 800; }
+.readiness-item strong { color: #d9e2d8; font-size: 11px; margin-top: 2px; }
+.readiness-item.good { border-color: #456849; background: #1b2a1e; }
+.readiness-item.good .readiness-icon { background: #315039; color: #c8eba9; }
+.readiness-item.bad { border-color: #83584d; background: #30221e; }
+.readiness-item.bad .readiness-icon { background: #58362e; color: #f1b9aa; }
+.readiness-row > .icon-button { align-self: center; }
+.invite-ready { display: flex; align-items: flex-start; gap: 11px; }
+.invite-ready > span { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: #c9edae; background: #315039; flex: 0 0 auto; }
+.invite-ready strong { display: block; font-size: 13px; }
+.invite-ready p { margin: 3px 0 0; }
+.inline-invite { padding: 12px 14px; }
+.inline-invite .actions { margin-top: 9px; }
+.inline-invite details { margin-top: 8px; }
+.helper-text > .icon { margin-right: 4px; }
+
+/* The common new-world path is one compact form instead of stacked steps. */
+.quick-setup-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.quick-setup-fields .invite-input { max-width: none; margin: 7px 0 2px; }
+.setup-password { margin-bottom: 2px; }
+.server-step { display: grid; grid-template-columns: minmax(150px, .4fr) minmax(0, 1.6fr); gap: 15px; align-items: center; }
+.server-step h3 { margin: 0 !important; }
+.server-step-content { min-width: 0; }
+.server-step .selection-summary { margin: 0; display: flex; gap: 7px; align-items: center; }
+.server-step .selection-summary small { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #91a092; }
+.settings-panel .advanced-block { margin-top: 10px; }
+.settings-panel .save-row { margin-top: 10px; padding-top: 10px; }
+
+@media (max-width: 900px) {
+  .readiness-row { grid-template-columns: repeat(2, minmax(120px, 1fr)) auto; }
+  .readiness-row > .icon-button { grid-column: 3; grid-row: 1 / span 2; }
+}
+@media (max-width: 700px) {
+  .quick-setup-fields, .server-step { grid-template-columns: 1fr; gap: 7px; }
+  .server-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .server-actions button { min-width: 0; width: 100%; }
+  .readiness-row { grid-template-columns: 1fr 1fr; }
+  .readiness-row > .icon-button { grid-column: auto; grid-row: auto; width: 100%; }
+  .readiness-item { padding: 8px; }
+}

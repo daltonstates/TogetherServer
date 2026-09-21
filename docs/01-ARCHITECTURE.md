@@ -6,7 +6,9 @@ TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)
   React UI in native window                      React UI in native window
   Valheim.exe process check                      settings + friend pairing
   outbound HTTPS heartbeat/start/stop  ----->   small HTTPS companion API
-                                                fixed process supervisor
+                                                process supervisor + game registry
+                                                       |
+                                                built-in Valheim driver
                                                        |
                                                 valheim_server.exe
                                                 chosen world/save folder
@@ -14,7 +16,7 @@ TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)
 
 This is **one codebase and one TogetherServer process per PC**. The game client and Valheim dedicated server remain their own processes. There is no separate TogetherServer web server, worker agent, Docker runtime, PostgreSQL server, or cloud relay. Development may use frontend tooling, but a published app must bundle the built React assets and run without Node installed.
 
-The native window embeds the bundled React UI with WebView2 and talks to the same process's loopback API. WebView2 may start its normal renderer child processes; there is still only one TogetherServer app process and no second web-server process. The Evergreen WebView2 Runtime is a shared Windows component; the app shows a native setup message if it is absent.
+The borderless native window supplies app-styled drag, resize, minimize, maximize/restore, and close controls. It embeds the bundled React UI with WebView2 and talks to the same process's loopback API. WebView2 may start its normal renderer child processes; there is still only one TogetherServer app process and no second web-server process. The Evergreen WebView2 Runtime is a shared Windows component; the app shows a native setup message if it is absent.
 
 ## Host internals
 
@@ -22,10 +24,11 @@ The Host and Friend capabilities may run concurrently in the same process. My se
 
 - A local loopback GUI listener serves bundled React files and local-owner API actions. It must not become the public management interface.
 - An optional HTTPS companion listener accepts only pairing, authenticated heartbeat, status, Start, and Stop requests. It is off by default and cannot start without pairing and TLS configuration. The owner can start or stop it immediately in the same process; the local GUI remains on loopback. It is distinct from Valheim's game port.
-- The process supervisor has fixed `start`, `stop`, and `health` actions for an owner-approved Valheim installation/profile. Implement them as small reviewed host-local scripts or typed .NET code; never execute a script, path, argument, environment key, or shell expression supplied by a Friend request.
+- `HostManager` owns shared serialization, process identity, one-writer world rules, concurrency, and remote authorization. It dispatches only to a registered `IGameServerDriver`. Each built-in driver owns its executable validation, fixed launch arguments, declared TCP/UDP ports, readiness evidence, public join-address shape, and graceful stop. Friend requests contain only a saved profile ID and typed action; they never select a driver, executable, script, path, argument, environment key, or shell expression.
 - Serialize lifecycle actions with one in-process gate and durable state. On app restart, verify the recorded PID, start time, executable path, and managed world before reattaching. If identity cannot be proven, show Unknown and refuse another start for that world until the owner resolves it. Never kill by process name alone.
 - Local settings and pairing metadata live under the user's `%LOCALAPPDATA%\TogetherServer` directory. A small atomically replaced JSON store is enough for v1's single Host process; secrets must be protected with Windows facilities, and only credential hashes should be stored on Host. Do not store worlds under the source checkout.
-- `maxConcurrentServers` counts managed game server processes. A world/save path and its game ports can have only one managed writer. Check actual local port binding before a start; a configured count is not a physical-capacity guarantee.
+- `maxConcurrentServers` counts managed game server processes. A world/save path and every port declared by its driver can have only one managed writer. Check actual local port binding before a start; a configured count is not a physical-capacity guarantee.
+- Port diagnostics read Windows' active TCP and UDP listener tables. They can prove that a declared port is open on this PC. Only a fresh authenticated Friend heartbeat proves that the control listener was reached from a Friend PC, and only a real game-client join proves the game route.
 
 ## Friend internals
 
@@ -41,4 +44,4 @@ The Host interface stays on loopback. For the Friend API, prefer a Host-generate
 
 ## Scope discipline
 
-Keep the code close to these actual boundaries: GUI, settings/pairing, process supervisor, and companion HTTP API. Avoid schedulers, outboxes, migrations, generic plugin systems, multi-node abstractions, or cloud/provider code in v1. A later game can be added only after Valheim's real behavior and save/restart checks pass.
+Keep the code close to these actual boundaries: GUI, settings/pairing, process supervisor, built-in game drivers, and companion HTTP API. Avoid schedulers, outboxes, migrations, generic plugin systems, multi-node abstractions, or cloud/provider code in v1. A later game follows [the built-in driver contract](07-ADDING-A-GAME.md) and can ship only with its own focused lifecycle and safety evidence.

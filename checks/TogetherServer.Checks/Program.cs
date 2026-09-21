@@ -170,6 +170,49 @@ await Check("identity mismatch blocks start and never stops an unrelated process
     }
 });
 
+await Check("game drivers are explicit and unknown games fail closed", async () =>
+{
+    using var data = Data("drivers");
+    var registry = new GameServerRegistry(data);
+    Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[] { GameKinds.Fixture, GameKinds.Valheim }),
+        "Valheim and the fixture were not separate registered drivers");
+    var profile = Profile("unknown-game", "unknown-game", FreePort());
+    profile.Kind = "UnregisteredGame";
+    var manager = new HostManager(data, registry);
+    var result = await manager.UpdateSettingsAsync(Settings(profile));
+    Require(!result.Ok && result.Code == "InvalidSettings", "an unregistered game profile was accepted");
+});
+
+await Check("port diagnostics show local game and Friend listeners honestly", async () =>
+{
+    using var data = Data("port-diagnostics");
+    var gamePort = FreePort();
+    using var game = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
+    using var query = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
+    game.Bind(new IPEndPoint(IPAddress.Any, gamePort));
+    query.Bind(new IPEndPoint(IPAddress.Any, gamePort + 1));
+    using var control = new TcpListener(IPAddress.Loopback, 0);
+    control.Start();
+    var controlPort = ((IPEndPoint)control.LocalEndpoint).Port;
+    var profile = new ServerProfile { Kind = GameKinds.Valheim, Name = "Port check", WorldId = "port-check",
+        WorldDirectory = root, ExecutablePath = fixture, GamePort = gamePort };
+    var settings = Settings(profile);
+    settings.CompanionPort = controlPort;
+    var snapshot = new HostSnapshot(settings, [new RunView(profile.Id, "Ready", "fixture", 1)],
+        "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
+    var device = new DeviceView(Guid.NewGuid(), profile.Id, "Friend PC", true, false, false, true,
+        DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow, false, "");
+    var diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
+    Require(diagnostics.Games.Single().State == "Open on PC", "open UDP game ports were not reported");
+    Require(diagnostics.Control.State == "Open on PC" && diagnostics.Control.RemoteState == "Friend reached",
+        "local TCP listener or authenticated Friend evidence was not reported");
+    query.Dispose();
+    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, []);
+    Require(diagnostics.Games.Single().State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
+        "a missing UDP port or absent Friend route was claimed as open");
+    await Task.CompletedTask;
+});
+
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");
 return failed == 0 ? 0 : 1;
 

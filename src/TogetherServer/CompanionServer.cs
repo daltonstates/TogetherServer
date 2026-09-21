@@ -9,7 +9,7 @@ namespace TogetherServer;
 // It starts only after the owner enables Friend connections and pairing/TLS
 // material is ready; the local GUI remains bound to loopback.
 public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
-    SemaphoreSlim modeGate, int localPort)
+    GameServerRegistry games, SemaphoreSlim modeGate, int localPort)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -158,7 +158,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, pairing);
                 return new PublicProfile(profile.Id, profile.Name,
                     snapshot.Runs.Single(run => run.ProfileId == profile.Id).State,
-                    GameConnection.JoinAddress(profile, address),
+                    games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
                     snapshot.Settings.RemoteControlsEnabled && own?.CanStop == true && permit.Allowed,
                     permit.Reason);
             }).ToList();

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -32,6 +33,7 @@ internal sealed class DesktopWindow
     public bool Visible => visible;
     public bool Rendered => rendered;
     public bool FileDialogOpen => Volatile.Read(ref fileDialogOpen) != 0;
+    public bool CustomChrome => form is ChromeForm;
 
     public void Start()
     {
@@ -151,15 +153,18 @@ internal sealed class DesktopWindow
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using var window = new Form
+            using var window = new ChromeForm
             {
                 Text = "TogetherServer",
                 StartPosition = FormStartPosition.CenterScreen,
                 Size = new Size(1180, 820),
                 MinimumSize = new Size(800, 600),
-                BackColor = Color.FromArgb(16, 22, 19)
+                BackColor = Color.FromArgb(40, 51, 44),
+                FormBorderStyle = FormBorderStyle.None,
+                Padding = new Padding(1)
             };
             form = window;
+            var content = BuildChrome(window);
             window.FormClosing += (_, eventArgs) =>
             {
                 if (closing || eventArgs.CloseReason == CloseReason.WindowsShutDown) return;
@@ -170,7 +175,7 @@ internal sealed class DesktopWindow
             {
                 visible = true;
                 shown.TrySetResult(true);
-                _ = LoadGuiAsync(window);
+                _ = LoadGuiAsync(window, content);
             };
             window.VisibleChanged += (_, _) => visible = window.Visible;
             Application.Run(window);
@@ -184,25 +189,146 @@ internal sealed class DesktopWindow
         finally { visible = false; }
     }
 
-    private async Task LoadGuiAsync(Form window)
+    private Control BuildChrome(Form window)
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(16, 22, 19),
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var titleBar = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(17, 25, 20), Margin = Padding.Empty };
+        var mark = new Label
+        {
+            Text = "T",
+            ForeColor = Color.FromArgb(19, 33, 23),
+            BackColor = Color.FromArgb(172, 216, 137),
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Location = new Point(11, 8),
+            Size = new Size(26, 26)
+        };
+        var title = new Label
+        {
+            Text = "TogetherServer",
+            ForeColor = Color.FromArgb(232, 237, 232),
+            BackColor = Color.Transparent,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            AutoSize = true,
+            Location = new Point(47, 12)
+        };
+        var close = ChromeButton("×", "Close TogetherServer");
+        var maximize = ChromeButton("□", "Maximize TogetherServer");
+        var minimize = ChromeButton("—", "Minimize TogetherServer");
+        close.Dock = DockStyle.Right;
+        maximize.Dock = DockStyle.Right;
+        minimize.Dock = DockStyle.Right;
+        close.ForeColor = Color.FromArgb(222, 231, 222);
+        close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(160, 52, 52);
+        close.MouseLeave += (_, _) => close.BackColor = Color.Transparent;
+        minimize.MouseEnter += ChromeHover;
+        minimize.MouseLeave += ChromeLeave;
+        maximize.MouseEnter += ChromeHover;
+        maximize.MouseLeave += ChromeLeave;
+        minimize.Click += (_, _) => window.WindowState = FormWindowState.Minimized;
+        maximize.Click += (_, _) => ToggleMaximize(window, maximize);
+        close.Click += (_, _) => { if (!requestingQuit) _ = RequestQuitAsync(window); };
+
+        void BeginDrag(object? _, MouseEventArgs eventArgs)
+        {
+            if (eventArgs.Button != MouseButtons.Left || window.WindowState == FormWindowState.Maximized) return;
+            ReleaseCapture();
+            SendMessage(window.Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
+        }
+        void Toggle(object? _, EventArgs __) => ToggleMaximize(window, maximize);
+        titleBar.MouseDown += BeginDrag;
+        mark.MouseDown += BeginDrag;
+        title.MouseDown += BeginDrag;
+        titleBar.DoubleClick += Toggle;
+        mark.DoubleClick += Toggle;
+        title.DoubleClick += Toggle;
+        window.Resize += (_, _) =>
+        {
+            maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
+            maximize.AccessibleName = window.WindowState == FormWindowState.Maximized
+                ? "Restore TogetherServer" : "Maximize TogetherServer";
+        };
+
+        titleBar.Controls.Add(mark);
+        titleBar.Controls.Add(title);
+        titleBar.Controls.Add(minimize);
+        titleBar.Controls.Add(maximize);
+        titleBar.Controls.Add(close);
+        mark.BringToFront();
+        title.BringToFront();
+        var content = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(16, 22, 19), Margin = Padding.Empty };
+        layout.Controls.Add(titleBar, 0, 0);
+        layout.Controls.Add(content, 0, 1);
+        window.Controls.Add(layout);
+        return content;
+    }
+
+    private static Button ChromeButton(string text, string accessibleName)
+    {
+        var button = new Button
+        {
+            Text = text,
+            AccessibleName = accessibleName,
+            TabStop = false,
+            Width = 46,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.Transparent,
+            ForeColor = Color.FromArgb(186, 200, 188),
+            Font = new Font("Segoe UI Symbol", 11),
+            Margin = Padding.Empty,
+            UseVisualStyleBackColor = false
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(52, 79, 57);
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(43, 70, 48);
+        return button;
+    }
+
+    private static void ChromeHover(object? sender, EventArgs _) =>
+        ((Button)sender!).BackColor = Color.FromArgb(43, 70, 48);
+
+    private static void ChromeLeave(object? sender, EventArgs _) =>
+        ((Button)sender!).BackColor = Color.Transparent;
+
+    private static void ToggleMaximize(Form window, Button maximize)
+    {
+        if (window.WindowState == FormWindowState.Maximized) window.WindowState = FormWindowState.Normal;
+        else if (window is ChromeForm chrome) chrome.MaximizeWithinWorkingArea();
+        else window.WindowState = FormWindowState.Maximized;
+        maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
+    }
+
+    private async Task LoadGuiAsync(Form window, Control content)
     {
         var loading = new Label
         {
             Dock = DockStyle.Fill,
             ForeColor = Color.FromArgb(216, 240, 205),
-            BackColor = window.BackColor,
+            BackColor = content.BackColor,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 15),
             Text = "Opening TogetherServer..."
         };
-        window.Controls.Add(loading);
+        content.Controls.Add(loading);
         try
         {
             _ = CoreWebView2Environment.GetAvailableBrowserVersionString();
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory);
             if (window.IsDisposed) return;
-            var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = window.BackColor };
-            window.Controls.Add(view);
+            var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = content.BackColor };
+            content.Controls.Add(view);
             await view.EnsureCoreWebView2Async(environment);
             if (window.IsDisposed) return;
             view.CoreWebView2.NavigationStarting += (_, eventArgs) =>
@@ -237,27 +363,27 @@ internal sealed class DesktopWindow
                     catch (Exception) { /* Navigation may still be settling; retry briefly. */ }
                     await Task.Delay(100);
                 }
-                ShowLoadError(window, loading, "TogetherServer loaded its local page, but the interface did not render. Close the app and try again.", false);
+                ShowLoadError(window, content, loading, "TogetherServer loaded its local page, but the interface did not render. Close the app and try again.", false);
             };
             view.Source = address;
             view.BringToFront();
         }
         catch (WebView2RuntimeNotFoundException)
         {
-            ShowLoadError(window, loading, "Microsoft Edge WebView2 Runtime is needed to display TogetherServer. Install it from Microsoft, then reopen this app.", true);
+            ShowLoadError(window, content, loading, "Microsoft Edge WebView2 Runtime is needed to display TogetherServer. Install it from Microsoft, then reopen this app.", true);
         }
         catch (Exception ex)
         {
-            ShowLoadError(window, loading, "TogetherServer could not display its interface.\n\n" + ex.Message, false);
+            ShowLoadError(window, content, loading, "TogetherServer could not display its interface.\n\n" + ex.Message, false);
         }
     }
 
-    private static void ShowLoadError(Form window, Label loading, string message, bool offerRuntimeLink)
+    private static void ShowLoadError(Form window, Control content, Label loading, string message, bool offerRuntimeLink)
     {
         if (window.IsDisposed) return;
-        window.Controls.Clear();
+        content.Controls.Clear();
         loading.Text = message;
-        window.Controls.Add(loading);
+        content.Controls.Add(loading);
         if (!offerRuntimeLink) return;
         var button = new Button
         {
@@ -272,7 +398,7 @@ internal sealed class DesktopWindow
             catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
             { DesktopLaunch.ShowError("Could not open Microsoft's WebView2 download page.\n\n" + ex.Message); }
         };
-        window.Controls.Add(button);
+        content.Controls.Add(button);
     }
 
     private static void OpenApprovedExternal(string? target)
@@ -306,5 +432,51 @@ internal sealed class DesktopWindow
                     "TogetherServer", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally { requestingQuit = false; }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    private sealed class ChromeForm : Form
+    {
+        private const int ResizeBorder = 7;
+
+        public void MaximizeWithinWorkingArea()
+        {
+            MaximizedBounds = Screen.FromControl(this).WorkingArea;
+            WindowState = FormWindowState.Maximized;
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            const int hitTest = 0x0084;
+            if (message.Msg == hitTest && WindowState == FormWindowState.Normal)
+            {
+                base.WndProc(ref message);
+                var screen = new Point(unchecked((short)(long)message.LParam), unchecked((short)((long)message.LParam >> 16)));
+                var point = PointToClient(screen);
+                var left = point.X <= ResizeBorder;
+                var right = point.X >= ClientSize.Width - ResizeBorder;
+                var top = point.Y <= ResizeBorder;
+                var bottom = point.Y >= ClientSize.Height - ResizeBorder;
+                message.Result = (left, right, top, bottom) switch
+                {
+                    (true, _, true, _) => new IntPtr(13),
+                    (_, true, true, _) => new IntPtr(14),
+                    (true, _, _, true) => new IntPtr(16),
+                    (_, true, _, true) => new IntPtr(17),
+                    (true, _, _, _) => new IntPtr(10),
+                    (_, true, _, _) => new IntPtr(11),
+                    (_, _, true, _) => new IntPtr(12),
+                    (_, _, _, true) => new IntPtr(15),
+                    _ => message.Result
+                };
+                return;
+            }
+            base.WndProc(ref message);
+        }
     }
 }

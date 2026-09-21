@@ -2,7 +2,7 @@
 
 ## Goal
 
-Let the owner host a Valheim dedicated server on a Windows PC and let a small, known group of friends see its status and request start/stop from their own Windows PCs. Valheim is the first supported game; later games may use owner-authored local action scripts. Keep the program understandable: one installable app with Host and Friend modes, a bundled GUI, approved actions, and local settings. No cloud control plane or separate database service.
+Let the owner host a Valheim dedicated server on a Windows PC and let a small, known group of friends see its status and request start/stop from their own Windows PCs. Valheim is the first supported game; later games can be added as reviewed built-in game drivers with fixed lifecycle actions. Keep the program understandable: one installable app with Host and Friend modes, a bundled GUI, approved actions, and local settings. No cloud control plane or separate database service.
 
 ## People and modes
 
@@ -33,9 +33,9 @@ Let the owner host a Valheim dedicated server on a Windows PC and let a small, k
 
 - `maxConcurrentServers` is an owner-set positive count, default 1. It limits only TogetherServer-managed processes. Each running world needs a distinct save location and game ports.
 - Configure idle minutes, game executable path, world/profile, server name, port, remote-control toggle, and per-friend Start/Stop permissions. Save secret material through Windows-protected storage, outside the repo.
-- Distinguish Process running, Server ready, Friend control connected, and Friend game running. A process existing is not a join test.
+- Distinguish Process running, Server ready, local game ports, the local Friend-control listener, an authenticated Friend heartbeat, and Friend game running. A local listener or process is not a public route or game join test.
 - A saved Friend Host endpoint may be checked from Friend mode; it must display Unknown when the public route or Host cannot be verified. Host mode may show the latest authenticated heartbeat for each paired Friend.
 
 ## Out of scope for v1
 
-Commercial or cloud servers, billing, a public web dashboard, a plugin system, provider provisioning, automatic DNS/router/firewall changes, mobile or console companions, and guaranteeing physical server capacity. Owner-authored scripts for other games are a planned local profile type, not a public command endpoint. They must identify the actual server process and prove safe Stop behavior before remote Stop or automatic shutdown is enabled for that profile. The Valheim friend join/save/restart gate remains required.
+Commercial or cloud servers, billing, a public web dashboard, a plugin system, provider provisioning, automatic DNS/router/firewall changes, mobile or console companions, and guaranteeing physical server capacity. A future game driver must identify the actual server process, declare its ports and readiness evidence, and prove safe Stop behavior before remote Stop or automatic shutdown is enabled for that profile. No Friend request can supply a script or command. The Valheim friend join/save/restart gate remains required.
