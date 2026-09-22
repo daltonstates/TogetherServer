@@ -174,7 +174,7 @@ internal sealed class DesktopWindow
                 Text = "TogetherServer",
                 StartPosition = FormStartPosition.CenterScreen,
                 Size = new Size(1180, 820),
-                MinimumSize = new Size(800, 600),
+                MinimumSize = new Size(380, 560),
                 BackColor = Color.FromArgb(40, 51, 44),
                 FormBorderStyle = FormBorderStyle.None,
                 Padding = new Padding(1),
@@ -391,8 +391,8 @@ internal sealed class DesktopWindow
                 {
                     try
                     {
-                        var value = await view.ExecuteScriptAsync("document.querySelector('.brand strong')?.textContent ?? ''");
-                        if (JsonSerializer.Deserialize<string>(value) == "TogetherServer")
+                        var value = await view.ExecuteScriptAsync("document.querySelector('.shell') !== null");
+                        if (JsonSerializer.Deserialize<bool>(value))
                         {
                             rendered = true;
                             loading.Dispose();

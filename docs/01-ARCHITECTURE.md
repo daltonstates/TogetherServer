@@ -22,7 +22,7 @@ The optional per-user Windows Run entry starts this same EXE at sign-in with `--
 
 ## Host internals
 
-The Host and Friend capabilities may run concurrently in the same process. My server and Join a friend select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Join a friend. Quit remains blocked by any managed game run from either page.
+The Host and Friend capabilities may run concurrently in the same process. Host and Join select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Join. Quit remains blocked by any managed game run from either page.
 
 - A local loopback GUI listener serves bundled React files and local-owner API actions. It must not become the public management interface.
 - An optional HTTPS companion listener accepts only pairing, authenticated heartbeat, status, Start, and Stop requests. It is off by default and cannot start without pairing and TLS configuration. The owner can start or stop it immediately in the same process; the local GUI remains on loopback. Its port is distinct from each game's ports.

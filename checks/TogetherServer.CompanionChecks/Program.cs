@@ -164,6 +164,22 @@ try
         "the reusable server code did not issue separate device credentials");
     var deviceAId = pairedDevices[0].GetProperty("id").GetGuid();
     var deviceBId = pairedDevices[1].GetProperty("id").GetGuid();
+    const string deviceBName = "Morgan's gaming PC";
+    var missingName = await OwnerPut<DeviceNameRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/name", new(null));
+    var multilineName = await OwnerPut<DeviceNameRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/name", new("Morgan's\ngaming PC"));
+    var longName = await OwnerPut<DeviceNameRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/name", new(new string('x', 49)));
+    var renamed = await OwnerPut<DeviceNameRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/name", new($"  {deviceBName}  "));
+    var renamedView = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices")
+        .EnumerateArray().Single(device => device.GetProperty("id").GetGuid() == deviceBId);
+    Require(!missingName.Ok && missingName.Code == "InvalidDeviceName" &&
+        !multilineName.Ok && multilineName.Code == "InvalidDeviceName" &&
+        !longName.Ok && longName.Code == "InvalidDeviceName" && renamed.Ok &&
+        renamedView.GetProperty("name").GetString() == deviceBName,
+        "Friend PC name validation or trimmed rename failed");
     Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(owner,
         $"/api/local/devices/{deviceBId}/permissions", new(false, true))).Ok,
         "second Friend permissions were not saved");
@@ -283,6 +299,10 @@ try
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     Require((await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single(run => run.ProfileId == profile.Id).State == "Process running", "Host restart did not reattach fixture");
+    var restoredDeviceName = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices")
+        .EnumerateArray().Single(device => device.GetProperty("id").GetGuid() == deviceBId).GetProperty("name").GetString();
+    Require(restoredDeviceName == deviceBName, "renamed Friend PC name did not survive Host restart");
+    Console.WriteLine("PASS Friend PC names reject unsafe input and persist after Host restart"); passes++;
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Connected", "Friend did not reconnect after Host restart");
     settings.RemoteControlsEnabled = false;

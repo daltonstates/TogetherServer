@@ -488,6 +488,13 @@ app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePer
         Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop)); }
     finally { modeGate.Release(); }
 });
+app.MapPut("/api/local/devices/{id:guid}/name", async (Guid id, DeviceNameRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
+        Results.Json(pairing.SetName(id, request.Name)); }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>
     friendMode ? Results.Json(await friend.PairAsync(request.Invitation, request.ClientExecutablePath, request.HostAddress))
     : Results.Conflict(new { ok = false, code = "HostMode" }));
@@ -496,6 +503,29 @@ app.MapPost("/api/local/friend/connections/{id:guid}/select", (Guid id) =>
 app.MapPost("/api/local/friend/client-path", async (ClientPathRequest request) =>
     friendMode ? Results.Json(await friend.SetClientPathAsync(request.Path))
         : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPost("/api/local/friend/browse-client", async (FriendClientBrowseRequest request) =>
+{
+    if (!friendMode) return Results.Conflict(new { ok = false, code = "HostMode", message = "Switch to Join first." });
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
+    var (title, filter) = request.Kind switch
+    {
+        GameKinds.Valheim => ("Choose the Valheim game client", "Valheim (valheim.exe)|valheim.exe|Applications (*.exe)|*.exe"),
+        GameKinds.MinecraftJava => ("Choose the Minecraft Java game client", "Java applications (javaw.exe;java.exe)|javaw.exe;java.exe|Applications (*.exe)|*.exe"),
+        GameKinds.MinecraftBedrock => ("Choose the Minecraft Bedrock game client", "Minecraft (Minecraft.Windows.exe)|Minecraft.Windows.exe|Applications (*.exe)|*.exe"),
+        _ => ("Choose the installed game client", "Applications (*.exe)|*.exe")
+    };
+    try
+    {
+        var selected = await desktop.PickFileAsync(title, filter);
+        return Results.Json(selected is null
+            ? new { ok = false, code = "Canceled", message = "No game client was selected.", path = (string?)null }
+            : new { ok = true, code = "ClientSelected", message = "Game client selected.", path = (string?)selected });
+    }
+    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException)
+    {
+        return Results.BadRequest(new { ok = false, code = "BrowseFailed", message = ex.Message, path = (string?)null });
+    }
+});
 app.MapPost("/api/local/friend/poll", async () =>
     friendMode ? Results.Json(await friend.PollAsync()) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/{action}", async (Guid id, string action) =>

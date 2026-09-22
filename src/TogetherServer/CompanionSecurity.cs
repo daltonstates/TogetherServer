@@ -50,8 +50,10 @@ public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
 public sealed record DevicePlayerIdRequest(string PlatformUserId);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
+public sealed record DeviceNameRequest(string? Name);
 public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
 public sealed record ClientPathRequest(string Path);
+public sealed record FriendClientBrowseRequest(string? Kind);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
 
@@ -455,6 +457,22 @@ public sealed class PairingService(LocalData data)
             data.SaveDevices(devices);
             data.Audit($"permissions-change {device.Id} {DateTimeOffset.UtcNow:O}");
             return new PairingDecision(true, "PermissionsSaved", "Friend permissions changed immediately.");
+        }
+    }
+
+    public PairingDecision SetName(Guid id, string? name)
+    {
+        var value = name?.Trim() ?? "";
+        if (value.Length is < 1 or > 48 || value.Any(char.IsControl))
+            return new PairingDecision(false, "InvalidDeviceName", "Use a name between 1 and 48 characters without line breaks.");
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d));
+            if (device is null) return new PairingDecision(false, "UnknownDevice", "Friend PC was not found.");
+            device.Name = value;
+            data.SaveDevices(devices);
+            data.Audit($"device-name-change {device.Id} {DateTimeOffset.UtcNow:O}");
+            return new PairingDecision(true, "DeviceNameSaved", "Friend PC name saved locally.");
         }
     }
 

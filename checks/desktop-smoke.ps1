@@ -40,9 +40,25 @@ using System;
 using System.Runtime.InteropServices;
 public static class TogetherServerWindowCheck
 {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WindowRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr window, out WindowRect rect);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool MoveWindow(IntPtr window, int x, int y, int width, int height, bool repaint);
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")]
@@ -155,6 +171,31 @@ try {
     if ($state.mode -ne 'Host') { throw 'First desktop launch did not default to Host mode.' }
     Wait-ForWindow $first
     Write-Host "PASS $launchLabel opens a visible native window with custom chrome and rendered React"
+
+    $originalRect = [TogetherServerWindowCheck+WindowRect]::new()
+    if (![TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$originalRect)) {
+        throw 'Could not read the native window size.'
+    }
+    $windowDpi = [TogetherServerWindowCheck]::GetDpiForWindow($first.MainWindowHandle)
+    if ($windowDpi -eq 0) { $windowDpi = 96 }
+    $compactWidth = [int][Math]::Round(390 * $windowDpi / 96)
+    $compactHeight = [int][Math]::Round(600 * $windowDpi / 96)
+    if (![TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
+        $compactWidth, $compactHeight, $true)) { throw 'Could not resize the native window.' }
+    $compactRect = [TogetherServerWindowCheck+WindowRect]::new()
+    for ($i = 0; $i -lt 30; $i++) {
+        [TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$compactRect) | Out-Null
+        $actualWidth = $compactRect.Right - $compactRect.Left
+        $actualHeight = $compactRect.Bottom - $compactRect.Top
+        if ([Math]::Abs($actualWidth - $compactWidth) -le 8 -and [Math]::Abs($actualHeight - $compactHeight) -le 8) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if ([Math]::Abs($actualWidth - $compactWidth) -gt 8 -or [Math]::Abs($actualHeight - $compactHeight) -gt 8) {
+        throw "Native window rejected the compact size: requested ${compactWidth}x${compactHeight}, received ${actualWidth}x${actualHeight}."
+    }
+    [TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
+        $originalRect.Right - $originalRect.Left, $originalRect.Bottom - $originalRect.Top, $true) | Out-Null
+    Write-Host 'PASS native window accepts a compact 390x600 logical-pixel size'
 
     foreach ($control in @('Minimize TogetherServer', 'Maximize TogetherServer', 'Close TogetherServer')) {
         if ($null -eq (Get-ChromeButton $first $control)) { throw "Missing accessible title-bar control: $control" }
@@ -329,6 +370,33 @@ try {
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
         throw 'Friend mode selection failed.'
+    }
+    foreach ($gameKind in @('Valheim', 'MinecraftJava', 'MinecraftBedrock')) {
+        $picker = Start-Job -ArgumentList $baseUrl, $gameKind -ScriptBlock {
+            param($url, $kind)
+            Invoke-RestMethod -Uri "$url/api/local/friend/browse-client" -Method Post -ContentType 'application/json' -Body (@{ kind = $kind } | ConvertTo-Json) -Headers @{ Origin = $url; 'X-TogetherServer-Local' = '1' } -TimeoutSec 30
+        }
+        try {
+            $popup = [IntPtr]::Zero
+            for ($i = 0; $i -lt 100; $i++) {
+                $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
+                $first.Refresh()
+                $popup = [TogetherServerWindowCheck]::FindDialog($first.Id)
+                if ($windowState.fileDialogOpen -and $popup -ne [IntPtr]::Zero -and $popup -ne $first.MainWindowHandle) { break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (!$windowState.fileDialogOpen -or $popup -eq [IntPtr]::Zero -or $popup -eq $first.MainWindowHandle) {
+                throw "$gameKind client Browse did not open a native picker."
+            }
+            if (![TogetherServerWindowCheck]::PostMessage($popup, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) {
+                throw "Could not cancel the $gameKind client picker."
+            }
+            if (!(Wait-Job -Job $picker -Timeout 10)) { throw "Canceled $gameKind client picker did not return." }
+            $choice = Receive-Job -Job $picker
+            if ($choice.code -ne 'Canceled') { throw "Canceled $gameKind client picker returned $($choice.code)." }
+            Write-Host "PASS Friend $gameKind client Browse opens and cancels a native Windows picker"
+        }
+        finally { Stop-Job -Job $picker -ErrorAction SilentlyContinue; Remove-Job -Job $picker -Force -ErrorAction SilentlyContinue }
     }
     $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
     if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }

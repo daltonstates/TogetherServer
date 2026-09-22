@@ -72,8 +72,22 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
-    if (!$js.Content.Contains('Set up a server') -or !$js.Content.Contains('My server') -or !$js.Content.Contains('Minecraft Java Edition') -or !$js.Content.Contains('Minecraft Bedrock Edition') -or !$js.Content.Contains('Install Java server') -or !$js.Content.Contains('Install Bedrock server') -or !$js.Content.Contains('Servers found on this PC') -or !$js.Content.Contains('Saved connections') -or !$js.Content.Contains('Join a friend') -or !$js.Content.Contains('Create new') -or !$js.Content.Contains('Use existing') -or !$js.Content.Contains('Browse for a world folder') -or !$js.Content.Contains('Start server') -or !$js.Content.Contains('Paste the invite here') -or !$js.Content.Contains('Invite friend') -or !$js.Content.Contains('Refresh access') -or !$js.Content.Contains('Game details') -or !$js.Content.Contains('Game ports') -or !$js.Content.Contains('Outside access') -or !$js.Content.Contains('Friend PCs connect outbound') -or !$js.Content.Contains('If forwarding is needed') -or !$js.Content.Contains('Safety setup waiting') -or !$js.Content.Contains('Allow Stop requests') -or !$js.Content.Contains('Create or verify player-only access list') -or !$js.Content.Contains('steam://install/896660')) {
-        throw 'The published GUI is missing game setup or Friend connection controls.'
+    $requiredUiText = @(
+        'Host a server', 'Join a server', 'Choose a game', 'Create new', 'Use existing',
+        'Browse for a world folder', 'Use an existing server', 'TogetherServer installs the latest official server',
+        'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
+        'Start server', 'Invite friends',
+        'Paste your server code', 'Saved servers', 'Game activity detection', 'Browse for game',
+        'Friend access and settings', 'PC name', 'Allow remote Start and Stop', 'Remote Stop',
+        'Connection help', 'Advanced network and game paths', 'Technical details',
+        'Maximum servers running at once',
+        'Revoke all access and create a new code', 'Create or verify player-only access list',
+        'steam://install/896660'
+    )
+    foreach ($expectedText in $requiredUiText) {
+        if (!$js.Content.Contains($expectedText)) {
+            throw "The published GUI is missing expected guided-flow text: $expectedText"
+        }
     }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
