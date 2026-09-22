@@ -225,7 +225,7 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     var snapshot = new HostSnapshot(settings, [new RunView(profile.Id, "Ready", "fixture", 1)],
         "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
-    var device = new DeviceView(Guid.NewGuid(), profile.Id, "Friend PC", true, false, false, true,
+    var device = new DeviceView(Guid.NewGuid(), profile.Id, [profile.Id], "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow, false);
     var diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
     Require(diagnostics.Games.Single().State == "Open on PC" &&

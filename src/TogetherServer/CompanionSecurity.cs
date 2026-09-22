@@ -11,8 +11,11 @@ namespace TogetherServer;
 public sealed class PairedDevice
 {
     public Guid Id { get; set; }
+    // ProfileId and InviteGeneration identify the server code that issued this
+    // credential. AssignedProfileIds is the separate, owner-managed access set.
     public Guid ProfileId { get; set; }
     public Guid InviteGeneration { get; set; }
+    public List<Guid>? AssignedProfileIds { get; set; }
     public string Name { get; set; } = "";
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
@@ -35,7 +38,8 @@ public sealed class ServerInviteState
     public bool Rotated { get; set; }
 }
 
-public sealed record DeviceView(Guid Id, Guid ProfileId, string Name, bool CanStart, bool CanStop, bool Revoked,
+public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> AssignedProfileIds,
+    string Name, bool CanStart, bool CanStop, bool Revoked,
     bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning);
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
     bool ServerScope = false);
@@ -47,6 +51,7 @@ public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOf
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
+public sealed record DeviceServerAccessRequest(IReadOnlyList<Guid>? ProfileIds);
 public sealed record DeviceNameRequest(string? Name);
 public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
 public sealed record ClientPathRequest(string Path);
@@ -209,12 +214,44 @@ public sealed class HostIdentity(LocalData data)
     }
 }
 
-public sealed class PairingService(LocalData data)
+public sealed class PairingService
 {
+    private readonly LocalData data;
     private readonly object sync = new();
-    private readonly List<PairedDevice> devices = data.LoadDevices();
-    private readonly List<ServerInviteState> serverInvites = data.LoadServerInvites();
+    private readonly List<PairedDevice> devices;
+    private readonly List<ServerInviteState> serverInvites;
     private readonly ConcurrentDictionary<Guid, HeartbeatReceipt> heartbeats = new();
+
+    public PairingService(LocalData data)
+    {
+        this.data = data;
+        devices = data.LoadDevices();
+        serverInvites = data.LoadServerInvites();
+        if (NormalizeAssignments()) data.SaveDevices(devices);
+    }
+
+    private bool NormalizeAssignments()
+    {
+        var changed = false;
+        foreach (var device in devices)
+        {
+            if (device.AssignedProfileIds is null)
+            {
+                // Existing TS3 credentials were already scoped by ProfileId.
+                // TS1/TS2 credentials have no trustworthy server scope and are
+                // deliberately migrated with no access until the owner assigns it.
+                device.AssignedProfileIds = device.ProfileId == Guid.Empty ? [] : [device.ProfileId];
+                changed = true;
+            }
+            var normalized = device.AssignedProfileIds.Where(id => id != Guid.Empty).Distinct().ToList();
+            if (!normalized.SequenceEqual(device.AssignedProfileIds))
+            {
+                device.AssignedProfileIds = normalized;
+                changed = true;
+            }
+        }
+        return changed;
+    }
 
     private bool IsRevoked(PairedDevice device) => device.Revoked ||
         (device.ProfileId == Guid.Empty
@@ -238,9 +275,16 @@ public sealed class PairingService(LocalData data)
         {
             var removed = serverInvites.RemoveAll(invite => !known.Contains(invite.ProfileId));
             var changedDevices = false;
-            foreach (var device in devices.Where(device => device.ProfileId != Guid.Empty && !known.Contains(device.ProfileId)))
+            foreach (var device in devices)
             {
-                if (device.Revoked) continue;
+                var assigned = device.AssignedProfileIds!;
+                var validAssignments = assigned.Where(known.Contains).ToList();
+                if (!validAssignments.SequenceEqual(assigned))
+                {
+                    device.AssignedProfileIds = validAssignments;
+                    changedDevices = true;
+                }
+                if (device.ProfileId == Guid.Empty || known.Contains(device.ProfileId) || device.Revoked) continue;
                 device.Revoked = true;
                 heartbeats.TryRemove(device.Id, out _);
                 changedDevices = true;
@@ -274,7 +318,7 @@ public sealed class PairingService(LocalData data)
             data.SaveServerInvites(serverInvites);
             if (refresh)
             {
-                foreach (var device in devices.Where(device => device.ProfileId == profileId || device.ProfileId == Guid.Empty))
+                foreach (var device in devices.Where(device => device.ProfileId == profileId))
                 {
                     device.Revoked = true;
                     device.InviteHash = null;
@@ -294,7 +338,8 @@ public sealed class PairingService(LocalData data)
         {
             heartbeats.TryGetValue(device.Id, out var heartbeat);
             var fresh = heartbeat is not null && DateTimeOffset.UtcNow - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
-            return new DeviceView(device.Id, device.ProfileId, device.Name, device.CanStart, device.CanStop, IsRevoked(device),
+            return new DeviceView(device.Id, device.ProfileId, device.AssignedProfileIds!.ToArray(),
+                device.Name, device.CanStart, device.CanStop, IsRevoked(device),
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
                 fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null);
         }).ToList();
@@ -326,6 +371,7 @@ public sealed class PairingService(LocalData data)
             {
                 var newDeviceId = Guid.NewGuid();
                 device = new PairedDevice { Id = newDeviceId,
+                    AssignedProfileIds = [],
                     Name = name == "Friend PC" ? $"Friend PC {newDeviceId.ToString("N")[..6]}" : name,
                     CanStart = canStart, CanStop = canStop };
                 devices.Add(device);
@@ -353,6 +399,7 @@ public sealed class PairingService(LocalData data)
                 devices.Add(new PairedDevice
                 {
                     Id = id, ProfileId = state.ProfileId, InviteGeneration = state.Generation,
+                    AssignedProfileIds = [state.ProfileId],
                     Name = $"Friend PC {id.ToString("N")[..6]}", CanStart = state.CanStart,
                     CanStop = state.CanStop, CredentialHash = Hash(serverToken), CredentialExpiresUtc = expires
                 });
@@ -436,6 +483,32 @@ public sealed class PairingService(LocalData data)
             data.Audit($"permissions-change {device.Id} {DateTimeOffset.UtcNow:O}");
             return new PairingDecision(true, "PermissionsSaved", "Friend permissions changed immediately.");
         }
+    }
+
+    public PairingDecision SetServerAccess(Guid id, IReadOnlyList<Guid>? profileIds, IEnumerable<Guid> knownProfileIds)
+    {
+        if (profileIds is null || profileIds.Any(profileId => profileId == Guid.Empty) ||
+            profileIds.Distinct().Count() != profileIds.Count)
+            return new PairingDecision(false, "InvalidServerAccess", "Choose each saved server at most once.");
+        var known = knownProfileIds.ToHashSet();
+        if (profileIds.Any(profileId => !known.Contains(profileId)))
+            return new PairingDecision(false, "UnknownServer", "One or more selected servers are no longer saved on this Host.");
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
+            if (device is null) return new PairingDecision(false, "UnknownDevice", "Pair this Friend PC first.");
+            device.AssignedProfileIds = profileIds.ToList();
+            data.SaveDevices(devices);
+            data.Audit($"server-access-change {device.Id} {device.AssignedProfileIds.Count} {DateTimeOffset.UtcNow:O}");
+            return new PairingDecision(true, "ServerAccessSaved", device.AssignedProfileIds.Count == 0
+                ? "This Friend PC is not assigned to any servers."
+                : $"This Friend PC can now access {device.AssignedProfileIds.Count} server{(device.AssignedProfileIds.Count == 1 ? "" : "s")}.");
+        }
+    }
+
+    public bool CanAccess(PairedDevice device, Guid profileId)
+    {
+        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId);
     }
 
     public PairingDecision SetName(Guid id, string? name)

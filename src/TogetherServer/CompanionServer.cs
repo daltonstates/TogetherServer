@@ -152,8 +152,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var address = snapshot.Settings.PublicGameIpCheckedUtc is { } checkedUtc &&
                 DateTimeOffset.UtcNow - checkedUtc <= TimeSpan.FromHours(1) ? snapshot.Settings.PublicGameIp : null;
             var own = pairing.Views().SingleOrDefault(view => view.Id == deviceId);
-            var profiles = snapshot.Settings.Profiles.Where(profile => own?.ProfileId == Guid.Empty ||
-                profile.Id == own?.ProfileId).Select(profile =>
+            var profiles = snapshot.Settings.Profiles.Where(profile =>
+                own?.AssignedProfileIds.Contains(profile.Id) == true).Select(profile =>
             {
                 var run = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
@@ -204,8 +204,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         statusCode: decision.Code == "Revoked" ? 403 : 401);
                 if (request.DeviceId != device!.Id || request.ProfileId == Guid.Empty)
                     return Results.BadRequest(new FriendActionResult(false, "InvalidRequest", "Device or profile ID is invalid.", null));
-                if (device.ProfileId != Guid.Empty && device.ProfileId != request.ProfileId)
-                    return Results.Json(new FriendActionResult(false, "PermissionDenied", "This PC is paired with a different server.", null),
+                if (!pairing.CanAccess(device, request.ProfileId))
+                    return Results.Json(new FriendActionResult(false, "PermissionDenied", "The Host has not assigned this server to this PC.", null),
                         statusCode: 403);
                 if (!Guid.TryParse(context.Request.Headers["Idempotency-Key"], out var key) || key == Guid.Empty)
                     return Results.BadRequest(new FriendActionResult(false, "IdempotencyKeyRequired", "A request ID is required.", null));

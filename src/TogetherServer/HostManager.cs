@@ -57,8 +57,12 @@ public sealed class HostManager
             var profileIds = next.Profiles.Select(profile => profile.Id).ToHashSet();
             var serverInvites = data.LoadServerInvites()
                 .Where(invite => profileIds.Contains(invite.ProfileId)).ToList();
-            var devices = data.LoadDevices().Where(device => !device.Revoked &&
-                (device.ProfileId == Guid.Empty || profileIds.Contains(device.ProfileId))).ToList();
+            var devices = data.LoadDevices().Where(device =>
+            {
+                var assigned = device.AssignedProfileIds ??
+                    (device.ProfileId == Guid.Empty ? [] : [device.ProfileId]);
+                return !device.Revoked && assigned.Any(profileIds.Contains);
+            }).ToList();
             if (next.CompanionListeningEnabled &&
                 (!data.HasProtected("host-certificate.protected") ||
                  !(serverInvites.Count > 0 || devices.Any(device =>

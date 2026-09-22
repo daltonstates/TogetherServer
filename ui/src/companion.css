@@ -603,6 +603,10 @@ main { padding-top: 22px; }
 .access-device { align-items: stretch; margin-top: 8px; }
 .device-main { flex: 1; min-width: 210px; }
 .device-main label { margin-top: 0 !important; }
+.device-server-access { display: grid; gap: 7px; margin: 13px 0 0; padding: 11px 12px; border: 1px solid #3f5142; border-radius: 8px; }
+.device-server-access legend { padding: 0 5px; color: #d6dfd4; font-size: 12px; font-weight: 700; }
+.device-server-access .check-row { margin: 0; }
+.device-server-access small { margin-top: 2px; color: #efc097; }
 .device-controls { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
 .device-controls .check-row { margin: 0; white-space: nowrap; }
 .device-controls .actions { flex-wrap: nowrap; }

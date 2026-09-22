@@ -25,7 +25,7 @@ type Settings = {
 type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null }
 type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; ownerGameRunning: boolean | null; ownerCheckedUtc: string; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
 type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null }
-type Device = { id: string; profileId: string; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null }
+type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null }
 type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
 type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; localGameRunning: boolean | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; clientExecutablePath: string; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null }
 type Snapshot = HostSnapshot | FriendSnapshot
@@ -487,7 +487,7 @@ function App() {
     } finally { setCheckingInternetRoute(false) }
   }
   const issueInvite = async (profileId: string, refresh = false): Promise<string | null> => {
-    if (refresh && !window.confirm('Refresh this server code? All Friend PCs paired to this server will lose access and need to connect again.')) return null
+    if (refresh && !window.confirm('Refresh this server code? Every Friend PC that connected with this code will lose its credential and need to connect again. Any extra servers assigned to those credentials will also be removed.')) return null
     setPending('invite')
     setNotice(null)
     try {
@@ -745,6 +745,19 @@ function App() {
     } catch (error) {
       setNotice({ good: false, text: String(error) })
     } finally { setPending('') }
+  }
+  const setDeviceServerAccess = async (device: Device, profileId: string, assigned: boolean) => {
+    setPending(device.id)
+    try {
+      const profileIds = assigned
+        ? [...new Set([...device.assignedProfileIds, profileId])]
+        : device.assignedProfileIds.filter(id => id !== profileId)
+      const result = await change<BasicResult>(`/api/local/devices/${device.id}/servers`, 'PUT', { profileIds })
+      setNotice({ good: result.ok, text: result.message })
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
   }
 
   const updateProfile = (id: string, patch: Partial<Profile>) => {
@@ -1046,7 +1059,8 @@ function App() {
             {friendGame === 'Valheim' && discovery && discovery.clients.length > 1 && <div className="choices"><strong>Valheim installs found</strong>{discovery.clients.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><Button className="secondary" onClick={() => { friendClientEdited.current = true; setFriendClientPath(item.executablePath) }}>Use this install</Button></div>)}</div>}
             <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void browseFriendClient()}>Browse for game</Button><Button disabled={!snapshot.endpoint || !!pending || !friendClientPath} onClick={() => void saveFriendClientPath()}>Save game check</Button></div>
           </details>}
-          {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>Server</h3>
+          {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
+          {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
           {snapshot.profiles.map(profile => <article className="profile-card" key={profile.id}>
             <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p>{profile.state === 'Ready' && <span className={`player-count ${profile.onlinePlayers === null ? 'unknown' : ''}`}>{playerCount(profile.onlinePlayers, profile.maxPlayers)}</span>}</div><span className={`status ${statusTone(profile.state)}`}>{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
             <div className="actions server-actions">
@@ -1092,7 +1106,7 @@ function App() {
                       : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</Button>}
                       <Button className="danger-outline" disabled={!!pending || !!activeInviteWarning} onClick={() => void issueInvite(profile.id, true)}><Icon name="refresh" />Revoke all access and create a new code</Button>
                       <Button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</Button></div>
-                    <p>Creating a new code revokes every paired PC for this server.</p></>
+                    <p>Creating a new code revokes every PC credential issued by the old code, including any extra servers later assigned to those credentials.</p></>
                     : inviteListenerWarning ? <><p className="connection-warning" role="alert">{inviteListenerWarning}</p>
                       <div className="actions"><Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</Button>
                         <Button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</Button></div></>
@@ -1209,9 +1223,10 @@ function App() {
                 <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
                 <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /></label>
                   <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
-                {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
-                  <div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</small></div>
-                  <div className="device-controls"><label className="check-row"><Input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} />Can start</label><label className="check-row"><Input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} />Can request Stop</label><div className="actions"><Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
+                {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
+                  <div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small>
+                    <fieldset className="device-server-access"><legend>Servers this PC can control</legend>{savedProfiles.map(profile => <label className="check-row" key={profile.id}><Input type="checkbox" checked={device.assignedProfileIds.includes(profile.id)} disabled={!!pending || !device.paired} onChange={event => void setDeviceServerAccess(device, profile.id, event.target.checked)} />{profile.name}</label>)}{device.assignedProfileIds.length === 0 && <small>No servers assigned. This PC can connect for status, but it cannot see or control a server.</small>}</fieldset></div>
+                  <div className="device-controls"><label className="check-row"><Input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} />Can start assigned servers</label><label className="check-row"><Input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} />Can request Stop on assigned servers</label><div className="actions"><Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">

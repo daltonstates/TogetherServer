@@ -6,7 +6,7 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 
 ### Start
 
-1. Authorize the local owner or authenticated Friend action. Reject remote requests while controls are disabled.
+1. Authorize the local owner or authenticated Friend action. A Friend credential must currently be assigned to the requested saved server profile and have permission for the typed action. Reject remote requests while controls are disabled.
 2. Serialize starts/stops in the Host process. Recheck maximum concurrent managed servers, one writer per world, configured game-port conflicts, executable identity, save path, and available local ports immediately before launch.
 3. Record an operation ID and its intended world/profile before launching. A repeated request with the same idempotency key returns the same result and never creates another server process.
 4. Start only the owner-approved installed server selected by the saved built-in game profile, with validated fixed arguments and an explicit world/save location. Do not modify installed game files or accept game terms. Capture logs without storing passwords or personal identifiers in Git.

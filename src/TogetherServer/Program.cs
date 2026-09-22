@@ -474,6 +474,14 @@ app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePer
         Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop)); }
     finally { modeGate.Release(); }
 });
+app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerAccessRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
+        Results.Json(pairing.SetServerAccess(id, request.ProfileIds,
+            data.LoadSettings().Profiles.Select(profile => profile.Id))); }
+    finally { modeGate.Release(); }
+});
 app.MapPut("/api/local/devices/{id:guid}/name", async (Guid id, DeviceNameRequest request) =>
 {
     await modeGate.WaitAsync();

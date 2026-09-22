@@ -77,6 +77,25 @@ try
         "a checker service failure was interpreted as a closed Host port");
     Console.WriteLine("PASS outside TCP probe fails closed on wrong IP, private target, and checker error"); passes++;
 
+    var migrationRoot = Path.Combine(root, "assignment-migration");
+    var existingScopedProfile = Guid.NewGuid();
+    var existingScopedDevice = Guid.NewGuid();
+    var existingLegacyDevice = Guid.NewGuid();
+    using (var migrationData = new LocalData(migrationRoot))
+    {
+        migrationData.SaveDevices([
+            new PairedDevice { Id = existingScopedDevice, ProfileId = existingScopedProfile },
+            new PairedDevice { Id = existingLegacyDevice, ProfileId = Guid.Empty }
+        ]);
+        _ = new PairingService(migrationData);
+        var migrated = migrationData.LoadDevices();
+        Require(migrated.Single(device => device.Id == existingScopedDevice).AssignedProfileIds!
+                .SequenceEqual([existingScopedProfile]) &&
+            migrated.Single(device => device.Id == existingLegacyDevice).AssignedProfileIds!.Count == 0,
+            "existing scoped and legacy credentials did not migrate to fail-closed explicit server access");
+    }
+    Console.WriteLine("PASS existing scoped access is preserved while legacy unscoped access fails closed"); passes++;
+
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
@@ -160,8 +179,10 @@ try
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");
     var pairedDevices = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
         .Where(device => device.GetProperty("profileId").GetGuid() == profile.Id).ToArray();
-    Require(pairedDevices.Length == 2 && pairedDevices.Select(device => device.GetProperty("id").GetGuid()).Distinct().Count() == 2,
-        "the reusable server code did not issue separate device credentials");
+    Require(pairedDevices.Length == 2 && pairedDevices.Select(device => device.GetProperty("id").GetGuid()).Distinct().Count() == 2 &&
+        pairedDevices.All(device => device.GetProperty("assignedProfileIds").EnumerateArray()
+            .Select(value => value.GetGuid()).SequenceEqual([profile.Id])),
+        "the reusable server code did not issue separate device credentials scoped only to that server");
     var deviceAId = pairedDevices[0].GetProperty("id").GetGuid();
     var deviceBId = pairedDevices[1].GetProperty("id").GetGuid();
     const string deviceBName = "Morgan's gaming PC";
@@ -188,6 +209,39 @@ try
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
     Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
         "a server code exposed a different server profile");
+    var differentServerDenied = await OwnerPost<object, FriendActionResult>(bLocal,
+        $"/api/local/friend/{joinProfile.Id}/start", new { });
+    Require(differentServerDenied.Code == "PermissionDenied",
+        "a Friend controlled a server that was not assigned to its code or device");
+    var unknownServerAssignment = await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, Guid.NewGuid()]));
+    var duplicateServerAssignment = await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, profile.Id]));
+    Require(!unknownServerAssignment.Ok && unknownServerAssignment.Code == "UnknownServer" &&
+        !duplicateServerAssignment.Ok && duplicateServerAssignment.Code == "InvalidServerAccess",
+        "the Host assigned a Friend to an unknown or duplicate server ID");
+    var assignedBoth = await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id]));
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(assignedBoth.Ok && bView.Profiles.Select(item => item.Id).ToHashSet()
+            .SetEquals([profile.Id, joinProfile.Id]),
+        "the Host could not assign one Friend PC to multiple saved servers");
+    var assignedButPaused = await OwnerPost<object, FriendActionResult>(bLocal,
+        $"/api/local/friend/{joinProfile.Id}/start", new { });
+    Require(assignedButPaused.Code == "RemoteControlsDisabled",
+        "an assigned server did not pass server access before the separate global control gate");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([]))).Ok,
+        "the Host could not remove every server assignment");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    var removedServerDenied = await OwnerPost<object, FriendActionResult>(bLocal,
+        $"/api/local/friend/{profile.Id}/start", new { });
+    Require(bView.Profiles.Count == 0 && removedServerDenied.Code == "PermissionDenied",
+        "removing assignments did not immediately hide and deny server access");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id]))).Ok,
+        "the Host could not restore multiple server assignments");
+    Console.WriteLine("PASS codes grant one server and the Host can reassign zero, one, or multiple saved servers"); passes++;
     var pairedSecondGame = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(inviteB), fixturePath));
     Require(pairedSecondGame.Ok, "second server pairing replaced the first or failed");
@@ -300,12 +354,18 @@ try
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     Require((await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single(run => run.ProfileId == profile.Id).State == "Process running", "Host restart did not reattach fixture");
-    var restoredDeviceName = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices")
-        .EnumerateArray().Single(device => device.GetProperty("id").GetGuid() == deviceBId).GetProperty("name").GetString();
-    Require(restoredDeviceName == deviceBName, "renamed Friend PC name did not survive Host restart");
-    Console.WriteLine("PASS Friend PC names reject unsafe input and persist after Host restart"); passes++;
+    var restoredDevice = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices")
+        .EnumerateArray().Single(device => device.GetProperty("id").GetGuid() == deviceBId);
+    Require(restoredDevice.GetProperty("name").GetString() == deviceBName &&
+        restoredDevice.GetProperty("assignedProfileIds").EnumerateArray().Select(value => value.GetGuid()).ToHashSet()
+            .SetEquals([profile.Id, joinProfile.Id]),
+        "renamed Friend PC name or multiple server assignments did not survive Host restart");
+    Console.WriteLine("PASS Friend PC names and multiple server assignments persist after Host restart"); passes++;
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
-    Require(aView.State == "Connected", "Friend did not reconnect after Host restart");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    Require(aView.State == "Connected" && bView.Profiles.Select(item => item.Id).ToHashSet()
+            .SetEquals([profile.Id, joinProfile.Id]),
+        "Friend did not reconnect with its saved server assignments after Host restart");
     settings.RemoteControlsEnabled = false;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "remote disable failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
