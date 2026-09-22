@@ -87,6 +87,17 @@ function FriendConnectionHelp({ code }: { code: string }) {
     <small>The Friend app connects outward. This PC does not need an inbound port forward.</small></div>
 }
 
+function FriendStopBlockers({ snapshot, profile }: { snapshot: FriendSnapshot; profile: PublicProfile }) {
+  const authenticated = snapshot.state === 'Connected' || snapshot.state === 'Disabled'
+  const stopVisible = profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow
+  if (!authenticated || stopVisible) return null
+  const blockers: string[] = []
+  if (!snapshot.remoteControlsEnabled) blockers.push('The Host has paused remote Start and Stop.')
+  if (!snapshot.canStop) blockers.push('Ask the Host to open Settings and safety and choose Allow Stop requests for this PC.')
+  if (profile.stopReason) blockers.push(`Host safety: ${profile.stopReason}`)
+  return <div className="stop-blockers"><strong>Stop unavailable</strong><ul>{blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></div>
+}
+
 function hostAddress(endpoint: string): string {
   try {
     const url = new URL(endpoint)
@@ -922,8 +933,7 @@ function App() {
               {profile.state === 'Ready' && profile.joinAddress && <button className="secondary" onClick={() => void copyText(profile.joinAddress!, 'Game address')}><Icon name="copy" />Copy game address</button>}
               {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}><Icon name="stop" />Stop server</button>}
             </div>
-            {profile.state === 'Ready' && snapshot.state === 'Connected' && !snapshot.canStop && <p className="helper-text">Stop unavailable: The Host has not allowed this PC to stop the server.{!profile.canStopNow && profile.stopReason ? ` Host setup: ${profile.stopReason}` : ''}</p>}
-            {snapshot.canStop && profile.state === 'Ready' && !profile.canStopNow && <p className="helper-text">Stop unavailable: {profile.stopReason}</p>}
+            <FriendStopBlockers snapshot={snapshot} profile={profile} />
             {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
             {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
           </article>)}
@@ -1081,18 +1091,27 @@ function App() {
               <h3>Safe remote Stop</h3>
               {!savedProfiles.some(profile => profile.kind === 'Valheim') && <p>Minecraft remote Stop is unavailable until player coverage and real save behavior are verified. The owner can use local Stop.</p>}
               {savedProfiles.some(profile => profile.kind === 'Valheim') && <>
-              <p>Valheim must admit only the owner and paired Friend PCs. Set their Valheim player IDs, then create a player-only access list while the server is off. Stop works only when every allowed PC reports its game closed.</p>
+              <p>Valheim must admit only the owner and paired Friend PCs. The Host checks every Stop request even after permission is granted.</p>
+              <div className="stop-setup-guide"><strong>Enable Stop for a Friend</strong><ol>
+                <li>Choose <b>Allow Stop requests</b> for that Friend PC.</li>
+                <li>Save the Valheim player ID from F2 for every Friend, and for the owner if the owner plays.</li>
+                <li>Stop the server locally, then create or verify its player-only access list below.</li>
+                <li>Start the server again so it loads that exact list.</li>
+                <li>On every Friend PC, save the Valheim client under Game check. If the owner plays here, verify the owner game path under Advanced network and game paths. Close every game client.</li>
+                <li>On My server, make sure Remote control is On.</li>
+              </ol></div>
               <label>My Valheim player ID (only if I play)<input value={draft.ownerPlatformUserId} onChange={event => edit({ ...draft, ownerPlatformUserId: event.target.value.trim() })} placeholder="V_123456789" /><small>Find it in Valheim's F2 panel. Leave blank if this PC never joins the server.</small></label>
               {companion?.devices.filter(device => !device.revoked && (device.profileId === '00000000-0000-0000-0000-000000000000' || savedProfiles.some(profile => profile.kind === 'Valheim' && profile.id === device.profileId))).map(device => <div className="device" key={device.id}>
                 <div><strong>{device.name} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</strong><small>{device.paired ? device.gameRunning === null ? 'Game check unknown' : device.gameRunning ? 'Game running' : 'Game closed' : 'Invite pending'} · Start {device.canStart ? 'allowed' : 'off'} · Stop {device.canStop ? 'allowed' : 'off'}</small>
                   <label>Valheim player ID<input value={playerIds[device.id] ?? ''} onChange={event => setPlayerIds(current => ({ ...current, [device.id]: event.target.value }))} placeholder="V_123456789" /></label></div>
                 <div className="actions"><button className="secondary" disabled={!!pending} onClick={() => void savePlayerId(device.id)}>Save ID</button>
-                  {device.paired && <button className="secondary" disabled={!!pending || (!device.canStop && !companion?.stopSafety?.[device.profileId]?.available)} onClick={() => void setDevicePermissions(device, !device.canStop)}>{device.canStop ? 'Remove Stop access' : 'Allow Stop'}</button>}</div>
+                  {device.paired && <button className="secondary" disabled={!!pending} onClick={() => void setDevicePermissions(device, !device.canStop)}>{device.canStop ? 'Remove Stop access' : 'Allow Stop requests'}</button>}</div>
               </div>)}
-              {savedProfiles.filter(profile => profile.kind === 'Valheim').map(profile => <div className="safety-status" key={profile.id}><strong>{profile.name}: {companion?.stopSafety?.[profile.id]?.available ? 'Remote Stop ready' : 'Remote Stop waiting'}</strong>
+              {savedProfiles.filter(profile => profile.kind === 'Valheim').map(profile => <div className="safety-status" key={profile.id}><strong>{profile.name}: {companion?.stopSafety?.[profile.id]?.available ? 'Safety checks ready' : 'Safety setup waiting'}</strong>
                 <p>{companion?.stopSafety?.[profile.id]?.reason ?? 'Checking player coverage…'}</p>
-                <button className="secondary" disabled={!!pending || dirty || snapshot.runs.find(run => run.profileId === profile.id)?.state !== 'Offline'} onClick={() => void createPermittedList(profile.id)}>Create player-only access list</button>
-                <small>Existing lists are never overwritten. Start or restart the server after creating one.</small></div>)}
+                <button className="secondary" disabled={!!pending || dirty || snapshot.runs.find(run => run.profileId === profile.id)?.state !== 'Offline'} onClick={() => void createPermittedList(profile.id)}>Create or verify player-only access list</button>
+                <small>{dirty ? 'Save settings first.' : snapshot.runs.find(run => run.profileId === profile.id)?.state !== 'Offline' ? 'Use local Stop on My server first. Then return here to prepare the list.' : 'Existing lists are never overwritten. Start the server after this check succeeds.'}</small>
+                <small>Remote control is {draft.remoteControlsEnabled ? 'On' : 'Paused on My server'}; each Friend's Stop permission is shown above.</small></div>)}
               </>}
 
               <h3>Advanced network and game paths</h3>

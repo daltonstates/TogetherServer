@@ -160,7 +160,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     snapshot.Runs.Single(run => run.ProfileId == profile.Id).State,
                     games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
                     snapshot.Settings.RemoteControlsEnabled && own?.CanStop == true && permit.Allowed,
-                    permit.Reason, profile.Kind);
+                    permit.Allowed ? null : permit.Reason, profile.Kind);
             }).ToList();
             return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",

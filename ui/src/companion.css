@@ -43,6 +43,14 @@
 .check-row input { accent-color: #acd889; width: 15px; height: 15px; }
 .device-options .check-row { margin-top: 6px; }
 .warning-text { font-size: 12px; color: #f0bd97; }
+.stop-setup-guide { margin: 14px 0 18px; padding: 14px 17px; border: 1px solid #456049; border-radius: 9px; background: #19271d; color: #b9c7ba; font-size: 12px; line-height: 1.55; }
+.stop-setup-guide strong { color: #e1ebdd; }
+.stop-setup-guide ol { margin: 8px 0 0; padding-left: 21px; }
+.stop-setup-guide li + li { margin-top: 4px; }
+.stop-blockers { margin-top: 12px; padding: 12px 14px; border: 1px solid #705942; border-radius: 9px; background: #30271f; color: #e9cda7; font-size: 12px; line-height: 1.5; }
+.stop-blockers strong { color: #f3dbc0; }
+.stop-blockers ul { margin: 6px 0 0; padding-left: 19px; }
+.stop-blockers li + li { margin-top: 3px; }
 .invite-box {
   border: 1px solid #627760;
   border-radius: 9px;

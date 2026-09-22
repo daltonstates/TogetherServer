@@ -518,11 +518,24 @@ try
     var stopPair = await OwnerPost<FriendPairRequest, FriendActionResult>(stopFriendLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(stopInvite), fixturePath));
     Require(stopPair.Ok, "restricted Friend did not pair from the server code");
+    var stopBeforePermission = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    Require(!stopBeforePermission.CanStop && !stopBeforePermission.Profiles.Single().CanStopNow &&
+        !string.IsNullOrWhiteSpace(stopBeforePermission.Profiles.Single().StopReason),
+        "new Friend did not receive distinct Stop permission and safety state");
     var stopDeviceId = (await stopOwner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
         .Single(device => device.GetProperty("profileId").GetGuid() == stopProfile.Id).GetProperty("id").GetGuid();
     Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
         $"/api/local/devices/{stopDeviceId}/permissions", new(true, true))).Ok,
         "restricted Friend Stop permission was not saved");
+    var stopPreparing = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    Require(stopPreparing.CanStop && !stopPreparing.Profiles.Single().CanStopNow &&
+        !string.IsNullOrWhiteSpace(stopPreparing.Profiles.Single().StopReason),
+        "early Stop permission bypassed or hid the incomplete safety setup");
+    var prematureStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    Require(!prematureStop.Ok && prematureStop.Code == "PlayerStateUnknown",
+        "Host accepted Stop before the restricted server was ready");
+    Console.WriteLine("PASS early Stop permission remains blocked until Host safety setup is complete"); passes++;
     var setId = await OwnerPut<DevicePlayerIdRequest, PairingDecision>(stopOwner,
         $"/api/local/devices/{stopDeviceId}/player-id", new("V_123456789"));
     Require(setId.Ok, "restricted Friend player ID was not saved");
@@ -540,7 +553,8 @@ try
     }
     Require(ready, "restricted synthetic server never reached Ready");
     var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
-    Require(stopView.Profiles.Single().CanStopNow, "Friend UI did not receive available remote Stop");
+    Require(stopView.Profiles.Single().CanStopNow && stopView.Profiles.Single().StopReason is null,
+        "Friend UI did not receive available remote Stop without a contradictory blocker");
     var remoteStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
         $"/api/local/friend/{stopProfile.Id}/stop", new { });
     Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
