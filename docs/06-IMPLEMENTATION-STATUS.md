@@ -571,7 +571,7 @@ Join a friend now separates Friend-PC checks from Host-PC checks. Pairing and la
 
 The current Host identity pins the invite endpoint. If the public IP changes, diagnostics can detect an address mismatch, but changing an already pinned Host endpoint still requires a separate reviewed migration path. Do not treat a router forward as a fix for a stale invite address.
 
-## 2026-09-22 - Friend remote Stop explanation and v0.1.5 candidate
+## 2026-09-22 - Friend remote Stop explanation and v0.1.5 release
 
 Live inspection of the owner's connected Friend showed that the connection and heartbeat were working, but remote Stop was withheld for three independent safety reasons: the Host had not granted Stop permission to that device, the running Valheim server had no startup fingerprint for a complete `permittedlist.txt`, and the Friend had neither a saved Valheim player ID nor a known closed-game report. The Friend UI previously hid Stop without explaining these Host-side requirements whenever the device permission itself was off.
 
@@ -582,3 +582,5 @@ The Friend server card now says that the Host has not allowed this PC to stop th
 | `scripts/prepare-github-release.ps1` | Pass: npm reported 0 vulnerabilities; TypeScript/Vite, three fixtures, and the self-contained Windows x64 EXE built. The existing WebView2/WindowsBase `MSB3277` warning remains. |
 | Exact v0.1.5 asset | `local-data/github-release/v0.1.5/TogetherServer-win-x64.exe`, 64,186,093 bytes, file version `0.1.5.0`, SHA-256 `A06F89D3FE2BC7145702CA609ABC33829CBEEB2E9393EBD273532ECA4EBCDE3C`. |
 | Served and native desktop smoke | Pass: 19 served groups and 15 desktop groups, 0 failures. The served bundle includes the new Stop explanation; the native EXE rendered and completed the existing synthetic lifecycle checks. Disposable data: `local-data/served-smoke/a91675d6ec0f4e64a75bf7b32b329d85` and `local-data/desktop-smoke/87433ddde00c40a88ea79d55db7d5243`. |
+| Local install | `local-data/release/TogetherServer.exe` matches the tested asset byte for byte; the prior file is backed up as `TogetherServer.exe.pre-0.1.5`. |
+| GitHub release | Published stable `v0.1.5` with the EXE and checksum assets. GitHub's latest-release API reports the same 64,186,093-byte asset and SHA-256 digest. |
