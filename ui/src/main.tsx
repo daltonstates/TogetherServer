@@ -922,6 +922,7 @@ function App() {
               {profile.state === 'Ready' && profile.joinAddress && <button className="secondary" onClick={() => void copyText(profile.joinAddress!, 'Game address')}><Icon name="copy" />Copy game address</button>}
               {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}><Icon name="stop" />Stop server</button>}
             </div>
+            {profile.state === 'Ready' && snapshot.state === 'Connected' && !snapshot.canStop && <p className="helper-text">Stop unavailable: The Host has not allowed this PC to stop the server.{!profile.canStopNow && profile.stopReason ? ` Host setup: ${profile.stopReason}` : ''}</p>}
             {snapshot.canStop && profile.state === 'Ready' && !profile.canStopNow && <p className="helper-text">Stop unavailable: {profile.stopReason}</p>}
             {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
             {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
