@@ -2,6 +2,7 @@
 // It refuses to run outside an explicitly supplied disposable fixture root.
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 var root = Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_ROOT");
 string? Value(string key)
@@ -26,10 +27,10 @@ if (!Inside(saveDir) || !Inside(log) || Value("-password") != "fixture-pass-123"
 
 using var gameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
     { ExclusiveAddressUse = true };
-using var querySocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-    { ExclusiveAddressUse = true };
 gameSocket.Bind(new IPEndPoint(IPAddress.Any, gamePort));
-querySocket.Bind(new IPEndPoint(IPAddress.Any, gamePort + 1));
+using var querySocket = new UdpClient(new IPEndPoint(IPAddress.Any, gamePort + 1));
+using var queryDone = new CancellationTokenSource();
+var queryTask = ServeQuery(querySocket, saveDir!, queryDone.Token);
 
 var stop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 Console.CancelKeyPress += (_, eventArgs) =>
@@ -44,4 +45,53 @@ if (int.TryParse(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_STOP
     delayMs is > 0 and <= 10000)
     await Task.Delay(delayMs);
 await File.WriteAllTextAsync(Path.Combine(saveDir!, "synthetic-stop.marker"), "Ctrl+C received");
+queryDone.Cancel();
+await queryTask;
 return 0;
+
+static async Task ServeQuery(UdpClient query, string saveDirectory, CancellationToken token)
+{
+    try
+    {
+        while (!token.IsCancellationRequested)
+        {
+            var request = await query.ReceiveAsync(token);
+            if (request.Buffer.Length < 5 || request.Buffer[0] != 0xff || request.Buffer[1] != 0xff ||
+                request.Buffer[2] != 0xff || request.Buffer[3] != 0xff || request.Buffer[4] != 0x54)
+                continue;
+            var countPath = Path.Combine(saveDirectory, "synthetic-online-players.txt");
+            var hasCount = File.Exists(countPath);
+            byte reported = 0;
+            var countIsValid = !hasCount || byte.TryParse(File.ReadAllText(countPath).Trim(), out reported);
+            var online = countIsValid && hasCount ? Math.Min(reported, (byte)10) : (byte)0;
+            using var packet = new MemoryStream();
+            using (var writer = new BinaryWriter(packet, Encoding.UTF8, true))
+            {
+                writer.Write(-1);
+                writer.Write((byte)0x49);
+                writer.Write((byte)17);
+                WriteCString(writer, "TogetherServer Valheim fixture");
+                WriteCString(writer, "fixture-world");
+                WriteCString(writer, "valheim");
+                WriteCString(writer, "Valheim");
+                writer.Write((ushort)0);
+                writer.Write(online);
+                writer.Write(countIsValid ? (byte)10 : (byte)0);
+                writer.Write((byte)0);
+                writer.Write((byte)'d');
+                writer.Write((byte)'w');
+                writer.Write((byte)1);
+                writer.Write((byte)0);
+                WriteCString(writer, "fixture");
+            }
+            await query.SendAsync(packet.ToArray(), request.RemoteEndPoint, token);
+        }
+    }
+    catch (OperationCanceledException) { }
+}
+
+static void WriteCString(BinaryWriter writer, string value)
+{
+    writer.Write(Encoding.UTF8.GetBytes(value));
+    writer.Write((byte)0);
+}

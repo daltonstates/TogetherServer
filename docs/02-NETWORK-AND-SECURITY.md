@@ -31,7 +31,7 @@ As of the project handoff, [Let's Encrypt supports public-IP certificates](https
 
 Per-Friend permission changes and revocation are checked by Host on each action even if the Friend UI has stale buttons. No Friend request may supply an executable, script, command line, working directory, world save path, or arbitrary settings update. Public input is a request for a fixed approved action only.
 
-Remote Stop also requires an exact, unchanged `permittedlist.txt` in the selected Valheim save directory from server startup. The owner assigns a unique Valheim Platform User ID to each paired Friend PC and to the owner if the owner plays. TogetherServer creates a new list only in its own new-world folder or an imported copy while the server is offline; it never overwrites an existing list. Host requires fresh closed-game reports from every paired Friend and checks the owner's local game before signaling Stop. This policy does not prove a real player count or a public Friend join.
+Remote Stop uses the selected built-in game driver's local status/query protocol instead of player IDs. The server must be Ready and report exactly zero online players. A positive, missing, malformed, timed-out, or unsupported reply denies the request. Host repeats the same query under the lifecycle gate immediately before signaling Stop; a changed or unknown result sends no signal. The local owner Stop path deliberately remains available as the owner's override. A local count reply does not prove public reachability, a particular Friend join, or saved-world integrity.
 
 ## Owner approval gates
 

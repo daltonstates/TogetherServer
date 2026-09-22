@@ -1,4 +1,5 @@
 import { Icon } from './Icon'
+import { Button } from './Controls'
 
 export type GamePortCheck = {
   profileId: string
@@ -319,7 +320,7 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
     {issue && <div className={`readiness-action ${issue.tone}`} role="status">
       <span className="readiness-action-icon"><Icon name="warning" /></span>
       <span className="readiness-action-copy"><strong>{issue.title}</strong><span>{issue.detail}</span></span>
-      {issue.connection && onOpenConnection && <button type="button" onClick={onOpenConnection}>Fix connection</button>}
+      {issue.connection && onOpenConnection && <Button type="button" onClick={onOpenConnection}>Fix connection</Button>}
     </div>}
 
     <div className="readiness-footer">
@@ -341,9 +342,9 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
           <p>Only the Host forwards a port when needed. Friend PCs connect outbound.</p>
         </div>
       </details>
-      <button className="readiness-refresh" type="button" disabled={busy} onClick={onRefresh}>
+      <Button className="readiness-refresh" type="button" disabled={busy} onClick={onRefresh}>
         <Icon name="refresh" />{busy ? 'Checking…' : 'Refresh checks'}
-      </button>
+      </Button>
     </div>
   </div>
 }

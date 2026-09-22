@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { Button, Input, Select, TextArea } from './Controls'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { gameLabel, type Profile } from './GameProfile'
@@ -19,14 +20,12 @@ type Settings = {
   publicGameIp: string
   publicGameIpCheckedUtc: string | null
   ownerClientExecutablePath: string
-  ownerPlatformUserId: string
-  permittedPlayersVerified: boolean
   profiles: Profile[]
 }
-type Run = { profileId: string; state: string; detail: string; processId: number | null }
+type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null }
 type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; ownerGameRunning: boolean | null; ownerCheckedUtc: string; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
-type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string }
-type Device = { id: string; profileId: string; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null; platformUserId: string }
+type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null }
+type Device = { id: string; profileId: string; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null }
 type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
 type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; localGameRunning: boolean | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; clientExecutablePath: string; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null }
 type Snapshot = HostSnapshot | FriendSnapshot
@@ -107,6 +106,11 @@ function statusTone(state: string) {
   if (['Disabled', 'Starting', 'Stopping'].includes(state)) return 'paused'
   if (state === 'Offline') return 'offline'
   return 'unknown'
+}
+
+function playerCount(online: number | null, capacity: number | null) {
+  if (online === null) return 'Player count unavailable'
+  return capacity === null ? `${online} online` : `${online} / ${capacity} online`
 }
 
 function hostAddress(endpoint: string): string {
@@ -216,7 +220,6 @@ function App() {
   const [detectingPublicIp, setDetectingPublicIp] = useState(false)
   const [inviteProfileId, setInviteProfileId] = useState('')
   const [inviteListenerWarning, setInviteListenerWarning] = useState<string | null>(null)
-  const [playerIds, setPlayerIds] = useState<Record<string, string>>({})
   const [deviceNames, setDeviceNames] = useState<Record<string, string>>({})
   const [invitation, setInvitation] = useState('')
   const [friendInvite, setFriendInvite] = useState('')
@@ -331,11 +334,6 @@ function App() {
           if (response.ok && alive) {
             const current: CompanionInfo = await response.json()
             setCompanion(current)
-            setPlayerIds(ids => {
-              const next = { ...ids }
-              for (const device of current.devices) if (next[device.id] === undefined) next[device.id] = device.platformUserId
-              return next
-            })
             setDeviceNames(names => {
               const next = { ...names }
               for (const device of current.devices) if (next[device.id] === undefined) next[device.id] = device.name
@@ -537,17 +535,6 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const savePlayerId = async (id: string) => {
-    setPending(id)
-    try {
-      const result = await change<BasicResult>(`/api/local/devices/${id}/player-id`, 'PUT',
-        { platformUserId: playerIds[id] ?? '' })
-      setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
   const saveDeviceName = async (id: string) => {
     setPending(id)
     try {
@@ -582,16 +569,6 @@ function App() {
       setDraft(result.snapshot.settings)
       dirtyRef.current = false
       setDirty(false)
-      setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const createPermittedList = async (id: string) => {
-    setPending(id)
-    try {
-      const result = await change<BasicResult>(`/api/local/profiles/${id}/permitted-list`, 'POST')
       setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
       if (latest.ok) setCompanion(await latest.json())
@@ -1015,16 +992,16 @@ function App() {
   return <div className="shell">
     <header className="topbar">
       <nav className="mode-switch" aria-label="App pages">
-        <button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</button>
-        <button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</button>
+        <Button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</Button>
+        <Button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</Button>
       </nav>
       <div className="header-tools">
-        {update?.state === 'Available' && <button className="update-ready" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}><Icon name="refresh" />Update ready</button>}
+        {update?.state === 'Available' && <Button className="update-ready" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}><Icon name="refresh" />Update ready</Button>}
         <details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong>
-          <div className="app-version"><span>Version {update?.currentVersion ?? 'checking…'}</span><button className="text-button" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}>{updateBusy ? 'Checking…' : 'Check for updates'}</button></div>
-          <label className="check-row"><input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>Starts quietly in the tray.</small>
-          <label className="check-row"><input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} />Close to tray</label><small>Hosting and Friend checks keep running.</small>
-          <button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit TogetherServer</button>
+          <div className="app-version"><span>Version {update?.currentVersion ?? 'checking…'}</span><Button className="text-button" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}>{updateBusy ? 'Checking…' : 'Check for updates'}</Button></div>
+          <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>Starts quietly in the tray.</small>
+          <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} />Close to tray</label><small>Hosting and Friend checks keep running.</small>
+          <Button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit TogetherServer</Button>
         </div></details>
       </div>
     </header>
@@ -1034,7 +1011,7 @@ function App() {
         <p>{snapshot?.mode === 'Friend' ? 'Connect to a server without interrupting anything you host on this PC.' : savedProfiles.length === 0 ? 'Set up a server, or switch to Join if a friend sent you a code.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Start a saved server when your group is ready.'}</p></div>
       </div>
 
-      {update?.state === 'Available' && <div className="update-notice" role="status"><div><strong>Update available · v{update.latestVersion}</strong><span>Download from the TogetherServer GitHub release, verify it, then restart. Stop hosted servers first.</span></div><button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? 'Preparing update…' : 'Update and restart'}</button></div>}
+      {update?.state === 'Available' && <div className="update-notice" role="status"><div><strong>Update available · v{update.latestVersion}</strong><span>Download from the TogetherServer GitHub release, verify it, then restart. Stop hosted servers first.</span></div><Button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? 'Preparing update…' : 'Update and restart'}</Button></div>}
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
       {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
@@ -1044,7 +1021,7 @@ function App() {
         {(snapshot.connections?.length ?? 0) > 1 && <section className="panel saved-connections"><div className="section-heading"><div><h2>Saved servers</h2><p>Choose which Host you want to view.</p></div></div>
           <div className="choices">{snapshot.connections!.map(connection => <div className="choice" key={connection.connectionId}>
             <span><strong>{connection.profiles[0]?.name ?? hostAddress(connection.endpoint)}</strong><small>{gameLabel(connection.profiles[0]?.kind ?? 'Server')} · {connection.state}</small></span>
-            <button className="secondary" disabled={!!pending || connection.connectionId === snapshot.connectionId} onClick={() => void selectFriendConnection(connection.connectionId)}>{connection.connectionId === snapshot.connectionId ? 'Showing' : 'Show'}</button>
+            <Button className="secondary" disabled={!!pending || connection.connectionId === snapshot.connectionId} onClick={() => void selectFriendConnection(connection.connectionId)}>{connection.connectionId === snapshot.connectionId ? 'Showing' : 'Show'}</Button>
           </div>)}</div>
         </section>}
         <section className="panel friend-panel friend-primary">
@@ -1053,30 +1030,29 @@ function App() {
             <div className="compact-status"><span className={`status ${statusTone(snapshot.state)}`}>{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state}</span>
               <span>{snapshot.lastConnectedUtc ? `Last reached ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'Waiting for a reply from the Host'}</span></div>
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked') && <details className="troubleshoot-block" open><summary>Troubleshoot connection</summary><FriendConnectionHelp code={snapshot.connectionCode} /></details>}
-            <div className="actions"><button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? 'Checking…' : 'Check connection'}</button>
-              <button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</button></div>
+            <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? 'Checking…' : 'Check connection'}</Button>
+              <Button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</Button></div>
           </> : <>
             <form className="join-row" onSubmit={event => { event.preventDefault(); void pairFriend() }}>
-              <label className="invite-input">Server code<input autoFocus type="password" autoComplete="off" value={friendInvite} onChange={event => { setFriendInvite(event.target.value.trim()); setPairIssue(null) }} placeholder="Paste the invite here" /></label>
-              <button disabled={!!pending || !friendInvite}>{pending === 'pair' ? 'Connecting…' : 'Connect'}</button>
+              <label className="invite-input">Server code<Input autoFocus type="password" autoComplete="off" value={friendInvite} onChange={event => { setFriendInvite(event.target.value.trim()); setPairIssue(null) }} placeholder="Paste the invite here" /></label>
+              <Button type="submit" disabled={!!pending || !friendInvite}>{pending === 'pair' ? 'Connecting…' : 'Connect'}</Button>
             </form>
             {pairIssue && <div className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></div>}
-            <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
+            <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<Input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
-          {snapshot.endpoint && snapshot.localGameRunning === null && <p className="warning-text">Game activity detection needs setup before the Host can safely evaluate remote Stop.</p>}
-          {snapshot.endpoint && <details className="advanced-block"><summary>Game activity detection · {snapshot.localGameRunning === null ? 'Needs setup' : snapshot.localGameRunning ? 'Game running' : 'Working'}</summary>
-            <p className="helper-text">Keep TogetherServer running while you play. It checks the selected game process; it does not launch the game or prove a server join.</p>
-            <div className="settings-grid"><label>{gameLabel(friendGame || 'Game')} client<input value={friendClientPath} onChange={event => { friendClientEdited.current = true; setFriendClientPath(event.target.value) }} placeholder="Choose the installed game client" /></label></div>
-            {friendGame === 'Valheim' && discovery && discovery.clients.length > 1 && <div className="choices"><strong>Valheim installs found</strong>{discovery.clients.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><button className="secondary" onClick={() => { friendClientEdited.current = true; setFriendClientPath(item.executablePath) }}>Use this install</button></div>)}</div>}
-            <div className="actions"><button className="secondary" disabled={!!pending} onClick={() => void browseFriendClient()}>Browse for game</button><button disabled={!snapshot.endpoint || !!pending || !friendClientPath} onClick={() => void saveFriendClientPath()}>Save game check</button></div>
+          {snapshot.endpoint && <details className="advanced-block"><summary>Optional game activity · {snapshot.localGameRunning === null ? 'Not configured' : snapshot.localGameRunning ? 'Game running' : 'Game closed'}</summary>
+            <p className="helper-text">This local indicator is informational. Remote Stop uses the game server's current online-player count and does not depend on this setting.</p>
+            <div className="settings-grid"><label>{gameLabel(friendGame || 'Game')} client<Input value={friendClientPath} onChange={event => { friendClientEdited.current = true; setFriendClientPath(event.target.value) }} placeholder="Choose the installed game client" /></label></div>
+            {friendGame === 'Valheim' && discovery && discovery.clients.length > 1 && <div className="choices"><strong>Valheim installs found</strong>{discovery.clients.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><Button className="secondary" onClick={() => { friendClientEdited.current = true; setFriendClientPath(item.executablePath) }}>Use this install</Button></div>)}</div>}
+            <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void browseFriendClient()}>Browse for game</Button><Button disabled={!snapshot.endpoint || !!pending || !friendClientPath} onClick={() => void saveFriendClientPath()}>Save game check</Button></div>
           </details>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>Server</h3>
           {snapshot.profiles.map(profile => <article className="profile-card" key={profile.id}>
-            <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p></div><span className={`status ${statusTone(profile.state)}`}>{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
+            <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p>{profile.state === 'Ready' && <span className={`player-count ${profile.onlinePlayers === null ? 'unknown' : ''}`}>{playerCount(profile.onlinePlayers, profile.maxPlayers)}</span>}</div><span className={`status ${statusTone(profile.state)}`}>{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
             <div className="actions server-actions">
-              {profile.state === 'Offline' && snapshot.state === 'Connected' && snapshot.canStart && <button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}><Icon name="play" />Start server</button>}
-              {profile.state === 'Ready' && profile.joinAddress && <button onClick={() => void copyText(profile.joinAddress!, 'Join address')}><Icon name="copy" />Copy join address</button>}
-              {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}><Icon name="stop" />Stop server</button>}
+              {profile.state === 'Offline' && snapshot.state === 'Connected' && snapshot.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}><Icon name="play" />Start server</Button>}
+              {profile.state === 'Ready' && profile.joinAddress && <Button onClick={() => void copyText(profile.joinAddress!, 'Join address')}><Icon name="copy" />Copy join address</Button>}
+              {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}><Icon name="stop" />Stop server</Button>}
             </div>
             <FriendStopBlockers snapshot={snapshot} profile={profile} />
             {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
@@ -1090,60 +1066,60 @@ function App() {
         {savedProfiles.length > 0 && <>
         <section className="panel">
           <div className="section-heading server-heading"><div><h2>Servers</h2></div>
-            <div className="server-toolbar"><button disabled={!!pending || dirty} onClick={addProfile}>Add server</button>
-              <button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}><Icon name="invite" />Friend access</button></div></div>
+            <div className="server-toolbar"><Button disabled={!!pending || dirty} onClick={addProfile}>Add server</Button>
+              <Button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}><Icon name="invite" />Friend access</Button></div></div>
           <div className="profile-list server-grid">
             {snapshot.settings.profiles.map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
               return <article className="profile-card" key={profile.id}>
-                <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)} · World {profile.worldId}</p></div>
+                <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)} · World {profile.worldId}</p>{status?.state === 'Ready' && <span className={`player-count ${status.onlinePlayers === null ? 'unknown' : ''}`}>{playerCount(status.onlinePlayers, status.maxPlayers)}</span>}</div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={!!pending} onRefresh={() => void checkPorts()} onOpenConnection={() => openHostSettings('network')} />
                 <div className="actions server-actions">
-                  {status?.state === 'Offline' && <button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}><Icon name="play" /><span>Start server</span></button>}
-                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}><Icon name="stop" /><span>Stop server</span></button>}
-                  <button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></button>
-                  {profile.kind === 'Valheim' && status?.state === 'Ready' && detectedGameIp && <button className="secondary server-share-button" disabled={!!pending} onClick={() => void copyGameDetails(profile, `${detectedGameIp}:${profile.gamePort}`)}><Icon name="copy" />Copy join info</button>}
-                  {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && status?.state === 'Ready' && detectedGameIp && <button className="secondary server-share-button" onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Join address')}><Icon name="copy" />Copy join address</button>}
+                  {status?.state === 'Offline' && <Button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}><Icon name="play" /><span>Start server</span></Button>}
+                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}><Icon name="stop" /><span>Stop server</span></Button>}
+                  <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
+                  {profile.kind === 'Valheim' && status?.state === 'Ready' && detectedGameIp && <Button className="secondary server-share-button" disabled={!!pending} onClick={() => void copyGameDetails(profile, `${detectedGameIp}:${profile.gamePort}`)}><Icon name="copy" />Copy join info</Button>}
+                  {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && status?.state === 'Ready' && detectedGameIp && <Button className="secondary server-share-button" onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Join address')}><Icon name="copy" />Copy join address</Button>}
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">
                   {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : 'Server code copied'}</strong><p>{activeInviteWarning ? 'Fix the issue below before sharing this code.' : 'Send the copied code privately. Your Friend still needs to test Connect.'}</p></div></div>
                     {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
                     {!activeInviteWarning && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
                     <div className="actions">{activeInviteWarning
-                      ? <button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</button>
-                      : <button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</button>}
-                      <button className="danger-outline" disabled={!!pending || !!activeInviteWarning} onClick={() => void issueInvite(profile.id, true)}><Icon name="refresh" />Revoke all access and create a new code</button>
-                      <button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</button></div>
+                      ? <Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</Button>
+                      : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</Button>}
+                      <Button className="danger-outline" disabled={!!pending || !!activeInviteWarning} onClick={() => void issueInvite(profile.id, true)}><Icon name="refresh" />Revoke all access and create a new code</Button>
+                      <Button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</Button></div>
                     <p>Creating a new code revokes every paired PC for this server.</p></>
                     : inviteListenerWarning ? <><p className="connection-warning" role="alert">{inviteListenerWarning}</p>
-                      <div className="actions"><button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</button>
-                        <button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</button></div></>
+                      <div className="actions"><Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</Button>
+                        <Button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</Button></div></>
                       : <p className="helper-text">Preparing this server's invite…</p>}
                 </div>}
-                {status?.state === 'Ready' && !detectedGameIp && <div className="next-action"><span>Your public game address is not available yet.</span><button className="text-button" onClick={() => openHostSettings('network')}>Check connection</button></div>}
+                {status?.state === 'Ready' && !detectedGameIp && <div className="next-action"><span>Your public game address is not available yet.</span><Button className="text-button" onClick={() => openHostSettings('network')}>Check connection</Button></div>}
                 <details className="advanced-block card-manage"><summary>Manage server</summary>
                   <p className="helper-text">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>
-                  <div className="actions"><button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</button><button className="secondary" onClick={() => openHostSettings('network')}>Connection help</button><button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</button>
-                    {(status?.state === 'Unknown' || status?.state === 'Failed') && <button className="text-button" disabled={!!pending || dirty} onClick={() => {
+                  <div className="actions"><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}>Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</Button>
+                    {(status?.state === 'Unknown' || status?.state === 'Failed') && <Button className="text-button" disabled={!!pending || dirty} onClick={() => {
                       if (window.confirm('Clear this unresolved run record only after verifying the original process is stopped?'))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
-                    }}>Clear unresolved record</button>}</div>
+                    }}>Clear unresolved record</Button>}</div>
                 </details>
               </article>
             })}
           </div>
           {dirty && <p className="warning-text">Save your setup changes before starting or stopping a server.</p>}
           {companion?.devices.some(device => device.paired && !device.revoked) && <div className="access-strip"><span>Friend controls are <strong>{draft.remoteControlsEnabled ? 'on' : 'paused'}</strong> · {companion.devices.filter(device => device.paired && !device.revoked).length} paired PC{companion.devices.filter(device => device.paired && !device.revoked).length === 1 ? '' : 's'}</span>
-            <button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}>Manage friend access</button></div>}
+            <Button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}>Manage friend access</Button></div>}
         </section>
         </>}
 
         {savedProfiles.length === 0 && !showSetup && <section className="panel welcome-panel"><div className="section-heading"><div><h2>What would you like to do?</h2><p>You can host and join at the same time. Switching pages never stops a running server.</p></div></div>
-          {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><button onClick={() => { setActiveProfileId(draft.profiles[0].id); setSetupStep('world'); setShowSetup(true) }}>Continue setup</button></div> : <div className="welcome-grid">
-            <button className="welcome-choice" disabled={!!pending} onClick={addProfile}><span className="section-icon"><Icon name="server" /></span><span><strong>Host a server</strong><small>Create a new world or use a server already on this PC.</small></span></button>
-            <button className="welcome-choice secondary-choice" disabled={!!pending} onClick={() => void switchMode('friend')}><span className="section-icon"><Icon name="link" /></span><span><strong>Join a server</strong><small>Paste the private code your friend sent you.</small></span></button>
+          {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><Button onClick={() => { setActiveProfileId(draft.profiles[0].id); setSetupStep('world'); setShowSetup(true) }}>Continue setup</Button></div> : <div className="welcome-grid">
+            <Button className="welcome-choice" disabled={!!pending} onClick={addProfile}><span className="section-icon"><Icon name="server" /></span><span><strong>Host a server</strong><small>Create a new world or use a server already on this PC.</small></span></Button>
+            <Button className="welcome-choice secondary-choice" disabled={!!pending} onClick={() => void switchMode('friend')}><span className="section-icon"><Icon name="link" /></span><span><strong>Join a server</strong><small>Paste the private code your friend sent you.</small></span></Button>
           </div>}
         </section>}
 
@@ -1151,44 +1127,44 @@ function App() {
           <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p>Choose the game, world, and server files.</p></div></div>
           {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
           <ol className="setup-progress" aria-label="Setup progress">{(['game', 'world', 'server', 'review'] as SetupStep[]).map((step, index) => <li className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
-          {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><button onClick={addProfile}>Set up a server</button></div></div>}
+          {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={addProfile}>Set up a server</Button></div></div>}
           {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
             {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">TogetherServer uses reviewed built-in server controls. You can change technical defaults during Review.</p><div className="game-choice-grid">
-              <button className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></button>
-              <button className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></button>
-              <button className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></button>
-              {profile.kind === 'Fixture' && <button className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></button>}
+              <Button className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></Button>
+              <Button className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
+              <Button className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
+              {profile.kind === 'Fixture' && <Button className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
             </div></div>}
             {setupStep === 'world' && <div className="setup-step world-step"><h3><Icon name="game" /> {profile.kind === 'Valheim' ? 'Choose a world' : 'Name this server'}</h3>
               {profile.kind === 'Valheim' && <div className="choice-pills">
-                <button className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>Create new</button>
-                <button className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</button>
+                <Button className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>Create new</Button>
+                <Button className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</Button>
               </div>}
               {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <>
                 {profile.worldId && profile.worldDirectory && <p className="selection-summary">Copy ready: <strong>{profile.worldId}</strong>. Your original save stays separate.</p>}
-                {discovery && <div className="choices"><strong>Worlds found on this PC</strong>{discovery.worlds.length === 0 ? <p>None found. Browse to a world folder below.</p> : discovery.worlds.map(world => <div className="choice" key={world.saveRoot + world.sourceFolder + world.name}><span>{world.name} <small>{world.format === 'Steam cloud folder' ? 'Steam Cloud' : 'Local save'} · {world.saveRoot}</small></span><button className="secondary" disabled={!!pending} onClick={() => void importWorld(profile, world.saveRoot, world.name, world.sourceFolder)}>Copy world</button></div>)}</div>}
-                <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile, true)}>{pending === profile.id ? 'Browsing…' : 'Browse for a world folder'}</button></div>
+                {discovery && <div className="choices"><strong>Worlds found on this PC</strong>{discovery.worlds.length === 0 ? <p>None found. Browse to a world folder below.</p> : discovery.worlds.map(world => <div className="choice" key={world.saveRoot + world.sourceFolder + world.name}><span>{world.name} <small>{world.format === 'Steam cloud folder' ? 'Steam Cloud' : 'Local save'} · {world.saveRoot}</small></span><Button className="secondary" disabled={!!pending} onClick={() => void importWorld(profile, world.saveRoot, world.name, world.sourceFolder)}>Copy world</Button></div>)}</div>}
+                <div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile, true)}>{pending === profile.id ? 'Browsing…' : 'Browse for a world folder'}</Button></div>
                 <p className="helper-text">Close Valheim and let Steam finish syncing before copying a cloud world.</p>
                 <details className="advanced-block"><summary>Older saves and custom paths</summary>
-                  <button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile)}>Choose an older .db or .fwl file</button>
-                  <div className="settings-grid"><label>Local save root<input value={sourceRoots[profile.id] ?? ''} onChange={event => setSourceRoots(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="C:\\...\\IronGate\\Valheim" /></label><label>World ID<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="World folder name" /></label></div>
-                  <button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => void importWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</button>
+                  <Button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile)}>Choose an older .db or .fwl file</Button>
+                  <div className="settings-grid"><label>Local save root<Input value={sourceRoots[profile.id] ?? ''} onChange={event => setSourceRoots(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="C:\\...\\IronGate\\Valheim" /></label><label>World ID<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="World folder name" /></label></div>
+                  <Button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => void importWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</Button>
                 </details>
               </>}
-              {profile.kind === 'Valheim' && profile.worldSource === 'New' && <div className="quick-setup-fields"><label className="invite-input">World name<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value, name: event.target.value, serverName: event.target.value })} placeholder="My Valheim world" /><small>Stored in TogetherServer's private data.</small></label>
-                <label className="invite-input">Game password<input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label></div>}
-              {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test profile name<input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
+              {profile.kind === 'Valheim' && profile.worldSource === 'New' && <div className="quick-setup-fields"><label className="invite-input">World name<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value, name: event.target.value, serverName: event.target.value })} placeholder="My Valheim world" /><small>Stored in TogetherServer's private data.</small></label>
+                <label className="invite-input">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label></div>}
+              {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test profile name<Input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
               {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && <><div className="choice-pills">
-                <button className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))}>Use an existing server</button>
-                <button className={minecraftSetupMode[profile.id] === 'install' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'install' }))}>Install a new official server</button>
+                <Button className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))}>Use an existing server</Button>
+                <Button className={minecraftSetupMode[profile.id] === 'install' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'install' }))}>Install a new official server</Button>
               </div><MinecraftWorldSetup profile={profile} busy={!!pending} onChange={patch => updateProfile(profile.id, patch)} /></>}
-              {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <label className="invite-input setup-password">Game password<input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label>}
+              {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <label className="invite-input setup-password">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label>}
             </div>}
             {setupStep === 'server' && <div className="setup-step server-step"><h3><Icon name="search" /> Server app</h3>
               <div className="server-step-content">{profile.kind === 'Valheim' ? <>
                 {profile.executablePath ? <p className="selection-summary"><Icon name="check" /> Valheim Dedicated Server found <small>{profile.executablePath}</small></p> : <>
-                  {discovery && <div className="choices">{discovery.installations.length === 0 ? <p>Valheim Dedicated Server was not found.</p> : discovery.installations.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><button className="secondary" onClick={() => updateProfile(profile.id, { executablePath: item.executablePath })}>Use this install</button></div>)}</div>}
-                  <div className="setup-tools"><button className="secondary" disabled={!!pending} onClick={() => void scanValheim()}>{pending === 'scan' ? 'Searching…' : 'Search this PC'}</button><button className="secondary" disabled={!!pending} onClick={() => void browseServer(profile)}>Browse for server</button>{discovery?.installations.length === 0 && <a href="steam://install/896660">Open install in Steam</a>}</div>
+                  {discovery && <div className="choices">{discovery.installations.length === 0 ? <p>Valheim Dedicated Server was not found.</p> : discovery.installations.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><Button className="secondary" onClick={() => updateProfile(profile.id, { executablePath: item.executablePath })}>Use this install</Button></div>)}</div>}
+                  <div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => void scanValheim()}>{pending === 'scan' ? 'Searching…' : 'Search this PC'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void browseServer(profile)}>Browse for server</Button>{discovery?.installations.length === 0 && <a href="steam://install/896660">Open install in Steam</a>}</div>
                   <p className="helper-text">Steam handles installation and any terms when you open it.</p>
                 </>}
               </> : profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock' ?
@@ -1199,43 +1175,43 @@ function App() {
                   onInstall={() => void installMinecraft(profile)} acceptedTerms={!!minecraftTerms[profile.id]}
                   onTermsChange={accepted => setMinecraftTerms(current => ({ ...current, [profile.id]: accepted }))}
                   installBusy={pending === 'install-minecraft'} />
-              : <label>Fixture executable path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
+              : <label>Fixture executable path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
             </div>}
             {setupStep === 'review' && <div className="setup-stage review-stage"><h3>Review and start</h3><div className="review-summary"><div><span>Game</span><strong>{gameLabel(profile.kind)}</strong></div><div><span>Server</span><strong>{profile.name || profile.serverName || 'Needs a name'}</strong></div><div><span>World</span><strong>{profile.worldId || 'Not selected'}</strong></div><div><span>Server app</span><strong>{profile.executablePath ? 'Selected' : 'Not selected'}</strong></div></div>
             <details className="advanced-block"><summary>Advanced server settings</summary>
-              <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
-              {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
+              <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<Input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<Input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
+              {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><Input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><Input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
               {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
             </details></div>}
           </div>)}
-          {editedProfile && <>{setupStep === 'review' && savedProfiles.some(saved => saved.id === editedProfile.id) && <details className="advanced-block danger-zone"><summary>Danger zone</summary><p className="helper-text">Removing this server forgets its setup and Friend access. TogetherServer leaves its world files in place.</p><button className="text-button danger" disabled={!!pending} onClick={() => void removeProfile(editedProfile)}>Remove from TogetherServer</button></details>}
+          {editedProfile && <>{setupStep === 'review' && savedProfiles.some(saved => saved.id === editedProfile.id) && <details className="advanced-block danger-zone"><summary>Danger zone</summary><p className="helper-text">Removing this server forgets its setup and Friend access. TogetherServer leaves its world files in place.</p><Button className="text-button danger" disabled={!!pending} onClick={() => void removeProfile(editedProfile)}>Remove from TogetherServer</Button></details>}
           {(setupStep === 'review' ? setupIssues : stepIssues).length > 0 && <p className="field-error" role="status">{setupStep === 'review' ? setupIssues[0].message : stepIssues[0]}</p>}
           <div className="wizard-footer">{savedProfiles.length === 0
-            ? <button className="text-button" disabled={!!pending} onClick={finishSetupLater}>Finish later</button>
-            : <button className="text-button" disabled={!!pending} onClick={cancelSetup}>Cancel</button>}<div className="actions">
-            {setupStepIndex > 0 && <button className="secondary" disabled={!!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex - 1])}>Back</button>}
-            {setupStep !== 'review' && <button disabled={stepIssues.length > 0 || !!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex + 1])}>Continue</button>}
-            {setupStep === 'review' && <><button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup()}>Save for later</button><button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Save and start'}</button></>}
+            ? <Button className="text-button" disabled={!!pending} onClick={finishSetupLater}>Finish later</Button>
+            : <Button className="text-button" disabled={!!pending} onClick={cancelSetup}>Cancel</Button>}<div className="actions">
+            {setupStepIndex > 0 && <Button className="secondary" disabled={!!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex - 1])}>Back</Button>}
+            {setupStep !== 'review' && <Button disabled={stepIssues.length > 0 || !!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex + 1])}>Continue</Button>}
+            {setupStep === 'review' && <><Button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup()}>Save for later</Button><Button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Save and start'}</Button></>}
           </div></div></>}
         </dialog>}
         {savedProfiles.length > 0 && showHostSettings && <dialog ref={hostSettingsRef} className="panel modal-dialog host-settings-dialog" aria-labelledby="host-settings-title" onCancel={event => { event.preventDefault(); closeHostSettings() }}>
           <div className="modal-heading"><div><h2 id="host-settings-title">Friend access and settings</h2><p>Everyday permissions first. Network and game paths stay under Advanced.</p></div>
-            <button className="secondary" disabled={!!pending} onClick={closeHostSettings}>{dirty ? 'Cancel' : 'Close'}</button></div>
+            <Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>{dirty ? 'Cancel' : 'Close'}</Button></div>
           {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
           <nav className="settings-tabs" aria-label="Host settings sections">
-            <button className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</button>
-            <button className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Remote Stop</button>
-            <button className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</button>
-            <button className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</button>
+            <Button className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</Button>
+            <Button className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Remote Stop</Button>
+            <Button className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</Button>
+            <Button className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</Button>
           </nav>
             <div className="settings-content">
               {hostSettingsSection === 'access' && <section className="settings-section"><h3>Friend access</h3>
                 <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
-                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /></label>
-                  <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
+                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /></label>
+                  <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
                 {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
-                  <div className="device-main"><label>PC name<input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</small></div>
-                  <div className="device-controls"><label className="check-row"><input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} />Can start</label><label className="check-row"><input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} />Can request Stop</label><div className="actions"><button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</button><button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</button></div></div>
+                  <div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</small></div>
+                  <div className="device-controls"><label className="check-row"><Input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} />Can start</label><label className="check-row"><Input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} />Can request Stop</label><div className="actions"><Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
@@ -1243,8 +1219,8 @@ function App() {
               <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {companion?.listenerActive ? 'listening on this PC, public route untested' : 'off'}.</p>
               {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
               {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
-              <div className="actions"><button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking…' : 'Refresh public address'}</button></div>
-              <div className="internet-route-test"><button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? 'Testing TCP port…' : 'Test Friend app port from internet'}</button>
+              <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking…' : 'Refresh public address'}</Button></div>
+              <div className="internet-route-test"><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? 'Testing TCP port…' : 'Test Friend app port from internet'}</Button>
                 <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no invite or credential is sent.</small>
                 {internetRouteCheck && <p className={`internet-route-result ${previousRouteVerdict ? 'neutral' : internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
                   <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `TCP ${internetRouteCheck.port} reached` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
@@ -1256,51 +1232,44 @@ function App() {
                 {portDiagnostics.control.lanAddresses?.map(item => <p key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code> · {item.interfaceName} · gateway {item.gateway}</p>)}
               </div>}
               <p className="helper-text">A Friend on another network must test the app connection and game join separately. Router and firewall changes remain yours to approve.</p>
-              <div className="next-action"><span>Friend app connections are <strong>{draft.companionListeningEnabled ? 'on' : 'off'}</strong>.</span><button className="text-button" onClick={() => setHostSettingsSection('access')}>Manage access</button></div>
+              <div className="next-action"><span>Friend app connections are <strong>{draft.companionListeningEnabled ? 'on' : 'off'}</strong>.</span><Button className="text-button" onClick={() => setHostSettingsSection('access')}>Manage access</Button></div>
               <details className="advanced-block"><summary>Technical connection details</summary><p className="helper-text">Friend app HTTPS uses TCP {draft.companionPort}. Game ports are separate. Friend PCs connect outbound.</p>{companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}</details>
               </section>}
 
-              {hostSettingsSection === 'stop' && <section className="settings-section"><h3>Remote Stop setup</h3>
-              {!savedProfiles.some(profile => profile.kind === 'Valheim') && <p>Minecraft remote Stop is unavailable until player coverage and real save behavior are verified. The owner can use local Stop.</p>}
-              {savedProfiles.some(profile => profile.kind === 'Valheim') && <>
-              <p>Valheim must admit only the owner and paired Friend PCs. The Host checks every Stop request even after permission is granted.</p>
-              <div className="stop-checklist"><strong>Setup progress</strong><ul>
-                <li className={companion?.devices.some(device => device.paired && !device.revoked) ? 'done' : ''}><Icon name={companion?.devices.some(device => device.paired && !device.revoked) ? 'check' : 'warning'} />Pair every Friend PC that can join</li>
-                <li className={companion?.devices.filter(device => device.paired && !device.revoked).every(device => !!device.platformUserId) && !!companion?.devices.some(device => device.paired && !device.revoked) ? 'done' : ''}><Icon name={companion?.devices.filter(device => device.paired && !device.revoked).every(device => !!device.platformUserId) && !!companion?.devices.some(device => device.paired && !device.revoked) ? 'check' : 'warning'} />Save each Friend's Valheim player ID</li>
-                <li className={companion?.devices.filter(device => device.paired && !device.revoked).every(device => device.gameRunning !== null) && !!companion?.devices.some(device => device.paired && !device.revoked) ? 'done' : ''}><Icon name={companion?.devices.filter(device => device.paired && !device.revoked).every(device => device.gameRunning !== null) && !!companion?.devices.some(device => device.paired && !device.revoked) ? 'check' : 'warning'} />Configure game activity detection on every Friend PC</li>
-                <li className={draft.remoteControlsEnabled ? 'done' : ''}><Icon name={draft.remoteControlsEnabled ? 'check' : 'warning'} />Turn on Friend controls under Friend access</li>
-              </ul></div>
-              <label>My Valheim player ID (only if I play)<input value={draft.ownerPlatformUserId} onChange={event => edit({ ...draft, ownerPlatformUserId: event.target.value.trim() })} placeholder="V_123456789" /><small>Find it in Valheim's F2 panel. Leave blank if this PC never joins the server.</small></label>
-              {companion?.devices.filter(device => !device.revoked && (device.profileId === '00000000-0000-0000-0000-000000000000' || savedProfiles.some(profile => profile.kind === 'Valheim' && profile.id === device.profileId))).map(device => <div className="device" key={device.id}>
-                <div><strong>{device.name} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</strong><small>{device.paired ? device.gameRunning === null ? 'Game activity unknown' : device.gameRunning ? 'Game running' : 'Game closed' : 'Invite pending'} · Start {device.canStart ? 'allowed' : 'off'} · Stop {device.canStop ? 'allowed' : 'off'}</small>
-                  <label>Valheim player ID<input value={playerIds[device.id] ?? ''} onChange={event => setPlayerIds(current => ({ ...current, [device.id]: event.target.value }))} placeholder="V_123456789" /></label></div>
-                <div className="actions"><button className="secondary" disabled={!!pending} onClick={() => void savePlayerId(device.id)}>Save ID</button>
-                  {device.paired && <button className="secondary" disabled={!!pending} onClick={() => void setDevicePermissions(device, device.canStart, !device.canStop)}>{device.canStop ? 'Remove Stop access' : 'Allow Stop requests'}</button>}</div>
-              </div>)}
-              {savedProfiles.filter(profile => profile.kind === 'Valheim').map(profile => <div className="safety-status" key={profile.id}><strong>{profile.name}: {companion?.stopSafety?.[profile.id]?.available ? 'Safety checks ready' : 'Safety setup waiting'}</strong>
-                <p>{companion?.stopSafety?.[profile.id]?.reason ?? 'Checking player coverage…'}</p>
-                <button className="secondary" disabled={!!pending || dirty || snapshot.runs.find(run => run.profileId === profile.id)?.state !== 'Offline'} onClick={() => void createPermittedList(profile.id)}>Create or verify player-only access list</button>
-                <small>{dirty ? 'Save settings first.' : snapshot.runs.find(run => run.profileId === profile.id)?.state !== 'Offline' ? 'Use local Stop on the Host page first. Then return here to prepare the list.' : 'Existing lists are never overwritten. Start the server after this check succeeds.'}</small>
-                <small>Friend controls are {draft.remoteControlsEnabled ? 'on' : 'paused'}; each Friend's Stop permission is shown above.</small></div>)}
-              {dirty && <div className="sticky-save"><span>Save the owner player ID or other changes before preparing access.</span><button disabled={!!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save changes</button></div>}
-              </>}
+              {hostSettingsSection === 'stop' && <section className="settings-section"><h3>Remote Stop safety</h3>
+                <p>There are no player IDs to enter. Each game server reports its current online-player count. A Friend Stop request is allowed only at 0, then TogetherServer checks the count again immediately before sending the graceful stop command.</p>
+                <div className="stop-checklist"><strong>How it works</strong><ul>
+                  <li className="done"><Icon name="check" />The server must be running and Ready</li>
+                  <li className="done"><Icon name="check" />Unknown player counts block Friend Stop</li>
+                  <li className="done"><Icon name="check" />One or more online players block Friend Stop</li>
+                  <li className={draft.remoteControlsEnabled ? 'done' : ''}><Icon name={draft.remoteControlsEnabled ? 'check' : 'warning'} />Friend controls are {draft.remoteControlsEnabled ? 'on' : 'paused'}</li>
+                </ul></div>
+                {savedProfiles.map(profile => {
+                  const run = snapshot.runs.find(item => item.profileId === profile.id)
+                  const safety = companion?.stopSafety?.[profile.id]
+                  return <div className="safety-status" key={profile.id}>
+                    <strong>{profile.name}: {run?.state === 'Ready' ? playerCount(run.onlinePlayers, run.maxPlayers) : run?.state ?? 'Unknown'}</strong>
+                    <p>{safety?.reason ?? 'Checking the server player count…'}</p>
+                    <small>The local Stop button on the Host page remains available for the owner's decision.</small>
+                  </div>
+                })}
               </section>}
 
               {hostSettingsSection === 'advanced' && <section className="settings-section"><h3>Advanced network and game paths</h3>
               <div className="settings-grid companion-fields">
-                <label>Maximum servers running at once<input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /><small>Most homes should leave this at 1.</small></label>
-                <label>Friend app TCP port<input type="number" min="1024" max="65535" value={draft.companionPort} onChange={event => {
+                <label>Maximum servers running at once<Input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /><small>Most homes should leave this at 1.</small></label>
+                <label>Friend app TCP port<Input type="number" min="1024" max="65535" value={draft.companionPort} onChange={event => {
                   const port = Number(event.target.value)
                   let endpoint = draft.companionEndpoint
                   if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
                   edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
                 }} /></label>
-                <label>Custom HTTPS endpoint<input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /></label>
-                <label>Bind IP<input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
-                {savedProfiles.some(profile => profile.kind === 'Valheim') && <label>Owner Valheim game path<input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="Auto-detected game install" /></label>}
+                <label>Custom HTTPS endpoint<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /></label>
+                <label>Bind IP<Input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
+                {savedProfiles.some(profile => profile.kind === 'Valheim') && <label>Owner Valheim game path<Input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="Auto-detected game install" /></label>}
               </div>
               {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
-              <div className="actions"><button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</button></div>
+              <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</Button></div>
               {companion?.devices.some(device => device.revoked) ? <details className="advanced-block"><summary>Revoked Friend PCs</summary><div className="profile-list device-list">{companion.devices.filter(device => device.revoked).map(device => <div className="device" key={device.id}>
                 <div><strong>{device.name} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</strong><small>Revoked</small></div>
               </div>)}</div></details> : null}

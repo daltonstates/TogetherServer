@@ -670,3 +670,38 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .device-controls .actions button { width: 100%; }
   .next-action, .access-strip, .sticky-save { align-items: stretch; flex-direction: column; }
 }
+:where(.ui-button) {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  border: 1px solid #a9d788;
+  border-radius: 8px;
+  padding: 8px 13px;
+  background: #acd889;
+  color: #172019;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+:where(.ui-button):hover:not(:disabled) { border-color: #c9eca9; filter: brightness(1.04); }
+:where(.ui-button.secondary) { border-color: #627760; background: transparent; color: #d3e4cd; }
+:where(.ui-button.text-button) { min-height: 0; border-color: transparent; background: transparent; color: #c0dcaf; }
+:where(.ui-button.danger, .ui-button.danger-outline) { border-color: #99685c; background: transparent; color: #efb8aa; }
+:where(.ui-input:not([type="checkbox"]), .ui-select, .ui-textarea) {
+  width: 100%;
+  border: 1px solid #475749;
+  border-radius: 7px;
+  background: #101813;
+  color: #e8ede8;
+  font: inherit;
+  font-size: 13px;
+}
+:where(.ui-input:not([type="checkbox"]), .ui-select) { min-height: 38px; padding: 9px 11px; }
+:where(.ui-textarea) { padding: 10px 11px; resize: vertical; }
+:where(.ui-input[type="checkbox"]) { accent-color: #acd889; }
+.player-count { display: inline-flex; margin-top: 7px; border: 1px solid #4d6b51; border-radius: 999px; padding: 4px 8px; background: #24372a; color: #cce9bd; font-size: 11px; font-weight: 750; }
+.player-count.unknown { border-color: #73563f; background: #3a2c21; color: #f0c493; }

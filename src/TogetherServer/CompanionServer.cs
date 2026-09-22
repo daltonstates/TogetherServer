@@ -126,7 +126,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     public IReadOnlyDictionary<Guid, object> StopSafety(HostSnapshot snapshot) =>
         snapshot.Settings.Profiles.ToDictionary(profile => profile.Id, profile =>
         {
-            using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, pairing);
+            using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
             return (object)new { available = permit.Allowed, reason = permit.Reason };
         });
 
@@ -155,12 +155,13 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var profiles = snapshot.Settings.Profiles.Where(profile => own?.ProfileId == Guid.Empty ||
                 profile.Id == own?.ProfileId).Select(profile =>
             {
-                using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, pairing);
+                var run = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+                using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
                 return new PublicProfile(profile.Id, profile.Name,
-                    snapshot.Runs.Single(run => run.ProfileId == profile.Id).State,
+                    run.State,
                     games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
                     snapshot.Settings.RemoteControlsEnabled && own?.CanStop == true && permit.Allowed,
-                    permit.Allowed ? null : permit.Reason, profile.Kind);
+                    permit.Allowed ? null : permit.Reason, profile.Kind, run.OnlinePlayers, run.MaxPlayers);
             }).ToList();
             return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",
@@ -220,9 +221,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     result = new(false, "PermissionDenied", "The Host has not granted this action to this PC.", await PublicStatus(device.Id));
                 else if (action == "stop")
                 {
-                    using var permit = RemoteStopSafety.TryAcquire(snapshot, request.ProfileId, data, pairing);
+                    using var permit = RemoteStopSafety.TryAcquire(snapshot, request.ProfileId, data, games);
                     if (!permit.Allowed)
-                        result = new(false, "PlayerStateUnknown", permit.Reason, await PublicStatus(device.Id));
+                        result = new(false, permit.Code, permit.Reason, await PublicStatus(device.Id));
                     else
                     {
                         var operation = await manager.StopAsync(request.ProfileId, permit.StillSafe);

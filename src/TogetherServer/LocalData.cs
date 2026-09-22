@@ -12,14 +12,12 @@ public sealed class HostSettings
     public bool AutoShutdownEnabled { get; set; }
     public bool RemoteControlsEnabled { get; set; }
     public bool CompanionListeningEnabled { get; set; }
-    public bool PermittedPlayersVerified { get; set; }
     public string CompanionBindAddress { get; set; } = "127.0.0.1";
     public string CompanionEndpoint { get; set; } = "";
     public int CompanionPort { get; set; } = 5131;
     public string PublicGameIp { get; set; } = "";
     public DateTimeOffset? PublicGameIpCheckedUtc { get; set; }
     public string OwnerClientExecutablePath { get; set; } = "";
-    public string OwnerPlatformUserId { get; set; } = "";
     public List<ServerProfile> Profiles { get; set; } = [];
 }
 
@@ -59,7 +57,6 @@ public sealed class ManagedRun
     public string LogPath { get; set; } = "";
     public int? ProcessId { get; set; }
     public long? StartTimeUtcTicks { get; set; }
-    public string PermittedListSha256 { get; set; } = "";
 }
 
 public sealed record NewWorldOwnership(Guid ProfileId, string WorldId, string WorldDirectory);

@@ -241,13 +241,6 @@ app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => m
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
-app.MapPost("/api/local/profiles/{id:guid}/permitted-list", async (Guid id) =>
-{
-    await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(RemoteStopSafety.CreateList(await manager.SnapshotAsync(), id, data, pairing)); }
-    finally { modeGate.Release(); }
-});
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
 app.MapPost("/api/local/profiles/{id:guid}/game-password/reveal", async (Guid id) =>
@@ -472,13 +465,6 @@ app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
 {
     await modeGate.WaitAsync();
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Revoke(id)); }
-    finally { modeGate.Release(); }
-});
-app.MapPut("/api/local/devices/{id:guid}/player-id", async (Guid id, DevicePlayerIdRequest request) =>
-{
-    await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetPlatformUserId(id, request.PlatformUserId)); }
     finally { modeGate.Release(); }
 });
 app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePermissionRequest request) =>

@@ -273,7 +273,7 @@ try
     using (var stopData = new LocalData(Path.Combine(root, "remote-stop-host")))
     {
         var host = new HostManager(stopData);
-        var pairing = new PairingService(stopData);
+        var games = new GameServerRegistry(stopData);
         var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
             ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
             GamePort = FreePort(), ExecutablePath = fixture };
@@ -282,44 +282,46 @@ try
             "restricted synthetic profile was rejected");
         Require((await host.SetValheimPasswordAsync(stopProfile.Id, "fixture-pass-123")).Ok,
             "restricted synthetic password was rejected");
-        var invite = pairing.IssueServer(stopProfile.Id, true, true, "https://127.0.0.1:5131", new string('A', 64), false);
-        var credential = pairing.Activate(new PairingActivation(invite.DeviceId, invite.Code, true));
-        Require(credential is not null && pairing.SetPlatformUserId(credential.DeviceId, "V_123456789").Ok,
-            "synthetic Friend ID was not assigned");
-        Require(RemoteStopSafety.CreateList(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing).Ok,
-            "restricted player list was not created in the app-managed save folder");
-        var listPath = Path.Combine(stopProfile.WorldDirectory, "permittedlist.txt");
-        Require(File.ReadAllText(listPath).Trim() == "V_123456789", "permitted list did not contain the sole Friend ID");
-        var originalList = File.ReadAllBytes(listPath);
+        using (var offline = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games))
+            Require(!offline.Allowed && offline.Code == "ServerNotReady", "remote Stop was offered while the server was offline");
         var started = await host.StartAsync(stopProfile.Id);
         Require(started.Ok, "restricted synthetic server did not start");
         await WaitForReady(host, stopProfile.Id);
         try
         {
-            using (var missing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
-                Require(!missing.Allowed, "remote Stop accepted a missing Friend heartbeat");
-            var auth = pairing.Authenticate(credential!.DeviceId, credential.Credential, out var device);
-            Require(auth.Ok && device is not null, "synthetic Friend credential failed");
-            var instance = Guid.NewGuid();
-            Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(credential.DeviceId, instance, 1, "check", false)).Ok,
-                "closed-game heartbeat failed");
-            using (var ready = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
+            var snapshot = await host.SnapshotAsync();
+            var view = snapshot.Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(view.OnlinePlayers == 0 && view.MaxPlayers == 10,
+                "Valheim's synthetic server count was not exposed in the Host snapshot");
+            var playerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
+            using (var ready = RemoteStopSafety.TryAcquire(snapshot, stopProfile.Id, stopData, games))
             {
-                Require(ready.Allowed, "remote Stop was not offered with a complete list and fresh closed-game report");
-                Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(credential.DeviceId, instance, 2, "check", true)).Ok,
-                    "running-game heartbeat failed");
-                Require(!ready.StillSafe(), "a game-started report after approval did not cancel remote Stop");
+                Require(ready.Allowed, "remote Stop was not offered when the server reported zero players");
+                File.WriteAllText(playerCountPath, "unknown");
+                var canceled = await host.StopAsync(stopProfile.Id, ready.StillSafe);
+                Require(!canceled.Ok && canceled.Code == "PlayersOnlineOrUnknown" &&
+                    !File.Exists(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")),
+                    "an invalid player count after approval did not cancel remote Stop before signaling");
             }
-            using (var playing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
-                Require(!playing.Allowed, "remote Stop accepted a Friend still playing");
-            Require(pairing.RecordHeartbeat(device!, new HeartbeatRequest(invite.DeviceId, instance, 3, "check", false)).Ok,
-                "second closed-game heartbeat failed");
-            File.AppendAllText(listPath, "V_unpaired\n");
-            using (var changed = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing))
-                Require(!changed.Allowed, "remote Stop accepted a changed permitted-player list");
-            File.WriteAllBytes(listPath, originalList);
-            using var permit = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing);
-            Require(permit.Allowed, "restored permitted-player list did not allow remote Stop");
+            using (var unknown = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games))
+                Require(!unknown.Allowed && unknown.Code == "PlayerCountUnknown",
+                    "remote Stop accepted an invalid Valheim player count");
+            using (var ready = RemoteStopSafety.TryAcquire(await ZeroCountSnapshot(host, stopProfile.Id, playerCountPath),
+                stopProfile.Id, stopData, games))
+            {
+                Require(ready.Allowed, "remote Stop did not recover after the server reported zero players");
+                File.WriteAllText(playerCountPath, "1");
+                var canceled = await host.StopAsync(stopProfile.Id, ready.StillSafe);
+                Require(!canceled.Ok && canceled.Code == "PlayersOnlineOrUnknown" &&
+                    !File.Exists(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")),
+                    "a positive player-count change after approval did not cancel remote Stop before signaling");
+            }
+            using (var playing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games))
+                Require(!playing.Allowed && playing.Code == "PlayersOnline",
+                    "remote Stop accepted a server reporting an online player");
+            File.WriteAllText(playerCountPath, "0");
+            using var permit = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games);
+            Require(permit.Allowed, "zero online players did not allow remote Stop");
             var stopped = await host.StopAsync(stopProfile.Id, permit.StillSafe);
             Require(stopped.Ok && stopped.Code == "ValheimStopped", "safe synthetic remote Stop did not exit through Ctrl+C");
         }
@@ -335,13 +337,15 @@ try
         Require((await host.StartAsync(stopProfile.Id)).Ok,
             "a TogetherServer-created world could not start again after it gained save files");
         await WaitForReady(host, stopProfile.Id);
-        Require((await host.StopAsync(stopProfile.Id)).Ok, "restarted app-owned synthetic world did not stop");
+        File.WriteAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt"), "1");
+        var occupied = await host.SnapshotAsync();
+        Require(occupied.Runs.Single(run => run.ProfileId == stopProfile.Id).OnlinePlayers == 1,
+            "restarted server did not report the synthetic online player");
+        Require((await host.StopAsync(stopProfile.Id)).Ok,
+            "the local Host could not override the online-player remote Stop guard");
         Require(File.ReadAllText(Path.Combine(worldFolder, stopProfile.WorldId + ".db")) == "synthetic saved world",
             "restarting an app-owned world changed its disposable saved data");
-        File.AppendAllText(listPath, "V_unpaired\n");
-        Require(RemoteStopSafety.CreateList(await host.SnapshotAsync(), stopProfile.Id, stopData, pairing).Code == "ListExists",
-            "player-only list creation overwrote an existing different list");
-        Console.WriteLine("PASS synthetic remote Stop needs exact list and fresh reports; app-owned world restarts"); passes++;
+        Console.WriteLine("PASS remote Stop needs two zero-player reports; local Host override and app-owned restart work"); passes++;
     }
     Console.WriteLine($"Synthetic Valheim checks: {passes} passed, 0 failed. Data: {root}");
     return 0;
@@ -370,6 +374,15 @@ finally
         catch (ArgumentException) { }
         catch (InvalidOperationException) { }
     }
+}
+
+static async Task<HostSnapshot> ZeroCountSnapshot(HostManager host, Guid profileId, string countPath)
+{
+    File.WriteAllText(countPath, "0");
+    var snapshot = await host.SnapshotAsync();
+    if (snapshot.Runs.Single(run => run.ProfileId == profileId).OnlinePlayers != 0)
+        throw new Exception("synthetic server did not restore a zero-player count");
+    return snapshot;
 }
 
 static void CreateChunkedWorld(string folder, int revision)

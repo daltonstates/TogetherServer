@@ -4,7 +4,7 @@
 Friend PC                                      Owner PC
 TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)
   React UI in native window                      React UI in native window
-  selected client process check                  settings + friend pairing
+  saved Host connection                          settings + friend pairing
   outbound HTTPS heartbeat/start/stop  ----->   small HTTPS companion API
                                                 process supervisor + game registry
                                                        |
@@ -26,7 +26,7 @@ The Host and Friend capabilities may run concurrently in the same process. Host 
 
 - A local loopback GUI listener serves bundled React files and local-owner API actions. It must not become the public management interface.
 - An optional HTTPS companion listener accepts only pairing, authenticated heartbeat, status, Start, and Stop requests. It is off by default and cannot start without pairing and TLS configuration. The owner can start or stop it immediately in the same process; the local GUI remains on loopback. Its port is distinct from each game's ports.
-- `HostManager` owns shared serialization, process identity, save-folder ownership, concurrency, and remote authorization. It dispatches only to a registered `IGameServerDriver`. Each built-in driver owns its executable validation, fixed launch arguments, declared TCP/UDP ports, readiness evidence, public join-address shape, and graceful stop. Friend requests contain only a saved profile ID and typed action; they never select a driver, executable, script, path, argument, environment key, or shell expression. A run records its declared ports for conflict checks after restart.
+- `HostManager` owns shared serialization, process identity, save-folder ownership, concurrency, and remote authorization. It dispatches only to a registered `IGameServerDriver`. Each built-in driver owns its executable validation, fixed launch arguments, declared TCP/UDP ports, readiness evidence, local online-player count, public join-address shape, and graceful stop. Friend requests contain only a saved profile ID and typed action; they never select a driver, executable, script, path, argument, environment key, or shell expression. A run records its declared ports for conflict checks after restart.
 - Serialize lifecycle actions with one in-process gate and durable state. On app restart, verify the recorded PID, start time, executable path, and managed world before reattaching. If identity cannot be proven, show Unknown and refuse another start for that world until the owner resolves it. Never kill by process name alone.
 - Local settings and pairing metadata live under the user's `%LOCALAPPDATA%\TogetherServer` directory. A small atomically replaced JSON store is enough for v1's single Host process; secrets must be protected with Windows facilities, and only credential hashes should be stored on Host. Do not store worlds under the source checkout.
 - Minecraft setup scans bounded common folders and saved paths for Bedrock executables and manifest-bearing Java server JARs. The owner-only install action fetches official metadata and fresh Java or Bedrock files into new private folders after explicit in-app terms consent. Java uses Mojang's checksum and a matching hashed Temurin runtime; Bedrock uses the official download link and guarded ZIP extraction. Neither discovery nor installation modifies an existing server folder.
@@ -36,7 +36,7 @@ The Host and Friend capabilities may run concurrently in the same process. Host 
 ## Friend internals
 
 - The same executable runs in Friend mode and serves its React UI locally. It stores only its own pairing material, protected on that Windows account.
-- Each saved Friend connection keeps its own credential, heartbeat sequence, and game-client executable path. It reports whether that exact executable is running, sends an outbound heartbeat at a bounded interval, and displays the selected Host's last response with a freshness timestamp. The Friend app must stay running when the game closes so it can report `false`.
+- Each saved Friend connection keeps its own credential and heartbeat sequence. It sends an outbound heartbeat at a bounded interval and displays the selected Host's last response, server-reported online-player count, and freshness timestamp. An optional exact game-client path can supply an informational local activity indicator; remote Stop does not depend on it.
 - The Friend app does not receive or run host scripts. It sends typed Start/Stop requests and displays actual Host results. An unreachable Host is Disconnected/Unknown; it is not assumed Disabled or Offline.
 
 ## Public-IP path

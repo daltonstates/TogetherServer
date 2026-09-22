@@ -93,10 +93,16 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
 
     public GameHealthResult Health(ManagedRun run)
     {
-        var ready = java ? MinecraftStatusProbe.Java(run.GamePort) : MinecraftStatusProbe.Bedrock(run.GamePort);
-        return ready
-            ? new(true, "MinecraftLocalStatus", "Ready", "Minecraft answered a local game status request. Friend join and save are unverified.")
-            : new(false, "MinecraftStarting", "Starting", "The managed process matches; waiting for a Minecraft game status reply.");
+        var status = java ? MinecraftStatusProbe.Java(run.GamePort) : MinecraftStatusProbe.Bedrock(run.GamePort);
+        if (status is null)
+            return new(false, "MinecraftStarting", "Starting",
+                "The managed process matches; waiting for a Minecraft game status reply.");
+        return status.Players is { } players
+            ? new(true, "MinecraftLocalStatus", "Ready",
+                $"Minecraft reports {players.Online} of {players.Capacity?.ToString() ?? "?"} players online. Friend join and save are unverified.",
+                players.Online, players.Capacity)
+            : new(true, "MinecraftLocalStatus", "Ready",
+                "Minecraft answered its local status request, but its player count was invalid or unavailable; remote Stop is blocked.");
     }
 
     public Task<GameStopResult> StopAsync(Process process, ManagedRun run)
@@ -132,11 +138,13 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
 internal sealed class MinecraftJavaServerDriver() : MinecraftServerDriver(true);
 internal sealed class MinecraftBedrockServerDriver() : MinecraftServerDriver(false);
 
+internal sealed record MinecraftStatusResult(GamePlayerCount? Players);
+
 internal static class MinecraftStatusProbe
 {
     private static readonly byte[] RakNetMagic = Convert.FromHexString("00FFFF00FEFEFEFEFDFDFDFD12345678");
 
-    public static bool Java(int port)
+    public static MinecraftStatusResult? Java(int port)
     {
         try
         {
@@ -158,23 +166,33 @@ internal static class MinecraftStatusProbe
             SendPacket(stream, handshake.ToArray());
             SendPacket(stream, [0]);
             var length = ReadVarInt(stream);
-            if (length is < 3 or > 1_000_000) return false;
+            if (length is < 3 or > 1_000_000) return null;
             var packet = new byte[length];
             stream.ReadExactly(packet);
             using var content = new MemoryStream(packet);
-            if (ReadVarInt(content) != 0) return false;
+            if (ReadVarInt(content) != 0) return null;
             var jsonLength = ReadVarInt(content);
-            if (jsonLength < 2 || jsonLength > packet.Length - content.Position) return false;
+            if (jsonLength < 2 || jsonLength > packet.Length - content.Position) return null;
             var json = new byte[jsonLength];
             content.ReadExactly(json);
             using var status = JsonDocument.Parse(json);
-            return status.RootElement.ValueKind == JsonValueKind.Object &&
-                status.RootElement.TryGetProperty("version", out _);
+            if (status.RootElement.ValueKind != JsonValueKind.Object ||
+                !status.RootElement.TryGetProperty("version", out _))
+                return null;
+            if (!status.RootElement.TryGetProperty("players", out var players) ||
+                players.ValueKind != JsonValueKind.Object ||
+                !players.TryGetProperty("online", out var onlineValue) ||
+                !players.TryGetProperty("max", out var capacityValue) ||
+                onlineValue.ValueKind != JsonValueKind.Number || capacityValue.ValueKind != JsonValueKind.Number ||
+                !onlineValue.TryGetInt32(out var online) || !capacityValue.TryGetInt32(out var capacity) ||
+                online < 0 || capacity <= 0 || capacity < online)
+                return new(null);
+            return new(new(online, capacity));
         }
-        catch (Exception ex) when (ex is SocketException or IOException or OperationCanceledException or JsonException or ArgumentException) { return false; }
+        catch (Exception ex) when (ex is SocketException or IOException or OperationCanceledException or JsonException or ArgumentException) { return null; }
     }
 
-    public static bool Bedrock(int port)
+    public static MinecraftStatusResult? Bedrock(int port)
     {
         try
         {
@@ -191,12 +209,18 @@ internal static class MinecraftStatusProbe
             var length = socket.Receive(pong);
             if (length < 36 || pong[0] != 0x1c ||
                 !pong.AsSpan(1, 8).SequenceEqual(ping.AsSpan(1, 8)) ||
-                !pong.AsSpan(17, 16).SequenceEqual(RakNetMagic)) return false;
+                !pong.AsSpan(17, 16).SequenceEqual(RakNetMagic)) return null;
             var textLength = BinaryPrimitives.ReadUInt16BigEndian(pong.AsSpan(33, 2));
-            return textLength > 5 && length >= 35 + textLength &&
-                Encoding.UTF8.GetString(pong, 35, textLength).StartsWith("MCPE;", StringComparison.Ordinal);
+            if (textLength <= 5 || length < 35 + textLength) return null;
+            var fields = Encoding.UTF8.GetString(pong, 35, textLength).Split(';');
+            if (fields.Length < 4 || fields[0] != "MCPE") return null;
+            if (fields.Length < 6 ||
+                !int.TryParse(fields[4], out var online) || !int.TryParse(fields[5], out var capacity) ||
+                online < 0 || capacity <= 0 || capacity < online)
+                return new(null);
+            return new(new(online, capacity));
         }
-        catch (Exception ex) when (ex is SocketException or IOException or ArgumentException) { return false; }
+        catch (Exception ex) when (ex is SocketException or IOException or ArgumentException) { return null; }
     }
 
     private static void SendPacket(Stream stream, byte[] payload)

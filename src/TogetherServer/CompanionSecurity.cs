@@ -16,7 +16,6 @@ public sealed class PairedDevice
     public string Name { get; set; } = "";
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
-    public string PlatformUserId { get; set; } = "";
     public bool Revoked { get; set; }
     public string? InviteHash { get; set; }
     public DateTimeOffset? InviteExpiresUtc { get; set; }
@@ -37,8 +36,7 @@ public sealed class ServerInviteState
 }
 
 public sealed record DeviceView(Guid Id, Guid ProfileId, string Name, bool CanStart, bool CanStop, bool Revoked,
-    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning,
-    string PlatformUserId);
+    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning);
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
     bool ServerScope = false);
 public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart);
@@ -48,7 +46,6 @@ public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Seque
 public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc, bool? GameRunning);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
-public sealed record DevicePlayerIdRequest(string PlatformUserId);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
 public sealed record DeviceNameRequest(string? Name);
 public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
@@ -299,8 +296,7 @@ public sealed class PairingService(LocalData data)
             var fresh = heartbeat is not null && DateTimeOffset.UtcNow - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
             return new DeviceView(device.Id, device.ProfileId, device.Name, device.CanStart, device.CanStop, IsRevoked(device),
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
-                fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null,
-                device.PlatformUserId);
+                fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null);
         }).ToList();
     }
 
@@ -428,24 +424,6 @@ public sealed class PairingService(LocalData data)
         }
     }
 
-    public PairingDecision SetPlatformUserId(Guid id, string? platformUserId)
-    {
-        var value = platformUserId?.Trim() ?? "";
-        if (value.Length > 0 && !RemoteStopSafety.ValidPlatformUserId(value))
-            return new PairingDecision(false, "InvalidPlayerId", "Use the Valheim Platform User ID shown in F2, such as V_123456789.");
-        lock (sync)
-        {
-            var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d));
-            if (device is null) return new PairingDecision(false, "UnknownDevice", "Friend PC was not found.");
-            if (devices.Any(d => d.Id != id && !IsRevoked(d) && d.ProfileId == device.ProfileId && d.PlatformUserId == value && value.Length > 0))
-                return new PairingDecision(false, "DuplicatePlayerId", "That Valheim player ID belongs to another Friend PC.");
-            device.PlatformUserId = value;
-            data.SaveDevices(devices);
-            data.Audit($"player-id-change {device.Id} {DateTimeOffset.UtcNow:O}");
-            return new PairingDecision(true, "PlayerIdSaved", value.Length == 0 ? "Valheim player ID cleared." : "Valheim player ID saved locally.");
-        }
-    }
-
     public PairingDecision SetPermissions(Guid id, bool canStart, bool canStop)
     {
         lock (sync)
@@ -473,51 +451,6 @@ public sealed class PairingService(LocalData data)
             data.SaveDevices(devices);
             data.Audit($"device-name-change {device.Id} {DateTimeOffset.UtcNow:O}");
             return new PairingDecision(true, "DeviceNameSaved", "Friend PC name saved locally.");
-        }
-    }
-
-    public bool TryAssignedPlayerIds(Guid profileId, out string[] ids, out string reason)
-    {
-        lock (sync)
-        {
-            var active = devices.Where(d => !IsRevoked(d) && (d.ProfileId == profileId || d.ProfileId == Guid.Empty)).ToList();
-            ids = [];
-            if (active.Count == 0) { reason = "No Friend PCs are paired."; return false; }
-            if (active.Any(d => d.CredentialHash is null || d.CredentialExpiresUtc <= DateTimeOffset.UtcNow))
-            { reason = "A Friend invite is pending or a device credential expired."; return false; }
-            if (active.Any(d => !ValidPlayerId(d.PlatformUserId)) ||
-                active.Select(d => d.PlatformUserId).Distinct(StringComparer.Ordinal).Count() != active.Count)
-            { reason = "Add a unique Valheim player ID for every paired Friend PC."; return false; }
-            ids = active.Select(d => d.PlatformUserId).ToArray();
-            reason = "Each paired Friend PC has a Valheim player ID.";
-            return true;
-        }
-    }
-
-    public bool TryCoveredPlayerIds(Guid profileId, out string[] ids, out string reason)
-    {
-        if (!TryAssignedPlayerIds(profileId, out ids, out reason)) return false;
-        lock (sync)
-        {
-            if (!devices.Where(d => !IsRevoked(d) && (d.ProfileId == profileId || d.ProfileId == Guid.Empty)).All(d => heartbeats.TryGetValue(d.Id, out var receipt) &&
-                DateTimeOffset.UtcNow - receipt.ReceivedUtc <= TimeSpan.FromSeconds(45) && receipt.GameRunning == false))
-            { reason = "Every Friend PC must have a fresh, closed-game report."; return false; }
-            reason = "All paired Friend PCs reported their game closed.";
-            return true;
-        }
-    }
-
-    private static bool ValidPlayerId(string? value) => RemoteStopSafety.ValidPlatformUserId(value);
-
-    public bool AllKnownNotPlaying(Guid profileId)
-    {
-        lock (sync)
-        {
-            var active = devices.Where(d => !IsRevoked(d) && (d.ProfileId == profileId || d.ProfileId == Guid.Empty)).ToList();
-            return active.Count > 0 && active.All(d => d.CredentialHash is not null &&
-                d.CredentialExpiresUtc > DateTimeOffset.UtcNow &&
-                heartbeats.TryGetValue(d.Id, out var receipt) &&
-                DateTimeOffset.UtcNow - receipt.ReceivedUtc <= TimeSpan.FromSeconds(45) && receipt.GameRunning == false);
         }
     }
 

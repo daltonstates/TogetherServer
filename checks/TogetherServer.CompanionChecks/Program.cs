@@ -287,7 +287,8 @@ try
     Require(duplicate.Code == "AlreadyManaged", "another device launched a duplicate");
     var deniedStop = await OwnerPost<object, FriendActionResult>(aLocal, $"/api/local/friend/{profile.Id}/stop", new { });
     var unknownStop = await OwnerPost<object, FriendActionResult>(bLocal, $"/api/local/friend/{profile.Id}/stop", new { });
-    Require(deniedStop.Code == "PermissionDenied" && unknownStop.Code == "PlayerStateUnknown", "remote Stop safety or permissions failed");
+    Require(deniedStop.Code == "PermissionDenied" && unknownStop.Code == "ServerNotReady",
+        $"remote Stop safety or permissions failed: denied={deniedStop.Code}, unsupported={unknownStop.Code}");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.LocalGameRunning == true, "synthetic client-running transition was missed");
     Console.WriteLine("PASS permissions, idempotent Start, duplicate guard, Stop denial, synthetic true signal"); passes++;
@@ -553,15 +554,9 @@ try
         "early Stop permission bypassed or hid the incomplete safety setup");
     var prematureStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
         $"/api/local/friend/{stopProfile.Id}/stop", new { });
-    Require(!prematureStop.Ok && prematureStop.Code == "PlayerStateUnknown",
-        "Host accepted Stop before the restricted server was ready");
+    Require(!prematureStop.Ok && prematureStop.Code == "ServerNotReady",
+        "Host accepted Stop before the server was ready");
     Console.WriteLine("PASS early Stop permission remains blocked until Host safety setup is complete"); passes++;
-    var setId = await OwnerPut<DevicePlayerIdRequest, PairingDecision>(stopOwner,
-        $"/api/local/devices/{stopDeviceId}/player-id", new("V_123456789"));
-    Require(setId.Ok, "restricted Friend player ID was not saved");
-    var listCreated = await OwnerPost<object, StopListResult>(stopOwner,
-        $"/api/local/profiles/{stopProfile.Id}/permitted-list", new { });
-    Require(listCreated.Ok, "restricted permitted-player list was not created");
     Require((await OwnerPost<object, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/start", new { })).Ok, "restricted synthetic start failed");
     var ready = false;
@@ -572,15 +567,30 @@ try
         await Task.Delay(100);
     }
     Require(ready, "restricted synthetic server never reached Ready");
+    var readySnapshot = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
+    Require(readySnapshot.Runs.Single().OnlinePlayers == 0 && readySnapshot.Runs.Single().MaxPlayers == 10,
+        "Host API did not expose the server-reported player count");
     var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
-    Require(stopView.Profiles.Single().CanStopNow && stopView.Profiles.Single().StopReason is null,
+    Require(stopView.Profiles.Single().OnlinePlayers == 0 && stopView.Profiles.Single().MaxPlayers == 10 &&
+        stopView.Profiles.Single().CanStopNow && stopView.Profiles.Single().StopReason is null,
         "Friend UI did not receive available remote Stop without a contradictory blocker");
+    var playerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
+    File.WriteAllText(playerCountPath, "1");
+    var occupiedView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    Require(occupiedView.Profiles.Single().OnlinePlayers == 1 && !occupiedView.Profiles.Single().CanStopNow &&
+        occupiedView.Profiles.Single().StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
+        "Friend UI did not receive the online-player Stop blocker");
+    var occupiedStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    Require(!occupiedStop.Ok && occupiedStop.Code == "PlayersOnline",
+        "Host accepted remote Stop while the server reported an online player");
+    File.WriteAllText(playerCountPath, "0");
     var remoteStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
         $"/api/local/friend/{stopProfile.Id}/stop", new { });
     Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
-    Console.WriteLine("PASS paired Friend remotely stops restricted synthetic Valheim through HTTPS and Ctrl+C"); passes++;
+    Console.WriteLine("PASS paired Friend sees player counts and can stop only at zero through HTTPS and Ctrl+C"); passes++;
 
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;

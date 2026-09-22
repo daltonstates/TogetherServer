@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
 using TogetherServer;
 
 var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/net10.0/TogetherServer.MinecraftFixture.exe");
@@ -23,17 +21,11 @@ int FreePort()
     for (var attempt = 0; attempt < 100; attempt++)
     {
         var port = Random.Shared.Next(35000, 59000);
-        try
-        {
-            using var tcp = new TcpListener(IPAddress.Loopback, port);
-            tcp.Start();
-            using var udp = new UdpClient(port);
-            using var ipv6 = new UdpClient(AddressFamily.InterNetworkV6);
-            ipv6.Client.DualMode = false;
-            ipv6.Client.Bind(new IPEndPoint(IPAddress.IPv6Loopback, port + 1));
+        if (GameServerRegistry.PortsAvailable([
+            new("TCP", port, "Java game"),
+            new("UDP", port, "Bedrock IPv4 game", "IPv4"),
+            new("UDP", port + 1, "Bedrock IPv6 game", "IPv6")]))
             return port;
-        }
-        catch (SocketException) { }
     }
     throw new Exception("No free TCP and UDP port found.");
 }
@@ -135,9 +127,14 @@ await Check("two games can share a world name and numeric port on different prot
         Require(startedBedrock.Ok, $"Bedrock fixture start failed: {startedBedrock.Code} {startedBedrock.Message}");
         await Ready(manager, bedrock.Id);
         var snapshot = await manager.SnapshotAsync();
-        var ports = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), false, []);
-        Require(ports.Games.Count == 2 && ports.Games.All(check => check.State == "Open on PC"),
-            "local TCP and UDP listeners were not reported for both games");
+        Require(snapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
+            .All(run => run.OnlinePlayers == 0 && run.MaxPlayers == 10),
+            "Minecraft player counts were not exposed in the Host snapshot");
+        var games = new GameServerRegistry(data);
+        var ports = PortDiagnostics.Read(snapshot, games, false, []);
+        Require(ports.Games.Count == 2 && ports.Games.All(check => check.State is "Open on PC" or "Loopback only"),
+            "local TCP and UDP listeners were not reported for both games: " +
+            string.Join(" | ", ports.Games.Select(check => $"{check.Kind}={check.State}: {check.Detail}")));
         var extra = Profile(GameKinds.MinecraftBedrock, "bedrock-conflict", "other", FreePort());
         File.WriteAllText(Path.Combine(extra.WorldDirectory, "server.properties"),
             $"level-name=other\nserver-port={extra.GamePort}\nserver-portv6={port + 1}\nenable-lan-visibility=false\n");
@@ -145,11 +142,27 @@ await Check("two games can share a world name and numeric port on different prot
             Profiles = [java, bedrock, extra] })).Ok, "third Bedrock profile rejected");
         Require((await manager.StartAsync(extra.Id)).Code == "PortConflict",
             "second Bedrock run could reuse the first run's IPv6 game port");
-        var pairing = new PairingService(data);
-        using var javaPermit = RemoteStopSafety.TryAcquire(snapshot, java.Id, data, pairing);
-        using var bedrockPermit = RemoteStopSafety.TryAcquire(snapshot, bedrock.Id, data, pairing);
-        Require(!javaPermit.Allowed && !bedrockPermit.Allowed,
-            "Minecraft remote Stop was enabled without game-specific player coverage evidence");
+        using var javaPermit = RemoteStopSafety.TryAcquire(snapshot, java.Id, data, games);
+        using var bedrockPermit = RemoteStopSafety.TryAcquire(snapshot, bedrock.Id, data, games);
+        Require(javaPermit.Allowed && bedrockPermit.Allowed,
+            "Minecraft remote Stop was not enabled for verified zero-player status replies");
+        File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "unknown");
+        File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "synthetic-online-players.txt"), "unknown");
+        var unknownSnapshot = await manager.SnapshotAsync();
+        Require(unknownSnapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
+            .All(run => run.State == "Ready" && run.OnlinePlayers is null),
+            "valid Minecraft status replies with invalid counts did not stay Ready with an Unknown count");
+        using var javaUnknown = RemoteStopSafety.TryAcquire(unknownSnapshot, java.Id, data, games);
+        using var bedrockUnknown = RemoteStopSafety.TryAcquire(unknownSnapshot, bedrock.Id, data, games);
+        Require(!javaUnknown.Allowed && javaUnknown.Code == "PlayerCountUnknown" &&
+            !bedrockUnknown.Allowed && bedrockUnknown.Code == "PlayerCountUnknown",
+            "Minecraft remote Stop did not fail closed for invalid player counts");
+        File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "2");
+        File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "synthetic-online-players.txt"), "0");
+        using var occupied = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), java.Id, data, games);
+        Require(!occupied.Allowed && occupied.Code == "PlayersOnline",
+            "Minecraft remote Stop accepted a server reporting online players");
+        File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "0");
         var runs = data.LoadRuns();
         Require(runs.Count == 2 && runs.Any(run => run.Kind == GameKinds.MinecraftJava &&
             run.DeclaredPorts.Single().Protocol == "TCP") && runs.Any(run => run.Kind == GameKinds.MinecraftBedrock &&

@@ -4,7 +4,7 @@ using System.Net;
 namespace TogetherServer;
 
 public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId,
-    IReadOnlyList<GamePort>? DeclaredPorts = null);
+    IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, bool? OwnerGameRunning, DateTimeOffset OwnerCheckedUtc,
     IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
@@ -191,7 +191,7 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
-    public async Task<ActionResult> StopAsync(Guid profileId, Func<bool>? remoteStillSafe = null)
+    public async Task<ActionResult> StopAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
     {
         await gate.WaitAsync();
         try
@@ -208,8 +208,9 @@ public sealed class HostManager
                 if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != run.StartTimeUtcTicks ||
                     !Path.GetFullPath(process.MainModule!.FileName).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
                     return Result(false, "IdentityUnknown", "Process identity changed. No stop signal was sent.");
-                if (remoteStillSafe is not null && !remoteStillSafe())
-                    return Result(false, "PlayerStateUnknown", "A permitted player's game state changed before Stop. No stop signal was sent.");
+                if (remoteStillSafe is not null && !remoteStillSafe(run))
+                    return Result(false, "PlayersOnlineOrUnknown",
+                        "The server no longer reports zero online players. No stop signal was sent; the Host can still stop it locally.");
                 var stopped = await driver.StopAsync(process, run);
                 if (stopped.ExitCode != 0) return Result(false, stopped.Code, stopped.Message);
                 runs.Remove(run);
@@ -285,7 +286,8 @@ public sealed class HostManager
     }
 
     private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
-        new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts);
+        new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
+            health.OnlinePlayers, health.MaxPlayers);
 
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
 
@@ -294,9 +296,6 @@ public sealed class HostManager
         if (next.MaxConcurrentServers < 1 || next.MaxConcurrentServers > 16) return "Maximum servers must be between 1 and 16.";
         if (next.IdleMinutes < 1 || next.IdleMinutes > 1440) return "Idle minutes must be between 1 and 1440.";
         if (next.AutoShutdownEnabled) return "Auto shutdown is unavailable until real player coverage is verified.";
-        if (next.PermittedPlayersVerified) return "Permitted-player coverage requires real Valheim verification.";
-        if (!string.IsNullOrEmpty(next.OwnerPlatformUserId) && !RemoteStopSafety.ValidPlatformUserId(next.OwnerPlatformUserId))
-            return "Enter the owner's Valheim Platform User ID, such as V_123456789.";
         if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
         if (!string.IsNullOrWhiteSpace(next.PublicGameIp) && !GameConnection.IsPublicIpv4(next.PublicGameIp))
             return "The Valheim friend address must be public IPv4; 127.0.0.1, local, shared, and test addresses cannot be used.";

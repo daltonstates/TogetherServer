@@ -72,16 +72,21 @@ try {
     if ($js.StatusCode -ne 200 -or $js.RawContentLength -lt 10000) { throw 'The embedded JavaScript was not served.' }
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
+    if (!$css.Content.Contains('.ui-button')) { throw 'The shared control-library styles were not bundled.' }
+    $rawControls = Get-ChildItem -LiteralPath (Join-Path $repository 'ui/src') -Filter '*.tsx' |
+        Where-Object Name -NE 'Controls.tsx' |
+        Select-String -CaseSensitive -Pattern '<(button|input|select|textarea)\b'
+    if ($rawControls) { throw "A page bypasses the shared control library: $($rawControls[0].Path):$($rawControls[0].LineNumber)" }
     $requiredUiText = @(
         'Host a server', 'Join a server', 'Choose a game', 'Create new', 'Use existing',
         'Browse for a world folder', 'Use an existing server', 'TogetherServer installs the latest official server',
         'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
         'Start server', 'Invite friends',
-        'Paste your server code', 'Saved servers', 'Game activity detection', 'Browse for game',
+        'Paste your server code', 'Saved servers', 'Optional game activity', 'Browse for game',
         'Friend access and settings', 'PC name', 'Allow remote Start and Stop', 'Remote Stop',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Maximum servers running at once',
-        'Revoke all access and create a new code', 'Create or verify player-only access list',
+        'Revoke all access and create a new code', 'Remote Stop safety', 'There are no player IDs to enter',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {
@@ -240,6 +245,12 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (!$ready) { throw 'Published EXE did not see the synthetic server-connected log.' }
+    $valheimSnapshot = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
+    $valheimView = @($valheimSnapshot.runs) | Where-Object profileId -EQ $valheimId
+    if ($valheimView.onlinePlayers -ne 0 -or $valheimView.maxPlayers -ne 10) {
+        throw 'Published EXE did not expose the synthetic Valheim 0 of 10 player count.'
+    }
+    Write-Host 'PASS published GUI snapshot exposes the synthetic Valheim player count'
     $ports = Invoke-RestMethod -Uri "$baseUrl/api/local/network/ports"
     $gameCheck = @($ports.games) | Where-Object profileId -EQ $valheimId
     if ($gameCheck.state -ne 'Open on PC' -or @($gameCheck.ports).Count -ne 2 -or $ports.control.state -ne 'Off' -or $ports.control.remoteState -ne 'Not verified') {

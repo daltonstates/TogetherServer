@@ -12,6 +12,13 @@ var portLine = properties.Single(line => line.StartsWith("server-port=", StringC
 var port = int.Parse(portLine["server-port=".Length..]);
 var ipv6PortLine = properties.SingleOrDefault(line => line.StartsWith("server-portv6=", StringComparison.Ordinal));
 var ipv6Port = ipv6PortLine is null ? 19133 : int.Parse(ipv6PortLine["server-portv6=".Length..]);
+var playerCountPath = Path.Combine(root, "synthetic-online-players.txt");
+int? OnlinePlayers()
+{
+    if (!File.Exists(playerCountPath)) return 0;
+    return int.TryParse(File.ReadAllText(playerCountPath).Trim(), out var count)
+        ? Math.Clamp(count, 0, 10) : null;
+}
 using var done = new CancellationTokenSource();
 var server = java ? ServeJava(done.Token) : ServeBedrock(done.Token);
 while (true)
@@ -43,7 +50,8 @@ async Task ServeJava(CancellationToken token)
                 var bytes = new byte[handshake];
                 stream.ReadExactly(bytes);
                 if (ReadVarInt(stream) != 1 || stream.ReadByte() != 0) continue;
-                var status = Encoding.UTF8.GetBytes("{\"version\":{\"name\":\"synthetic\",\"protocol\":760},\"players\":{\"max\":1,\"online\":0},\"description\":\"fixture\"}");
+                var online = OnlinePlayers()?.ToString() ?? "null";
+                var status = Encoding.UTF8.GetBytes($"{{\"version\":{{\"name\":\"synthetic\",\"protocol\":760}},\"players\":{{\"max\":10,\"online\":{online}}},\"description\":\"fixture\"}}");
                 using var response = new MemoryStream();
                 response.WriteByte(0);
                 WriteVarInt(response, status.Length);
@@ -72,7 +80,8 @@ async Task ServeBedrock(CancellationToken token)
             var request = await udp.ReceiveAsync(token);
             if (request.Buffer.Length != 33 || request.Buffer[0] != 1 ||
                 !request.Buffer.AsSpan(9, 16).SequenceEqual(magic)) continue;
-            var motd = Encoding.UTF8.GetBytes($"MCPE;Fixture;0;fixture;0;1;1;fixture;Survival;1;{port};{ipv6Port};");
+            var online = OnlinePlayers()?.ToString() ?? "unknown";
+            var motd = Encoding.UTF8.GetBytes($"MCPE;Fixture;0;fixture;{online};10;1;fixture;Survival;1;{port};{ipv6Port};");
             var response = new byte[35 + motd.Length];
             response[0] = 0x1c;
             request.Buffer.AsSpan(1, 8).CopyTo(response.AsSpan(1, 8));

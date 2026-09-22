@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 namespace TogetherServer;
 
@@ -16,7 +18,9 @@ public static class GameKinds
 public sealed record GamePort(string Protocol, int Port, string Label, string Family = "Any");
 public sealed record GameValidation(string Code, string Message);
 public sealed record GameLaunchResult(string Code, string Message, int ProcessId);
-public sealed record GameHealthResult(bool Ok, string Code, string State, string Detail);
+public sealed record GamePlayerCount(int Online, int? Capacity = null);
+public sealed record GameHealthResult(bool Ok, string Code, string State, string Detail,
+    int? OnlinePlayers = null, int? MaxPlayers = null);
 public sealed record GameStopResult(string Code, string Message, uint ExitCode);
 
 // A game driver owns only game-specific validation, launch, readiness, ports, and
@@ -118,7 +122,6 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
         if (!Directory.Exists(profile.WorldDirectory)) Directory.CreateDirectory(profile.WorldDirectory);
         if (profile.WorldSource == "New" && !data.OwnsNewWorld(profile)) data.RecordNewWorld(profile);
         run.LogPath = data.NewRunLogPath(run.OperationId);
-        run.PermittedListSha256 = RemoteStopSafety.FingerprintAtStart(profile);
     }
 
     public GameLaunchResult Start(ServerProfile profile, ManagedRun run)
@@ -136,11 +139,19 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
             "Valheim process launched. Waiting for its server-connected log signal; join and save are unverified.", processId);
     }
 
-    public GameHealthResult Health(ManagedRun run) => ValheimLogReady(run.LogPath)
-        ? new(true, "ValheimLogReady", "Ready",
-            "Valheim server-connected log observed; client join and save still unverified")
-        : new(false, "ValheimStarting", "Starting",
-            "Valheim process matches; waiting for server-connected log");
+    public GameHealthResult Health(ManagedRun run)
+    {
+        if (!ValheimLogReady(run.LogPath))
+            return new(false, "ValheimStarting", "Starting",
+                "Valheim process matches; waiting for server-connected log");
+        var players = ValveServerQuery.Info(run.GamePort + 1);
+        return players is null
+            ? new(true, "ValheimLogReady", "Ready",
+                "Valheim is ready, but its local player-count query did not answer; remote Stop is blocked")
+            : new(true, "ValheimLogReady", "Ready",
+                $"Valheim reports {players.Online} of {players.Capacity?.ToString() ?? "?"} players online; client join and save remain unverified",
+                players.Online, players.Capacity);
+    }
 
     public async Task<GameStopResult> StopAsync(Process process, ManagedRun run)
     {
@@ -166,6 +177,75 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
         }
         catch (IOException) { return false; }
         catch (UnauthorizedAccessException) { return false; }
+    }
+}
+
+// Valheim's Steam-compatible local query reply carries a current player count.
+// A missing, split, malformed, or unsupported reply stays unknown so remote Stop
+// fails closed. The query is local-only; it does not establish public reachability.
+internal static class ValveServerQuery
+{
+    private static readonly byte[] InfoRequest =
+    [
+        0xff, 0xff, 0xff, 0xff, 0x54,
+        .. Encoding.ASCII.GetBytes("Source Engine Query\0")
+    ];
+
+    public static GamePlayerCount? Info(int port)
+    {
+        try
+        {
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
+            {
+                ReceiveTimeout = 800,
+                SendTimeout = 800
+            };
+            socket.Connect(IPAddress.Loopback, port);
+            socket.Send(InfoRequest);
+            var buffer = new byte[4096];
+            var length = socket.Receive(buffer);
+            if (IsChallenge(buffer.AsSpan(0, length), out var challenge))
+            {
+                var challenged = new byte[InfoRequest.Length + sizeof(int)];
+                InfoRequest.CopyTo(challenged, 0);
+                BinaryPrimitives.WriteInt32LittleEndian(challenged.AsSpan(InfoRequest.Length), challenge);
+                socket.Send(challenged);
+                length = socket.Receive(buffer);
+            }
+            return ParseInfo(buffer.AsSpan(0, length));
+        }
+        catch (Exception ex) when (ex is SocketException or IOException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsChallenge(ReadOnlySpan<byte> response, out int challenge)
+    {
+        challenge = 0;
+        if (response.Length < 9 || BinaryPrimitives.ReadInt32LittleEndian(response) != -1 || response[4] != 0x41)
+            return false;
+        challenge = BinaryPrimitives.ReadInt32LittleEndian(response[5..]);
+        return true;
+    }
+
+    private static GamePlayerCount? ParseInfo(ReadOnlySpan<byte> response)
+    {
+        if (response.Length < 7 || BinaryPrimitives.ReadInt32LittleEndian(response) != -1 || response[4] != 0x49)
+            return null;
+        var offset = 6; // Header, A2S_INFO response type, protocol byte.
+        for (var field = 0; field < 4; field++)
+        {
+            var terminator = response[offset..].IndexOf((byte)0);
+            if (terminator < 0) return null;
+            offset += terminator + 1;
+            if (offset > response.Length) return null;
+        }
+        if (response.Length - offset < 4) return null;
+        offset += sizeof(ushort); // Steam application ID.
+        var online = response[offset++];
+        var capacity = response[offset];
+        return capacity > 0 && online <= capacity ? new(online, capacity) : null;
     }
 }
 

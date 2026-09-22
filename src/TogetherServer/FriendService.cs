@@ -21,7 +21,8 @@ public sealed class FriendConfiguration
 }
 
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
-    bool CanStopNow = false, string? StopReason = null, string Kind = "");
+    bool CanStopNow = false, string? StopReason = null, string Kind = "",
+    int? OnlinePlayers = null, int? MaxPlayers = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,

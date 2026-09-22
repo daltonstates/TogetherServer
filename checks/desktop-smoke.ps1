@@ -330,6 +330,10 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (!$ready) { throw 'Desktop synthetic server readiness was not observed.' }
+    $desktopRun = @((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").runs) | Where-Object profileId -EQ $profileId
+    if ($desktopRun.onlinePlayers -ne 0 -or $desktopRun.maxPlayers -ne 10) {
+        throw 'Desktop GUI snapshot did not expose the synthetic Valheim 0 of 10 player count.'
+    }
     $stopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/stop" -Method Post -Headers $headers -TimeoutSec 15
     if (!$stopped.ok -or !(Test-Path -LiteralPath (Join-Path $import.worldDirectory 'synthetic-stop.marker'))) {
         throw "Desktop synthetic Ctrl+C stop failed: $($stopped.message)"
