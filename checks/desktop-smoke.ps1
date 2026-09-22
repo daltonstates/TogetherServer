@@ -4,7 +4,8 @@ $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release/TogetherServer.exe' }
 $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $fixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
-if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath)) { throw 'Run scripts/build.ps1 first.' }
+$idleClientPath = Join-Path $repository 'src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe'
+if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath) -or !(Test-Path -LiteralPath $idleClientPath)) { throw 'Run scripts/build.ps1 first.' }
 
 # The default checks the exact no-argument Explorer path; an isolated port uses --desktop for parallel testing.
 if ($Port -eq 0) {
@@ -293,7 +294,7 @@ try {
     $import = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body (@{ profileId = $profileId; sourceSaveRoot = $saveRoot; worldId = 'fixture-world' } | ConvertTo-Json)
     if (!$import.ok) { throw 'Desktop synthetic world import failed.' }
     $profile = @{ id = $profileId; kind = 'Valheim'; name = 'Desktop fixture'; serverName = 'Fixture "Valheim"'; worldId = 'fixture-world'; worldDirectory = $import.worldDirectory; gamePort = (Get-FreeUdpPair); executablePath = $fixturePath }
-    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; profiles = @($profile) }
+    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $true; remoteControlsEnabled = $false; ownerClientExecutablePath = $idleClientPath; profiles = @($profile) }
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw 'Desktop synthetic Valheim settings failed.' }
     $password = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/password" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"password":"fixture-pass-123"}'
@@ -331,8 +332,8 @@ try {
     }
     if (!$ready) { throw 'Desktop synthetic server readiness was not observed.' }
     $desktopRun = @((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").runs) | Where-Object profileId -EQ $profileId
-    if ($desktopRun.onlinePlayers -ne 0 -or $desktopRun.maxPlayers -ne 10) {
-        throw 'Desktop GUI snapshot did not expose the synthetic Valheim 0 of 10 player count.'
+    if ($desktopRun.onlinePlayers -ne 0 -or $desktopRun.maxPlayers -ne 10 -or $null -eq $desktopRun.autoShutdownAtUtc) {
+        throw 'Desktop GUI snapshot did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
     }
     $stopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/stop" -Method Post -Headers $headers -TimeoutSec 15
     if (!$stopped.ok -or !(Test-Path -LiteralPath (Join-Path $import.worldDirectory 'synthetic-stop.marker'))) {

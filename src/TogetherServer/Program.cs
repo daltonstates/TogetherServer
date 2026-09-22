@@ -36,9 +36,10 @@ var desktopPreferences = data.LoadDesktopPreferences();
 var startupRegistration = new WindowsStartup(Environment.ProcessPath ?? "");
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
 var games = new GameServerRegistry(data);
-var manager = new HostManager(data, games);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
+var manager = new HostManager(data, games,
+    idleBlocker: profileId => AutoShutdownPresence.FriendBlocker(profileId, pairing.Views()));
 var identity = new HostIdentity(data);
 var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
@@ -553,15 +554,23 @@ app.MapGet("/{**path}", async (HttpContext context, string? path) =>
 Console.WriteLine($"TogetherServer {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
 await companionServer.SyncAsync();
 using var pollStop = new CancellationTokenSource();
-var pollTask = Task.Run(async () =>
+var friendPollTask = Task.Run(async () =>
 {
     while (!pollStop.IsCancellationRequested)
     {
         try { await friend.PollAsync(); }
         catch (Exception ex) { Console.Error.WriteLine("Friend poll failed: " + ex.GetType().Name); }
-        try { await manager.SnapshotAsync(); }
-        catch (Exception ex) { Console.Error.WriteLine("Host client check failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(15), pollStop.Token); }
+        catch (OperationCanceledException) { break; }
+    }
+});
+var idleShutdownTask = Task.Run(async () =>
+{
+    while (!pollStop.IsCancellationRequested)
+    {
+        try { await manager.MaintainIdleShutdownAsync(); }
+        catch (Exception ex) { Console.Error.WriteLine("Empty-server timer failed: " + ex.GetType().Name); }
+        try { await Task.Delay(TimeSpan.FromSeconds(3), pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
 });
@@ -576,4 +585,4 @@ catch (Exception ex) when (openWindow)
     DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
     Environment.ExitCode = 1;
 }
-finally { pollStop.Cancel(); await pollTask; await companionServer.StopAsync(); }
+finally { pollStop.Cancel(); await Task.WhenAll(friendPollTask, idleShutdownTask); await companionServer.StopAsync(); }

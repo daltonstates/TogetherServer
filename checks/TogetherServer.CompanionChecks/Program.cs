@@ -583,13 +583,16 @@ try
         ExecutablePath = valheimFixturePath, GamePort = gamePort + 20 };
     stopProfileId = stopProfile.Id;
     stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
+    var inactiveClientPath = Path.Combine(root, "InactiveGameClient.exe");
+    File.WriteAllText(inactiveClientPath, "synthetic client marker; never executed");
     stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 7000);
     stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
     await WaitLocal(stopHostPort); await WaitLocal(stopFriendPort);
     using var stopOwner = LocalClient(stopHostPort);
     using var stopFriendLocal = LocalClient(stopFriendPort);
     var stopSettings = new HostSettings { Profiles = [stopProfile], CompanionEndpoint = stopEndpoint,
-        CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort };
+        CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort,
+        AutoShutdownEnabled = true, IdleMinutes = 15, OwnerClientExecutablePath = inactiveClientPath };
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
         "restricted Host settings failed");
     Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
@@ -597,7 +600,7 @@ try
         "restricted Host password failed");
     var stopInvite = await ServerInvite(stopOwner, stopProfile.Id, true, enableConnections: true);
     var stopPair = await OwnerPost<FriendPairRequest, FriendActionResult>(stopFriendLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(stopInvite), fixturePath));
+        new(PairingPassword.Encode(stopInvite), inactiveClientPath));
     Require(stopPair.Ok, "restricted Friend did not pair from the server code");
     var stopBeforePermission = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     Require(!stopBeforePermission.CanStop && !stopBeforePermission.Profiles.Single().CanStopNow &&
@@ -628,18 +631,23 @@ try
     }
     Require(ready, "restricted synthetic server never reached Ready");
     var readySnapshot = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
-    Require(readySnapshot.Runs.Single().OnlinePlayers == 0 && readySnapshot.Runs.Single().MaxPlayers == 10,
-        "Host API did not expose the server-reported player count");
+    var hostRun = readySnapshot.Runs.Single();
+    var hostDeadline = hostRun.AutoShutdownAtUtc;
+    Require(hostRun.OnlinePlayers == 0 && hostRun.MaxPlayers == 10 &&
+        hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(14),
+        "Host API did not expose the server-reported player count and empty-server deadline");
     var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
-    Require(stopView.Profiles.Single().OnlinePlayers == 0 && stopView.Profiles.Single().MaxPlayers == 10 &&
-        stopView.Profiles.Single().CanStopNow && stopView.Profiles.Single().StopReason is null,
-        "Friend UI did not receive available remote Stop without a contradictory blocker");
+    var friendProfile = stopView.Profiles.Single();
+    Require(friendProfile.OnlinePlayers == 0 && friendProfile.MaxPlayers == 10 &&
+        friendProfile.AutoShutdownAtUtc == hostDeadline && friendProfile.CanStopNow && friendProfile.StopReason is null,
+        "Friend UI did not receive the player count, shared countdown, and available remote Stop state");
     var playerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
     File.WriteAllText(playerCountPath, "1");
     var occupiedView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
-    Require(occupiedView.Profiles.Single().OnlinePlayers == 1 && !occupiedView.Profiles.Single().CanStopNow &&
+    Require(occupiedView.Profiles.Single().OnlinePlayers == 1 &&
+        occupiedView.Profiles.Single().AutoShutdownAtUtc is null && !occupiedView.Profiles.Single().CanStopNow &&
         occupiedView.Profiles.Single().StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
-        "Friend UI did not receive the online-player Stop blocker");
+        "Friend UI did not cancel the countdown and receive the online-player Stop blocker");
     var occupiedStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
         $"/api/local/friend/{stopProfile.Id}/stop", new { });
     Require(!occupiedStop.Ok && occupiedStop.Code == "PlayersOnline",
@@ -650,7 +658,7 @@ try
     Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
-    Console.WriteLine("PASS paired Friend sees player counts and can stop only at zero through HTTPS and Ctrl+C"); passes++;
+    Console.WriteLine("PASS paired Friend sees player counts/countdown and can stop only at zero through HTTPS and Ctrl+C"); passes++;
 
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;

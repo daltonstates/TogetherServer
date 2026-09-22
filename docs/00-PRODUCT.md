@@ -23,9 +23,10 @@ Let the owner host a dedicated game server on a Windows PC and let a small, know
 
 ## Auto shutdown
 
-- The owner sets an idle duration in minutes and can disable auto shutdown. Default it to **off** until real Valheim and companion coverage checks pass.
-- Server-reported player counts are the primary occupancy signal. A missing or malformed reply is Unknown, never zero. Optional companion `gameRunning` reports remain informational and must not override a positive or unknown server count.
-- Before auto shutdown can be enabled, each real built-in game needs a tested count transition, idle window, final zero-player recheck, graceful stop, and recognizable save/restart result. Until then, show Auto shutdown unavailable.
+- The owner sets an idle duration in minutes and can disable auto shutdown. Default it to **off**, and keep the missing real-game acceptance visible before recommending it for a valued world.
+- Server-reported player counts are the primary occupancy signal. A missing or malformed reply is Unknown, never zero. Host/Friend `gameRunning` checks can only add a blocker; they can never override a positive or unknown server count.
+- When enabled, each Ready zero-player server owns a Host-generated shutdown deadline shown as the same live countdown on its Host card and every assigned Friend card. A positive or Unknown count, a running/unknown Host game check, or a running/unknown report from any assigned paired Friend cancels that deadline. A Host app restart starts a fresh idle window rather than counting unobserved time.
+- At expiry, Host rechecks the driver's current count under the lifecycle gate and stops only if it is still exactly zero. Fixture coverage is not real-game acceptance; each real built-in game still needs a tested count transition, idle window, graceful stop, and recognizable save/restart result before the owner relies on automatic shutdown for a valued world.
 - Never force-kill a real world as a normal idle action. Surface timeout/failure and leave the process/world state Unknown when a graceful stop cannot be verified.
 
 ## Settings and honest status

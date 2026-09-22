@@ -272,8 +272,10 @@ try
 
     using (var stopData = new LocalData(Path.Combine(root, "remote-stop-host")))
     {
-        var host = new HostManager(stopData);
         var games = new GameServerRegistry(stopData);
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero));
+        string? presenceBlocker = null;
+        var host = new HostManager(stopData, games, clock, _ => presenceBlocker);
         var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
             ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
             GamePort = FreePort(), ExecutablePath = fixture };
@@ -346,6 +348,96 @@ try
         Require(File.ReadAllText(Path.Combine(worldFolder, stopProfile.WorldId + ".db")) == "synthetic saved world",
             "restarting an app-owned world changed its disposable saved data");
         Console.WriteLine("PASS remote Stop needs two zero-player reports; local Host override and app-owned restart work"); passes++;
+
+        DeviceView FriendPresence(IReadOnlyList<Guid> assigned, DateTimeOffset? heartbeat, bool? gameRunning,
+            bool revoked = false, bool paired = true) => new(Guid.NewGuid(), stopProfile.Id, assigned,
+                "Synthetic Friend", true, true, revoked, paired, clock.GetUtcNow().AddDays(1), heartbeat, gameRunning);
+        Require(AutoShutdownPresence.FriendBlocker(stopProfile.Id,
+                [FriendPresence([stopProfile.Id], null, false)])?.Contains("fresh report", StringComparison.Ordinal) == true &&
+            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
+                [FriendPresence([stopProfile.Id], clock.GetUtcNow(), null)])?.Contains("current game check", StringComparison.Ordinal) == true &&
+            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
+                [FriendPresence([stopProfile.Id], clock.GetUtcNow(), true)])?.Contains("game is running", StringComparison.Ordinal) == true &&
+            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
+                [FriendPresence([stopProfile.Id], clock.GetUtcNow(), false)]) is null &&
+            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
+                [FriendPresence([Guid.NewGuid()], null, true), FriendPresence([stopProfile.Id], null, true, revoked: true)]) is null,
+            "assigned Friend heartbeat coverage did not fail closed or ignored unrelated/revoked devices");
+
+        var timerSettings = stopData.LoadSettings();
+        timerSettings.AutoShutdownEnabled = true;
+        timerSettings.IdleMinutes = 1;
+        timerSettings.OwnerClientExecutablePath = unrelatedFixture;
+        Require((await host.UpdateSettingsAsync(timerSettings)).Ok, "empty-server timer settings were rejected");
+        var timerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
+        var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");
+        File.WriteAllText(timerCountPath, "0");
+        if (File.Exists(stopMarker)) File.Delete(stopMarker);
+        Require((await host.StartAsync(stopProfile.Id)).Ok, "empty-server timer fixture did not start");
+        await WaitForReady(host, stopProfile.Id);
+        try
+        {
+            var first = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(first.OnlinePlayers == 0 && first.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "a zero-player Ready server did not publish its shutdown deadline");
+
+            presenceBlocker = "Waiting for a fresh Friend report.";
+            var presencePaused = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(presencePaused.AutoShutdownAtUtc is null && presencePaused.AutoShutdownReason == presenceBlocker,
+                "missing companion coverage did not pause and explain the countdown");
+            presenceBlocker = null;
+            var presenceRecovered = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(presenceRecovered.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "fresh companion coverage did not start a full new idle window");
+
+            var longerTimerSettings = stopData.LoadSettings();
+            longerTimerSettings.IdleMinutes = 2;
+            Require((await host.UpdateSettingsAsync(longerTimerSettings)).Ok &&
+                (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(2),
+                "changing the wait did not start a full new idle window");
+            var restoredTimerSettings = stopData.LoadSettings();
+            restoredTimerSettings.IdleMinutes = 1;
+            Require((await host.UpdateSettingsAsync(restoredTimerSettings)).Ok &&
+                (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "restoring the wait did not start a full new idle window");
+
+            clock.Advance(TimeSpan.FromSeconds(30));
+            File.WriteAllText(timerCountPath, "1");
+            var occupiedTimer = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(occupiedTimer.OnlinePlayers == 1 && occupiedTimer.AutoShutdownAtUtc is null,
+                "an online player did not cancel the empty-server countdown");
+
+            File.WriteAllText(timerCountPath, "0");
+            var secondTimer = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(secondTimer.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "the countdown did not restart from a new zero-player observation");
+            clock.Advance(TimeSpan.FromSeconds(30));
+            File.WriteAllText(timerCountPath, "unknown");
+            var unknownTimer = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(unknownTimer.OnlinePlayers is null && unknownTimer.AutoShutdownAtUtc is null,
+                "an unavailable count was treated as zero or left the countdown running");
+
+            File.WriteAllText(timerCountPath, "0");
+            var third = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(third.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "the countdown did not restart after an unavailable count recovered");
+            clock.Advance(TimeSpan.FromSeconds(59));
+            Require((await host.MaintainIdleShutdownAsync()).Count == 0 &&
+                (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State == "Ready",
+                "automatic shutdown ran before the full idle window");
+            clock.Advance(TimeSpan.FromSeconds(1));
+            var automatic = await host.MaintainIdleShutdownAsync();
+            Require(automatic.Count == 1 && automatic[0].Ok && automatic[0].Code == "ValheimStopped" &&
+                (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State == "Offline" &&
+                File.ReadAllText(stopMarker) == "Ctrl+C received",
+                "countdown expiry did not use the final zero check and graceful Stop path");
+        }
+        finally
+        {
+            if ((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State != "Offline")
+                await host.StopAsync(stopProfile.Id);
+        }
+        Console.WriteLine("PASS empty-server countdown resets for players/Unknown and stops gracefully only after a final zero check"); passes++;
     }
     Console.WriteLine($"Synthetic Valheim checks: {passes} passed, 0 failed. Data: {root}");
     return 0;
@@ -435,4 +527,11 @@ sealed class SyntheticIpHandler(string body) : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
         Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+}
+
+sealed class ManualTimeProvider(DateTimeOffset initialUtc) : TimeProvider
+{
+    private DateTimeOffset utcNow = initialUtc;
+    public override DateTimeOffset GetUtcNow() => utcNow;
+    public void Advance(TimeSpan value) => utcNow = utcNow.Add(value);
 }

@@ -4,7 +4,8 @@ using System.Net;
 namespace TogetherServer;
 
 public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId,
-    IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null);
+    IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
+    DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, bool? OwnerGameRunning, DateTimeOffset OwnerCheckedUtc,
     IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
@@ -15,15 +16,21 @@ public sealed class HostManager
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly LocalData data;
     private readonly GameServerRegistry games;
+    private readonly TimeProvider clock;
+    private readonly Func<Guid, string?>? idleBlocker;
     private HostSettings settings;
     private readonly List<ManagedRun> runs;
+    private readonly Dictionary<Guid, DateTimeOffset> emptySince = [];
 
-    public HostManager(LocalData data) : this(data, new GameServerRegistry(data)) { }
+    public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
-    public HostManager(LocalData data, GameServerRegistry games)
+    public HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock = null,
+        Func<Guid, string?>? idleBlocker = null)
     {
         this.data = data;
         this.games = games;
+        this.clock = clock ?? TimeProvider.System;
+        this.idleBlocker = idleBlocker;
         settings = data.LoadSettings();
         runs = data.LoadRuns();
     }
@@ -83,6 +90,10 @@ public sealed class HostManager
             data.SaveSettings(next);
             if (settings.RemoteControlsEnabled != next.RemoteControlsEnabled)
                 data.Audit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
+            if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
+                data.Audit($"auto-shutdown {(next.AutoShutdownEnabled ? "enabled" : "disabled")} idle-minutes={next.IdleMinutes} {clock.GetUtcNow():O}");
+            if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
+                emptySince.Clear();
             settings = next;
             return Result(true, "SettingsSaved", "Host settings saved.");
         }
@@ -170,6 +181,7 @@ public sealed class HostManager
                 ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
                 StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
             };
+            emptySince.Remove(profileId);
             driver.PrepareStart(profile, run);
             runs.Add(run);
             data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
@@ -198,35 +210,77 @@ public sealed class HostManager
     public async Task<ActionResult> StopAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
     {
         await gate.WaitAsync();
+        try { return await StopUnderGateAsync(profileId, remoteStillSafe); }
+        finally { gate.Release(); }
+    }
+
+    public async Task<IReadOnlyList<ActionResult>> MaintainIdleShutdownAsync()
+    {
+        await gate.WaitAsync();
         try
         {
-            var run = runs.SingleOrDefault(r => r.ProfileId == profileId);
-            if (run is null) return Result(false, "NotManaged", "This profile has no managed process.");
-            if (!games.TryGet(run.Kind, out var driver))
-                return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
-            if (Identity(run) != "Matched")
-                return Result(false, "IdentityUnknown", "Process identity is unverified. No stop signal was sent.");
-            try
+            if (!settings.AutoShutdownEnabled)
             {
-                using var process = Process.GetProcessById(run.ProcessId!.Value);
-                if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != run.StartTimeUtcTicks ||
-                    !Path.GetFullPath(process.MainModule!.FileName).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
-                    return Result(false, "IdentityUnknown", "Process identity changed. No stop signal was sent.");
-                if (remoteStillSafe is not null && !remoteStillSafe(run))
-                    return Result(false, "PlayersOnlineOrUnknown",
-                        "The server no longer reports zero online players. No stop signal was sent; the Host can still stop it locally.");
-                var stopped = await driver.StopAsync(process, run);
-                if (stopped.ExitCode != 0) return Result(false, stopped.Code, stopped.Message);
-                runs.Remove(run);
-                data.SaveRuns(runs);
-                return Result(true, stopped.Code, stopped.Message);
+                emptySince.Clear();
+                return [];
             }
-            catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+            var snapshot = Snapshot();
+            var now = clock.GetUtcNow();
+            var due = snapshot.Runs
+                .Where(run => run.AutoShutdownAtUtc is { } deadline && deadline <= now)
+                .Select(run => run.ProfileId).ToList();
+            var results = new List<ActionResult>(due.Count);
+            foreach (var profileId in due)
             {
-                return Result(false, "StopUnconfirmed", "The game driver could not confirm a graceful stop: " + ex.Message);
+                if (!emptySince.Remove(profileId, out var observedEmptySince)) continue;
+                var result = await StopUnderGateAsync(profileId,
+                    run => AutoShutdownStillSafe(run, observedEmptySince));
+                data.Audit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
+                results.Add(result);
             }
+            return results;
         }
         finally { gate.Release(); }
+    }
+
+    private async Task<ActionResult> StopUnderGateAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe)
+    {
+        var run = runs.SingleOrDefault(r => r.ProfileId == profileId);
+        if (run is null) return Result(false, "NotManaged", "This profile has no managed process.");
+        if (!games.TryGet(run.Kind, out var driver))
+            return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
+        if (Identity(run) != "Matched")
+            return Result(false, "IdentityUnknown", "Process identity is unverified. No stop signal was sent.");
+        try
+        {
+            using var process = Process.GetProcessById(run.ProcessId!.Value);
+            if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != run.StartTimeUtcTicks ||
+                !Path.GetFullPath(process.MainModule!.FileName).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+                return Result(false, "IdentityUnknown", "Process identity changed. No stop signal was sent.");
+            if (remoteStillSafe is not null && !remoteStillSafe(run))
+                return Result(false, "PlayersOnlineOrUnknown",
+                    "The server no longer reports zero online players. No stop signal was sent; the Host can still stop it locally.");
+            var stopped = await driver.StopAsync(process, run);
+            if (stopped.ExitCode != 0) return Result(false, stopped.Code, stopped.Message);
+            runs.Remove(run);
+            emptySince.Remove(profileId);
+            data.SaveRuns(runs);
+            return Result(true, stopped.Code, stopped.Message);
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+        {
+            return Result(false, "StopUnconfirmed", "The game driver could not confirm a graceful stop: " + ex.Message);
+        }
+    }
+
+    private bool AutoShutdownStillSafe(ManagedRun run, DateTimeOffset observedEmptySince)
+    {
+        if (!settings.AutoShutdownEnabled ||
+            clock.GetUtcNow() < observedEmptySince.AddMinutes(settings.IdleMinutes) ||
+            AutoShutdownBlocker(run.ProfileId) is not null ||
+            !games.TryGet(run.Kind, out var driver)) return false;
+        var health = driver.Health(run);
+        return health.Ok && health.State == "Ready" && health.OnlinePlayers == 0;
     }
 
     public async Task<ActionResult> HealthAsync(Guid profileId)
@@ -260,6 +314,7 @@ public sealed class HostManager
             if (Identity(run) == "Matched")
                 return Result(false, "StillRunning", "The recorded process is still running and cannot be forgotten.");
             runs.Remove(run);
+            emptySince.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, "RecordCleared", "The unresolved record was cleared by the local owner.");
         }
@@ -268,6 +323,7 @@ public sealed class HostManager
 
     private HostSnapshot Snapshot()
     {
+        var now = clock.GetUtcNow();
         var views = settings.Profiles.Select(profile =>
         {
             var run = runs.SingleOrDefault(r => r.ProfileId == profile.Id);
@@ -282,8 +338,33 @@ public sealed class HostManager
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId, run.DeclaredPorts)
             };
         }).ToList();
+        var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
+        foreach (var profileId in emptySince.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
+            emptySince.Remove(profileId);
+        for (var index = 0; index < views.Count; index++)
+        {
+            var view = views[index];
+            if (!settings.AutoShutdownEnabled || view.State != "Ready" || view.OnlinePlayers != 0)
+            {
+                emptySince.Remove(view.ProfileId);
+                continue;
+            }
+            var blocker = AutoShutdownBlocker(view.ProfileId);
+            if (blocker is not null)
+            {
+                emptySince.Remove(view.ProfileId);
+                views[index] = view with { AutoShutdownReason = blocker };
+                continue;
+            }
+            if (!emptySince.TryGetValue(view.ProfileId, out var observedEmptySince))
+            {
+                observedEmptySince = now;
+                emptySince[view.ProfileId] = observedEmptySince;
+            }
+            views[index] = view with { AutoShutdownAtUtc = observedEmptySince.AddMinutes(settings.IdleMinutes) };
+        }
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
-            ClientMonitor.IsRunning(settings.OwnerClientExecutablePath), DateTimeOffset.UtcNow,
+            ClientMonitor.IsRunning(settings.OwnerClientExecutablePath), now,
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
                 .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
             data.ManagedWorldsRoot);
@@ -293,13 +374,20 @@ public sealed class HostManager
         new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
             health.OnlinePlayers, health.MaxPlayers);
 
+    private string? AutoShutdownBlocker(Guid profileId)
+    {
+        var ownerGameRunning = ClientMonitor.IsRunning(settings.OwnerClientExecutablePath);
+        if (ownerGameRunning == true) return "The Host game is running.";
+        if (ownerGameRunning is null) return "The Host game activity check is not configured.";
+        return idleBlocker?.Invoke(profileId);
+    }
+
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
 
     private string? Validate(HostSettings next)
     {
         if (next.MaxConcurrentServers < 1 || next.MaxConcurrentServers > 16) return "Maximum servers must be between 1 and 16.";
         if (next.IdleMinutes < 1 || next.IdleMinutes > 1440) return "Idle minutes must be between 1 and 1440.";
-        if (next.AutoShutdownEnabled) return "Auto shutdown is unavailable until real player coverage is verified.";
         if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
         if (!string.IsNullOrWhiteSpace(next.PublicGameIp) && !GameConnection.IsPublicIpv4(next.PublicGameIp))
             return "The Valheim friend address must be public IPv4; 127.0.0.1, local, shared, and test addresses cannot be used.";

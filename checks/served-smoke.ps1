@@ -82,13 +82,14 @@ try {
         'Browse for a world folder', 'Use an existing server', 'TogetherServer installs the latest official server',
         'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
         'Start server', 'Invite friends',
-        'Paste your server code', 'Saved servers', 'Optional game activity', 'Browse for game',
+        'Paste your server code', 'Saved servers', 'Game activity check', 'Browse for game',
         'Friend access and settings', 'PC name', 'Server access', 'Choose servers', 'Search servers',
         'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop',
-        'Allow remote Start and Stop', 'Remote Stop',
+        'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Maximum servers running at once',
-        'Revoke all access and create a new code', 'Remote Stop safety', 'There are no player IDs to enter',
+        'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
+        'Wait after the server reaches 0 players', 'Stops in', 'Remote Stop safety', 'There are no player IDs to enter',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {
@@ -98,6 +99,9 @@ try {
     }
     if (!$css.Content.Contains('.server-picker-list{') -or !$css.Content.Contains('max-height:min(420px,45vh)')) {
         throw 'The bounded server assignment picker styles were not bundled.'
+    }
+    if (!$css.Content.Contains('.idle-countdown{') -or !$css.Content.Contains('font-variant-numeric:tabular-nums')) {
+        throw 'The shared empty-server countdown styles were not bundled.'
     }
     if ($js.Content.Contains('Servers this PC can control')) { throw 'The unbounded inline server checklist is still bundled.' }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -161,7 +165,7 @@ try {
     Write-Host 'PASS loopback cannot be saved as a public Friend game address'
 
     $profile = @{ id = $profileId; name = 'HTTP fixture'; worldId = 'http-smoke'; worldDirectory = $worldDirectory; gamePort = $gamePort; executablePath = $fixturePath }
-    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; publicGameIp = '1.2.3.4'; publicGameIpCheckedUtc = (Get-Date).ToUniversalTime().ToString('o'); profiles = @($profile) }
+    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; ownerClientExecutablePath = $fixturePath; publicGameIp = '1.2.3.4'; publicGameIpCheckedUtc = (Get-Date).ToUniversalTime().ToString('o'); profiles = @($profile) }
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw "Settings rejected: $($saved.message)" }
     if ((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings.publicGameIp -ne '1.2.3.4') { throw 'Friend game address was not saved.' }
@@ -238,6 +242,7 @@ try {
     $valheimProfile.worldId = 'fixture-world'
     $valheimProfile.serverName = 'Fixture "Valheim"'
     $valheimProfile.worldDirectory = $imported.worldDirectory
+    $settings.autoShutdownEnabled = $true
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw 'Imported synthetic Valheim profile was rejected.' }
     $valheimStart = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/start" -Method Post -Headers $headers
@@ -253,10 +258,10 @@ try {
     if (!$ready) { throw 'Published EXE did not see the synthetic server-connected log.' }
     $valheimSnapshot = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
     $valheimView = @($valheimSnapshot.runs) | Where-Object profileId -EQ $valheimId
-    if ($valheimView.onlinePlayers -ne 0 -or $valheimView.maxPlayers -ne 10) {
-        throw 'Published EXE did not expose the synthetic Valheim 0 of 10 player count.'
+    if ($valheimView.onlinePlayers -ne 0 -or $valheimView.maxPlayers -ne 10 -or $null -eq $valheimView.autoShutdownAtUtc) {
+        throw 'Published EXE did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
     }
-    Write-Host 'PASS published GUI snapshot exposes the synthetic Valheim player count'
+    Write-Host 'PASS published GUI snapshot exposes the synthetic Valheim player count and shutdown deadline'
     $ports = Invoke-RestMethod -Uri "$baseUrl/api/local/network/ports"
     $gameCheck = @($ports.games) | Where-Object profileId -EQ $valheimId
     if ($gameCheck.state -ne 'Open on PC' -or @($gameCheck.ports).Count -ne 2 -or $ports.control.state -ne 'Off' -or $ports.control.remoteState -ne 'Not verified') {

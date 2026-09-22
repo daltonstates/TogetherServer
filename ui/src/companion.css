@@ -745,5 +745,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 :where(.ui-input:not([type="checkbox"]), .ui-select) { min-height: 38px; padding: 9px 11px; }
 :where(.ui-textarea) { padding: 10px 11px; resize: vertical; }
 :where(.ui-input[type="checkbox"]) { accent-color: #acd889; }
-.player-count { display: inline-flex; margin-top: 7px; border: 1px solid #4d6b51; border-radius: 999px; padding: 4px 8px; background: #24372a; color: #cce9bd; font-size: 11px; font-weight: 750; }
+.server-activity-wrap { margin-top: 7px; }
+.server-activity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.player-count { display: inline-flex; border: 1px solid #4d6b51; border-radius: 999px; padding: 4px 8px; background: #24372a; color: #cce9bd; font-size: 11px; font-weight: 750; }
 .player-count.unknown { border-color: #73563f; background: #3a2c21; color: #f0c493; }
+.idle-countdown { display: inline-flex; border: 1px solid #53718a; border-radius: 999px; padding: 4px 8px; background: #1f3443; color: #c9e5f6; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.idle-reason { display: block; margin-top: 5px; max-width: 48ch; color: #dfbd8f; font-size: 11px; line-height: 1.35; }
+.idle-settings { display: grid; gap: 12px; margin: 14px 0 24px; padding: 14px; border: 1px solid #3c4c3f; border-radius: 10px; background: #121c15; }
+.idle-settings > label:not(.setting-toggle) { display: grid; gap: 6px; max-width: 320px; }

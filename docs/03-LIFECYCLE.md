@@ -19,7 +19,7 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 3. If the graceful stop times out, report Failed/Unknown and preserve the world. Do not automatically force-kill. Any owner-approved force action must warn that the save may be inconsistent.
 4. A restart is a verified stop followed by a new start against the same saved world. Test a recognizable in-world change surviving it before declaring real Valheim support.
 
-Minecraft Java and Bedrock use a fixed `stop` console command sent only after exact process and isolated-console checks. Their local status replies include player counts, so Friend Stop can use the same two-query zero-player gate. Disposable stop markers do not establish real save integrity, and auto shutdown remains unavailable.
+Minecraft Java and Bedrock use a fixed `stop` console command sent only after exact process and isolated-console checks. Their local status replies include player counts, so Friend and automatic Stop use the same two-query zero-player gate. Disposable stop markers do not establish real save integrity.
 
 ### Host app restart
 
@@ -27,7 +27,7 @@ Persist enough identity to check whether a previously managed server process sti
 
 ## Companion heartbeat
 
-- Friend mode sends an authenticated outbound heartbeat about every 15 seconds with device ID, version, and monotonic sequence. It may also include an optional local game-process indicator. The Host uses **its receipt time** for freshness, not the Friend PC's clock. This indicator is informational and does not authorize remote Stop.
+- Friend mode sends an authenticated outbound heartbeat about every 15 seconds with device ID, version, and monotonic sequence. It may also include a local game-process indicator. The Host uses **its receipt time** for freshness, not the Friend PC's clock. This indicator never authorizes remote Stop; for automatic shutdown it is a conservative blocker unless every assigned paired Friend has a fresh `gameRunning: false` report.
 - A heartbeat older than roughly 45 seconds is Stale/Unknown. Retries are bounded. Host reachability and game-running status are separate fields in the GUI.
 - Host mode may show the same optional local game-process indicator for the owner's PC. Minimizing the Host window must not stop Host supervision.
 - If a Friend app is revoked or missing, its connection status is Unknown. Server occupancy remains a separate driver-reported value; do not infer it from companion reachability.
@@ -35,6 +35,8 @@ Persist enough identity to check whether a previously managed server process sti
 
 ## Idle timer
 
-Auto shutdown is off by default. Before enabling it for a real game, verify repeated server player-count transitions, the idle window, a final zero-player recheck under the lifecycle gate, graceful exit, and a recognizable saved-world change after restart. Any positive or Unknown count cancels or pauses the countdown. Companion activity indicators may only add a blocker; they can never turn an unknown server count into zero.
+Auto shutdown is off by default. When the owner enables it, a Ready server's first exact zero-player observation starts its own idle window only while the Host game check is verified closed and every assigned paired Friend has a fresh closed-game heartbeat. Host publishes the resulting UTC deadline to its local snapshot and to assigned Friends; both UIs render the countdown from that same deadline. Any positive or Unknown count, running/unknown Host check, or running/missing/stale Friend check cancels the countdown, and later complete safe evidence starts a full new window. Restarting the Host app also starts a fresh window because time without observation cannot count as verified idle time. Companion activity indicators can never turn an unknown server count into zero.
 
-Process presence alone does not prove a player joined, and a fixture reply does not certify a real game's count. If the driver cannot obtain a fresh valid count, show Auto shutdown unavailable or leave it off. Do not turn a silent process or timed-out query into a zero-player pass.
+When the deadline expires, Host serializes the action with every other Start/Stop, rechecks exact process identity and companion coverage, and queries the same game driver again. It invokes only the existing graceful Stop when the fresh result is still Ready with exactly zero players and every activity check remains safe. A changed or Unknown result sends no signal. A failed or timed-out graceful Stop remains recorded for review and is not force-killed.
+
+Process presence alone does not prove a player joined, and a fixture reply does not certify a real game's count. Before relying on the feature for a valued world, verify real zero/one/disconnect transitions, the idle window, graceful exit, and a recognizable saved-world change after restart. Do not turn a silent process or timed-out query into a zero-player pass.

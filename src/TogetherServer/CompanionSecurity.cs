@@ -41,6 +41,23 @@ public sealed class ServerInviteState
 public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> AssignedProfileIds,
     string Name, bool CanStart, bool CanStop, bool Revoked,
     bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning);
+
+public static class AutoShutdownPresence
+{
+    public static string? FriendBlocker(Guid profileId, IEnumerable<DeviceView> devices)
+    {
+        var assigned = devices.Where(device => device.Paired && !device.Revoked &&
+            device.AssignedProfileIds.Contains(profileId)).ToList();
+        if (assigned.Any(device => device.LastHeartbeatUtc is null))
+            return "Waiting for a fresh report from every assigned Friend PC.";
+        if (assigned.Any(device => device.GameRunning == true))
+            return "An assigned Friend's game is running.";
+        if (assigned.Any(device => device.GameRunning is null))
+            return "Every assigned Friend PC needs a current game check.";
+        return null;
+    }
+}
+
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
     bool ServerScope = false);
 public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart);

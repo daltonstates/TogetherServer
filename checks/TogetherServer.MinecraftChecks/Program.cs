@@ -5,6 +5,8 @@ var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the Minecraft console fixture first.", fixture);
 var root = Path.GetFullPath("local-data/minecraft-checks/" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
+var idleClientPath = Path.Combine(root, "OwnerGameNotRunning.exe");
+File.WriteAllText(idleClientPath, "synthetic client marker; never executed");
 var passed = 0;
 var failed = 0;
 
@@ -116,7 +118,9 @@ await Check("two games can share a world name and numeric port on different prot
     var bedrock = Profile(GameKinds.MinecraftBedrock, "bedrock-concurrent", "shared", port);
     using var data = new LocalData(Path.Combine(root, "concurrent-data"));
     var manager = new HostManager(data);
-    Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2, Profiles = [java, bedrock] })).Ok,
+    Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2,
+        AutoShutdownEnabled = true, IdleMinutes = 15, OwnerClientExecutablePath = idleClientPath,
+        Profiles = [java, bedrock] })).Ok,
         "two game profiles were rejected");
     try
     {
@@ -128,8 +132,8 @@ await Check("two games can share a world name and numeric port on different prot
         await Ready(manager, bedrock.Id);
         var snapshot = await manager.SnapshotAsync();
         Require(snapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
-            .All(run => run.OnlinePlayers == 0 && run.MaxPlayers == 10),
-            "Minecraft player counts were not exposed in the Host snapshot");
+            .All(run => run.OnlinePlayers == 0 && run.MaxPlayers == 10 && run.AutoShutdownAtUtc is not null),
+            "Minecraft player counts and empty-server deadlines were not exposed in the Host snapshot");
         var games = new GameServerRegistry(data);
         var ports = PortDiagnostics.Read(snapshot, games, false, []);
         Require(ports.Games.Count == 2 && ports.Games.All(check => check.State is "Open on PC" or "Loopback only"),
@@ -139,7 +143,9 @@ await Check("two games can share a world name and numeric port on different prot
         File.WriteAllText(Path.Combine(extra.WorldDirectory, "server.properties"),
             $"level-name=other\nserver-port={extra.GamePort}\nserver-portv6={port + 1}\nenable-lan-visibility=false\n");
         Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 3,
-            Profiles = [java, bedrock, extra] })).Ok, "third Bedrock profile rejected");
+            AutoShutdownEnabled = true, IdleMinutes = 15, OwnerClientExecutablePath = idleClientPath,
+            Profiles = [java, bedrock, extra] })).Ok,
+            "third Bedrock profile rejected");
         Require((await manager.StartAsync(extra.Id)).Code == "PortConflict",
             "second Bedrock run could reuse the first run's IPv6 game port");
         using var javaPermit = RemoteStopSafety.TryAcquire(snapshot, java.Id, data, games);
@@ -150,8 +156,8 @@ await Check("two games can share a world name and numeric port on different prot
         File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "synthetic-online-players.txt"), "unknown");
         var unknownSnapshot = await manager.SnapshotAsync();
         Require(unknownSnapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
-            .All(run => run.State == "Ready" && run.OnlinePlayers is null),
-            "valid Minecraft status replies with invalid counts did not stay Ready with an Unknown count");
+            .All(run => run.State == "Ready" && run.OnlinePlayers is null && run.AutoShutdownAtUtc is null),
+            "valid Minecraft status replies with invalid counts did not stay Ready or cancel their countdowns");
         using var javaUnknown = RemoteStopSafety.TryAcquire(unknownSnapshot, java.Id, data, games);
         using var bedrockUnknown = RemoteStopSafety.TryAcquire(unknownSnapshot, bedrock.Id, data, games);
         Require(!javaUnknown.Allowed && javaUnknown.Code == "PlayerCountUnknown" &&
@@ -159,7 +165,11 @@ await Check("two games can share a world name and numeric port on different prot
             "Minecraft remote Stop did not fail closed for invalid player counts");
         File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "2");
         File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "synthetic-online-players.txt"), "0");
-        using var occupied = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), java.Id, data, games);
+        var mixedSnapshot = await manager.SnapshotAsync();
+        Require(mixedSnapshot.Runs.Single(run => run.ProfileId == java.Id).AutoShutdownAtUtc is null &&
+            mixedSnapshot.Runs.Single(run => run.ProfileId == bedrock.Id).AutoShutdownAtUtc is not null,
+            "positive and zero Minecraft counts did not produce separate per-server countdown states");
+        using var occupied = RemoteStopSafety.TryAcquire(mixedSnapshot, java.Id, data, games);
         Require(!occupied.Allowed && occupied.Code == "PlayersOnline",
             "Minecraft remote Stop accepted a server reporting online players");
         File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "0");

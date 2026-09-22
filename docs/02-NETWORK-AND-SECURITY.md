@@ -33,6 +33,8 @@ Per-Friend server assignments, permission changes, and revocation are checked by
 
 Remote Stop uses the selected built-in game driver's local status/query protocol instead of player IDs. The server must be Ready and report exactly zero online players. A positive, missing, malformed, timed-out, or unsupported reply denies the request. Host repeats the same query under the lifecycle gate immediately before signaling Stop; a changed or unknown result sends no signal. The local owner Stop path deliberately remains available as the owner's override. A local count reply does not prove public reachability, a particular Friend join, or saved-world integrity.
 
+Automatic shutdown uses the same Host-only authority and final driver query. Friend apps receive a display deadline but cannot create, extend, expire, or submit it. Any positive or Unknown server count cancels the deadline. A running or unknown Host client check and a running, missing, stale, or unconfigured game check from any assigned paired Friend also cancel it; these companion signals can block but never manufacture a zero-player result. A Host app restart begins a fresh observed idle window. The feature is off by default and never turns a count or heartbeat timeout into zero.
+
 ## Owner approval gates
 
 This repository setup does not publish a listener, request a certificate, install a binary, or modify a firewall/router/DNS setting. During real deployment, stop and ask for the owner's explicit approval before changing public firewall/router/DNS configuration or requesting credentials. The owner must accept game terms and install any terms-gated dedicated-server binary personally. Do not send invites to friends from a tool without the owner's explicit authorization.
