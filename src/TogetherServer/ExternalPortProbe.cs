@@ -3,7 +3,8 @@ using System.Text;
 
 namespace TogetherServer;
 
-public sealed record ExternalPortProbeResult(string State, string Detail, int Port, DateTimeOffset CheckedUtc);
+public sealed record ExternalPortProbeResult(string State, string Detail, int Port, DateTimeOffset CheckedUtc,
+    string? Endpoint = null);
 
 // An owner-requested, read-only TCP check from a service outside the home network.
 // The service checks the caller's public IPv4 address; it never receives an invite.
@@ -13,8 +14,8 @@ public sealed class ExternalPortProbe(HttpClient client, Uri? serviceRoot = null
 
     public async Task<ExternalPortProbeResult> CheckAsync(string advertisedEndpoint, int port)
     {
-        ExternalPortProbeResult Result(string state, string detail) =>
-            new(state, detail, port, DateTimeOffset.UtcNow);
+        ExternalPortProbeResult Result(string state, string detail, string? endpoint = null) =>
+            new(state, detail, port, DateTimeOffset.UtcNow, endpoint);
 
         if (port is < 1024 or > 65535 ||
             !HostIdentity.TryEndpoint(advertisedEndpoint, out var endpoint) ||
@@ -27,19 +28,19 @@ public sealed class ExternalPortProbe(HttpClient client, Uri? serviceRoot = null
             var seenAddress = await GetShortTextAsync(new Uri(serviceRoot, "api/me"), timeout.Token);
             if (!IPAddress.TryParse(seenAddress, out var observed) ||
                 !observed.Equals(IPAddress.Parse(endpoint.Host)))
-                return Result("Unavailable", "The outside checker sees a different public IPv4 address than the Friend invite. Refresh the public address and review the Host endpoint.");
+                return Result("Unavailable", "The outside checker sees a different public IPv4 address than the Friend invite. Refresh the public address and review the Host endpoint.", advertisedEndpoint);
 
             var status = await GetShortTextAsync(new Uri(serviceRoot, $"api/me/{port}"), timeout.Token);
             return status switch
             {
-                "True" => Result("Reachable", $"An outside TCP checker reached port {port}. A Friend still needs to verify pinned HTTPS pairing."),
-                "False" => Result("Not reachable", $"An outside TCP checker could not reach port {port}. Check router TCP forwarding to this PC and the inbound Windows Firewall rule, then retry."),
-                _ => Result("Inconclusive", "The outside checker returned an unexpected result. Retry with the Host app running.")
+                "True" => Result("Reachable", $"An outside TCP checker reached port {port}. A Friend still needs to verify pinned HTTPS pairing.", advertisedEndpoint),
+                "False" => Result("Not reachable", $"An outside TCP checker could not reach port {port}. The router forward, Windows Firewall, ISP filtering, or shared-address NAT may block it. Compare the router WAN address with the invite address, then retry.", advertisedEndpoint),
+                _ => Result("Inconclusive", "The outside checker returned an unexpected result. Retry with the Host app running.", advertisedEndpoint)
             };
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException)
         {
-            return Result("Inconclusive", "The outside TCP checker did not complete. Check the Internet connection and retry.");
+            return Result("Inconclusive", "The outside TCP checker did not complete. Check the Internet connection and retry.", advertisedEndpoint);
         }
     }
 

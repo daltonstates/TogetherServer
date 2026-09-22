@@ -50,6 +50,7 @@ try
         _ => ProbeResponse("unexpected", HttpStatusCode.BadRequest)
     });
     Require(reachable.State == "Reachable" && reachable.Port == probePort &&
+        reachable.Endpoint == publicEndpoint &&
         reachedPaths.SequenceEqual(["/api/me", "/api/me/5131"]),
         "the external TCP probe did not verify the advertised IP before checking the fixed port");
     var (blocked, blockedPaths) = await ProbeFake(publicEndpoint, probePort, path => path switch
@@ -58,16 +59,17 @@ try
         "/api/me/5131" => ProbeResponse("False"),
         _ => ProbeResponse("unexpected", HttpStatusCode.BadRequest)
     });
-    Require(blocked.State == "Not reachable" && blockedPaths.Count == 2,
+    Require(blocked.State == "Not reachable" && blocked.Endpoint == publicEndpoint && blockedPaths.Count == 2,
         "a closed outside TCP route was reported reachable");
     Console.WriteLine("PASS outside TCP probe distinguishes reachable and blocked fixed-port results"); passes++;
 
     var (wrongProbeAddress, wrongAddressPaths) = await ProbeFake(publicEndpoint, probePort, _ => ProbeResponse("5.6.7.8"));
-    Require(wrongProbeAddress.State == "Unavailable" && wrongAddressPaths.SequenceEqual(["/api/me"]),
+    Require(wrongProbeAddress.State == "Unavailable" && wrongProbeAddress.Endpoint == publicEndpoint &&
+        wrongAddressPaths.SequenceEqual(["/api/me"]),
         "the external TCP probe tested a route after the service saw a different public IP");
     var (invalidTarget, invalidTargetPaths) = await ProbeFake("https://127.0.0.1:5131", probePort,
         _ => ProbeResponse("1.2.3.4"));
-    Require(invalidTarget.State == "Unavailable" && invalidTargetPaths.Count == 0,
+    Require(invalidTarget.State == "Unavailable" && invalidTarget.Endpoint is null && invalidTargetPaths.Count == 0,
         "the external TCP probe sent a private endpoint to the outside service");
     var (serviceError, serviceErrorPaths) = await ProbeFake(publicEndpoint, probePort,
         _ => ProbeResponse("unavailable", HttpStatusCode.ServiceUnavailable));
@@ -143,6 +145,10 @@ try
     var wrongPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(tampered, webJson), fixturePath));
     Require(!wrongPin.Ok && wrongPin.Code == "HostIdentityMismatch", "wrong Host pin was accepted");
+    var rejectedCode = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
+        new(PairingPassword.Encode(inviteA with { Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }), fixturePath));
+    Require(!rejectedCode.Ok && rejectedCode.Code == "PairingRejected" && rejectedCode.Message.Contains("current server code"),
+        "a rejected server code was mistaken for a network or TLS failure");
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(passwordA, fixturePath));
     Require(pairedA.Ok, "a current invite did not pair without a separate Host IP");
@@ -436,6 +442,11 @@ try
         "disabled companion listener remained active");
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(bView.State == "Disconnected/Unknown", "a disabled listener was falsely reported as credential revocation");
+    var closedPortPair = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
+        new(PairingPassword.Encode(rotationInvite), fixturePath));
+    Require(!closedPortPair.Ok && closedPortPair.Code == "HostPortClosed" &&
+        !closedPortPair.Message.Contains("Test from internet", StringComparison.OrdinalIgnoreCase),
+        "a closed Host listener was not reported as a local TCP refusal");
     settings.CompanionListeningEnabled = true;
     settings.RemoteControlsEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,

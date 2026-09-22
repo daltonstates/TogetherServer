@@ -41,6 +41,12 @@ On your own PC, open the same EXE and choose **Join a friend**. Paste an invite 
 
 Current `TS3` server codes include the address. Older `TS1` and `TS2` per-device invites remain readable until their original expiry; `TS1` also needs the Host IP under **Using an older invite?**.
 
+### Who checks the router?
+
+The PC running **My server** is the Host. A Friend using **Join a friend** makes an outbound connection and does not forward a port for that connection. The Host enables Friend connections by creating an invite, then checks the HTTPS TCP port shown in **Settings and safety**. **Open on PC** checks only the local listener. The optional **Test from internet** checks whether that TCP port can be reached from outside; a failed result calls for checking the invite address, Windows Firewall, router forwarding to the Host PC's shown LAN address, and possible ISP/shared-address NAT. An inconclusive result does not establish whether the port is open. The final check is **Connect** on a Friend PC on another network. A certificate or pairing error after a TCP connection has a different cause; do not bypass the certificate check.
+
+Joining the game uses separate ports. For Valheim Crossplay, the game's relay means no game-port forwarding. For Valheim Steam, Minecraft Java, and Minecraft Bedrock, the game Host may need to forward the game ports shown on its server card. A local game-port check does not prove an outside player can join. The Friend does not forward game ports unless that Friend also hosts a different server. TogetherServer does not require a cloud relay and does not change router or firewall rules itself.
+
 ## Stop and player safety
 
 The owner can always request local Stop. It rechecks the recorded process ID, creation time, and executable path. Valheim receives Ctrl+C; Minecraft receives its fixed `stop` console command. The app waits for exit and never force-kills an unrelated process. A timeout leaves the run recorded for review.

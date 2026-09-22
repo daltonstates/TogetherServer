@@ -552,3 +552,21 @@ The Host now reports the configured bind scope, current local listener, fresh or
 | Browser visual inspection | Not run: the in-app Browser reported no available browser. Native desktop rendering and served asset/API checks passed, but the new connection screen was not visually inspected at multiple viewports. |
 
 No real world, game terms, router, firewall, or DNS setting was changed. The installed Host app was left running for the owner to use. A router TCP forwarding change and a real Friend retry still need owner approval and participation.
+
+## 2026-09-22 - Direct connection guidance and v0.1.4 local build
+
+The owner chose to keep direct public-IP connections without a required relay or cloud service. The Host card now separates the Friend HTTPS TCP listener, its invite address, the optional outside TCP result, and each game's route. It says that the Host may need manual inbound forwarding, while a Friend connecting outward does not. Valheim Crossplay reports its game relay; direct Valheim Steam and Minecraft ports are shown separately. A prior outside result is marked historical after the listener, endpoint, port, or time changes. A fresh checker result can still be useful when the separate public-IP lookup is old because the checker verifies the current observed public IP against the invite.
+
+Join a friend now separates Friend-PC checks from Host-PC checks. Pairing and later heartbeats distinguish refused TCP, timeout, network failure, invalid or revoked access, HTTPS identity failure, Host errors, and malformed responses. An uncertain Host response remains `Disconnected/Unknown`; a timed-out Start/Stop tells the Friend that the action result is unknown before retrying. The outside checker remains optional and outside the connection path. No router, firewall, DNS, or game settings were changed.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1 -ReleaseName release-candidate` | Pass on rerun. The first attempt was blocked by an orphaned disposable Fixture EXE from an earlier check; its recorded identity and stop pipe were verified, then it exited through its normal `stop` command. TypeScript/Vite, fixtures, and Windows x64 single-file publish then passed. The existing WebView2/WindowsBase `MSB3277` warning remains. |
+| `TogetherServer.CompanionChecks` | 17 groups passed, 0 failed. Includes outside-probe address binding, rejected current-code replacement, closed Host listener, pinning, heartbeat freshness, permissions, and synthetic remote Stop. Isolated data: `local-data/companion-checks/d10e814678e1481c9e688a99c71ae3fc`. |
+| `TogetherServer.Checks` | 11 groups passed, 0 failed, including direct/relay game-port diagnostics and local listener checks. Isolated data: `local-data/checks/13e2b654e3df4620b65f9366e648e97e`. |
+| Published candidate smokes | 19 served groups and 15 native desktop groups passed, 0 failed on the final build. The served check's UI marker was updated to the new outside-access wording. Isolated data: `local-data/served-smoke/7ba15c3e2b084e7b97ce53748c3c2f17` and `local-data/desktop-smoke/fe01a17d988542df8f76b299a2f7e40b`. |
+| Installed local EXE | `local-data/release/TogetherServer.exe` has file version `0.1.4.0`, SHA-256 `A165B9969C4A98ACCF08BFBF24C296F5338AAF6907B8C314884027B3DB82336C`, and matches the tested candidate byte for byte. The old EXE is backed up beside it as `TogetherServer.exe.pre-0.1.4`. The installed EXE was tested with isolated data and was not launched against the owner's saved Host settings during this check. |
+| Real outside-network acceptance | Not run. An actual Friend-PC Connect and game join are still needed after the Host reviews its router/WAN path. A previous outside TCP test of port 5131 was not reachable; no new claim is made about the current public route. |
+| Browser visual inspection | Not run: the in-app Browser listed no available browser. Native WebView rendering and served assets/API were checked; this does not replace a manual inspection of the new advice at phone widths. |
+
+The current Host identity pins the invite endpoint. If the public IP changes, diagnostics can detect an address mismatch, but changing an already pinned Host endpoint still requires a separate reviewed migration path. Do not treat a router forward as a fix for a stale invite address.

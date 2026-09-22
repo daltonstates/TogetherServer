@@ -7,6 +7,8 @@ export type GamePortCheck = {
   protocol: string
   state: string
   detail: string
+  routeKind?: 'Direct' | 'Relay' | 'Not applicable' | 'Unknown'
+  kind?: string
 }
 
 export type PortDiagnostics = {
@@ -33,6 +35,82 @@ export type InternetRouteCheck = {
   detail: string
   port: number
   checkedUtc: string
+  endpoint?: string | null
+}
+
+type ControlCheck = PortDiagnostics['control']
+
+export function currentOutsideResult(control: ControlCheck | undefined, result: InternetRouteCheck | null) {
+  if (!control || !result) return null
+  const age = Date.now() - Date.parse(result.checkedUtc)
+  return control.state === 'Open on PC' && control.bindScope !== 'Loopback only' &&
+    ['Address hint', 'Address stale'].includes(control.endpointState ?? '') && result.endpoint === control.endpoint &&
+    result.port === control.port && Number.isFinite(age) && age >= 0 && age < 5 * 60 * 1000
+    ? result : null
+}
+
+function friendGuidance(control: ControlCheck | undefined, result: InternetRouteCheck | null,
+  hadPreviousResult: boolean) {
+  if (!control) return {
+    summary: 'Checking this Host’s Friend app listener.',
+    next: 'Refresh connection checks on this Host.'
+  }
+  if (control.state === 'Off') return {
+    summary: 'Friend app connections are off on this Host.',
+    next: 'Choose Invite friends, or turn on Allow Friend app connections in Settings and safety.'
+  }
+  if (control.state !== 'Open on PC') return {
+    summary: 'This Host’s HTTPS listener is not confirmed on the configured address and port.',
+    next: 'Read the Friend app listener warning and get the HTTPS listener running before checking the router.'
+  }
+  if (control.bindScope === 'Loopback only') return {
+    summary: 'The Friend app listener only accepts connections from this PC.',
+    next: 'On this Host, set Bind IP in Settings and safety to its LAN address or 0.0.0.0, save, and refresh the check.'
+  }
+  if (!['Address hint', 'Address stale'].includes(control.endpointState ?? '')) return {
+    summary: 'The invite address needs review before the outside TCP result can apply.',
+    next: 'Refresh the public address on this Host and compare it with the saved Friend app invite address.'
+  }
+  if (result?.state === 'Reachable') return {
+    summary: `An outside checker reached HTTPS TCP ${result.port} at ${new Date(result.checkedUtc).toLocaleTimeString()}. Pinned HTTPS pairing is still untested.`,
+    next: 'Ask a Friend on another network to use Join a friend, then test the game join separately.'
+  }
+  if (result?.state === 'Not reachable') {
+    const target = control.lanAddresses?.length === 1
+      ? control.lanAddresses[0].address : 'the Host LAN address shown in Connection details'
+    return {
+      summary: `An outside checker could not reach HTTPS TCP ${result.port}. Router forwarding, Windows Firewall, ISP filtering, or shared-address NAT may be involved.`,
+      next: `On the Host router, compare its WAN IP with the invite IP. If they match, review a manual TCP ${result.port} forward to ${target} and Windows Firewall. If they differ or the WAN IP is private or shared, check upstream NAT or ask the ISP. Then retest.`
+    }
+  }
+  if (result?.state === 'Inconclusive' || result?.state === 'Unavailable') return {
+    summary: `The optional outside TCP check did not give a usable result. ${result.detail}`,
+    next: 'Ask a Friend on another network to try Join a friend. Check the Host invite address if Connect fails.'
+  }
+  if (control.endpointState === 'Address stale') return {
+    summary: 'The last public IP lookup is old, so the saved invite address needs a fresh check.',
+    next: 'Refresh the public address on this Host, then ask a Friend on another network to try Join a friend.'
+  }
+  return {
+    summary: hadPreviousResult
+      ? 'The earlier outside TCP result expired or no longer matches this Host’s listener and invite address.'
+      : control.remoteState === 'Friend connected'
+        ? 'A paired Friend sent a heartbeat, but that PC’s network location is unknown. Outside access still needs a Friend test.'
+        : 'Outside access has not been verified by a Friend on another network.',
+    next: 'Ask a Friend on another network to try Join a friend. If Connect fails, the optional TCP test in Settings and safety can help diagnose the Host port.'
+  }
+}
+
+function gameGuidance(game: GamePortCheck | undefined, controlPort: number | undefined) {
+  if (!game) return 'Waiting for game port details. The Friend app uses its own HTTPS TCP port.'
+  if (game.routeKind === 'Relay')
+    return `Valheim Crossplay uses a game relay, so game port forwarding is not required. The Friend app still uses separate HTTPS TCP ${controlPort ?? 'port'}.`
+  if (game.routeKind === 'Not applicable') return 'This fixture has no real game network route.'
+  if (game.routeKind === 'Unknown') return 'The saved game driver is unavailable, so its game route is unknown.'
+  const gameName = game.kind === 'Valheim' ? 'Valheim Steam' :
+    game.kind === 'MinecraftJava' ? 'Minecraft Java' :
+      game.kind === 'MinecraftBedrock' ? 'Minecraft Bedrock' : 'This game'
+  return `${gameName} uses direct ${game.protocol} ${game.ports.join(', ')}. These game ports are separate from Friend app HTTPS TCP ${controlPort ?? 'port'}. If an outside game join fails, the Host may need manual forwarding of the displayed game ports. Local sockets do not prove outside access.`
 }
 
 function tone(state: string) {
@@ -65,17 +143,9 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   const control = ports?.control
   const gamePortLabel = game?.ports.length ? `${game.protocol} ${game.ports.join(', ')}` : 'Game ports'
   const controlProblem = control && (control.state !== 'Open on PC' || control.bindScope === 'Loopback only')
-  const addressProblem = control && ['Invalid', 'Local only', 'Address stale', 'Address differs'].includes(control.endpointState ?? '')
-  const checkedRoute = routeCheck !== null && routeCheck.port === control?.port &&
-    Date.now() - Date.parse(routeCheck.checkedUtc) < 5 * 60 * 1000 &&
-    control?.endpointState !== 'Address differs' ? routeCheck : null
-  const routeSummary = checkedRoute?.state === 'Reachable'
-    ? `An internet TCP probe reached port ${checkedRoute.port} at ${new Date(checkedRoute.checkedUtc).toLocaleTimeString()}. Friend pairing and game join still need separate tests.`
-    : checkedRoute?.state === 'Not reachable'
-      ? `An internet TCP probe could not reach port ${checkedRoute.port}. Check the Host listener, router forwarding, and Windows Firewall.`
-      : control?.remoteState === 'Friend connected' || control?.remoteState === 'Friend reached'
-        ? 'A Friend app reached this Host. Confirm that PC was on another network; the game join is a separate test.'
-        : 'Not verified. Test the Friend app TCP port from Settings and ask a Friend on another network to connect.'
+  const addressProblem = control && control.endpointState !== 'Address hint' && control.endpointState !== 'Not configured'
+  const checkedRoute = currentOutsideResult(control, routeCheck)
+  const guidance = friendGuidance(control, checkedRoute, routeCheck !== null)
   return <div className="server-readiness" aria-label="Server connection checks">
     <div className="readiness-row">
       <Check icon="server" label="Server" state={status} detail="TogetherServer's managed process and game readiness state." />
@@ -88,7 +158,10 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
     {controlProblem && <p className="connection-warning"><strong>Friend app listener:</strong> {control.detail}</p>}
     {addressProblem && <p className="connection-warning"><strong>Invite address:</strong> {control.endpointDetail}</p>}
     {['Closed on PC', 'Loopback only'].includes(game?.state ?? '') && <p className="connection-warning"><strong>Game ports:</strong> {game?.detail}</p>}
-    <p className="readiness-route"><strong>Outside network:</strong> {routeSummary}</p>
+    <p className="readiness-route"><strong>Outside access:</strong> {guidance.summary}</p>
+    <p className="readiness-route"><strong>Next:</strong> {guidance.next}</p>
+    <p className="readiness-route">If forwarding is needed, the Host forwards the Friend app port. Friend PCs connect outbound.</p>
+    <p className="readiness-route"><strong>Game route:</strong> {gameGuidance(game, control?.port)}</p>
     <details className="readiness-details"><summary>Connection details</summary>
       <p><strong>Game {gamePortLabel}:</strong> {game?.detail ?? 'Waiting for a game port check.'}</p>
       <p><strong>HTTPS TCP {control?.port ?? '…'}:</strong> {control?.detail ?? 'Waiting for a listener check.'}{control?.bindAddress && ` Bound to ${control.bindAddress} (${control.bindScope ?? 'scope unknown'}).`}</p>

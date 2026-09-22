@@ -228,11 +228,18 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     var device = new DeviceView(Guid.NewGuid(), profile.Id, "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow, false, "");
     var diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
-    Require(diagnostics.Games.Single().State == "Open on PC", "open UDP game ports were not reported");
+    Require(diagnostics.Games.Single().State == "Open on PC" &&
+        diagnostics.Games.Single().RouteKind == "Direct" && diagnostics.Games.Single().Kind == GameKinds.Valheim,
+        "open Valheim Steam UDP ports or their direct route were not reported");
     Require(diagnostics.Control.State == "Open on PC" && diagnostics.Control.BindScope == "Loopback only" &&
         diagnostics.Control.EndpointState == "Address hint" && diagnostics.Control.RemoteState == "Friend connected" &&
         diagnostics.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
         "local TCP listener or authenticated Friend evidence overstated the outside-network route");
+    profile.Crossplay = true;
+    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
+    Require(diagnostics.Games.Single().RouteKind == "Relay" && diagnostics.Games.Single().State == "Relay ready",
+        "Valheim Crossplay relay was presented as direct game-port forwarding");
+    profile.Crossplay = false;
     settings.CompanionBindAddress = "0.0.0.0";
     diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
     Require(diagnostics.Control.State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
@@ -256,7 +263,8 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         [new RunView(javaProfile.Id, "Ready", "fixture", 1)],
         "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
     var javaPorts = PortDiagnostics.Read(javaSnapshot, new GameServerRegistry(data), false, []);
-    Require(javaPorts.Games.Single().State == "Loopback only",
+    Require(javaPorts.Games.Single().State == "Loopback only" &&
+        javaPorts.Games.Single().Kind == GameKinds.MinecraftJava,
         "a loopback-only game socket was reported as available to other PCs");
     await Task.CompletedTask;
 });

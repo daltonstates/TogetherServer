@@ -26,7 +26,8 @@ public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice,
     bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool? LocalGameRunning, bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
-    string ClientExecutablePath = "", Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null);
+    string ClientExecutablePath = "", Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
+    string? ConnectionCode = null);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status);
 
 internal sealed class FriendLink
@@ -102,7 +103,12 @@ internal sealed class FriendLink
                 using var client = MakeClient(invite.Endpoint, invite.Fingerprint);
                 var response = await client.PostAsync("api/companion/pair", new StringContent(
                     JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope), Json), Encoding.UTF8, "application/json"));
-                if (!response.IsSuccessStatusCode) return new(false, "PairingRejected", "Host did not accept this invite. Ask for the current server code.", null);
+                if (!response.IsSuccessStatusCode)
+                    return response.StatusCode == HttpStatusCode.TooManyRequests
+                        ? new(false, "HostBusy", "The Host is limiting connection attempts. Wait, then try the current invite again.", null)
+                        : response.StatusCode == HttpStatusCode.Unauthorized
+                            ? new(false, "PairingRejected", "The Host rejected this code. It may have been refreshed or revoked; ask for the current server code.", null)
+                            : new(false, "HostUnavailable", $"The Host app returned {(int)response.StatusCode} during pairing. Ask the Host to check its app.", null);
                 var credential = await response.Content.ReadFromJsonAsync<PairingCredential>(Json);
                 if (credential is null || credential.DeviceId == Guid.Empty ||
                     (!invite.ServerScope && credential.DeviceId != invite.DeviceId) || credential.Credential.Length < 32)
@@ -121,7 +127,7 @@ internal sealed class FriendLink
                     config.ClientExecutablePath);
                 return new(true, "Paired", "Device paired and credential saved in Windows protected storage.", null);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 return PairConnectionFailure(ex);
             }
@@ -138,7 +144,7 @@ internal sealed class FriendLink
             var localRunning = ClientMonitor.IsRunning(config.ClientExecutablePath);
             if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
             {
-                view = view with { State = "Disconnected/Unknown", Detail = "Device credential expired; ask the Host for the current server code.",
+                view = view with { State = "Disconnected/Unknown", Detail = "Device credential expired; ask the Host for the current server code.", ConnectionCode = "CredentialExpired",
                     LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return view;
             }
@@ -160,13 +166,20 @@ internal sealed class FriendLink
                     catch (JsonException) { /* A generic 403 is not evidence of revocation. */ }
                     var revoked = denial?.Code == "Revoked";
                     view = view with { State = revoked ? "Revoked" : "Disconnected/Unknown",
-                        Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code." : "Host access is unavailable or denied.", LocalGameRunning = localRunning,
+                        Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code." : "Host access is unavailable or denied.",
+                        ConnectionCode = revoked ? "Revoked" : "HostAccessDenied", LocalGameRunning = localRunning,
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return view;
                 }
                 if (!response.IsSuccessStatusCode)
                 {
-                    view = view with { State = "Disconnected/Unknown", Detail = $"Host returned {(int)response.StatusCode}.",
+                    var issue = response.StatusCode switch
+                    {
+                        HttpStatusCode.Unauthorized => new ConnectionIssue("CredentialRejected", "The Host rejected this PC's credential. Ask for the current server code."),
+                        HttpStatusCode.TooManyRequests => new ConnectionIssue("HostBusy", "The Host is limiting requests. Wait a moment and check again."),
+                        _ => new ConnectionIssue("HostUnavailable", $"The Host app returned {(int)response.StatusCode}. Ask the Host to check its app.")
+                    };
+                    view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
                         LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return view;
                 }
@@ -178,9 +191,10 @@ internal sealed class FriendLink
                     status.CanStart, status.CanStop, status.Profiles, config.ClientExecutablePath);
                 return view;
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
-                view = view with { State = "Disconnected/Unknown", Detail = "Host could not be verified: " + ex.Message,
+                var issue = ConnectionFailure(ex);
+                view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
                     LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return view;
             }
@@ -212,26 +226,27 @@ internal sealed class FriendLink
                     FriendActionResult? denied = null;
                     try { denied = JsonSerializer.Deserialize<FriendActionResult>(await response.Content.ReadAsStringAsync(), Json); }
                     catch (JsonException) { /* A generic 403 has no action result. */ }
-                    if (denied?.Code == "Revoked") view = view with { State = "Revoked", Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.",
+                    if (denied?.Code == "Revoked") view = view with { State = "Revoked", Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.", ConnectionCode = "Revoked",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                    else if (denied is null) view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.",
+                    else if (denied is null) view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.", ConnectionCode = "HostAccessDenied",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return denied ?? new(false, "Disconnected", "Host access is unavailable or denied.", null);
                 }
                 if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                    view = view with { State = "Disconnected/Unknown", Detail = "Host companion access is paused.",
+                    view = view with { State = "Disconnected/Unknown", Detail = "Host companion access is paused.", ConnectionCode = "HostUnavailable",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
-                    view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.",
+                    view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.", ConnectionCode = "CredentialRejected",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return await response.Content.ReadFromJsonAsync<FriendActionResult>(Json)
                     ?? new(false, "InvalidResponse", "Host returned an empty action result.", null);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
-                view = view with { State = "Disconnected/Unknown", Detail = "Host could not be verified: " + ex.Message,
+                var issue = ConnectionFailure(ex);
+                view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
                     RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                return new(false, "Disconnected", view.Detail, null);
+                return new(false, issue.Code, issue.Message + " The action result is unknown; check Host status before retrying.", null);
             }
         }
         finally { gate.Release(); }
@@ -250,26 +265,37 @@ internal sealed class FriendLink
         catch (FormatException) { return false; }
     }
 
+    private sealed record ConnectionIssue(string Code, string Message);
+
     private static FriendActionResult PairConnectionFailure(Exception failure)
     {
-        if (failure is TaskCanceledException)
-            return new(false, "PairingTimedOut",
-                "The Host did not answer. Keep TogetherServer open on the Host, then run its Test from internet check for the Friend TCP port.", null);
+        var issue = ConnectionFailure(failure);
+        return new(false, issue.Code, issue.Message, null);
+    }
+
+    private static ConnectionIssue ConnectionFailure(Exception failure)
+    {
         for (var error = failure; error is not null; error = error.InnerException)
         {
             if (error is AuthenticationException)
-                return new(false, "HostIdentityMismatch",
-                    "The HTTPS Host identity did not match this invite. Ask the Host to copy the current server code again.", null);
+                return new("HostIdentityMismatch",
+                    "The Host's HTTPS identity did not match this invite. Do not continue with this code; ask the Host for a new copy.");
             if (error is SocketException socket && socket.SocketErrorCode == SocketError.ConnectionRefused)
-                return new(false, "HostPortClosed",
-                    "The Host refused the Friend connection. Keep TogetherServer open and check its HTTPS listener and router TCP forwarding.", null);
-            if (error is SocketException socketFailure && socketFailure.SocketErrorCode is
-                SocketError.TimedOut or SocketError.HostUnreachable or SocketError.NetworkUnreachable)
-                return new(false, "HostUnreachable",
-                    "The Host's Friend TCP port could not be reached. Run Test from internet on the Host and check router TCP forwarding to that PC.", null);
+                return new("HostPortClosed", "The connection was refused at the invite address. The Host HTTPS listener may be off.");
+            if (error is SocketException timedOut && timedOut.SocketErrorCode == SocketError.TimedOut)
+                return new("HostPortTimedOut", "The invite address and Friend TCP port did not answer before the connection timed out.");
+            if (error is SocketException network && network.SocketErrorCode == SocketError.NetworkUnreachable)
+                return new("FriendNetworkUnavailable", "This PC could not route to the invite address. Check this PC's internet connection.");
+            if (error is SocketException unreachable && unreachable.SocketErrorCode == SocketError.HostUnreachable)
+                return new("HostUnreachable", "The invite address could not be reached from this network.");
+            if (error is SocketException missingAddress && missingAddress.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData)
+                return new("InviteAddressInvalid", "The invite address could not be resolved. Ask the Host for a fresh code.");
         }
-        return new(false, "Disconnected",
-            "Could not pair over HTTPS. Keep TogetherServer open on the Host and run its Test from internet check.", null);
+        if (failure is TaskCanceledException)
+            return new("HostTimedOut", "The Host did not respond before the request timed out. Its connection state is unknown.");
+        if (failure is JsonException)
+            return new("HostInvalidResponse", "The Host returned a response this app could not read. Ask the Host to check its app version and status.");
+        return new("Disconnected", "Could not verify the Host over HTTPS. Check this PC's internet connection and the invite address.");
     }
 
     private static HttpClient MakeClient(string endpoint, string fingerprint)

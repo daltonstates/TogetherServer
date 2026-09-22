@@ -214,6 +214,12 @@ main { padding-top: 24px; }
 .readiness-details p { margin: 7px 0 0; }
 .connection-warning { margin: 8px 0 0; padding: 9px 11px; border: 1px solid #83584d; border-radius: 7px; background: #30221e; color: #f1c2b5; }
 .connection-warning strong { color: #ffddd2; }
+.friend-connection-help { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 13px; margin: 12px 0; padding: 11px 13px; border: 1px solid #5f5945; border-radius: 8px; background: #28271f; font-size: 12px; line-height: 1.5; }
+.friend-connection-help strong { color: #efe4ba; }
+.friend-connection-help p { margin: 3px 0 0; color: #c8c8b7; }
+.friend-connection-help small { grid-column: 1 / -1; color: #aebba9; }
+.connection-warning .friend-connection-help { margin-bottom: 0; padding: 9px 0 0; border: 0; border-top: 1px solid #725449; border-radius: 0; background: transparent; }
+@media (max-width: 700px) { .friend-connection-help { grid-template-columns: 1fr; } }
 .internet-route-test { margin-top: 13px; }
 .internet-route-test > button { border: 1px solid #627760; border-radius: 8px; padding: 9px 12px; background: transparent; color: #d3e4cd; font-size: 12px; font-weight: 700; }
 .internet-route-test > small { display: block; margin-top: 7px; color: #9baa9c; line-height: 1.5; }

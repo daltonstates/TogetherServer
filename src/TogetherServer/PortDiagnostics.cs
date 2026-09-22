@@ -5,7 +5,7 @@ using System.Net.NetworkInformation;
 namespace TogetherServer;
 
 public sealed record GamePortCheck(Guid ProfileId, string Label, IReadOnlyList<int> Ports,
-    string Protocol, string State, string Detail);
+    string Protocol, string State, string Detail, string RouteKind = "Direct", string Kind = "");
 public sealed record LanAddressHint(string Address, string InterfaceName, string Gateway);
 public sealed record ControlPortCheck(int Port, string State, string Detail,
     string RemoteState, string RemoteDetail, string BindAddress, string BindScope,
@@ -35,24 +35,25 @@ public static class PortDiagnostics
         {
             if (!games.TryGet(profile.Kind, out var driver))
                 return new GamePortCheck(profile.Id, profile.Name, [], "Unknown", "Unknown",
-                    "The saved game driver is unavailable.");
+                    "The saved game driver is unavailable.", "Unknown", profile.Kind);
             var run = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
             var definitions = run.DeclaredPorts is { Count: > 0 } ? run.DeclaredPorts : driver.Ports(profile);
             var ports = definitions.Select(port => port.Port).ToList();
             var protocol = string.Join(" + ", definitions.Select(port => port.Protocol).Distinct(StringComparer.OrdinalIgnoreCase));
             if (!driver.ShowPortDiagnostics)
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Not checked",
-                    "The synthetic fixture has no real game network listener.");
+                    "The synthetic fixture has no real game network listener.", "Not applicable", profile.Kind);
             if (profile.Kind == GameKinds.Valheim && profile.Crossplay)
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol,
                     run.State == "Ready" ? "Relay ready" : run.State == "Offline" ? "Waiting" : run.State,
-                    "Valheim Crossplay uses its relay, so router game-port forwarding is not required.");
+                    "Valheim Crossplay uses its relay, so router game-port forwarding is not required.", "Relay", profile.Kind);
             if (run.State == "Offline")
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Waiting",
-                    "Start the server to check whether its game sockets open on this PC.");
+                    "Start the server to check whether its game sockets open on this PC.", "Direct", profile.Kind);
             if (inspectionError is not null || udp is null || tcp is null)
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Unknown",
-                    "Windows could not read its active port table" + (inspectionError is null ? "." : ": " + inspectionError));
+                    "Windows could not read its active port table" + (inspectionError is null ? "." : ": " + inspectionError),
+                    "Direct", profile.Kind);
             var missing = definitions.Where(port => !IsOpen(port,
                 port.Protocol.Equals("TCP", StringComparison.OrdinalIgnoreCase) ? tcp : udp)).ToList();
             if (missing.Count == 0)
@@ -62,16 +63,19 @@ public static class PortDiagnostics
                     .All(endpoint => IPAddress.IsLoopback(endpoint.Address))).ToList();
                 if (localOnly.Count > 0)
                     return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Loopback only",
-                        $"Windows sees {string.Join(", ", localOnly.Select(PortName))} listening only on this PC. Check the game's bind settings before trying a Friend join.");
+                        $"Windows sees {string.Join(", ", localOnly.Select(PortName))} listening only on this PC. Check the game's bind settings before trying a Friend join.",
+                        "Direct", profile.Kind);
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Open on PC",
-                    $"Windows sees {string.Join(", ", definitions.Select(PortName))} listening locally. Public forwarding still needs a Friend join test.");
+                    $"Windows sees {string.Join(", ", definitions.Select(PortName))} listening locally. Public forwarding still needs a Friend join test.",
+                    "Direct", profile.Kind);
             }
             if (run.State is "Starting" or "Process running")
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Opening",
-                    "The process is starting; waiting for " + string.Join(", ", missing.Select(PortName)) + ".");
+                    "The process is starting; waiting for " + string.Join(", ", missing.Select(PortName)) + ".",
+                    "Direct", profile.Kind);
             return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Closed on PC",
                 "The server reports ready, but Windows does not see " +
-                string.Join(", ", missing.Select(PortName)) + " listening.");
+                string.Join(", ", missing.Select(PortName)) + " listening.", "Direct", profile.Kind);
         }).ToList();
 
         var settings = snapshot.Settings;
