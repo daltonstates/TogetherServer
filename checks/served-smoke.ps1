@@ -83,7 +83,8 @@ try {
         'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
         'Start server', 'Invite friends',
         'Paste your server code', 'Saved servers', 'Optional game activity', 'Browse for game',
-        'Friend access and settings', 'PC name', 'Servers this PC can control', 'Can start assigned servers',
+        'Friend access and settings', 'PC name', 'Server access', 'Choose servers', 'Search servers',
+        'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop',
         'Allow remote Start and Stop', 'Remote Stop',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Maximum servers running at once',
@@ -95,6 +96,10 @@ try {
             throw "The published GUI is missing expected guided-flow text: $expectedText"
         }
     }
+    if (!$css.Content.Contains('.server-picker-list{') -or !$css.Content.Contains('max-height:min(420px,45vh)')) {
+        throw 'The bounded server assignment picker styles were not bundled.'
+    }
+    if ($js.Content.Contains('Servers this PC can control')) { throw 'The unbounded inline server checklist is still bundled.' }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
 

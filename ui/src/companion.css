@@ -600,16 +600,46 @@ main { padding-top: 22px; }
 .setting-toggle strong { font-size: 13px; }
 .setting-toggle small { margin-top: 3px; color: #91a092; font-size: 11px; line-height: 1.4; }
 .setting-toggle > input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: #acd889; }
-.access-device { align-items: stretch; margin-top: 8px; }
-.device-main { flex: 1; min-width: 210px; }
+.access-device { display: block; margin-top: 8px; padding: 16px; }
+.device-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.device-main { flex: 1; min-width: 0; max-width: 470px; }
 .device-main label { margin-top: 0 !important; }
-.device-server-access { display: grid; gap: 7px; margin: 13px 0 0; padding: 11px 12px; border: 1px solid #3f5142; border-radius: 8px; }
-.device-server-access legend { padding: 0 5px; color: #d6dfd4; font-size: 12px; font-weight: 700; }
-.device-server-access .check-row { margin: 0; }
-.device-server-access small { margin-top: 2px; color: #efc097; }
-.device-controls { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
-.device-controls .check-row { margin: 0; white-space: nowrap; }
-.device-controls .actions { flex-wrap: nowrap; }
+.device-main small { overflow-wrap: anywhere; }
+.device-card-actions { flex: 0 0 auto; padding-top: 19px; flex-wrap: nowrap; }
+.device-access-grid { display: grid; grid-template-columns: minmax(270px, 1.5fr) repeat(2, minmax(150px, 1fr)); gap: 10px; margin-top: 15px; }
+.device-server-summary, .device-permission-toggle { min-width: 0; min-height: 74px; border: 1px solid #3f5142; border-radius: 9px; background: #172119; }
+.device-server-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 12px; }
+.device-summary-copy { min-width: 0; }
+.device-summary-copy > span { display: block; color: #92a093; font-size: 10px; font-weight: 750; letter-spacing: .7px; text-transform: uppercase; }
+.device-summary-copy strong { display: block; margin-top: 4px; color: #e5eee2; font-size: 13px; }
+.device-summary-copy small { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-server-summary button { flex: 0 0 auto; white-space: nowrap; }
+.settings-content .device .device-permission-toggle { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 13px; cursor: pointer; }
+.device-permission-toggle > .ui-input { flex: 0 0 auto; width: 16px; height: 16px; margin: 1px 0 0; padding: 0; }
+.device-permission-toggle span { min-width: 0; }
+.device-permission-toggle strong { display: block; color: #e2ebe0; font-size: 12px; }
+.device-permission-toggle small { margin-top: 4px; }
+.server-access-dialog { width: min(620px, calc(100vw - 32px)); overflow: auto; }
+.server-access-dialog .modal-heading + .notice { margin-top: 16px; }
+.server-picker-search { display: block; margin-top: 18px; color: #d6dfd4; font-size: 12px; font-weight: 700; }
+.server-picker-search input { display: block; width: 100%; margin-top: 7px; }
+.server-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; }
+.server-picker-toolbar > strong { color: #b7c5b6; font-size: 12px; }
+.server-picker-toolbar .actions { flex-wrap: nowrap; }
+.server-picker-list { max-height: min(420px, 45vh); overflow-y: auto; border: 1px solid #3f5142; border-radius: 9px; background: #141d17; }
+.server-picker-option { display: flex; align-items: center; gap: 12px; min-height: 54px; margin: 0; padding: 10px 13px; cursor: pointer; }
+.server-picker-option + .server-picker-option { border-top: 1px solid #303f33; }
+.server-picker-option:hover { background: #1d2b21; }
+.server-picker-option > .ui-input { flex: 0 0 auto; width: 17px; height: 17px; margin: 0; }
+.server-picker-option span { min-width: 0; }
+.server-picker-option strong, .server-picker-option small { display: block; }
+.server-picker-option strong { overflow: hidden; color: #e3ece1; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.server-picker-option small { margin-top: 3px; color: #8f9e90; font-size: 11px; }
+.server-picker-option input:checked + span strong { color: #cfeebe; }
+.server-picker-empty { padding: 28px 16px; color: #9ba99c; font-size: 12px; text-align: center; }
+.server-picker-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 16px; }
+.server-picker-footer > span { color: #8f9e90; font-size: 11px; }
+.server-picker-footer .actions { flex-wrap: nowrap; }
 .compact-empty { padding: 15px 17px; }
 .compact-empty p { margin: 0; }
 .stop-checklist { margin: 13px 0; padding: 12px 14px; border: 1px solid #3b493d; border-radius: 9px; background: #1b261e; font-size: 12px; }
@@ -649,8 +679,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 @media (max-width: 820px) {
   .game-choice-grid { grid-template-columns: 1fr; }
-  .access-device { flex-direction: column; }
-  .device-controls { justify-content: flex-start; }
+  .device-access-grid { grid-template-columns: minmax(250px, 1.35fr) repeat(2, minmax(130px, 1fr)); }
 }
 @media (max-width: 700px) {
   .topbar { height: auto; min-height: 58px; }
@@ -662,6 +691,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .review-summary { grid-template-columns: 1fr; }
   .wizard-footer, .sticky-save { bottom: -18px; margin-inline: -18px; padding-inline: 18px; }
   .setting-toggle, .next-action, .access-strip { align-items: flex-start; }
+  .device-header { align-items: stretch; flex-direction: column; }
+  .device-main { max-width: none; }
+  .device-card-actions { padding-top: 0; }
+  .device-access-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .device-server-summary { grid-column: 1 / -1; }
 }
 @media (max-width: 480px) {
   .page-heading h1 { font-size: 22px; }
@@ -670,8 +704,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .wizard-footer { align-items: stretch; flex-direction: column-reverse; }
   .wizard-footer .actions { display: grid; grid-template-columns: 1fr 1fr; }
   .wizard-footer .actions button:last-child:nth-child(odd) { grid-column: 1 / -1; }
-  .device-controls, .device-controls .actions { align-items: stretch; flex-direction: column; width: 100%; }
-  .device-controls .actions button { width: 100%; }
+  .device-access-grid { grid-template-columns: 1fr; }
+  .device-server-summary { grid-column: auto; align-items: stretch; flex-direction: column; }
+  .device-server-summary button { width: 100%; }
+  .server-picker-toolbar, .server-picker-footer { align-items: stretch; flex-direction: column; }
+  .server-picker-toolbar .actions, .server-picker-footer .actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .server-picker-toolbar .actions button, .server-picker-footer .actions button { width: 100%; }
   .next-action, .access-strip, .sticky-save { align-items: stretch; flex-direction: column; }
 }
 :where(.ui-button) {

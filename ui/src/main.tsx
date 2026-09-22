@@ -113,6 +113,13 @@ function playerCount(online: number | null, capacity: number | null) {
   return capacity === null ? `${online} online` : `${online} / ${capacity} online`
 }
 
+function serverAssignmentPreview(device: Device, profiles: Profile[]) {
+  const names = profiles.filter(profile => device.assignedProfileIds.includes(profile.id)).map(profile => profile.name)
+  if (names.length === 0) return 'No servers assigned'
+  if (names.length <= 2) return names.join(', ')
+  return `${names.slice(0, 2).join(', ')} + ${names.length - 2} more`
+}
+
 function hostAddress(endpoint: string): string {
   try {
     const url = new URL(endpoint)
@@ -234,6 +241,9 @@ function App() {
   const [sourceRoots, setSourceRoots] = useState<Record<string, string>>({})
   const [showSetup, setShowSetup] = useState(false)
   const [showHostSettings, setShowHostSettings] = useState(false)
+  const [serverAccessDeviceId, setServerAccessDeviceId] = useState('')
+  const [serverAccessDraft, setServerAccessDraft] = useState<string[]>([])
+  const [serverAccessSearch, setServerAccessSearch] = useState('')
   const [setupStep, setSetupStep] = useState<SetupStep>('game')
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('access')
   const [minecraftSetupMode, setMinecraftSetupMode] = useState<Record<string, 'existing' | 'install'>>({})
@@ -244,6 +254,7 @@ function App() {
   const dirtyRef = useRef(false)
   const setupRef = useModalDialog(showSetup)
   const hostSettingsRef = useModalDialog(showHostSettings)
+  const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
   const friendClientEdited = useRef(false)
 
   useEffect(() => {
@@ -746,16 +757,34 @@ function App() {
       setNotice({ good: false, text: String(error) })
     } finally { setPending('') }
   }
-  const setDeviceServerAccess = async (device: Device, profileId: string, assigned: boolean) => {
-    setPending(device.id)
+  const openDeviceServerAccess = (device: Device) => {
+    const savedIds = new Set(snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : [])
+    setNotice(null)
+    setServerAccessSearch('')
+    setServerAccessDraft(device.assignedProfileIds.filter(id => savedIds.has(id)))
+    setServerAccessDeviceId(device.id)
+  }
+  const closeDeviceServerAccess = () => {
+    if (pending) return
+    setServerAccessDeviceId('')
+    setServerAccessDraft([])
+    setServerAccessSearch('')
+    setNotice(null)
+  }
+  const saveDeviceServerAccess = async () => {
+    if (!serverAccessDeviceId) return
+    setPending(serverAccessDeviceId)
     try {
-      const profileIds = assigned
-        ? [...new Set([...device.assignedProfileIds, profileId])]
-        : device.assignedProfileIds.filter(id => id !== profileId)
-      const result = await change<BasicResult>(`/api/local/devices/${device.id}/servers`, 'PUT', { profileIds })
+      const result = await change<BasicResult>(`/api/local/devices/${serverAccessDeviceId}/servers`, 'PUT',
+        { profileIds: serverAccessDraft })
       setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
       if (latest.ok) setCompanion(await latest.json())
+      if (result.ok) {
+        setServerAccessDeviceId('')
+        setServerAccessDraft([])
+        setServerAccessSearch('')
+      }
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
@@ -991,6 +1020,10 @@ function App() {
   const setupSteps: SetupStep[] = ['game', 'world', 'server', 'review']
   const setupStepIndex = setupSteps.indexOf(setupStep)
   const savedProfiles = snapshot?.mode === 'Host' ? snapshot.settings.profiles : []
+  const serverAccessDevice = companion?.devices.find(device => device.id === serverAccessDeviceId && !device.revoked)
+  const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
+  const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
+    `${profile.name} ${gameLabel(profile.kind)}`.toLocaleLowerCase().includes(normalizedServerSearch))
   const activeRuns = snapshot?.mode === 'Host'
     ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Ready'].includes(run.state)).length : 0
   const friendGame = snapshot?.mode === 'Friend' ? snapshot.profiles[0]?.kind : undefined
@@ -1224,9 +1257,11 @@ function App() {
                 <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /></label>
                   <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
                 {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
-                  <div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small>
-                    <fieldset className="device-server-access"><legend>Servers this PC can control</legend>{savedProfiles.map(profile => <label className="check-row" key={profile.id}><Input type="checkbox" checked={device.assignedProfileIds.includes(profile.id)} disabled={!!pending || !device.paired} onChange={event => void setDeviceServerAccess(device, profile.id, event.target.checked)} />{profile.name}</label>)}{device.assignedProfileIds.length === 0 && <small>No servers assigned. This PC can connect for status, but it cannot see or control a server.</small>}</fieldset></div>
-                  <div className="device-controls"><label className="check-row"><Input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} />Can start assigned servers</label><label className="check-row"><Input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} />Can request Stop on assigned servers</label><div className="actions"><Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
+                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
+                    <div className="actions device-card-actions"><Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
+                  <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
+                    <label className="device-permission-toggle"><Input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} /><span><strong>Start servers</strong><small>Allow on assigned servers</small></span></label>
+                    <label className="device-permission-toggle"><Input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} /><span><strong>Request Stop</strong><small>Allow on assigned servers</small></span></label></div>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
@@ -1290,6 +1325,15 @@ function App() {
               </div>)}</div></details> : null}
               </section>}
             </div>
+        </dialog>}
+        {savedProfiles.length > 0 && serverAccessDevice && <dialog ref={serverAccessRef} className="panel modal-dialog server-access-dialog" aria-labelledby="server-access-title" onCancel={event => { event.preventDefault(); closeDeviceServerAccess() }}>
+          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>This PC will see and control only the servers selected here.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
+          {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
+          <label className="server-picker-search">Search servers<Input value={serverAccessSearch} autoFocus placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
+          <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!!pending || visibleServerAccessProfiles.length === 0} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!!pending || serverAccessDraft.length === 0} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
+          <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => <label className="server-picker-option" key={profile.id}><Input type="checkbox" checked={serverAccessDraft.includes(profile.id)} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{gameLabel(profile.kind)}</small></span></label>)}
+            {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>
+          <div className="server-picker-footer"><span>Changes apply when you save.</span><div className="actions"><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button><Button disabled={!!pending} onClick={() => void saveDeviceServerAccess()}>{pending === serverAccessDevice.id ? 'Saving…' : 'Save access'}</Button></div></div>
         </dialog>}
       </>}
     </main>
