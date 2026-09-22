@@ -218,18 +218,46 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         WorldDirectory = root, ExecutablePath = fixture, GamePort = gamePort };
     var settings = Settings(profile);
     settings.CompanionPort = controlPort;
+    settings.CompanionBindAddress = "127.0.0.1";
+    settings.CompanionListeningEnabled = true;
+    settings.CompanionEndpoint = $"https://1.2.3.4:{controlPort}";
+    settings.PublicGameIp = "1.2.3.4";
+    settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     var snapshot = new HostSnapshot(settings, [new RunView(profile.Id, "Ready", "fixture", 1)],
         "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
     var device = new DeviceView(Guid.NewGuid(), profile.Id, "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow, false, "");
     var diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
     Require(diagnostics.Games.Single().State == "Open on PC", "open UDP game ports were not reported");
-    Require(diagnostics.Control.State == "Open on PC" && diagnostics.Control.RemoteState == "Friend reached",
-        "local TCP listener or authenticated Friend evidence was not reported");
+    Require(diagnostics.Control.State == "Open on PC" && diagnostics.Control.BindScope == "Loopback only" &&
+        diagnostics.Control.EndpointState == "Address hint" && diagnostics.Control.RemoteState == "Friend connected" &&
+        diagnostics.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
+        "local TCP listener or authenticated Friend evidence overstated the outside-network route");
+    settings.CompanionBindAddress = "0.0.0.0";
+    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
+    Require(diagnostics.Control.State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
+        "a listener on the wrong bind address was reported open");
+    settings.CompanionBindAddress = "127.0.0.1";
+    var staleDevice = device with { LastHeartbeatUtc = DateTimeOffset.UtcNow.AddSeconds(-46) };
+    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [staleDevice]);
+    Require(diagnostics.Control.RemoteState == "Not verified", "a stale heartbeat was reported as connected");
+    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), false, [], "TLS listener failed");
+    Require(diagnostics.Control.State == "Not listening" && diagnostics.Control.Detail == "TLS listener failed",
+        "an enabled but failed HTTPS listener was reported off");
     query.Dispose();
     diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, []);
     Require(diagnostics.Games.Single().State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
         "a missing UDP port or absent Friend route was claimed as open");
+    using var loopbackGame = new TcpListener(IPAddress.Loopback, 0);
+    loopbackGame.Start();
+    var javaProfile = new ServerProfile { Kind = GameKinds.MinecraftJava, Name = "Local game",
+        GamePort = ((IPEndPoint)loopbackGame.LocalEndpoint).Port };
+    var javaSnapshot = new HostSnapshot(Settings(javaProfile),
+        [new RunView(javaProfile.Id, "Ready", "fixture", 1)],
+        "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
+    var javaPorts = PortDiagnostics.Read(javaSnapshot, new GameServerRegistry(data), false, []);
+    Require(javaPorts.Games.Single().State == "Loopback only",
+        "a loopback-only game socket was reported as available to other PCs");
     await Task.CompletedTask;
 });
 

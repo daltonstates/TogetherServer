@@ -204,6 +204,29 @@ main { padding-top: 24px; }
 .readiness-item.bad { border-color: #83584d; background: #30221e; }
 .readiness-item.bad .readiness-icon { background: #58362e; color: #f1b9aa; }
 .readiness-row > .icon-button { align-self: center; }
+.server-readiness { margin: 13px 0 2px; min-width: 0; }
+.server-readiness .readiness-row { margin: 0; }
+.readiness-route, .readiness-details, .connection-warning { font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.readiness-route { margin: 8px 0 0; color: #a9b9aa; }
+.readiness-route strong, .readiness-details strong { color: #d7e5d4; }
+.readiness-details { margin-top: 7px; color: #a9b9aa; }
+.readiness-details summary { color: #c5dcc0; cursor: pointer; font-weight: 700; }
+.readiness-details p { margin: 7px 0 0; }
+.connection-warning { margin: 8px 0 0; padding: 9px 11px; border: 1px solid #83584d; border-radius: 7px; background: #30221e; color: #f1c2b5; }
+.connection-warning strong { color: #ffddd2; }
+.internet-route-test { margin-top: 13px; }
+.internet-route-test > button { border: 1px solid #627760; border-radius: 8px; padding: 9px 12px; background: transparent; color: #d3e4cd; font-size: 12px; font-weight: 700; }
+.internet-route-test > small { display: block; margin-top: 7px; color: #9baa9c; line-height: 1.5; }
+.internet-route-result { margin: 10px 0 0; padding: 11px 13px; border: 1px solid #495b4b; border-radius: 8px; background: #1c2920; font-size: 12px; line-height: 1.5; }
+.internet-route-result.good { border-color: #456849; background: #1b2a1e; }
+.internet-route-result.bad { border-color: #83584d; background: #30221e; }
+.internet-route-result strong, .internet-route-result span, .internet-route-result small { display: block; }
+.internet-route-result span { margin-top: 3px; }
+.internet-route-result small { margin-top: 7px; color: #a6b5a5; }
+.lan-target-hint { margin-top: 12px; padding: 10px 12px; border: 1px solid #3b4b3d; border-radius: 8px; background: #19231c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.lan-target-hint strong { color: #d7e5d4; }
+.lan-target-hint p { margin: 6px 0 0; color: #a9b9aa; }
+.lan-target-hint code { color: #d7f3c5; }
 .invite-ready { display: flex; align-items: flex-start; gap: 11px; }
 .invite-ready > span { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: #c9edae; background: #315039; flex: 0 0 auto; }
 .invite-ready strong { display: block; font-size: 13px; }

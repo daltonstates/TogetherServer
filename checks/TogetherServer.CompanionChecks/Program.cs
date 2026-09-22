@@ -41,6 +41,40 @@ var stopProfileId = Guid.Empty;
 var passes = 0;
 try
 {
+    const int probePort = 5131;
+    const string publicEndpoint = "https://1.2.3.4:5131";
+    var (reachable, reachedPaths) = await ProbeFake(publicEndpoint, probePort, path => path switch
+    {
+        "/api/me" => ProbeResponse("1.2.3.4"),
+        "/api/me/5131" => ProbeResponse("True"),
+        _ => ProbeResponse("unexpected", HttpStatusCode.BadRequest)
+    });
+    Require(reachable.State == "Reachable" && reachable.Port == probePort &&
+        reachedPaths.SequenceEqual(["/api/me", "/api/me/5131"]),
+        "the external TCP probe did not verify the advertised IP before checking the fixed port");
+    var (blocked, blockedPaths) = await ProbeFake(publicEndpoint, probePort, path => path switch
+    {
+        "/api/me" => ProbeResponse("1.2.3.4"),
+        "/api/me/5131" => ProbeResponse("False"),
+        _ => ProbeResponse("unexpected", HttpStatusCode.BadRequest)
+    });
+    Require(blocked.State == "Not reachable" && blockedPaths.Count == 2,
+        "a closed outside TCP route was reported reachable");
+    Console.WriteLine("PASS outside TCP probe distinguishes reachable and blocked fixed-port results"); passes++;
+
+    var (wrongProbeAddress, wrongAddressPaths) = await ProbeFake(publicEndpoint, probePort, _ => ProbeResponse("5.6.7.8"));
+    Require(wrongProbeAddress.State == "Unavailable" && wrongAddressPaths.SequenceEqual(["/api/me"]),
+        "the external TCP probe tested a route after the service saw a different public IP");
+    var (invalidTarget, invalidTargetPaths) = await ProbeFake("https://127.0.0.1:5131", probePort,
+        _ => ProbeResponse("1.2.3.4"));
+    Require(invalidTarget.State == "Unavailable" && invalidTargetPaths.Count == 0,
+        "the external TCP probe sent a private endpoint to the outside service");
+    var (serviceError, serviceErrorPaths) = await ProbeFake(publicEndpoint, probePort,
+        _ => ProbeResponse("unavailable", HttpStatusCode.ServiceUnavailable));
+    Require(serviceError.State == "Inconclusive" && serviceErrorPaths.SequenceEqual(["/api/me"]),
+        "a checker service failure was interpreted as a closed Host port");
+    Console.WriteLine("PASS outside TCP probe fails closed on wrong IP, private target, and checker error"); passes++;
+
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
@@ -78,6 +112,19 @@ try
     var listener = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     Require(listener.GetProperty("listenerActive").GetBoolean(), "companion listener did not start");
     Console.WriteLine("PASS one persistent code per server starts the loopback HTTPS listener without restart"); passes++;
+    var copiedWhilePaused = await ServerInvite(owner, profile.Id, true, enableConnections: true);
+    var pausedSnapshot = await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    Require(copiedWhilePaused.Code == inviteA.Code && pausedSnapshot?.Settings.RemoteControlsEnabled == false &&
+        pausedSnapshot.Settings.CompanionListeningEnabled,
+        "copying an existing invite silently re-enabled remote Start and Stop after the Host paused them");
+    Console.WriteLine("PASS copying an invite keeps the Host's remote controls paused"); passes++;
+
+    var localPorts = await owner.GetFromJsonAsync<PortDiagnosticsView>("/api/local/network/ports");
+    Require(localPorts?.Control.State == "Open on PC" && localPorts.Control.BindAddress == "127.0.0.1" &&
+        localPorts.Control.BindScope == "Loopback only" && localPorts.Control.EndpointState == "Local only" &&
+        localPorts.Control.RemoteState == "Not verified",
+        "loopback HTTPS listener was mistaken for a public Friend route");
+    Console.WriteLine("PASS companion diagnostics distinguish a live loopback listener from public reachability"); passes++;
 
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
@@ -95,13 +142,13 @@ try
     Require(wrongAddress.Code == "HostAddressMismatch", "pairing ignored an address that differed from the pinned invite");
     var wrongPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(JsonSerializer.Serialize(tampered, webJson), fixturePath));
-    Require(!wrongPin.Ok && wrongPin.Code == "Disconnected", "wrong Host pin was accepted");
+    Require(!wrongPin.Ok && wrongPin.Code == "HostIdentityMismatch", "wrong Host pin was accepted");
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(passwordA, fixturePath));
     Require(pairedA.Ok, "a current invite did not pair without a separate Host IP");
     var wrongPasswordPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(tampered), fixturePath, $"127.0.0.1:{companionPort}"));
-    Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "Disconnected", "password pairing accepted the wrong Host TLS pin");
+    Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "HostIdentityMismatch", "password pairing accepted the wrong Host TLS pin");
     var pairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
         new(passwordA, fixturePath));
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");
@@ -175,6 +222,11 @@ try
     }
     Require(await SendHeartbeat() == HttpStatusCode.OK && await SendHeartbeat() == HttpStatusCode.Conflict,
         "replayed heartbeat refreshed a device");
+    localPorts = await owner.GetFromJsonAsync<PortDiagnosticsView>("/api/local/network/ports");
+    Require(localPorts?.Control.RemoteState == "Friend connected" &&
+        localPorts.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
+        "an authenticated same-PC heartbeat was presented as an outside-network connection");
+    Console.WriteLine("PASS fresh authenticated heartbeat does not claim outside-network reachability"); passes++;
     settings.RemoteControlsEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "remote controls enable failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
@@ -640,4 +692,30 @@ async Task<FriendActionResult> PublicAction(HttpClient client, PairingCredential
 static void Require(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static HttpResponseMessage ProbeResponse(string body, HttpStatusCode status = HttpStatusCode.OK) =>
+    new(status) { Content = new StringContent(body) };
+
+static async Task<(ExternalPortProbeResult Result, List<string> Paths)> ProbeFake(
+    string endpoint, int port, Func<string, HttpResponseMessage> respond)
+{
+    var paths = new List<string>();
+    using var client = new HttpClient(new ProbeHandler(request =>
+    {
+        Require(request.RequestUri?.Scheme == Uri.UriSchemeHttps &&
+            request.RequestUri.Host == "checker.example", "external probe sent a request to an unexpected service");
+        var path = request.RequestUri!.AbsolutePath;
+        paths.Add(path);
+        return respond(path);
+    }));
+    var result = await new ExternalPortProbe(client, new Uri("https://checker.example/"))
+        .CheckAsync(endpoint, port);
+    return (result, paths);
+}
+
+sealed class ProbeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+        CancellationToken cancellationToken) => Task.FromResult(respond(request));
 }

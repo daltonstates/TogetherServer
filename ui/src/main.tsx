@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Icon } from './Icon'
-import { ServerReadiness, type PortDiagnostics } from './ServerReadiness'
+import { ServerReadiness, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { gameLabel, type Profile } from './GameProfile'
 import { MinecraftWorldSetup, MinecraftServerSetup, minecraftSetupIssues, type MinecraftDiscovery, type MinecraftInstallation } from './MinecraftSetup'
 import './style.css'
@@ -122,13 +122,16 @@ function App() {
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [portDiagnostics, setPortDiagnostics] = useState<PortDiagnostics | null>(null)
+  const [internetRouteCheck, setInternetRouteCheck] = useState<InternetRouteCheck | null>(null)
+  const [checkingInternetRoute, setCheckingInternetRoute] = useState(false)
   const [detectingPublicIp, setDetectingPublicIp] = useState(false)
-  const [deviceStart, setDeviceStart] = useState(true)
   const [inviteProfileId, setInviteProfileId] = useState('')
+  const [inviteListenerWarning, setInviteListenerWarning] = useState<string | null>(null)
   const [playerIds, setPlayerIds] = useState<Record<string, string>>({})
   const [invitation, setInvitation] = useState('')
   const [friendInvite, setFriendInvite] = useState('')
   const [friendHostAddress, setFriendHostAddress] = useState('')
+  const [pairIssue, setPairIssue] = useState('')
   const [showPairing, setShowPairing] = useState(false)
   const [friendClientPath, setFriendClientPath] = useState('')
   const [passwords, setPasswords] = useState<Record<string, string>>({})
@@ -367,16 +370,38 @@ function App() {
       if (response.ok) setPortDiagnostics(await response.json())
     } catch { /* The regular refresh will retry without replacing the current evidence. */ }
   }
+  const checkInternetRoute = async () => {
+    setCheckingInternetRoute(true)
+    try {
+      const response = await fetch('/api/local/network/test-friend-route', { method: 'POST', headers: localHeaders })
+      const result: InternetRouteCheck = await response.json()
+      setInternetRouteCheck(result)
+    } catch (error) {
+      setInternetRouteCheck({ state: 'Unavailable', detail: `Internet TCP test failed: ${String(error)}`,
+        port: draft?.companionPort ?? 0, checkedUtc: new Date().toISOString() })
+    } finally { setCheckingInternetRoute(false) }
+  }
   const issueInvite = async (profileId: string, refresh = false): Promise<string | null> => {
     if (refresh && !window.confirm('Refresh this server code? All Friend PCs paired to this server will lose access and need to connect again.')) return null
     setPending('invite')
     setNotice(null)
     try {
+      let canStart = true
+      if (refresh) {
+        const currentResponse = await fetch(`/api/local/servers/${profileId}/invite/current`, { method: 'POST', headers: localHeaders })
+        if (!currentResponse.ok) throw new Error('Could not read this server code before refreshing access.')
+        const current: { canStart: boolean } = await currentResponse.json()
+        if (typeof current.canStart !== 'boolean') throw new Error('Could not confirm this invite’s Start permission before refreshing access.')
+        canStart = current.canStart
+      }
       const response = await fetch(`/api/local/servers/${profileId}/invite`, { method: 'POST', headers: localHeaders,
-        body: JSON.stringify({ refresh, canStart: deviceStart, enableConnections: true }) })
+        body: JSON.stringify({ refresh, canStart, enableConnections: true }) })
       const result: { ok: boolean; code: string; message: string; password?: string; listenerActive?: boolean; listenerWarning?: string } = await response.json()
-      setNotice({ good: result.ok && result.listenerActive !== false,
-        text: result.listenerWarning || result.message })
+      const listenerWarning = result.ok && result.listenerActive !== true
+        ? result.listenerWarning || `The HTTPS listener on TCP ${draft?.companionPort ?? 'the configured port'} did not start. Check Settings and safety before sharing this code.`
+        : null
+      setInviteListenerWarning(listenerWarning || (!result.ok ? result.message : null))
+      setNotice({ good: result.ok && !listenerWarning, text: listenerWarning || result.message })
       if (result.ok && result.password) {
         setInvitation(result.password)
         const latest = await fetch('/api/local/companion')
@@ -387,10 +412,10 @@ function App() {
           if (!dirty) setDraft(host.settings)
         }
         await checkPorts()
-        return result.password
+        return listenerWarning ? null : result.password
       }
       return null
-    } catch (error) { setNotice({ good: false, text: String(error) }); return null }
+    } catch (error) { setInviteListenerWarning(String(error)); setNotice({ good: false, text: String(error) }); return null }
     finally { setPending('') }
   }
   const revokeDevice = async (id: string) => {
@@ -439,14 +464,24 @@ function App() {
   }
   const pairFriend = async () => {
     if (!friendInvite) {
-      setNotice({ good: false, text: 'Paste the invite from your friend.' })
+      setPairIssue('Paste the invite from your friend.')
       return
     }
     setPending('pair')
+    setPairIssue('')
+    setNotice(null)
     try {
-      const result = await change<BasicResult>('/api/local/friend/pair', 'POST', { invitation: friendInvite,
-        clientExecutablePath: '', hostAddress: friendHostAddress || null })
-      setNotice({ good: result.ok, text: result.message })
+      const response = await fetch('/api/local/friend/pair', { method: 'POST', headers: localHeaders,
+        body: JSON.stringify({ invitation: friendInvite, clientExecutablePath: '', hostAddress: friendHostAddress || null }) })
+      const result: BasicResult = await response.json()
+      if (!response.ok || !result.ok) {
+        const message = result.message || `Local app returned ${response.status} while connecting.`
+        setPairIssue(result.code === 'Disconnected'
+          ? `${message} Ask the Host to check its HTTPS listener and test the Friend app TCP port from the internet.`
+          : message)
+        return
+      }
+      setNotice({ good: true, text: result.message })
       if (result.ok) {
         friendClientEdited.current = false
         setFriendInvite('')
@@ -454,7 +489,7 @@ function App() {
         await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
         setSnapshot(await readSnapshot())
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setPairIssue(`Could not finish connecting: ${String(error)}`) }
     finally { setPending('') }
   }
   const checkFriendConnection = async () => {
@@ -688,27 +723,15 @@ function App() {
     const request = ++inviteLoad.current
     setInviteProfileId(profileId)
     setInvitation('')
-    setPending('invite')
+    setInviteListenerWarning(null)
     try {
-      const response = await fetch(`/api/local/servers/${profileId}/invite/current`, { method: 'POST', headers: localHeaders })
-      if (!response.ok) throw new Error('Could not read this server code.')
-      const result: { password: string | null; canStart: boolean } = await response.json()
-      if (request === inviteLoad.current) {
-        setDeviceStart(result.canStart)
-        if (result.password) {
-          setInvitation(result.password)
-          await copyText(result.password, 'Invite')
-        } else {
-          setPending('')
-          const created = await issueInvite(profileId)
-          if (created && request === inviteLoad.current) {
-            try { await navigator.clipboard.writeText(created) }
-            catch { setNotice({ good: false, text: 'Invite ready, but it could not be copied. Choose Copy again.' }) }
-          }
-        }
+      // Reissuing without refresh keeps the current code and also starts the HTTPS listener.
+      const ready = await issueInvite(profileId)
+      if (ready && request === inviteLoad.current) {
+        try { await navigator.clipboard.writeText(ready) }
+        catch { setNotice({ good: false, text: 'Invite ready, but it could not be copied. Choose Copy again.' }) }
       }
     } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
   }
 
   const scanValheim = async () => {
@@ -788,6 +811,9 @@ function App() {
   const activeRuns = snapshot?.mode === 'Host'
     ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Ready'].includes(run.state)).length : 0
   const friendGame = snapshot?.mode === 'Friend' ? snapshot.profiles[0]?.kind : undefined
+  const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false
+    ? companion.listenerWarning || 'Friend app connections are off. Choose Invite friends again to start the HTTPS listener.'
+    : null)
 
   return <div className="shell">
     <header className="topbar">
@@ -826,9 +852,10 @@ function App() {
               <button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite('') }}>Use another invite</button></div>
           </> : <>
             <form className="join-row" onSubmit={event => { event.preventDefault(); void pairFriend() }}>
-              <label className="invite-input">Invite code<input type="password" autoComplete="off" value={friendInvite} onChange={event => setFriendInvite(event.target.value.trim())} placeholder="Paste the invite here" /></label>
+              <label className="invite-input">Invite code<input type="password" autoComplete="off" value={friendInvite} onChange={event => { setFriendInvite(event.target.value.trim()); setPairIssue('') }} placeholder="Paste the invite here" /></label>
               <button disabled={!!pending || !friendInvite}>{pending === 'pair' ? 'Connecting…' : 'Connect'}</button>
             </form>
+            {pairIssue && <p className="connection-warning" role="alert">{pairIssue}</p>}
             <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
           {snapshot.endpoint && snapshot.localGameRunning === null && <p className="warning-text">Game client was not found. Choose its install path under Game check.</p>}
@@ -867,7 +894,7 @@ function App() {
               return <article className="profile-card" key={profile.id}>
                 <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)} · World {profile.worldId}</p></div>
                   <span className={`status ${status?.state === 'Process running' || status?.state === 'Ready' ? 'running' : status?.state === 'Offline' ? 'offline' : 'unknown'}`}>{status?.state ?? 'Unknown'}</span></div>
-                <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics}
+                <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={!!pending} onRefresh={() => void checkPorts()} />
                 <div className="actions server-actions">
                   {status?.state === 'Offline' && <button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}><Icon name="play" /><span>Start server</span></button>}
@@ -878,12 +905,19 @@ function App() {
                   {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && status?.state === 'Ready' && detectedGameIp && <button className="secondary server-share-button" onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Game address')}><Icon name="copy" />Game address</button>}
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">
-                  {invitation ? <><div className="invite-ready"><span><Icon name="check" /></span><div><strong>Invite ready</strong><p>The current server code is ready to paste into TogetherServer on each Friend PC.</p></div></div>
-                    <div className="actions"><button onClick={() => void copyText(invitation, 'Invite code')}><Icon name="copy" />Copy again</button>
-                      <button className="secondary" disabled={!!pending} onClick={() => void issueInvite(profile.id, true)}><Icon name="refresh" />Refresh access</button>
-                      <button className="text-button" onClick={() => setInviteProfileId('')}>Done</button></div>
-                    <details><summary>Show code and access note</summary><p>One code for {profile.name}. Refreshing it revokes every paired PC for this server.</p><textarea readOnly rows={3} value={invitation} /></details></>
-                    : <p className="helper-text">Preparing this server's invite…</p>}
+                  {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : 'Invite code ready'}</strong><p>{activeInviteWarning ? 'Check the issue below before sharing this code.' : 'The HTTPS listener is running on this PC. A Friend outside your network must still test Connect.'}</p></div></div>
+                    {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
+                    {!activeInviteWarning && internetRouteCheck?.state === 'Not reachable' && internetRouteCheck.port === portDiagnostics?.control.port && Date.now() - Date.parse(internetRouteCheck.checkedUtc) < 5 * 60 * 1000 && <p className="connection-warning" role="alert">The internet TCP test could not reach port {internetRouteCheck.port} at {new Date(internetRouteCheck.checkedUtc).toLocaleTimeString()}. Check Settings and safety before sharing.</p>}
+                    <div className="actions">{activeInviteWarning
+                      ? <button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</button>
+                      : <button onClick={() => void copyText(invitation, 'Invite code')}><Icon name="copy" />Copy again</button>}
+                      <button className="secondary" disabled={!!pending || !!activeInviteWarning} onClick={() => void issueInvite(profile.id, true)}><Icon name="refresh" />Refresh access</button>
+                      <button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</button></div>
+                    <p>Share the copied code privately. Refreshing access revokes every paired PC for this server.</p></>
+                    : inviteListenerWarning ? <><p className="connection-warning" role="alert">{inviteListenerWarning}</p>
+                      <div className="actions"><button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</button>
+                        <button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</button></div></>
+                      : <p className="helper-text">Preparing this server's invite…</p>}
                 </div>}
                 {!friendAppAddress && <p className="helper-text"><Icon name="warning" /> A public address is still being checked. You can start now and invite when it appears.</p>}
                 {status?.state === 'Ready' && !detectedGameIp && <p className="helper-text">Your public game address is not available yet. Check Network in Settings.</p>}
@@ -982,6 +1016,17 @@ function App() {
               {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
               <div className="actions"><button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking…' : 'Refresh public address'}</button>
                 {detectedGameIp && <button className="secondary" onClick={() => void copyText(`${detectedGameIp}:${savedProfiles[0].gamePort}`, 'Game address')}>Copy game address</button>}</div>
+              <div className="internet-route-test"><button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? 'Testing TCP port…' : 'Test Friend app port from internet'}</button>
+                <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no invite or credential is sent.</small>
+                {internetRouteCheck && <p className={`internet-route-result ${internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
+                  <strong>{internetRouteCheck.state === 'Reachable' ? `TCP ${internetRouteCheck.port} reached` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
+                  <span>{internetRouteCheck.detail}</span><small>Checked {new Date(internetRouteCheck.checkedUtc).toLocaleString()}. This tests TCP access only; your Friend still needs to pair, and the game join needs its own test.</small>
+                </p>}
+              </div>
+              {portDiagnostics?.control.lanForwardDetail && <div className="lan-target-hint"><strong>Router forwarding target on this PC</strong>
+                <p>{portDiagnostics.control.lanForwardDetail}</p>
+                {portDiagnostics.control.lanAddresses?.map(item => <p key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code> · {item.interfaceName} · gateway {item.gateway}</p>)}
+              </div>}
               <p className="helper-text">A Friend on another network must test the app connection and game join separately. Router and firewall changes remain yours to approve.</p>
               <label className="check-row"><input type="checkbox" checked={draft.companionListeningEnabled} onChange={event => edit({ ...draft, companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /> Allow Friend app connections</label>
 

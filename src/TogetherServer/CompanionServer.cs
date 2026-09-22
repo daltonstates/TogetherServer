@@ -92,7 +92,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             Warning = null;
             Console.WriteLine($"Companion HTTPS listener: {address}");
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or
             System.Security.Cryptography.CryptographicException)
         {
             if (nextApp is not null) await nextApp.DisposeAsync();

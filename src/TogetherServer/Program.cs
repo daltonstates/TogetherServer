@@ -46,6 +46,8 @@ var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "",
     Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0));
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
+using var externalProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+var externalPortProbe = new ExternalPortProbe(externalProbeClient);
 using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
 var minecraftInstaller = new MinecraftInstaller(minecraftClient, data);
 var modeGate = new SemaphoreSlim(1, 1);
@@ -215,7 +217,21 @@ app.MapPost("/api/local/network/detect-public-ip", async () =>
     finally { modeGate.Release(); }
 });
 app.MapGet("/api/local/network/ports", async () => Results.Json(PortDiagnostics.Read(
-    await manager.SnapshotAsync(), games, companionServer.Active, pairing.Views())));
+    await manager.SnapshotAsync(), games, companionServer.Active, pairing.Views(), companionServer.Warning)));
+app.MapPost("/api/local/network/test-friend-route", async () =>
+{
+    if (friendMode) return Results.Conflict(new ExternalPortProbeResult("Unavailable",
+        "Switch to My server before testing the Friend route.", 0, DateTimeOffset.UtcNow));
+    var settings = (await manager.SnapshotAsync()).Settings;
+    if (!companionServer.Active) return Results.Json(new ExternalPortProbeResult("Unavailable",
+        "Start Friend app connections from Invite friends before testing the outside route.",
+        settings.CompanionPort, DateTimeOffset.UtcNow));
+    if (IPAddress.TryParse(settings.CompanionBindAddress, out var bindAddress) && IPAddress.IsLoopback(bindAddress))
+        return Results.Json(new ExternalPortProbeResult("Unavailable",
+            "Friend app connections are bound to this PC only. Use a LAN bind address or 0.0.0.0 for an outside route.",
+            settings.CompanionPort, DateTimeOffset.UtcNow));
+    return Results.Json(await externalPortProbe.CheckAsync(settings.CompanionEndpoint, settings.CompanionPort));
+});
 app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => new
 {
     game.Kind,
@@ -426,13 +442,14 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
         try
         {
             using var certificate = identity.Ensure(settings.CompanionEndpoint);
+            var firstHostInvite = !pairing.HasInviteOrCredential();
             var invite = pairing.IssueServer(profileId, request.CanStart, false,
                 settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh);
             password = PairingPassword.Encode(invite);
             if (request.EnableConnections)
             {
                 settings.CompanionListeningEnabled = true;
-                if (data.LoadServerInvites().Any(state => state.ProfileId == profileId && state.CanStart))
+                if (firstHostInvite && request.CanStart)
                     settings.RemoteControlsEnabled = true;
                 var saved = await manager.UpdateSettingsAsync(settings);
                 if (!saved.Ok)

@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -121,8 +123,7 @@ internal sealed class FriendLink
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
             {
-                return new(false, "Disconnected", "Could not pair over pinned TLS: " + ex.Message +
-                    (ex.InnerException is null ? "" : " " + ex.InnerException.Message), null);
+                return PairConnectionFailure(ex);
             }
         }
         finally { gate.Release(); }
@@ -247,6 +248,28 @@ internal sealed class FriendLink
         if (value?.Length != 64) return false;
         try { return Convert.FromHexString(value).Length == 32; }
         catch (FormatException) { return false; }
+    }
+
+    private static FriendActionResult PairConnectionFailure(Exception failure)
+    {
+        if (failure is TaskCanceledException)
+            return new(false, "PairingTimedOut",
+                "The Host did not answer. Keep TogetherServer open on the Host, then run its Test from internet check for the Friend TCP port.", null);
+        for (var error = failure; error is not null; error = error.InnerException)
+        {
+            if (error is AuthenticationException)
+                return new(false, "HostIdentityMismatch",
+                    "The HTTPS Host identity did not match this invite. Ask the Host to copy the current server code again.", null);
+            if (error is SocketException socket && socket.SocketErrorCode == SocketError.ConnectionRefused)
+                return new(false, "HostPortClosed",
+                    "The Host refused the Friend connection. Keep TogetherServer open and check its HTTPS listener and router TCP forwarding.", null);
+            if (error is SocketException socketFailure && socketFailure.SocketErrorCode is
+                SocketError.TimedOut or SocketError.HostUnreachable or SocketError.NetworkUnreachable)
+                return new(false, "HostUnreachable",
+                    "The Host's Friend TCP port could not be reached. Run Test from internet on the Host and check router TCP forwarding to that PC.", null);
+        }
+        return new(false, "Disconnected",
+            "Could not pair over HTTPS. Keep TogetherServer open on the Host and run its Test from internet check.", null);
     }
 
     private static HttpClient MakeClient(string endpoint, string fingerprint)
