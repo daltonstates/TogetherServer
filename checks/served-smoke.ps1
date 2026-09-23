@@ -89,7 +89,7 @@ try {
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Maximum servers running at once',
         'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
-        'Wait after the server reaches 0 players', 'Stops in', 'Remote Stop safety', 'There are no player IDs to enter',
+        'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Remote Stop safety', 'There are no player IDs to enter',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {

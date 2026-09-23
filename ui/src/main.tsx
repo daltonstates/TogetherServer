@@ -134,7 +134,7 @@ function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs 
       <span className={`player-count ${online === null ? 'unknown' : ''}`}>{playerCount(online, capacity)}</span>
       {countdown && <span className="idle-countdown" role="timer" title="No players are online and automatic shutdown is on.">{countdown}</span>}
     </div>
-    {online === 0 && timerReason && <small className="idle-reason">Timer paused · {timerReason}</small>}
+    {timerReason && <small className="idle-reason">Timer not running · {timerReason}</small>}
   </div>
 }
 

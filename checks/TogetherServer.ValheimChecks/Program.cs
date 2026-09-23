@@ -439,6 +439,130 @@ try
         }
         Console.WriteLine("PASS empty-server countdown resets for players/Unknown and stops gracefully only after a final zero check"); passes++;
     }
+
+    using (var logData = new LocalData(Path.Combine(root, "private-log-count-host")))
+    {
+        var games = new GameServerRegistry(logData);
+        var host = new HostManager(logData, games);
+        var logProfile = new ServerProfile { Kind = "Valheim", Name = "Private synthetic world",
+            ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
+            GamePort = FreePort(), ExecutablePath = fixture, PublicListing = false, Crossplay = false };
+        logProfile.WorldDirectory = logData.NewWorldDirectory(logProfile.Id);
+        Directory.CreateDirectory(logProfile.WorldDirectory);
+        File.WriteAllText(Path.Combine(logProfile.WorldDirectory, "synthetic-query-silent"),
+            "bind the private query port without replying");
+        Require((await host.UpdateSettingsAsync(new HostSettings { Profiles = [logProfile] })).Ok,
+            "private synthetic profile was rejected");
+        Require((await host.SetValheimPasswordAsync(logProfile.Id, "fixture-pass-123")).Ok,
+            "private synthetic password was rejected");
+        Require((await host.StartAsync(logProfile.Id)).Ok, "private synthetic server did not start");
+        var recorded = logData.LoadRuns().Single();
+        fixturePid = recorded.ProcessId;
+        fixtureStart = recorded.StartTimeUtcTicks;
+        await WaitForReady(host, logProfile.Id);
+        try
+        {
+            var initial = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
+            Require(initial.OnlinePlayers == 0 && initial.MaxPlayers == 10 &&
+                initial.Detail.Contains("server log reports", StringComparison.Ordinal) &&
+                initial.AutoShutdownReason == "Automatic shutdown is off.",
+                "private query silence did not fall back to the owned log or explain the disabled timer");
+
+            var timerSettings = logData.LoadSettings();
+            timerSettings.AutoShutdownEnabled = true;
+            timerSettings.IdleMinutes = 1;
+            timerSettings.OwnerClientExecutablePath = unrelatedFixture;
+            Require((await host.UpdateSettingsAsync(timerSettings)).Ok,
+                "private log-count timer settings were rejected");
+            Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).AutoShutdownAtUtc is not null,
+                "private zero-player log count did not start the timer");
+
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:01:00: New connection\n");
+            var partialJoin = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
+            Require(partialJoin.OnlinePlayers is null && partialJoin.AutoShutdownAtUtc is null &&
+                partialJoin.AutoShutdownReason == "Waiting for a reliable player count.",
+                "an incomplete log connection was treated as zero or left the timer unexplained");
+
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:01:01: Got connection SteamID 111111\n");
+            var joined = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
+            Require(joined.OnlinePlayers == 1 && joined.AutoShutdownAtUtc is null &&
+                joined.AutoShutdownReason == "Waiting for the server to be empty.",
+                "a completed log connection did not report one player and explain the stopped timer");
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:01:30: Game server connected\n");
+            Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers == 1,
+                "a repeated readiness marker reset an existing player count to zero");
+
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:02:00: RPC_Disconnect\n");
+            var partialLeave = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
+            Require(partialLeave.OnlinePlayers is null && partialLeave.AutoShutdownAtUtc is null,
+                "an incomplete log disconnection was treated as a reliable count");
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:02:01: Closing socket 111111\n");
+            var left = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
+            Require(left.OnlinePlayers == 0 && left.AutoShutdownAtUtc is not null,
+                "the completed log disconnection did not restore zero and a fresh timer");
+
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:10:00: Connections 2 ZDOS:123 sent:0 recv:0\n");
+            Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers == 2,
+                "the periodic Valheim connection checkpoint did not replace the derived count");
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:15:00: Connections invalid ZDOS:123 sent:0 recv:0\n");
+            Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers is null,
+                "a malformed Valheim connection checkpoint left a trusted count");
+            File.AppendAllText(recorded.LogPath, "09/22/2026 12:20:00: Connections 0 ZDOS:123 sent:0 recv:0\n");
+            var checkpointZero = await host.SnapshotAsync();
+            Require(checkpointZero.Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers == 0,
+                "the periodic Valheim zero checkpoint did not recover the count");
+
+            using (var permit = RemoteStopSafety.TryAcquire(checkpointZero, logProfile.Id, logData, games))
+            {
+                Require(permit.Allowed, "the private log-backed zero did not allow a guarded remote Stop");
+                File.AppendAllText(recorded.LogPath, "09/22/2026 12:21:00: New connection\n");
+                var canceled = await host.StopAsync(logProfile.Id, permit.StillSafe);
+                Require(!canceled.Ok && canceled.Code == "PlayersOnlineOrUnknown",
+                    "an incomplete private log event did not cancel Stop during the final recheck");
+            }
+            File.AppendAllText(recorded.LogPath,
+                "09/22/2026 12:21:01: Got connection SteamID 222222\n" +
+                "09/22/2026 12:22:00: RPC_Disconnect\n" +
+                "09/22/2026 12:22:01: Closing socket 222222\n");
+            using var finalPermit = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), logProfile.Id, logData, games);
+            Require(finalPermit.Allowed, "private log count did not recover after a complete join and leave");
+            var stopped = await host.StopAsync(logProfile.Id, finalPermit.StillSafe);
+            Require(stopped.Ok && stopped.Code == "ValheimStopped",
+                "private log-backed guarded Stop did not use Valheim Ctrl+C");
+            fixturePid = null;
+            fixtureStart = null;
+        }
+        finally
+        {
+            if ((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).State != "Offline")
+                await host.StopAsync(logProfile.Id);
+        }
+
+        var crossplaySettings = logData.LoadSettings();
+        crossplaySettings.Profiles.Single().Crossplay = true;
+        Require((await host.UpdateSettingsAsync(crossplaySettings)).Ok,
+            "stopped private profile could not be switched to the Crossplay safety case");
+        Require((await host.StartAsync(logProfile.Id)).Ok, "silent-query Crossplay fixture did not start");
+        recorded = logData.LoadRuns().Single();
+        fixturePid = recorded.ProcessId;
+        fixtureStart = recorded.StartTimeUtcTicks;
+        await WaitForReady(host, logProfile.Id);
+        try
+        {
+            var crossplay = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
+            Require(crossplay.OnlinePlayers is null && crossplay.AutoShutdownAtUtc is null &&
+                crossplay.Detail.Contains("not enabled for Crossplay", StringComparison.Ordinal),
+                "silent Crossplay query used the unvalidated server-log fallback");
+        }
+        finally
+        {
+            if ((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).State != "Offline")
+                await host.StopAsync(logProfile.Id);
+            fixturePid = null;
+            fixtureStart = null;
+        }
+        Console.WriteLine("PASS private non-Crossplay log fallback reports zero/join/leave, explains blockers, fails closed, and stays off for Crossplay"); passes++;
+    }
     Console.WriteLine($"Synthetic Valheim checks: {passes} passed, 0 failed. Data: {root}");
     return 0;
 }

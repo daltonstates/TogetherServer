@@ -141,16 +141,28 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
 
     public GameHealthResult Health(ManagedRun run)
     {
-        if (!ValheimLogReady(run.LogPath))
+        var log = ValheimServerLog.Read(run.LogPath);
+        if (!log.Ready)
             return new(false, "ValheimStarting", "Starting",
                 "Valheim process matches; waiting for server-connected log");
-        var players = ValveServerQuery.Info(run.GamePort + 1);
-        return players is null
-            ? new(true, "ValheimLogReady", "Ready",
-                "Valheim is ready, but its local player-count query did not answer; remote Stop is blocked")
-            : new(true, "ValheimLogReady", "Ready",
+        var query = ValveServerQuery.Info(run.GamePort + 1);
+        if (query.Players is { } players)
+            return new(true, "ValheimLogReady", "Ready",
                 $"Valheim reports {players.Online} of {players.Capacity?.ToString() ?? "?"} players online; client join and save remain unverified",
                 players.Online, players.Capacity);
+
+        var nonCrossplay = IsNonCrossplay(run);
+        if (query.NoReply && nonCrossplay && log.Players is { } loggedPlayers)
+            return new(true, "ValheimLogReady", "Ready",
+                $"Valheim's local server log reports {loggedPlayers.Online} of {loggedPlayers.Capacity} players online; client join and save remain unverified",
+                loggedPlayers.Online, loggedPlayers.Capacity);
+
+        return new(true, "ValheimLogReady", "Ready",
+            !query.NoReply
+                ? "Valheim is ready, but its local player-count query returned an invalid response; remote Stop is blocked"
+                : nonCrossplay
+                ? "Valheim is ready, but neither its local query nor its server log provides a complete player count; remote Stop is blocked"
+                : "Valheim is ready, but its local player-count query did not answer; the server-log fallback is not enabled for Crossplay, so remote Stop is blocked");
     }
 
     public async Task<GameStopResult> StopAsync(Process process, ManagedRun run)
@@ -165,24 +177,177 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
             : new("StopFailed", "Server exited with a nonzero status. Run remains recorded for review.", exitCode);
     }
 
-    private static bool ValheimLogReady(string path)
+    private bool IsNonCrossplay(ManagedRun run)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            stream.Seek(Math.Max(0, stream.Length - 65536), SeekOrigin.Begin);
-            using var reader = new StreamReader(stream);
-            return reader.ReadToEnd().Contains("Game server connected", StringComparison.OrdinalIgnoreCase);
+            return data.LoadSettings().Profiles.SingleOrDefault(profile =>
+                profile.Id == run.ProfileId && profile.Kind == GameKinds.Valheim) is { Crossplay: false };
         }
-        catch (IOException) { return false; }
-        catch (UnauthorizedAccessException) { return false; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
+}
+
+internal sealed record ValheimLogStatus(bool Ready, GamePlayerCount? Players);
+
+// Steam-only private Valheim servers may not answer A2S_INFO locally. Their
+// TogetherServer-owned run log still records an authoritative connection total
+// and paired connection/disconnection events. Incomplete or contradictory event
+// sequences remain Unknown; a later Connections checkpoint can recover them.
+internal static class ValheimServerLog
+{
+    private const int Capacity = 10;
+    private const int TailBytes = 4 * 1024 * 1024;
+    private const string ReadyMarker = "Game server connected";
+    private const string ConnectionsMarker = "Connections ";
+    private const string ConnectionsSuffix = " ZDOS:";
+    private const string ConnectedMarker = "Got connection SteamID ";
+    private const string ClosingMarker = "Closing socket ";
+
+    public static ValheimLogStatus Read(string path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return new(false, null);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var start = Math.Max(0, stream.Length - TailBytes);
+            stream.Seek(start, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream, Encoding.UTF8, true, 4096, leaveOpen: false);
+            if (start > 0) reader.ReadLine(); // Discard the possibly partial first line.
+            return Parse(reader);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
+        {
+            return new(false, null);
+        }
+    }
+
+    internal static ValheimLogStatus Parse(TextReader reader)
+    {
+        var ready = false;
+        var count = 0;
+        var pendingConnections = 0;
+        var pendingDisconnects = 0;
+        var inconsistent = false;
+        var activeIds = new HashSet<string>(StringComparer.Ordinal);
+        var closedIds = new HashSet<string>(StringComparer.Ordinal);
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            if (line.Contains(ReadyMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!ready)
+                {
+                    ready = true;
+                    count = 0;
+                    pendingConnections = 0;
+                    pendingDisconnects = 0;
+                    inconsistent = false;
+                    activeIds.Clear();
+                    closedIds.Clear();
+                }
+                continue;
+            }
+
+            if (line.Contains(ConnectionsMarker, StringComparison.Ordinal))
+            {
+                if (!TryConnections(line, out var checkpoint))
+                {
+                    if (ready) inconsistent = true;
+                    continue;
+                }
+                ready = true;
+                count = checkpoint;
+                pendingConnections = 0;
+                pendingDisconnects = 0;
+                inconsistent = checkpoint is < 0 or > Capacity;
+                activeIds.Clear();
+                closedIds.Clear();
+                continue;
+            }
+            if (!ready) continue;
+
+            if (EndsWithMessage(line, "New connection"))
+            {
+                pendingConnections++;
+                continue;
+            }
+            if (line.Contains(ConnectedMarker, StringComparison.Ordinal))
+            {
+                if (!TryId(line, ConnectedMarker, out var connectedId) ||
+                    pendingConnections == 0 || !activeIds.Add(connectedId))
+                    inconsistent = true;
+                else
+                {
+                    pendingConnections--;
+                    closedIds.Remove(connectedId);
+                    count++;
+                    if (count > Capacity) inconsistent = true;
+                }
+                continue;
+            }
+            if (EndsWithMessage(line, "RPC_Disconnect"))
+            {
+                pendingDisconnects++;
+                continue;
+            }
+            if (line.Contains(ClosingMarker, StringComparison.Ordinal))
+            {
+                if (!TryId(line, ClosingMarker, out var closingId) ||
+                    pendingDisconnects == 0 || !closedIds.Add(closingId) || count == 0)
+                    inconsistent = true;
+                else
+                {
+                    pendingDisconnects--;
+                    activeIds.Remove(closingId);
+                    count--;
+                }
+            }
+        }
+
+        var complete = ready && !inconsistent && pendingConnections == 0 && pendingDisconnects == 0 &&
+            count is >= 0 and <= Capacity;
+        return new(ready, complete ? new GamePlayerCount(count, Capacity) : null);
+    }
+
+    private static bool TryConnections(string line, out int count)
+    {
+        count = 0;
+        var marker = line.LastIndexOf(ConnectionsMarker, StringComparison.Ordinal);
+        if (marker < 0) return false;
+        var valueStart = marker + ConnectionsMarker.Length;
+        var suffix = line.IndexOf(ConnectionsSuffix, valueStart, StringComparison.Ordinal);
+        return suffix > valueStart && int.TryParse(line.AsSpan(valueStart, suffix - valueStart), out count);
+    }
+
+    private static bool EndsWithMessage(string line, string message)
+    {
+        var trimmed = line.AsSpan().TrimEnd();
+        return trimmed.Equals(message, StringComparison.Ordinal) ||
+            (trimmed.EndsWith(message, StringComparison.Ordinal) &&
+             trimmed.Length > message.Length && trimmed[^(message.Length + 1)] is ':' or ' ');
+    }
+
+    private static bool TryId(string line, string marker, out string id)
+    {
+        id = "";
+        var index = line.LastIndexOf(marker, StringComparison.Ordinal);
+        if (index < 0) return false;
+        var value = line.AsSpan(index + marker.Length).Trim();
+        if (value.IsEmpty || !ulong.TryParse(value, out _)) return false;
+        id = value.ToString();
+        return true;
     }
 }
 
 // Valheim's Steam-compatible local query reply carries a current player count.
 // A missing, split, malformed, or unsupported reply stays unknown so remote Stop
 // fails closed. The query is local-only; it does not establish public reachability.
+internal sealed record ValveServerQueryResult(GamePlayerCount? Players, bool NoReply);
+
 internal static class ValveServerQuery
 {
     private static readonly byte[] InfoRequest =
@@ -191,7 +356,7 @@ internal static class ValveServerQuery
         .. Encoding.ASCII.GetBytes("Source Engine Query\0")
     ];
 
-    public static GamePlayerCount? Info(int port)
+    public static ValveServerQueryResult Info(int port)
     {
         try
         {
@@ -212,11 +377,15 @@ internal static class ValveServerQuery
                 socket.Send(challenged);
                 length = socket.Receive(buffer);
             }
-            return ParseInfo(buffer.AsSpan(0, length));
+            return new(ParseInfo(buffer.AsSpan(0, length)), false);
         }
-        catch (Exception ex) when (ex is SocketException or IOException or ArgumentException)
+        catch (Exception ex) when (ex is SocketException or IOException)
         {
-            return null;
+            return new(null, true);
+        }
+        catch (ArgumentException)
+        {
+            return new(null, false);
         }
     }
 

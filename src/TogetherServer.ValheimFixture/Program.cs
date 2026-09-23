@@ -30,7 +30,9 @@ using var gameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 
 gameSocket.Bind(new IPEndPoint(IPAddress.Any, gamePort));
 using var querySocket = new UdpClient(new IPEndPoint(IPAddress.Any, gamePort + 1));
 using var queryDone = new CancellationTokenSource();
-var queryTask = ServeQuery(querySocket, saveDir!, queryDone.Token);
+var queryTask = File.Exists(Path.Combine(saveDir!, "synthetic-query-silent"))
+    ? HoldQueryOpen(queryDone.Token)
+    : ServeQuery(querySocket, saveDir!, queryDone.Token);
 
 var stop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 Console.CancelKeyPress += (_, eventArgs) =>
@@ -87,6 +89,12 @@ static async Task ServeQuery(UdpClient query, string saveDirectory, Cancellation
             await query.SendAsync(packet.ToArray(), request.RemoteEndPoint, token);
         }
     }
+    catch (OperationCanceledException) { }
+}
+
+static async Task HoldQueryOpen(CancellationToken token)
+{
+    try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
     catch (OperationCanceledException) { }
 }
 

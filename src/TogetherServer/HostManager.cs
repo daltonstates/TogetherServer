@@ -344,9 +344,27 @@ public sealed class HostManager
         for (var index = 0; index < views.Count; index++)
         {
             var view = views[index];
-            if (!settings.AutoShutdownEnabled || view.State != "Ready" || view.OnlinePlayers != 0)
+            if (view.State != "Ready")
             {
                 emptySince.Remove(view.ProfileId);
+                continue;
+            }
+            if (!settings.AutoShutdownEnabled)
+            {
+                emptySince.Remove(view.ProfileId);
+                views[index] = view with { AutoShutdownReason = "Automatic shutdown is off." };
+                continue;
+            }
+            if (view.OnlinePlayers is null)
+            {
+                emptySince.Remove(view.ProfileId);
+                views[index] = view with { AutoShutdownReason = "Waiting for a reliable player count." };
+                continue;
+            }
+            if (view.OnlinePlayers != 0)
+            {
+                emptySince.Remove(view.ProfileId);
+                views[index] = view with { AutoShutdownReason = "Waiting for the server to be empty." };
                 continue;
             }
             var blocker = AutoShutdownBlocker(view.ProfileId);
