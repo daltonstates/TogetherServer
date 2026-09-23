@@ -6,6 +6,7 @@ import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { gameLabel, profileGameLabel, type CustomPort, type Profile } from './GameProfile'
 import { MinecraftWorldSetup, MinecraftServerSetup, minecraftSetupIssues, type MinecraftDiscovery, type MinecraftInstallation } from './MinecraftSetup'
+import './theme.css'
 import './style.css'
 import './companion.css'
 

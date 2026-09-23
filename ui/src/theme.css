@@ -1,0 +1,64 @@
+/* Black-first product palette. Orange is the interaction accent; status colors stay semantic. */
+:root {
+  color-scheme: dark;
+
+  --color-canvas: #0b0b0c;
+  --color-shell: #0e0e0f;
+  --color-topbar: #111112e8;
+  --color-surface: #171718;
+  --color-surface-translucent: #171718f2;
+  --color-surface-raised: #1d1c1b;
+  --color-surface-soft: #23211f;
+  --color-surface-hover: #292521;
+  --color-field: #101011;
+  --color-border-subtle: #302e2c;
+  --color-border: #4a4540;
+  --color-border-strong: #6b5d50;
+
+  --color-text: #f3f0ed;
+  --color-text-secondary: #d7d2cd;
+  --color-text-muted: #aaa39d;
+  --color-text-subtle: #86807b;
+  --color-placeholder: #706a65;
+
+  --color-accent: #ff8a1f;
+  --color-accent-hover: #ffa34d;
+  --color-accent-light: #ffc27d;
+  --color-accent-text: #ffd7b0;
+  --color-accent-ink: #1a0e05;
+  --color-accent-glow: #3b1f0f;
+  --color-accent-soft: #342014;
+  --color-accent-soft-strong: #492913;
+  --color-accent-border: #915529;
+  --color-focus-ring: #ff8a1f3d;
+
+  --color-success: #b6e59b;
+  --color-success-bright: #c8eba9;
+  --color-success-text: #d8f1cf;
+  --color-success-bg: #243a28;
+  --color-success-bg-strong: #29472f;
+  --color-success-border: #507c55;
+  --color-success-ring: #b6e59b33;
+
+  --color-warning: #f0c493;
+  --color-warning-strong: #f1d89a;
+  --color-warning-text: #f3dbc0;
+  --color-warning-bg: #33251b;
+  --color-warning-bg-strong: #4c3a24;
+  --color-warning-border: #76583b;
+
+  --color-danger: #f1b9aa;
+  --color-danger-text: #f1c2b5;
+  --color-danger-bright: #ffddd2;
+  --color-danger-bg: #30221e;
+  --color-danger-bg-strong: #58362e;
+  --color-danger-border: #83584d;
+
+  --color-info: #c9e5f6;
+  --color-info-bg: #1f3443;
+  --color-info-border: #53718a;
+
+  --color-overlay: #090706dc;
+  --color-shadow: #0000008f;
+  --color-shadow-soft: #00000018;
+}
