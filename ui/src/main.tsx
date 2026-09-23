@@ -22,15 +22,18 @@ type Settings = {
   publicGameIpCheckedUtc: string | null
   profiles: Profile[]
 }
-type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null }
+type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean }
 type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
-type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null }
-type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null }
+type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean }
+type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean }
+type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; serverPermissions: ServerPermission[] }
 type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
 type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null }
 type Snapshot = HostSnapshot | FriendSnapshot
-type BasicResult = { ok: boolean; code: string; message: string }
-type ActionResult = { ok: boolean; code: string; message: string; snapshot: HostSnapshot }
+type GamePort = { protocol: string; port: number; label: string; family: string }
+type PortConflict = { profileId: string; profileName: string; sharedPorts: GamePort[]; canReplace: boolean; blockReason: string | null }
+type BasicResult = { ok: boolean; code: string; message: string; portConflicts?: PortConflict[] | null }
+type ActionResult = BasicResult & { snapshot: HostSnapshot }
 type PublicIpDetection = BasicResult & { address: string | null; snapshot?: HostSnapshot }
 type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
 type ImportResult = BasicResult & { worldDirectory: string | null }
@@ -46,6 +49,59 @@ type SetupStep = 'game' | 'world' | 'server' | 'review'
 type HostSettingsSection = 'access' | 'stop' | 'network' | 'advanced'
 type BrowseResult = BasicResult & { path?: string | null }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
+type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean }>
+
+function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
+  const ref = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = mixed
+  }, [mixed])
+  return <Input ref={ref} aria-checked={mixed ? 'mixed' : props.checked} {...props} />
+}
+
+type PlannedPort = { protocol: 'TCP' | 'UDP'; port: number; family: 'Any' | 'IPv4' }
+
+function plannedPorts(profile: Profile, basePort = profile.gamePort): PlannedPort[] {
+  if (profile.kind === 'MinecraftJava') return [{ protocol: 'TCP', port: basePort, family: 'Any' }]
+  if (profile.kind === 'MinecraftBedrock') return [{ protocol: 'UDP', port: basePort, family: 'IPv4' }]
+  return [
+    { protocol: 'UDP', port: basePort, family: 'Any' },
+    { protocol: 'UDP', port: basePort + 1, family: 'Any' }
+  ]
+}
+
+function plannedPortOverlap(left: PlannedPort, right: PlannedPort) {
+  return left.protocol === right.protocol && left.port === right.port &&
+    (left.family === 'Any' || right.family === 'Any' || left.family === right.family)
+}
+
+function configuredPortWarning(profile: Profile, profiles: Profile[]) {
+  const requested = plannedPorts(profile)
+  const conflicts = profiles.filter(other => other.id !== profile.id &&
+    plannedPorts(other).some(owned => requested.some(port => plannedPortOverlap(owned, port))))
+  if (conflicts.length === 0) return null
+  const maximum = profile.kind === 'Valheim' || profile.kind === 'Fixture' ? 65534 : 65535
+  let suggestion: number | null = null
+  for (let candidate = Math.max(1024, profile.gamePort + 1); candidate <= maximum; candidate++) {
+    const candidatePorts = plannedPorts(profile, candidate)
+    if (profiles.every(other => other.id === profile.id ||
+      !plannedPorts(other).some(owned => candidatePorts.some(port => plannedPortOverlap(owned, port))))) {
+      suggestion = candidate
+      break
+    }
+  }
+  return { conflicts, suggestion }
+}
+
+function ConfiguredPortWarning({ profile, profiles }: { profile: Profile; profiles: Profile[] }) {
+  const warning = configuredPortWarning(profile, profiles)
+  if (!warning) return null
+  const ports = plannedPorts(profile).map(port => `${port.protocol} ${port.port}`).join(', ')
+  return <div className="configured-port-warning" role="status"><strong>Duplicate saved game port</strong>
+    <p>{ports} overlaps {warning.conflicts.map(conflict => conflict.name).join(', ')}. TogetherServer will not run both configurations at once.</p>
+    {warning.suggestion && <small>Try port {warning.suggestion}; it does not overlap another saved server. Windows availability is checked again only when Start is requested.</small>}
+  </div>
+}
 
 function FriendConnectionHelp({ code }: { code: string }) {
   const steps = (() => {
@@ -92,11 +148,11 @@ function FriendConnectionHelp({ code }: { code: string }) {
 
 function FriendStopBlockers({ snapshot, profile }: { snapshot: FriendSnapshot; profile: PublicProfile }) {
   const authenticated = snapshot.state === 'Connected' || snapshot.state === 'Disabled'
-  const stopVisible = profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow
+  const stopVisible = profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow
   if (!authenticated || stopVisible) return null
   const blockers: string[] = []
   if (!snapshot.remoteControlsEnabled) blockers.push('The Host has paused remote Start and Stop.')
-  if (!snapshot.canStop) blockers.push('Ask the Host to open Friend access and allow Stop requests for this PC.')
+  if (!profile.canStop) blockers.push('Ask the Host to allow Stop requests for this server on this PC.')
   if (profile.stopReason) blockers.push(`Host safety: ${profile.stopReason}`)
   return <details className="stop-blockers"><summary>Why Stop is unavailable</summary><ul>{blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></details>
 }
@@ -144,6 +200,17 @@ function serverAssignmentPreview(device: Device, profiles: Profile[]) {
   if (names.length === 0) return 'No servers assigned'
   if (names.length <= 2) return names.join(', ')
   return `${names.slice(0, 2).join(', ')} + ${names.length - 2} more`
+}
+
+function devicePermission(device: Device, profileId: string) {
+  return device.serverPermissions?.find(permission => permission.profileId === profileId) ??
+    { profileId, canStart: device.canStart, canStop: device.canStop }
+}
+
+function permissionMix(device: Device, action: 'canStart' | 'canStop') {
+  const values = device.assignedProfileIds.map(profileId => devicePermission(device, profileId)[action])
+  const global = device[action]
+  return { mixed: values.some(value => value !== global), all: global }
 }
 
 function hostAddress(endpoint: string): string {
@@ -272,7 +339,9 @@ function App() {
   const [showHostSettings, setShowHostSettings] = useState(false)
   const [serverAccessDeviceId, setServerAccessDeviceId] = useState('')
   const [serverAccessDraft, setServerAccessDraft] = useState<string[]>([])
+  const [serverPermissionDraft, setServerPermissionDraft] = useState<PermissionDraft>({})
   const [serverAccessSearch, setServerAccessSearch] = useState('')
+  const [portConflictAction, setPortConflictAction] = useState<{ profileId: string; message: string; conflicts: PortConflict[] } | null>(null)
   const [setupStep, setSetupStep] = useState<SetupStep>('game')
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('access')
   const [minecraftSetupMode, setMinecraftSetupMode] = useState<Record<string, 'existing' | 'install'>>({})
@@ -632,11 +701,11 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const setDevicePermissions = async (device: Device, canStart: boolean, canStop: boolean) => {
+  const setDevicePermissions = async (device: Device, canStart: boolean, canStop: boolean, scope: 'start' | 'stop') => {
     setPending(device.id)
     try {
       const result = await change<BasicResult>(`/api/local/devices/${device.id}/permissions`, 'PUT',
-        { canStart, canStop })
+        { canStart, canStop, scope })
       setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
       if (latest.ok) setCompanion(await latest.json())
@@ -710,13 +779,16 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const friendAction = async (id: string, action: 'start' | 'stop') => {
+  const friendAction = async (id: string, action: 'start' | 'stop' | 'replace') => {
     const key = `friend-${action}-${id}`
     setPending(key)
     if (action === 'stop') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}`)
     try {
       const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
+      if (action === 'start' && result.code === 'PortConflict' && result.portConflicts?.length)
+        setPortConflictAction({ profileId: id, message: result.message, conflicts: result.portConflicts })
+      else if (result.ok || action === 'replace') setPortConflictAction(null)
       setSnapshot(await readSnapshot())
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
@@ -812,12 +884,17 @@ function App() {
     setNotice(null)
     setServerAccessSearch('')
     setServerAccessDraft(device.assignedProfileIds.filter(id => savedIds.has(id)))
+    setServerPermissionDraft(Object.fromEntries([...savedIds].map(profileId => {
+      const permission = devicePermission(device, profileId)
+      return [profileId, { canStart: permission.canStart, canStop: permission.canStop }]
+    })))
     setServerAccessDeviceId(device.id)
   }
   const closeDeviceServerAccess = () => {
     if (pending) return
     setServerAccessDeviceId('')
     setServerAccessDraft([])
+    setServerPermissionDraft({})
     setServerAccessSearch('')
     setNotice(null)
   }
@@ -826,13 +903,18 @@ function App() {
     setPending(serverAccessDeviceId)
     try {
       const result = await change<BasicResult>(`/api/local/devices/${serverAccessDeviceId}/servers`, 'PUT',
-        { profileIds: serverAccessDraft })
+        { profileIds: serverAccessDraft, permissions: serverAccessDraft.map(profileId => ({
+          profileId,
+          canStart: serverPermissionDraft[profileId]?.canStart ?? serverAccessDevice?.canStart ?? false,
+          canStop: serverPermissionDraft[profileId]?.canStop ?? serverAccessDevice?.canStop ?? false
+        })) })
       setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
       if (latest.ok) setCompanion(await latest.json())
       if (result.ok) {
         setServerAccessDeviceId('')
         setServerAccessDraft([])
+        setServerPermissionDraft({})
         setServerAccessSearch('')
       }
     } catch (error) { setNotice({ good: false, text: String(error) }) }
@@ -1191,11 +1273,14 @@ function App() {
                 onReveal={() => revealConnectionDetails(connectionKey)} onHide={() => hideConnectionDetails(connectionKey)}
                 onCopy={() => void copyConnectionValue(connectionKey, profile.joinAddress!, 'Join address')} />}
               <div className="actions server-actions">
-                {profile.state === 'Offline' && snapshot.state === 'Connected' && snapshot.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
+                {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
               </div>
+              {portConflictAction?.profileId === profile.id && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{portConflictAction.message}</p>
+                {portConflictAction.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
+                  : <small>{portConflictAction.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
               <FriendStopBlockers snapshot={snapshot} profile={profile} />
-              {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
+              {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
               {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
             </article>
           })}
@@ -1331,6 +1416,7 @@ function App() {
               : <label>Fixture executable path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
             </div>}
             {setupStep === 'review' && <div className="setup-stage review-stage"><h3>Review and start</h3><div className="review-summary"><div><span>Game</span><strong>{gameLabel(profile.kind)}</strong></div><div><span>Server</span><strong>{profile.name || profile.serverName || 'Needs a name'}</strong></div><div><span>World</span><strong>{profile.worldId || 'Not selected'}</strong></div><div><span>Server app</span><strong>{profile.executablePath ? 'Selected' : 'Not selected'}</strong></div></div>
+            <ConfiguredPortWarning profile={profile} profiles={draft.profiles} />
             <details className="advanced-block"><summary>Advanced server settings</summary>
               <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<Input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<Input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
               {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><Input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><Input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
@@ -1366,20 +1452,20 @@ function App() {
                   <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
                     <div className="actions device-card-actions"><Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
                   <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
-                    <label className="device-permission-toggle"><Input type="checkbox" checked={device.canStart} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, event.target.checked, device.canStop)} /><span><strong>Start servers</strong><small>Allow on assigned servers</small></span></label>
-                    <label className="device-permission-toggle"><Input type="checkbox" checked={device.canStop} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, event.target.checked)} /><span><strong>Request Stop</strong><small>Allow on assigned servers</small></span></label></div>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, permissionMix(device, 'canStart').mixed ? true : event.target.checked, device.canStop, 'start')} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, permissionMix(device, 'canStop').mixed ? true : event.target.checked, 'stop')} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label></div>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
               <h3>Connection checks</h3>
-              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {companion?.listenerActive ? 'listening on this PC, public route untested' : 'off'}.</p>
+              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {portDiagnostics?.control.remoteState === 'Friend connected' ? 'Friend connected' : currentRouteResult?.state === 'Reachable' ? 'reachable outside this network; Friend pairing untested' : companion?.listenerActive ? 'listening on this PC, outside route unconfirmed' : 'off'}.</p>
               {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
               {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
               <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Refresh public address</>}</Button></div>
               <div className={checkingInternetRoute ? 'internet-route-test refreshing' : 'internet-route-test'} aria-busy={checkingInternetRoute}><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? <><Icon name="loader" />Testing TCP port…</> : 'Test Friend app port from internet'}</Button>
                 <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no invite or credential is sent.</small>
                 {internetRouteCheck && <p className={`internet-route-result ${previousRouteVerdict ? 'neutral' : internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
-                  <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `TCP ${internetRouteCheck.port} reached` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
+                  <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `Reachable outside network · TCP ${internetRouteCheck.port}` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
                   <span>{internetRouteCheck.detail}</span><small>Checked {new Date(internetRouteCheck.checkedUtc).toLocaleString()}. {previousRouteVerdict && 'This result is no longer current for the saved listener, invite address, or time; test again after checking them. '}This tests TCP access only; your Friend still needs to pair, and the game join needs its own test.</small>
                 </p>}
               </div>
@@ -1437,11 +1523,16 @@ function App() {
             </div>
         </dialog>}
         {savedProfiles.length > 0 && serverAccessDevice && <dialog ref={serverAccessRef} className="panel modal-dialog server-access-dialog" aria-labelledby="server-access-title" onCancel={event => { event.preventDefault(); closeDeviceServerAccess() }}>
-          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>This PC will see and control only the servers selected here.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
+          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>Selected servers expose their connection details. Start and Stop can be allowed separately for each one.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
           {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
           <label className="server-picker-search">Search servers<Input value={serverAccessSearch} autoFocus placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
           <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!!pending || visibleServerAccessProfiles.length === 0} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!!pending || serverAccessDraft.length === 0} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
-          <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => <label className="server-picker-option" key={profile.id}><Input type="checkbox" checked={serverAccessDraft.includes(profile.id)} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{gameLabel(profile.kind)}</small></span></label>)}
+          <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
+            const assigned = serverAccessDraft.includes(profile.id)
+            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop }
+            return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{gameLabel(profile.kind)}</small></span></label>
+              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label></div></div>
+          })}
             {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>
           <div className="server-picker-footer"><span>Changes apply when you save.</span><div className="actions"><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button><Button disabled={!!pending} onClick={() => void saveDeviceServerAccess()}>{pending === serverAccessDevice.id ? 'Saving…' : 'Save access'}</Button></div></div>
         </dialog>}

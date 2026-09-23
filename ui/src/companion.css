@@ -321,6 +321,11 @@ main { padding-top: 24px; }
 .connection-warning { font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .connection-warning { margin: 8px 0 0; padding: 9px 11px; border: 1px solid #83584d; border-radius: 7px; background: #30221e; color: #f1c2b5; }
 .connection-warning strong { color: #ffddd2; }
+.port-conflict-action, .configured-port-warning { margin-top: 11px; padding: 11px 13px; border: 1px solid #83584d; border-radius: 8px; background: #30221e; color: #f1c2b5; font-size: 12px; line-height: 1.5; }
+.port-conflict-action strong, .configured-port-warning strong { color: #ffddd2; }
+.port-conflict-action p, .configured-port-warning p { margin: 4px 0 0; }
+.port-conflict-action small, .configured-port-warning small { display: block; margin-top: 7px; color: #d9b6ad; }
+.port-conflict-action button { margin-top: 9px; }
 .friend-connection-help { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 13px; margin: 12px 0; padding: 11px 13px; border: 1px solid #5f5945; border-radius: 8px; background: #28271f; font-size: 12px; line-height: 1.5; }
 .friend-connection-help strong { color: #efe4ba; }
 .friend-connection-help p { margin: 3px 0 0; color: #c8c8b7; }
@@ -696,15 +701,19 @@ main { padding-top: 22px; }
 .server-picker-toolbar > strong { color: #b7c5b6; font-size: 12px; }
 .server-picker-toolbar .actions { flex-wrap: nowrap; }
 .server-picker-list { max-height: min(420px, 45vh); overflow-y: auto; border: 1px solid #3f5142; border-radius: 9px; background: #141d17; }
-.server-picker-option { display: flex; align-items: center; gap: 12px; min-height: 54px; margin: 0; padding: 10px 13px; cursor: pointer; }
+.server-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 62px; margin: 0; padding: 10px 13px; }
 .server-picker-option + .server-picker-option { border-top: 1px solid #303f33; }
 .server-picker-option:hover { background: #1d2b21; }
-.server-picker-option > .ui-input { flex: 0 0 auto; width: 17px; height: 17px; margin: 0; }
+.server-picker-access { display: flex; align-items: center; gap: 12px; min-width: 0; cursor: pointer; }
+.server-picker-access > .ui-input { flex: 0 0 auto; width: 17px; height: 17px; margin: 0; }
 .server-picker-option span { min-width: 0; }
 .server-picker-option strong, .server-picker-option small { display: block; }
 .server-picker-option strong { overflow: hidden; color: #e3ece1; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .server-picker-option small { margin-top: 3px; color: #8f9e90; font-size: 11px; }
-.server-picker-option input:checked + span strong { color: #cfeebe; }
+.server-picker-access input:checked + span strong { color: #cfeebe; }
+.server-picker-permissions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.server-picker-permissions label { display: flex; align-items: center; gap: 5px; margin: 0; padding: 6px 8px; border: 1px solid #3e5041; border-radius: 7px; color: #bdcabc; font-size: 11px; cursor: pointer; }
+.server-picker-permissions .ui-input { width: 15px; height: 15px; margin: 0; }
 .server-picker-empty { padding: 28px 16px; color: #9ba99c; font-size: 12px; text-align: center; }
 .server-picker-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 16px; }
 .server-picker-footer > span { color: #8f9e90; font-size: 11px; }
@@ -777,6 +786,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .device-server-summary { grid-column: auto; align-items: stretch; flex-direction: column; }
   .device-server-summary button { width: 100%; }
   .server-picker-toolbar, .server-picker-footer { align-items: stretch; flex-direction: column; }
+  .server-picker-option { align-items: stretch; flex-direction: column; }
+  .server-picker-permissions { padding-left: 29px; }
   .server-picker-toolbar .actions, .server-picker-footer .actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
   .server-picker-toolbar .actions button, .server-picker-footer .actions button { width: 100%; }
   .next-action, .access-strip, .sticky-save { align-items: stretch; flex-direction: column; }

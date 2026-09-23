@@ -118,9 +118,19 @@ await Check("managed port overlap", async () =>
     var port = FreePort();
     var a = Profile("port-a", "port-a", port);
     var b = Profile("port-b", "port-b", port + 1);
-    Require((await manager.UpdateSettingsAsync(Settings(a, b))).Ok, "settings failed");
+    var settings = Settings(a, b);
+    settings.MaxConcurrentServers = 1;
+    Require((await manager.UpdateSettingsAsync(settings)).Ok, "settings failed");
     Require((await manager.StartAsync(a.Id)).Ok, "first start failed");
-    try { Require((await manager.StartAsync(b.Id)).Code == "PortConflict", "overlap was allowed"); }
+    try
+    {
+        var conflict = await manager.StartAsync(b.Id);
+        var portConflict = conflict.PortConflicts?.SingleOrDefault();
+        Require(conflict.Code == "PortConflict" && conflict.Message.Contains("port-a", StringComparison.Ordinal) &&
+            portConflict is not null && portConflict.ProfileId == a.Id &&
+            portConflict.SharedPorts.Any(shared => shared.Port == port + 1),
+            "overlap was allowed or did not identify the running server before the general concurrency limit");
+    }
     finally { Require((await manager.StopAsync(a.Id)).Ok, "fixture cleanup failed"); }
 });
 

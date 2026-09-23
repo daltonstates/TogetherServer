@@ -473,14 +473,14 @@ app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePer
 {
     await modeGate.WaitAsync();
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop)); }
+        Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop, request.Scope)); }
     finally { modeGate.Release(); }
 });
 app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerAccessRequest request) =>
 {
     await modeGate.WaitAsync();
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetServerAccess(id, request.ProfileIds,
+        Results.Json(pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
             data.LoadSettings().Profiles.Select(profile => profile.Id))); }
     finally { modeGate.Release(); }
 });

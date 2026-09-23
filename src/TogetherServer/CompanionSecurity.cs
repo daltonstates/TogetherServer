@@ -19,11 +19,27 @@ public sealed class PairedDevice
     public string Name { get; set; } = "";
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
+    // Global permissions remain the default. Entries are stored only when an
+    // assigned server differs from that default, so the owner can see and edit
+    // explicit per-server exceptions without duplicating the access list.
+    public List<ServerPermissionOverride>? ServerPermissionOverrides { get; set; }
     public bool Revoked { get; set; }
     public string? InviteHash { get; set; }
     public DateTimeOffset? InviteExpiresUtc { get; set; }
     public string? CredentialHash { get; set; }
     public DateTimeOffset? CredentialExpiresUtc { get; set; }
+
+    public bool CanStartProfile(Guid profileId) => ServerPermissionOverrides?
+        .FirstOrDefault(item => item.ProfileId == profileId)?.CanStart ?? CanStart;
+    public bool CanStopProfile(Guid profileId) => ServerPermissionOverrides?
+        .FirstOrDefault(item => item.ProfileId == profileId)?.CanStop ?? CanStop;
+}
+
+public sealed class ServerPermissionOverride
+{
+    public Guid ProfileId { get; set; }
+    public bool CanStart { get; set; }
+    public bool CanStop { get; set; }
 }
 
 public sealed class ServerInviteState
@@ -40,7 +56,9 @@ public sealed class ServerInviteState
 
 public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> AssignedProfileIds,
     string Name, bool CanStart, bool CanStop, bool Revoked,
-    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc);
+    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc,
+    IReadOnlyList<ServerPermissionView>? ServerPermissions = null);
+public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop);
 
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
     bool ServerScope = false);
@@ -51,8 +69,10 @@ public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Seque
 public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
-public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
-public sealed record DeviceServerAccessRequest(IReadOnlyList<Guid>? ProfileIds);
+public sealed record DevicePermissionRequest(bool CanStart, bool CanStop, string? Scope = null);
+public sealed record DeviceServerPermissionRequest(Guid ProfileId, bool CanStart, bool CanStop);
+public sealed record DeviceServerAccessRequest(IReadOnlyList<Guid>? ProfileIds,
+    IReadOnlyList<DeviceServerPermissionRequest>? Permissions = null);
 public sealed record DeviceNameRequest(string? Name);
 public sealed record FriendPairRequest(string Invitation, string? HostAddress = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -248,6 +268,34 @@ public sealed class PairingService
                 device.AssignedProfileIds = normalized;
                 changed = true;
             }
+            if (device.ServerPermissionOverrides is null)
+            {
+                device.ServerPermissionOverrides = [];
+                changed = true;
+            }
+            var normalizedPermissions = device.ServerPermissionOverrides
+                .Where(item => item.ProfileId != Guid.Empty && normalized.Contains(item.ProfileId))
+                .GroupBy(item => item.ProfileId)
+                // Corrupt duplicate entries collapse to the most restrictive
+                // effective permission so normalization never expands access.
+                .Select(group => new ServerPermissionOverride
+                {
+                    ProfileId = group.Key,
+                    CanStart = group.All(item => item.CanStart),
+                    CanStop = group.All(item => item.CanStop)
+                })
+                .Where(item => item.CanStart != device.CanStart || item.CanStop != device.CanStop)
+                .ToList();
+            if (normalizedPermissions.Count != device.ServerPermissionOverrides.Count ||
+                normalizedPermissions.Where((item, index) =>
+                    index >= device.ServerPermissionOverrides.Count ||
+                    item.ProfileId != device.ServerPermissionOverrides[index].ProfileId ||
+                    item.CanStart != device.ServerPermissionOverrides[index].CanStart ||
+                    item.CanStop != device.ServerPermissionOverrides[index].CanStop).Any())
+            {
+                device.ServerPermissionOverrides = normalizedPermissions;
+                changed = true;
+            }
         }
         return changed;
     }
@@ -281,6 +329,8 @@ public sealed class PairingService
                 if (!validAssignments.SequenceEqual(assigned))
                 {
                     device.AssignedProfileIds = validAssignments;
+                    device.ServerPermissionOverrides = device.ServerPermissionOverrides!
+                        .Where(permission => validAssignments.Contains(permission.ProfileId)).ToList();
                     changedDevices = true;
                 }
                 if (device.ProfileId == Guid.Empty || known.Contains(device.ProfileId) || device.Revoked) continue;
@@ -340,7 +390,9 @@ public sealed class PairingService
             return new DeviceView(device.Id, device.ProfileId, device.AssignedProfileIds!.ToArray(),
                 device.Name, device.CanStart, device.CanStop, IsRevoked(device),
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
-                fresh ? heartbeat!.ReceivedUtc : null);
+                fresh ? heartbeat!.ReceivedUtc : null,
+                device.AssignedProfileIds.Select(profileId => new ServerPermissionView(profileId,
+                    device.CanStartProfile(profileId), device.CanStopProfile(profileId))).ToList());
         }).ToList();
     }
 
@@ -371,6 +423,7 @@ public sealed class PairingService
                 var newDeviceId = Guid.NewGuid();
                 device = new PairedDevice { Id = newDeviceId,
                     AssignedProfileIds = [],
+                    ServerPermissionOverrides = [],
                     Name = name == "Friend PC" ? $"Friend PC {newDeviceId.ToString("N")[..6]}" : name,
                     CanStart = canStart, CanStop = canStop };
                 devices.Add(device);
@@ -399,6 +452,7 @@ public sealed class PairingService
                 {
                     Id = id, ProfileId = state.ProfileId, InviteGeneration = state.Generation,
                     AssignedProfileIds = [state.ProfileId],
+                    ServerPermissionOverrides = [],
                     Name = $"Friend PC {id.ToString("N")[..6]}", CanStart = state.CanStart,
                     CanStop = state.CanStop, CredentialHash = Hash(serverToken), CredentialExpiresUtc = expires
                 });
@@ -470,21 +524,36 @@ public sealed class PairingService
         }
     }
 
-    public PairingDecision SetPermissions(Guid id, bool canStart, bool canStop)
+    public PairingDecision SetPermissions(Guid id, bool canStart, bool canStop, string? scope = null)
     {
+        if (scope is not (null or "start" or "stop"))
+            return new PairingDecision(false, "InvalidPermissionScope", "Choose Start or Stop permissions.");
         lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Pair this Friend PC first.");
-            device.CanStart = canStart;
-            device.CanStop = canStop;
+            var effective = device.AssignedProfileIds!.ToDictionary(profileId => profileId, profileId =>
+                (CanStart: device.CanStartProfile(profileId), CanStop: device.CanStopProfile(profileId)));
+            if (scope is null or "start") device.CanStart = canStart;
+            if (scope is null or "stop") device.CanStop = canStop;
+            device.ServerPermissionOverrides = device.AssignedProfileIds!.Select(profileId =>
+            {
+                var previous = effective[profileId];
+                return new ServerPermissionOverride
+                {
+                    ProfileId = profileId,
+                    CanStart = scope == "stop" ? previous.CanStart : device.CanStart,
+                    CanStop = scope == "start" ? previous.CanStop : device.CanStop
+                };
+            }).Where(permission => permission.CanStart != device.CanStart || permission.CanStop != device.CanStop).ToList();
             data.SaveDevices(devices);
             data.Audit($"permissions-change {device.Id} {DateTimeOffset.UtcNow:O}");
             return new PairingDecision(true, "PermissionsSaved", "Friend permissions changed immediately.");
         }
     }
 
-    public PairingDecision SetServerAccess(Guid id, IReadOnlyList<Guid>? profileIds, IEnumerable<Guid> knownProfileIds)
+    public PairingDecision SetServerAccess(Guid id, IReadOnlyList<Guid>? profileIds,
+        IReadOnlyList<DeviceServerPermissionRequest>? permissions, IEnumerable<Guid> knownProfileIds)
     {
         if (profileIds is null || profileIds.Any(profileId => profileId == Guid.Empty) ||
             profileIds.Distinct().Count() != profileIds.Count)
@@ -492,11 +561,32 @@ public sealed class PairingService
         var known = knownProfileIds.ToHashSet();
         if (profileIds.Any(profileId => !known.Contains(profileId)))
             return new PairingDecision(false, "UnknownServer", "One or more selected servers are no longer saved on this Host.");
+        if (permissions is not null && (permissions.Any(permission => permission.ProfileId == Guid.Empty ||
+                !profileIds.Contains(permission.ProfileId)) ||
+            permissions.Select(permission => permission.ProfileId).Distinct().Count() != permissions.Count))
+            return new PairingDecision(false, "InvalidServerPermissions",
+                "Save at most one Start and Stop permission for each selected server.");
         lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Pair this Friend PC first.");
             device.AssignedProfileIds = profileIds.ToList();
+            if (permissions is null)
+            {
+                device.ServerPermissionOverrides = device.ServerPermissionOverrides!
+                    .Where(permission => device.AssignedProfileIds.Contains(permission.ProfileId)).ToList();
+            }
+            else
+            {
+                device.ServerPermissionOverrides = permissions
+                    .Where(permission => permission.CanStart != device.CanStart || permission.CanStop != device.CanStop)
+                    .Select(permission => new ServerPermissionOverride
+                    {
+                        ProfileId = permission.ProfileId,
+                        CanStart = permission.CanStart,
+                        CanStop = permission.CanStop
+                    }).ToList();
+            }
             data.SaveDevices(devices);
             data.Audit($"server-access-change {device.Id} {device.AssignedProfileIds.Count} {DateTimeOffset.UtcNow:O}");
             return new PairingDecision(true, "ServerAccessSaved", device.AssignedProfileIds.Count == 0
@@ -508,6 +598,18 @@ public sealed class PairingService
     public bool CanAccess(PairedDevice device, Guid profileId)
     {
         lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId);
+    }
+
+    public bool CanStart(PairedDevice device, Guid profileId)
+    {
+        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
+            device.CanStartProfile(profileId);
+    }
+
+    public bool CanStop(PairedDevice device, Guid profileId)
+    {
+        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
+            device.CanStopProfile(profileId);
     }
 
     public PairingDecision SetName(Guid id, string? name)

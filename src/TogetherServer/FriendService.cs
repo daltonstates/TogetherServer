@@ -22,14 +22,15 @@ public sealed class FriendConfiguration
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
     bool CanStopNow = false, string? StopReason = null, string Kind = "",
     int? OnlinePlayers = null, int? MaxPlayers = null, DateTimeOffset? AutoShutdownAtUtc = null,
-    string? AutoShutdownReason = null);
+    string? AutoShutdownReason = null, bool CanStart = false, bool CanStop = false);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
     Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
     string? ConnectionCode = null);
-public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status);
+public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status,
+    IReadOnlyList<PortConflictView>? PortConflicts = null);
 
 internal sealed class FriendLink
 {
@@ -187,11 +188,12 @@ internal sealed class FriendLink
         try
         {
             if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
-            if (action is not ("start" or "stop")) return new(false, "InvalidAction", "Only Start and Stop are available.", null);
+            if (action is not ("start" or "stop" or "replace"))
+                return new(false, "InvalidAction", "Only Start, Stop, and empty-server conflict replacement are available.", null);
             try
             {
                 using var client = MakeClient(config.Endpoint, config.Fingerprint);
-                if (action == "stop") client.Timeout = TimeSpan.FromSeconds(105);
+                if (action is "stop" or "replace") client.Timeout = TimeSpan.FromSeconds(105);
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
                 using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + action)
                 {

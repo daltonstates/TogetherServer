@@ -38,6 +38,7 @@ var joinProfile = new ServerProfile { Kind = "Valheim", Name = "Friend join exam
 Process? host = null, friendA = null, friendB = null, peerHost = null, stopHost = null, stopFriend = null;
 var stopHostPort = 0;
 var stopProfileId = Guid.Empty;
+var replacementProfileId = Guid.Empty;
 var passes = 0;
 try
 {
@@ -226,6 +227,37 @@ try
     Require(assignedBoth.Ok && bView.Profiles.Select(item => item.Id).ToHashSet()
             .SetEquals([profile.Id, joinProfile.Id]),
         "the Host could not assign one Friend PC to multiple saved servers");
+    var serverPermissions = new[]
+    {
+        new DeviceServerPermissionRequest(profile.Id, false, true),
+        new DeviceServerPermissionRequest(joinProfile.Id, true, false)
+    };
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id], serverPermissions))).Ok,
+        "per-server Start and Stop exceptions were not saved");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    var profilePermission = bView.Profiles.Single(item => item.Id == profile.Id);
+    var joinPermission = bView.Profiles.Single(item => item.Id == joinProfile.Id);
+    var mixedDevice = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices")
+        .EnumerateArray().Single(device => device.GetProperty("id").GetGuid() == deviceBId);
+    Require(!profilePermission.CanStart && profilePermission.CanStop && joinPermission.CanStart && !joinPermission.CanStop &&
+        !mixedDevice.GetProperty("canStart").GetBoolean() && mixedDevice.GetProperty("canStop").GetBoolean() &&
+        mixedDevice.GetProperty("serverPermissions").EnumerateArray().Count() == 2,
+        "Friend status or Host mixed-permission data ignored per-server exceptions");
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/permissions", new(true, true, "start"))).Ok,
+        "the global Start control did not apply to every assigned server");
+    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
+    profilePermission = bView.Profiles.Single(item => item.Id == profile.Id);
+    joinPermission = bView.Profiles.Single(item => item.Id == joinProfile.Id);
+    Require(profilePermission.CanStart && joinPermission.CanStart && profilePermission.CanStop && !joinPermission.CanStop,
+        "changing global Start erased a per-server Stop exception");
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/permissions", new(false, true, "start"))).Ok,
+        "the global Start control could not be returned to its prior default");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id], serverPermissions))).Ok,
+        "per-server exceptions could not be restored after a global permission change");
     var assignedButPaused = await OwnerPost<object, FriendActionResult>(bLocal,
         $"/api/local/friend/{joinProfile.Id}/start", new { });
     Require(assignedButPaused.Code == "RemoteControlsDisabled",
@@ -241,7 +273,7 @@ try
     Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
         $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id]))).Ok,
         "the Host could not restore multiple server assignments");
-    Console.WriteLine("PASS codes grant one server and the Host can reassign zero, one, or multiple saved servers"); passes++;
+    Console.WriteLine("PASS codes grant server access while per-server Start and Stop exceptions remain authoritative"); passes++;
     var pairedSecondGame = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(inviteB)));
     Require(pairedSecondGame.Ok, "second server pairing replaced the first or failed");
@@ -566,14 +598,19 @@ try
     var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
         ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
         ExecutablePath = valheimFixturePath, GamePort = gamePort + 20 };
+    var replacementProfile = new ServerProfile { Kind = "Valheim", Name = "Replacement synthetic world",
+        ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
+        ExecutablePath = valheimFixturePath, GamePort = stopProfile.GamePort };
     stopProfileId = stopProfile.Id;
+    replacementProfileId = replacementProfile.Id;
     stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
+    replacementProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", replacementProfile.Id.ToString("N"));
     stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 7000);
     stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
     await WaitLocal(stopHostPort); await WaitLocal(stopFriendPort);
     using var stopOwner = LocalClient(stopHostPort);
     using var stopFriendLocal = LocalClient(stopFriendPort);
-    var stopSettings = new HostSettings { Profiles = [stopProfile], CompanionEndpoint = stopEndpoint,
+    var stopSettings = new HostSettings { Profiles = [stopProfile, replacementProfile], CompanionEndpoint = stopEndpoint,
         CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort,
         AutoShutdownEnabled = true, IdleMinutes = 15 };
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
@@ -581,6 +618,9 @@ try
     Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/password", new("fixture-pass-123"))).Ok,
         "restricted Host password failed");
+    Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
+        $"/api/local/profiles/{replacementProfile.Id}/password", new("fixture-pass-123"))).Ok,
+        "replacement Host password failed");
     var stopInvite = await ServerInvite(stopOwner, stopProfile.Id, true, enableConnections: true);
     var stopPair = await OwnerPost<FriendPairRequest, FriendActionResult>(stopFriendLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(stopInvite)));
@@ -608,13 +648,14 @@ try
     var ready = false;
     for (var i = 0; i < 60; i++)
     {
-        var state = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single().State;
+        var state = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == stopProfile.Id).State;
         if (state == "Ready") { ready = true; break; }
         await Task.Delay(100);
     }
     Require(ready, "restricted synthetic server never reached Ready");
     var readySnapshot = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
-    var hostRun = readySnapshot.Runs.Single();
+    var hostRun = readySnapshot.Runs.Single(run => run.ProfileId == stopProfile.Id);
     var hostDeadline = hostRun.AutoShutdownAtUtc;
     Require(hostRun.OnlinePlayers == 0 && hostRun.MaxPlayers == 10 &&
         hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(14),
@@ -622,7 +663,7 @@ try
     var extendedCountdown = await OwnerPost<CountdownExtensionRequest, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/countdown/extend", new(37));
     Require(extendedCountdown.Ok, "Host could not extend an active countdown");
-    hostDeadline = extendedCountdown.Snapshot.Runs.Single().AutoShutdownAtUtc;
+    hostDeadline = extendedCountdown.Snapshot.Runs.Single(run => run.ProfileId == stopProfile.Id).AutoShutdownAtUtc;
     Require(hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(51),
         "Host countdown extension did not add the requested 37 minutes");
     var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
@@ -649,6 +690,88 @@ try
         "remote Stop did not use the synthetic console's graceful exit");
     Console.WriteLine("PASS Host extends the count-only timer; Friend sees counts/deadline and stops only at zero through HTTPS and Ctrl+C"); passes++;
 
+    var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");
+    File.Delete(stopMarker);
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{stopDeviceId}/servers", new([replacementProfile.Id],
+            [new DeviceServerPermissionRequest(replacementProfile.Id, true, false)]))).Ok,
+        "replacement server access and its Start-only permission were not saved");
+    var replacementView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    Require(replacementView.Profiles.Single().Id == replacementProfile.Id &&
+        replacementView.Profiles.Single().CanStart && !replacementView.Profiles.Single().CanStop,
+        "the Friend did not receive the replacement server's specific permissions");
+    Require((await OwnerPost<object, ActionResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/start", new { })).Ok,
+        "conflicting server did not restart");
+    ready = false;
+    for (var i = 0; i < 60; i++)
+    {
+        var state = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == stopProfile.Id).State;
+        if (state == "Ready") { ready = true; break; }
+        await Task.Delay(100);
+    }
+    Require(ready, "conflicting server never reached Ready for replacement checks");
+    Require((await OwnerPost<CountdownExtensionRequest, ActionResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/countdown/extend", new(37))).Ok,
+        "Host keep-alive extension was not applied before the replacement check");
+    var protectedConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    var protectedServer = protectedConflict.PortConflicts?.SingleOrDefault();
+    Require(!protectedConflict.Ok && protectedConflict.Code == "PortConflict" &&
+        protectedServer is { ProfileId: var protectedId, CanReplace: false } && protectedId == stopProfile.Id &&
+        protectedServer.BlockReason?.Contains("time added by the Host", StringComparison.OrdinalIgnoreCase) == true,
+        "a Host keep-alive extension did not block empty-server conflict replacement");
+
+    File.WriteAllText(playerCountPath, "not-a-count");
+    _ = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    var unknownConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    Require(!unknownConflict.Ok && unknownConflict.Code == "PortConflict" &&
+        unknownConflict.PortConflicts?.SingleOrDefault() is
+            { ProfileId: var unknownConflictId, CanReplace: false } &&
+        unknownConflictId == stopProfile.Id &&
+        unknownConflict.PortConflicts.Single().BlockReason?.Contains("reliable current player count", StringComparison.OrdinalIgnoreCase) == true,
+        "a conflicting server with an Unknown player count was incorrectly offered for replacement");
+    File.WriteAllText(playerCountPath, "1");
+    _ = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    var occupiedConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    Require(!occupiedConflict.Ok && occupiedConflict.Code == "PortConflict" &&
+        occupiedConflict.PortConflicts?.SingleOrDefault() is
+            { ProfileId: var occupiedConflictId, CanReplace: false } &&
+        occupiedConflictId == stopProfile.Id &&
+        occupiedConflict.PortConflicts.Single().BlockReason?.Contains("player", StringComparison.OrdinalIgnoreCase) == true,
+        "an occupied conflicting server was incorrectly offered for replacement");
+    File.WriteAllText(playerCountPath, "0");
+    _ = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    var replaceableConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    Require(!replaceableConflict.Ok && replaceableConflict.Code == "PortConflict" &&
+        replaceableConflict.PortConflicts?.SingleOrDefault() is { ProfileId: var conflictId, CanReplace: true } &&
+        conflictId == stopProfile.Id,
+        "an empty unextended conflicting server was not offered as an explicit replacement");
+    var replaced = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{replacementProfile.Id}/replace", new { });
+    Require(replaced.Ok && replaced.Code == "PortConflictReplaced" && File.Exists(stopMarker) &&
+        (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == replacementProfile.Id).State is "Starting" or "Ready",
+        $"Start-only Friend could not explicitly replace the unassigned empty conflict: {replaced.Code} {replaced.Message}");
+    ready = false;
+    for (var i = 0; i < 60; i++)
+    {
+        var state = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == replacementProfile.Id).State;
+        if (state == "Ready") { ready = true; break; }
+        await Task.Delay(100);
+    }
+    Require(ready, "replacement server never reached Ready after the conflicting empty server stopped");
+    var replacementCleanup = await OwnerPost<object, ActionResult>(stopOwner,
+        $"/api/local/profiles/{replacementProfile.Id}/stop", new { });
+    Require(replacementCleanup.Ok,
+        $"replacement fixture cleanup failed: {replacementCleanup.Code} {replacementCleanup.Message}");
+    Console.WriteLine("PASS Start-only Friend can replace an unassigned empty port conflict, but Host-added time blocks it"); passes++;
+
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;
 }
@@ -667,8 +790,9 @@ finally
         {
             using var stopOwner = LocalClient(stopHostPort);
             var snapshot = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
-            if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == stopProfileId)?.State is "Ready" or "Starting")
-                await OwnerPost<object, ActionResult>(stopOwner, $"/api/local/profiles/{stopProfileId}/stop", new { });
+            foreach (var profileId in new[] { stopProfileId, replacementProfileId })
+                if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == profileId)?.State is "Ready" or "Starting" or "Process running")
+                    await OwnerPost<object, ActionResult>(stopOwner, $"/api/local/profiles/{profileId}/stop", new { });
         }
         catch { Console.WriteLine("Restricted fixture cleanup via Host failed; inspect the recorded process."); }
     }

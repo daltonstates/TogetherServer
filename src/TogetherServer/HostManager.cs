@@ -5,10 +5,14 @@ namespace TogetherServer;
 
 public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId,
     IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
-    DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null);
+    DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null,
+    bool HostAddedTime = false);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
-public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot);
+public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
+    bool CanReplace, string? BlockReason = null);
+public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
+    IReadOnlyList<PortConflictView>? PortConflicts = null);
 public sealed record CountdownExtensionRequest(long Minutes);
 
 public sealed class HostManager
@@ -20,6 +24,7 @@ public sealed class HostManager
     private HostSettings settings;
     private readonly List<ManagedRun> runs;
     private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
+    private readonly HashSet<Guid> hostAddedTime = [];
 
     public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
@@ -75,7 +80,10 @@ public sealed class HostManager
             if (next.RemoteControlsEnabled &&
                 !(serverInvites.Any(invite => invite.CanStart || invite.CanStop) ||
                     devices.Any(device => (device.InviteHash is not null ||
-                    device.CredentialHash is not null) && (device.CanStart || device.CanStop))))
+                    device.CredentialHash is not null) &&
+                    (device.AssignedProfileIds ??
+                        (device.ProfileId == Guid.Empty ? [] : [device.ProfileId])).Any(profileId =>
+                        device.CanStartProfile(profileId) || device.CanStopProfile(profileId)))))
                 return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
             foreach (var run in runs)
             {
@@ -90,7 +98,10 @@ public sealed class HostManager
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
                 data.Audit($"auto-shutdown {(next.AutoShutdownEnabled ? "enabled" : "disabled")} idle-minutes={next.IdleMinutes} {clock.GetUtcNow():O}");
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
+            {
                 shutdownDeadlines.Clear();
+                hostAddedTime.Clear();
+            }
             settings = next;
             return Result(true, "SettingsSaved", "Host settings saved.");
         }
@@ -137,71 +148,134 @@ public sealed class HostManager
     public async Task<ActionResult> StartAsync(Guid profileId)
     {
         await gate.WaitAsync();
+        try { return StartUnderGate(profileId); }
+        finally { gate.Release(); }
+    }
+
+    // This is an explicit Friend action after an ordinary Start reports the
+    // conflict. It never runs automatically from the first Start request.
+    public async Task<ActionResult> ReplaceEmptyPortConflictsAndStartAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
         try
         {
-            var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
-            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
-            if (!games.TryGet(profile.Kind, out var driver))
-                return Result(false, "UnsupportedGame", "This game type is not installed in TogetherServer.");
-            if (runs.Any(r => r.ProfileId == profileId))
-                return Result(false, "AlreadyManaged", "This profile already has a managed or unresolved run.");
-            if (runs.Any(r => WorldConflict(r, profile)))
-                return Result(false, "WorldConflict", "Another managed run owns this world or save directory.");
-            if (runs.Count >= settings.MaxConcurrentServers)
-                return Result(false, "MaxConcurrent", "The managed server limit has been reached.");
-            if (!File.Exists(profile.ExecutablePath))
-                return Result(false, "ExecutableMissing", "Selected server executable does not exist.");
-            var validation = driver.ValidateForStart(profile);
-            if (validation is not null) return Result(false, validation.Code, validation.Message);
-            var declaredPorts = driver.Ports(profile).ToList();
-            foreach (var existing in runs)
-            {
-                var ownedPorts = PortsForRun(existing);
-                if (ownedPorts is null)
-                    return Result(false, "PortOwnershipUnknown", "A managed run's game ports cannot be verified. Resolve that run before starting another server.");
-                if (ownedPorts.Any(owned => declaredPorts.Any(requested => PortOverlap(owned, requested))))
-                    return Result(false, "PortConflict", "Another managed run owns one of these game ports.");
-            }
-            if (!GameServerRegistry.PortsAvailable(declaredPorts))
-                return Result(false, "PortInUse", "One or more configured game ports are already in use.");
+            var initial = StartUnderGate(profileId);
+            if (initial.Code != "PortConflict" || initial.PortConflicts is not { Count: > 0 }) return initial;
+            if (initial.PortConflicts.Any(conflict => !conflict.CanReplace))
+                return Result(false, "PortConflictProtected",
+                    initial.PortConflicts.First(conflict => !conflict.CanReplace).BlockReason ??
+                    "The conflicting server cannot be stopped safely.", initial.PortConflicts);
+            var conflictingIds = initial.PortConflicts.Select(conflict => conflict.ProfileId).ToHashSet();
+            if (runs.Count(run => !conflictingIds.Contains(run.ProfileId)) >= settings.MaxConcurrentServers)
+                return Result(false, "MaxConcurrent",
+                    "Stopping the port conflict would still leave the managed server limit full, so no server was stopped.",
+                    initial.PortConflicts);
 
-            var run = new ManagedRun
+            var stoppedNames = new List<string>();
+            foreach (var conflict in initial.PortConflicts)
             {
-                ProfileId = profile.Id,
-                OperationId = Guid.NewGuid(),
-                Kind = profile.Kind,
-                WorldId = profile.WorldId,
-                WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
-                GamePort = profile.GamePort,
-                DeclaredPorts = declaredPorts,
-                ExecutablePath = Path.GetFullPath(profile.ExecutablePath),
-                ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
-                StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
-            };
-            shutdownDeadlines.Remove(profileId);
-            driver.PrepareStart(profile, run);
-            runs.Add(run);
-            data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
-            try
-            {
-                var launch = driver.Start(profile, run);
-                run.ProcessId = launch.ProcessId;
-                using (var started = Process.GetProcessById(run.ProcessId.Value))
-                    run.StartTimeUtcTicks = started.StartTime.ToUniversalTime().Ticks;
-                data.SaveRuns(runs);
-                return Result(true, launch.Code, launch.Message);
+                if (HostAddedTimeIsActive(conflict.ProfileId))
+                    return Result(false, "PortConflictProtected",
+                        $"{conflict.ProfileName} is being kept alive with time added by the Host.", initial.PortConflicts);
+                var operation = await StopUnderGateAsync(conflict.ProfileId, run =>
+                    !HostAddedTimeIsActive(conflict.ProfileId) &&
+                    games.TryGet(run.Kind, out var driver) &&
+                    driver.Health(run) is { Ok: true, State: "Ready", OnlinePlayers: 0 });
+                if (!operation.Ok)
+                    return Result(false, operation.Code,
+                        $"{conflict.ProfileName} was not stopped, so the requested server was not started. {operation.Message}",
+                        initial.PortConflicts);
+                stoppedNames.Add(conflict.ProfileName);
             }
-            catch (Exception ex)
-            {
-                if (run.ProcessId is null)
+
+            var started = StartUnderGate(profileId);
+            return started.Ok
+                ? started with
                 {
-                    runs.Remove(run);
-                    data.SaveRuns(runs);
+                    Code = "PortConflictReplaced",
+                    Message = $"Stopped empty {string.Join(", ", stoppedNames)} and started the requested server. {started.Message}"
                 }
-                return Result(false, "LaunchFailed", "Server launch failed: " + ex.Message);
-            }
+                : started;
         }
         finally { gate.Release(); }
+    }
+
+    private ActionResult StartUnderGate(Guid profileId)
+    {
+        var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
+        if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (!games.TryGet(profile.Kind, out var driver))
+            return Result(false, "UnsupportedGame", "This game type is not installed in TogetherServer.");
+        if (runs.Any(r => r.ProfileId == profileId))
+            return Result(false, "AlreadyManaged", "This profile already has a managed or unresolved run.");
+        if (runs.Any(r => WorldConflict(r, profile)))
+            return Result(false, "WorldConflict", "Another managed run owns this world or save directory.");
+        if (!File.Exists(profile.ExecutablePath))
+            return Result(false, "ExecutableMissing", "Selected server executable does not exist.");
+        var validation = driver.ValidateForStart(profile);
+        if (validation is not null) return Result(false, validation.Code, validation.Message);
+        var declaredPorts = driver.Ports(profile).ToList();
+        var conflicts = new List<(ManagedRun Run, IReadOnlyList<GamePort> SharedPorts)>();
+        foreach (var existing in runs)
+        {
+            var ownedPorts = PortsForRun(existing);
+            if (ownedPorts is null)
+                return Result(false, "PortOwnershipUnknown", "A managed run's game ports cannot be verified. Resolve that run before starting another server.");
+            var shared = ownedPorts.Where(owned => declaredPorts.Any(requested => PortOverlap(owned, requested))).ToList();
+            if (shared.Count > 0) conflicts.Add((existing, shared));
+        }
+        if (conflicts.Count > 0)
+        {
+            var views = conflicts.Select(conflict => PortConflict(conflict.Run, conflict.SharedPorts)).ToList();
+            var descriptions = views.Select(view =>
+                $"{view.ProfileName} ({string.Join(", ", view.SharedPorts.Select(PortLabel))})");
+            return Result(false, "PortConflict",
+                $"{profile.Name} shares a game port with running {string.Join("; ", descriptions)}. Stop the conflicting server before starting this one.",
+                views);
+        }
+        // Report a concrete port conflict before the general concurrency limit,
+        // so the person who initiated Start gets the actionable reason.
+        if (runs.Count >= settings.MaxConcurrentServers)
+            return Result(false, "MaxConcurrent", "The managed server limit has been reached.");
+        if (!GameServerRegistry.PortsAvailable(declaredPorts))
+            return Result(false, "PortInUse", "One or more configured game ports are already in use by another program.");
+
+        var run = new ManagedRun
+        {
+            ProfileId = profile.Id,
+            OperationId = Guid.NewGuid(),
+            Kind = profile.Kind,
+            WorldId = profile.WorldId,
+            WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
+            GamePort = profile.GamePort,
+            DeclaredPorts = declaredPorts,
+            ExecutablePath = Path.GetFullPath(profile.ExecutablePath),
+            ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
+            StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
+        };
+        shutdownDeadlines.Remove(profileId);
+        hostAddedTime.Remove(profileId);
+        driver.PrepareStart(profile, run);
+        runs.Add(run);
+        data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
+        try
+        {
+            var launch = driver.Start(profile, run);
+            run.ProcessId = launch.ProcessId;
+            using (var started = Process.GetProcessById(run.ProcessId.Value))
+                run.StartTimeUtcTicks = started.StartTime.ToUniversalTime().Ticks;
+            data.SaveRuns(runs);
+            return Result(true, launch.Code, launch.Message);
+        }
+        catch (Exception ex)
+        {
+            if (run.ProcessId is null)
+            {
+                runs.Remove(run);
+                data.SaveRuns(runs);
+            }
+            return Result(false, "LaunchFailed", "Server launch failed: " + ex.Message);
+        }
     }
 
     public async Task<ActionResult> StopAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
@@ -219,6 +293,7 @@ public sealed class HostManager
             if (!settings.AutoShutdownEnabled)
             {
                 shutdownDeadlines.Clear();
+                hostAddedTime.Clear();
                 return [];
             }
             var snapshot = Snapshot();
@@ -230,6 +305,7 @@ public sealed class HostManager
             foreach (var profileId in due)
             {
                 if (!shutdownDeadlines.Remove(profileId, out var deadline)) continue;
+                hostAddedTime.Remove(profileId);
                 var result = await StopUnderGateAsync(profileId,
                     run => AutoShutdownStillSafe(run, deadline));
                 data.Audit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
@@ -259,6 +335,7 @@ public sealed class HostManager
             {
                 return Result(false, "InvalidExtension", "That extension would put the countdown outside the supported date range.");
             }
+            hostAddedTime.Add(profileId);
             data.Audit($"auto-shutdown-extended {profileId} minutes={minutes} {clock.GetUtcNow():O}");
             var profileName = settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Name ?? "Server";
             return Result(true, "CountdownExtended", $"Added {minutes} minute{(minutes == 1 ? "" : "s")} to {profileName}'s countdown.");
@@ -287,6 +364,7 @@ public sealed class HostManager
             if (stopped.ExitCode != 0) return Result(false, stopped.Code, stopped.Message);
             runs.Remove(run);
             shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, stopped.Code, stopped.Message);
         }
@@ -337,6 +415,7 @@ public sealed class HostManager
                 return Result(false, "StillRunning", "The recorded process is still running and cannot be forgotten.");
             runs.Remove(run);
             shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, "RecordCleared", "The unresolved record was cleared by the local owner.");
         }
@@ -362,30 +441,37 @@ public sealed class HostManager
         }).ToList();
         var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
         foreach (var profileId in shutdownDeadlines.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
+        {
             shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
+        }
         for (var index = 0; index < views.Count; index++)
         {
             var view = views[index];
             if (view.State != "Ready")
             {
                 shutdownDeadlines.Remove(view.ProfileId);
+                hostAddedTime.Remove(view.ProfileId);
                 continue;
             }
             if (!settings.AutoShutdownEnabled)
             {
                 shutdownDeadlines.Remove(view.ProfileId);
+                hostAddedTime.Remove(view.ProfileId);
                 views[index] = view with { AutoShutdownReason = "Automatic shutdown is off." };
                 continue;
             }
             if (view.OnlinePlayers is null)
             {
                 shutdownDeadlines.Remove(view.ProfileId);
+                hostAddedTime.Remove(view.ProfileId);
                 views[index] = view with { AutoShutdownReason = "Waiting for a reliable player count." };
                 continue;
             }
             if (view.OnlinePlayers != 0)
             {
                 shutdownDeadlines.Remove(view.ProfileId);
+                hostAddedTime.Remove(view.ProfileId);
                 views[index] = view with { AutoShutdownReason = "Waiting for the server to be empty." };
                 continue;
             }
@@ -394,7 +480,11 @@ public sealed class HostManager
                 deadline = now.AddMinutes(settings.IdleMinutes);
                 shutdownDeadlines[view.ProfileId] = deadline;
             }
-            views[index] = view with { AutoShutdownAtUtc = deadline };
+            views[index] = view with
+            {
+                AutoShutdownAtUtc = deadline,
+                HostAddedTime = HostAddedTimeIsActive(view.ProfileId)
+            };
         }
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
@@ -406,7 +496,49 @@ public sealed class HostManager
         new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
             health.OnlinePlayers, health.MaxPlayers);
 
-    private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
+    private ActionResult Result(bool ok, string code, string message,
+        IReadOnlyList<PortConflictView>? portConflicts = null) =>
+        new(ok, code, message, Snapshot(), portConflicts);
+
+    private PortConflictView PortConflict(ManagedRun run, IReadOnlyList<GamePort> sharedPorts)
+    {
+        var name = settings.Profiles.SingleOrDefault(profile => profile.Id == run.ProfileId)?.Name ?? "another server";
+        var canReplace = CanReplacePortConflict(run, out var reason);
+        return new(run.ProfileId, name, sharedPorts, canReplace, reason);
+    }
+
+    private bool CanReplacePortConflict(ManagedRun run, out string? reason)
+    {
+        if (HostAddedTimeIsActive(run.ProfileId))
+        {
+            reason = $"{settings.Profiles.SingleOrDefault(profile => profile.Id == run.ProfileId)?.Name ?? "The conflicting server"} is being kept alive with time added by the Host.";
+            return false;
+        }
+        if (Identity(run) != "Matched" || !games.TryGet(run.Kind, out var driver))
+        {
+            reason = "The conflicting server's process or game driver cannot be verified.";
+            return false;
+        }
+        var health = driver.Health(run);
+        if (!health.Ok || health.State != "Ready" || health.OnlinePlayers is null)
+        {
+            reason = "The conflicting server does not have a reliable current player count.";
+            return false;
+        }
+        if (health.OnlinePlayers != 0)
+        {
+            reason = $"The conflicting server has {health.OnlinePlayers} player{(health.OnlinePlayers == 1 ? "" : "s")} online.";
+            return false;
+        }
+        reason = null;
+        return true;
+    }
+
+    private bool HostAddedTimeIsActive(Guid profileId) => hostAddedTime.Contains(profileId) &&
+        shutdownDeadlines.TryGetValue(profileId, out var deadline) && deadline > clock.GetUtcNow();
+
+    private static string PortLabel(GamePort port) => $"{port.Protocol.ToUpperInvariant()} {port.Port}" +
+        (port.Family == "Any" ? "" : $" {port.Family}");
 
     private string? Validate(HostSettings next)
     {

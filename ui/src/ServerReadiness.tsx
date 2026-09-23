@@ -154,8 +154,8 @@ function friendSummary(control: ControlCheck | undefined, result: InternetRouteC
     detail: 'The address used by new invites is missing or does not match this Host.'
   }
   if (result?.state === 'Reachable') return {
-    label: 'Friend access', state: 'Outside route reached', tone: 'good',
-    detail: 'A TCP check reached this PC; pairing from a Friend PC is still untested.'
+    label: 'Friend access', state: 'Reachable outside network', tone: 'good',
+    detail: 'An independent TCP check reached this PC; pairing from a Friend PC is still untested.'
   }
   if (result?.state === 'Not reachable') return {
     label: 'Friend access', state: 'Outside route blocked', tone: 'bad',

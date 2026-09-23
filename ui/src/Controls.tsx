@@ -4,6 +4,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes
 } from 'react'
+import { forwardRef } from 'react'
 
 function classes(base: string, className?: string) {
   return className ? `${base} ${className}` : base
@@ -13,9 +14,11 @@ export function Button({ className, type = 'button', ...props }: ButtonHTMLAttri
   return <button type={type} className={classes('ui-button', className)} {...props} />
 }
 
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={classes('ui-input', className)} {...props} />
-}
+export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input(
+  { className, ...props }, ref
+) {
+  return <input ref={ref} className={classes('ui-input', className)} {...props} />
+})
 
 export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select className={classes('ui-select', className)} {...props} />

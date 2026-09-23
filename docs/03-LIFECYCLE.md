@@ -7,10 +7,12 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 ### Start
 
 1. Authorize the local owner or authenticated Friend action. A Friend credential must currently be assigned to the requested saved server profile and have permission for the typed action. Reject remote requests while controls are disabled.
-2. Serialize starts/stops in the Host process. Recheck maximum concurrent managed servers, one writer per world, configured game-port conflicts, executable identity, save path, and available local ports immediately before launch.
+2. Serialize starts/stops in the Host process. Recheck one writer per world, configured driver-declared protocol/address-family/port conflicts, maximum concurrent managed servers, executable identity, save path, and available local ports immediately before launch. Report a named managed port conflict before the generic maximum so the initiator sees the actionable cause. Setup warnings and suggested non-overlapping configured ports are advisory; this gate is authoritative.
 3. Record an operation ID and its intended world/profile before launching. A repeated request with the same idempotency key returns the same result and never creates another server process.
 4. Start only the owner-approved installed server selected by the saved built-in game profile, with validated fixed arguments and an explicit world/save location. Do not modify installed game files or accept game terms. Capture logs without storing passwords or personal identifiers in Git.
 5. Show Starting until an actual readiness signal is observed. A fixture script or process-exists result is labeled Fixture/Process running; only a real client join can certify Join verified.
+
+An ordinary Start conflict does not stop anything. A paired device with Start permission for the requested assigned profile may separately confirm **replace empty port conflict**. Assignment or Stop permission for the conflicting profile is intentionally not required, but the response exposes only its saved name and shared ports. The Host denies replacement if remote controls are off, process identity is uncertain, readiness/count is unavailable, any player is online, or a Host-added countdown extension is active. It then repeats exact zero inside the lifecycle gate, gracefully stops each conflict, and launches the requested profile only after those exits are confirmed.
 
 ### Stop
 

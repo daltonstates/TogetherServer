@@ -156,17 +156,21 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 own?.AssignedProfileIds.Contains(profile.Id) == true).Select(profile =>
             {
                 var run = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+                var permission = own?.ServerPermissions?.SingleOrDefault(item => item.ProfileId == profile.Id);
+                var canStart = permission?.CanStart ?? own?.CanStart == true;
+                var canStop = permission?.CanStop ?? own?.CanStop == true;
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
                 return new PublicProfile(profile.Id, profile.Name,
                     run.State,
                     games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
-                    snapshot.Settings.RemoteControlsEnabled && own?.CanStop == true && permit.Allowed,
+                    snapshot.Settings.RemoteControlsEnabled && canStop && permit.Allowed,
                     permit.Allowed ? null : permit.Reason, profile.Kind, run.OnlinePlayers, run.MaxPlayers,
-                    run.AutoShutdownAtUtc, run.AutoShutdownReason);
+                    run.AutoShutdownAtUtc, run.AutoShutdownReason, canStart, canStop);
             }).ToList();
             return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",
-                profiles, own?.CanStart == true, own?.CanStop == true, DateTimeOffset.UtcNow);
+                profiles, profiles.Any(profile => profile.CanStart), profiles.Any(profile => profile.CanStop),
+                DateTimeOffset.UtcNow);
         }
 
         var companion = app.MapGroup("/api/companion").RequireRateLimiting("companion");
@@ -217,8 +221,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     return prior.Action == action && prior.ProfileId == request.ProfileId
                         ? Results.Json(prior.Result) : Results.Conflict(new FriendActionResult(false, "IdempotencyConflict", "Request ID was reused for a different action.", null));
                 FriendActionResult result;
-                if (action == "start" && !device.CanStart || action == "stop" && !device.CanStop)
-                    result = new(false, "PermissionDenied", "The Host has not granted this action to this PC.", await PublicStatus(device.Id));
+                if (action is "start" or "replace" && !pairing.CanStart(device, request.ProfileId) ||
+                    action == "stop" && !pairing.CanStop(device, request.ProfileId))
+                    result = new(false, "PermissionDenied", "The Host has not granted this action for this server to this PC.", await PublicStatus(device.Id));
                 else if (action == "stop")
                 {
                     using var permit = RemoteStopSafety.TryAcquire(snapshot, request.ProfileId, data, games);
@@ -231,10 +236,18 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         data.Audit($"remote-stop {device.Id} {request.ProfileId} {operation.Code} {DateTimeOffset.UtcNow:O}");
                     }
                 }
+                else if (action == "replace")
+                {
+                    var operation = await manager.ReplaceEmptyPortConflictsAndStartAsync(request.ProfileId);
+                    result = new(operation.Ok, operation.Code, operation.Message, await PublicStatus(device.Id),
+                        operation.PortConflicts);
+                    data.Audit($"remote-replace-port-conflict {device.Id} {request.ProfileId} {operation.Code} {DateTimeOffset.UtcNow:O}");
+                }
                 else
                 {
                     var operation = await manager.StartAsync(request.ProfileId);
-                    result = new(operation.Ok, operation.Code, operation.Message, await PublicStatus(device.Id));
+                    result = new(operation.Ok, operation.Code, operation.Message, await PublicStatus(device.Id),
+                        operation.PortConflicts);
                     data.Audit($"remote-start {device.Id} {request.ProfileId} {operation.Code} {DateTimeOffset.UtcNow:O}");
                 }
                 if (replay.Count >= 2048) replay.Clear();
@@ -245,5 +258,6 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         }
         companion.MapPost("/start", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "start"));
         companion.MapPost("/stop", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "stop"));
+        companion.MapPost("/replace", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "replace"));
     }
 }
