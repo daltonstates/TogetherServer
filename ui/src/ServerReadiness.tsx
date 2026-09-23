@@ -283,32 +283,33 @@ function gameIssue(status: string, game: GamePortCheck | undefined): ReadinessIs
   return null
 }
 
-function SummaryLine({ summary, icon }: { summary: ReadinessSummary; icon: 'game' | 'link' }) {
+function SummaryLine({ summary, icon, loading = false }: { summary: ReadinessSummary; icon: 'game' | 'link'; loading?: boolean }) {
   return <div className={`readiness-summary ${summary.tone}`}>
     <span className="readiness-summary-icon"><Icon name={icon} /></span>
     <span className="readiness-summary-copy">
-      <span className="readiness-summary-title"><small>{summary.label}</small><strong>{summary.state}</strong></span>
+      <span className="readiness-summary-title"><small>{summary.label}</small><span className="readiness-summary-state">{loading && <Icon name="loader" />}<strong>{summary.state}</strong></span></span>
       <span className="readiness-summary-detail">{summary.detail}</span>
     </span>
   </div>
 }
 
-function TechnicalDetail({ label, value, detail, tone = 'neutral' }: {
+function TechnicalDetail({ label, value, detail, tone = 'neutral', loading = false }: {
   label: string
   value: ReactNode
   detail?: ReactNode
   tone?: ReadinessTone
+  loading?: boolean
 }) {
   return <div className="technical-detail-row">
     <dt>{label}</dt>
     <dd>
-      <span className={`technical-detail-value ${tone}`}>{value}</span>
+      <span className={`technical-detail-value ${tone}`}>{loading && <Icon name="loader" />}{value}</span>
       {detail !== undefined && detail !== null && <span className="technical-detail-description">{detail}</span>}
     </dd>
   </div>
 }
 
-export function ServerReadiness({ profileId, status, ports, routeCheck, onRefresh, onOpenConnection, busy }: {
+export function ServerReadiness({ profileId, status, ports, routeCheck, onRefresh, onOpenConnection, busy, refreshing = false }: {
   profileId: string
   status: string
   ports: PortDiagnostics | null
@@ -316,6 +317,7 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   onRefresh: () => void
   onOpenConnection?: () => void
   busy: boolean
+  refreshing?: boolean
 }) {
   const game = ports?.games.find(item => item.profileId === profileId)
   const control = ports?.control
@@ -339,10 +341,10 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
       ? 'The earlier result expired or no longer matches the current listener and invite address.'
       : guidance.summary
 
-  return <div className="server-readiness" aria-label="Server connection status">
-    <div className="readiness-overview">
-      <SummaryLine summary={friend} icon="link" />
-      <SummaryLine summary={gameAccess} icon="game" />
+  return <div className="server-readiness" aria-label="Server connection status" aria-busy={refreshing}>
+    <div className={refreshing ? 'readiness-overview refreshing' : 'readiness-overview'}>
+      <SummaryLine summary={friend} icon="link" loading={refreshing} />
+      <SummaryLine summary={gameAccess} icon="game" loading={refreshing} />
     </div>
 
     {issue && <div className={`readiness-action ${issue.tone}`} role="status">
@@ -363,8 +365,8 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
               </div>
               <dl>
                 <TechnicalDetail label="Current state" value={status} detail={gameAccess.detail} tone={gameAccess.tone} />
-                <TechnicalDetail label="Local game ports" value={gamePortLabel} detail={game?.detail ?? 'Waiting for a game port check.'} />
-                <TechnicalDetail label="Player route" value={game?.routeKind ?? 'Checking'} detail={gameGuidance(game, control?.port)} />
+                <TechnicalDetail label="Local game ports" value={gamePortLabel} detail={game?.detail ?? 'Waiting for a game port check.'} loading={refreshing} />
+                <TechnicalDetail label="Player route" value={game?.routeKind ?? 'Checking'} detail={gameGuidance(game, control?.port)} loading={refreshing} />
               </dl>
             </section>
 
@@ -374,9 +376,9 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
                 <div><h4 id={`friend-details-${profileId}`}>Friend app</h4><p>Secure control connection</p></div>
               </div>
               <dl>
-                <TechnicalDetail label="Listener" value={control ? `HTTPS TCP ${control.port} · ${control.state}` : 'Checking'} detail={friendListenerDetail} tone={friend.tone} />
-                <TechnicalDetail label="Invite address" value={control?.endpoint ? <code>{control.endpoint}</code> : control?.endpointState ?? 'Checking'} detail={control?.endpointDetail ?? 'Waiting for a public address check.'} />
-                <TechnicalDetail label="Friend heartbeat" value={control?.remoteState ?? 'Not verified'} detail={control?.remoteDetail ?? 'Waiting for an authenticated Friend connection.'} />
+                <TechnicalDetail label="Listener" value={control ? `HTTPS TCP ${control.port} · ${control.state}` : 'Checking'} detail={friendListenerDetail} tone={friend.tone} loading={refreshing} />
+                <TechnicalDetail label="Invite address" value={control?.endpoint ? <code>{control.endpoint}</code> : control?.endpointState ?? 'Checking'} detail={control?.endpointDetail ?? 'Waiting for a public address check.'} loading={refreshing} />
+                <TechnicalDetail label="Friend heartbeat" value={control?.remoteState ?? 'Not verified'} detail={control?.remoteDetail ?? 'Waiting for an authenticated Friend connection.'} loading={refreshing} />
               </dl>
             </section>
 
@@ -390,9 +392,9 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
                   ? <code>{control.lanAddresses[0].address}</code>
                   : control?.lanAddresses?.length ? `${control.lanAddresses.length} local addresses found` : 'Checking'}
                   detail={<>{control?.lanForwardDetail ?? 'Waiting for this PC\'s LAN address.'}
-                    {!!control?.lanAddresses?.length && <span className="technical-addresses">{control.lanAddresses.map(item => <span key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code><small>{item.interfaceName} · gateway {item.gateway}</small></span>)}</span>}</>} />
-                <TechnicalDetail label="Outside TCP check" value={outsideValue} detail={outsideDetail} tone={outsideTone} />
-                <TechnicalDetail label="Outside access" value={friend.state} detail={guidance.summary} tone={friend.tone} />
+                    {!!control?.lanAddresses?.length && <span className="technical-addresses">{control.lanAddresses.map(item => <span key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code><small>{item.interfaceName} · gateway {item.gateway}</small></span>)}</span>}</>} loading={refreshing} />
+                <TechnicalDetail label="Outside TCP check" value={outsideValue} detail={outsideDetail} tone={outsideTone} loading={refreshing} />
+                <TechnicalDetail label="Outside access" value={friend.state} detail={guidance.summary} tone={friend.tone} loading={refreshing} />
               </dl>
             </section>
           </div>
@@ -401,7 +403,7 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
         </div>
       </details>
       <Button className="readiness-refresh" type="button" disabled={busy} onClick={onRefresh}>
-        <Icon name="refresh" />{busy ? 'Checking…' : 'Refresh checks'}
+        <Icon name={refreshing ? 'loader' : 'refresh'} />{refreshing ? 'Refreshing…' : 'Refresh checks'}
       </Button>
     </div>
   </div>

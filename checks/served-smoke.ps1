@@ -88,6 +88,9 @@ try {
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Game server', 'Friend app', 'Outside connection', 'Recommended next step',
+        'Connection details', 'Hidden for stream safety', 'Copy without revealing',
+        'Automatically hides after 30 seconds', 'Notifications', 'Recent app and connection activity',
+        'Refreshing connection details', 'Connection details updated.',
         'Maximum servers running at once',
         'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
@@ -107,6 +110,10 @@ try {
     }
     if (!$css.Content.Contains('.technical-details-grid{') -or !$css.Content.Contains('.technical-detail-card{')) {
         throw 'The grouped Host technical-detail styles were not bundled.'
+    }
+    if (!$css.Content.Contains('.connection-details-card{') -or !$css.Content.Contains('.notification-badge{') -or
+        !$css.Content.Contains('@keyframes icon-spin')) {
+        throw 'The private connection card, notification badge, or loading spinner styles were not bundled.'
     }
     if ($js.Content.Contains('Servers this PC can control')) { throw 'The unbounded inline server checklist is still bundled.' }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }

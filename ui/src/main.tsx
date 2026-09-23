@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Button, Input, Select, TextArea } from './Controls'
+import { ConnectionDetails } from './ConnectionDetails'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { gameLabel, type Profile } from './GameProfile'
@@ -44,6 +45,7 @@ type FriendIssue = { code: string; message: string }
 type SetupStep = 'game' | 'world' | 'server' | 'review'
 type HostSettingsSection = 'access' | 'stop' | 'network' | 'advanced'
 type BrowseResult = BasicResult & { path?: string | null }
+type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 
 function FriendConnectionHelp({ code }: { code: string }) {
   const steps = (() => {
@@ -242,11 +244,13 @@ function App() {
   const [loadError, setLoadError] = useState('')
   const [update, setUpdate] = useState<UpdateView | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
+  const [notificationUnread, setNotificationUnread] = useState(false)
   const [desktopPreferences, setDesktopPreferences] = useState<DesktopPreferences | null>(null)
   const [desktopBusy, setDesktopBusy] = useState(false)
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [portDiagnostics, setPortDiagnostics] = useState<PortDiagnostics | null>(null)
+  const [checkingPorts, setCheckingPorts] = useState(false)
   const [internetRouteCheck, setInternetRouteCheck] = useState<InternetRouteCheck | null>(null)
   const [checkingInternetRoute, setCheckingInternetRoute] = useState(false)
   const [detectingPublicIp, setDetectingPublicIp] = useState(false)
@@ -273,10 +277,15 @@ function App() {
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('access')
   const [minecraftSetupMode, setMinecraftSetupMode] = useState<Record<string, 'existing' | 'install'>>({})
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({})
+  const [revealedConnections, setRevealedConnections] = useState<Record<string, boolean>>({})
+  const [revealedGamePasswords, setRevealedGamePasswords] = useState<Record<string, string>>({})
+  const [connectionActivity, setConnectionActivity] = useState<ConnectionActivity>({})
   const [activeProfileId, setActiveProfileId] = useState('')
   const initialDraftSet = useRef(false)
   const inviteLoad = useRef(0)
   const dirtyRef = useRef(false)
+  const liveConnectionKeysRef = useRef<Set<string>>(new Set())
+  const connectionRevealRequestRef = useRef<Record<string, number>>({})
   const setupRef = useModalDialog(showSetup)
   const hostSettingsRef = useModalDialog(showHostSettings)
   const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
@@ -285,6 +294,10 @@ function App() {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (notice || update?.state === 'Available') setNotificationUnread(true)
+  }, [notice, update?.state, update?.latestVersion])
 
   useEffect(() => {
     let alive = true
@@ -445,26 +458,72 @@ function App() {
     dirtyRef.current = true
     setDirty(true)
   }
-  const copyText = async (value: string, label: string) => {
+  const copyText = async (value: string, label: string, fallback = 'Select and copy it instead.') => {
     try {
       await navigator.clipboard.writeText(value)
       setNotice({ good: true, text: `${label} copied.` })
     } catch {
-      setNotice({ good: false, text: `Could not copy ${label.toLowerCase()}. Select and copy it instead.` })
+      setNotice({ good: false, text: `Could not copy ${label.toLowerCase()}. ${fallback}` })
     }
   }
-  const copyGameDetails = async (profile: Profile, address: string) => {
-    setPending(`game-details-${profile.id}`)
+  const hideConnectionDetails = (key: string) => {
+    connectionRevealRequestRef.current[key] = (connectionRevealRequestRef.current[key] ?? 0) + 1
+    setRevealedConnections(current => {
+      if (current[key] === undefined) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    setRevealedGamePasswords(current => {
+      if (current[key] === undefined) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }
+  const revealConnectionDetails = (key: string) =>
+    setRevealedConnections(current => ({ ...current, [key]: true }))
+  const readGamePassword = async (profile: Profile) => {
+    const response = await fetch(`/api/local/profiles/${profile.id}/game-password/reveal`, { method: 'POST', headers: localHeaders })
+    const result: BasicResult & { password?: string } = await response.json()
+    if (!response.ok || !result.ok || !result.password)
+      throw new Error(result.message ?? 'Could not read the saved game password.')
+    return result.password
+  }
+  const setConnectionBusy = (key: string, action: 'copy' | 'reveal' | null) =>
+    setConnectionActivity(current => {
+      if (action) return { ...current, [key]: action }
+      if (current[key] === undefined) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  const copyGameDetails = async (profile: Profile, address: string, key: string) => {
+    setConnectionBusy(key, 'copy')
     try {
-      const response = await fetch(`/api/local/profiles/${profile.id}/game-password/reveal`, { method: 'POST', headers: localHeaders })
-      const result: BasicResult & { password?: string } = await response.json()
-      if (!response.ok || !result.ok || !result.password) {
-        setNotice({ good: false, text: result.message ?? 'Could not read the saved game password.' })
-        return
-      }
-      await copyText(`Valheim Join IP: ${address}\nGame password: ${result.password}`, 'Game details')
+      const password = await readGamePassword(profile)
+      await copyText(`Valheim Join IP: ${address}\nGame password: ${password}`, 'Game details', 'Reveal the details, then select and copy them instead.')
     } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
+    finally { setConnectionBusy(key, null) }
+  }
+  const revealHostConnectionDetails = async (profile: Profile, key: string) => {
+    if (profile.kind !== 'Valheim') { revealConnectionDetails(key); return }
+    const request = (connectionRevealRequestRef.current[key] ?? 0) + 1
+    connectionRevealRequestRef.current[key] = request
+    setConnectionBusy(key, 'reveal')
+    try {
+      const password = await readGamePassword(profile)
+      if (connectionRevealRequestRef.current[key] !== request || !liveConnectionKeysRef.current.has(key) ||
+        document.hidden || !document.hasFocus()) return
+      setRevealedGamePasswords(current => ({ ...current, [key]: password }))
+      revealConnectionDetails(key)
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setConnectionBusy(key, null) }
+  }
+  const copyConnectionValue = async (key: string, value: string, label: string) => {
+    setConnectionBusy(key, 'copy')
+    try { await copyText(value, label, 'Reveal the details, then select and copy them instead.') }
+    finally { setConnectionBusy(key, null) }
   }
   const detectPublicIp = async () => {
     setDetectingPublicIp(true)
@@ -487,11 +546,19 @@ function App() {
     const timer = window.setInterval(() => void detectPublicIp(), 15 * 60 * 1000)
     return () => window.clearInterval(timer)
   }, [snapshot?.mode])
-  const checkPorts = async () => {
+  const checkPorts = async (announce = false) => {
+    if (announce) setCheckingPorts(true)
     try {
       const response = await fetch('/api/local/network/ports', { cache: 'no-store' })
-      if (response.ok) setPortDiagnostics(await response.json())
-    } catch { /* The regular refresh will retry without replacing the current evidence. */ }
+      if (!response.ok) throw new Error(`Connection check returned ${response.status}`)
+      setPortDiagnostics(await response.json())
+      if (announce) setNotice({ good: true, text: 'Connection details updated.' })
+    } catch (error) {
+      if (announce) setNotice({ good: false, text: `Could not refresh connection details: ${String(error)}` })
+      /* The regular refresh will retry without replacing the current evidence. */
+    } finally {
+      if (announce) setCheckingPorts(false)
+    }
   }
   const checkInternetRoute = async () => {
     setCheckingInternetRoute(true)
@@ -644,7 +711,9 @@ function App() {
     finally { setPending('') }
   }
   const friendAction = async (id: string, action: 'start' | 'stop') => {
-    setPending(id)
+    const key = `friend-${action}-${id}`
+    setPending(key)
+    if (action === 'stop') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}`)
     try {
       const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
@@ -713,6 +782,8 @@ function App() {
       const result: { ok: boolean; code: string; message: string } = await response.json()
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
+        setRevealedConnections({})
+        setRevealedGamePasswords({})
         const next = await readSnapshot()
         setSnapshot(next)
         setDraft(next.mode === 'Host' ? next.settings : null)
@@ -1007,6 +1078,32 @@ function App() {
   const setupSteps: SetupStep[] = ['game', 'world', 'server', 'review']
   const setupStepIndex = setupSteps.indexOf(setupStep)
   const savedProfiles = snapshot?.mode === 'Host' ? snapshot.settings.profiles : []
+  const liveConnectionKeySignature = JSON.stringify((snapshot?.mode === 'Host'
+    ? snapshot.runs.filter(run => run.state === 'Ready' && detectedGameIp).map(run => `host-${run.profileId}`)
+    : snapshot?.profiles.filter(profile => profile.state === 'Ready' && profile.joinAddress)
+      .map(profile => `friend-${snapshot.connectionId}-${profile.id}`) ?? []).sort())
+  useEffect(() => {
+    const liveKeys = new Set<string>(JSON.parse(liveConnectionKeySignature) as string[])
+    liveConnectionKeysRef.current = liveKeys
+    setRevealedConnections(current => {
+      let changed = false
+      const next: Record<string, boolean> = {}
+      for (const [key, value] of Object.entries(current)) {
+        if (liveKeys.has(key)) next[key] = value
+        else changed = true
+      }
+      return changed ? next : current
+    })
+    setRevealedGamePasswords(current => {
+      let changed = false
+      const next: Record<string, string> = {}
+      for (const [key, value] of Object.entries(current)) {
+        if (liveKeys.has(key)) next[key] = value
+        else changed = true
+      }
+      return changed ? next : current
+    })
+  }, [liveConnectionKeySignature])
   const serverAccessDevice = companion?.devices.find(device => device.id === serverAccessDeviceId && !device.revoked)
   const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
@@ -1028,7 +1125,18 @@ function App() {
         <Button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</Button>
       </nav>
       <div className="header-tools">
-        {update?.state === 'Available' && <Button className="update-ready" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}><Icon name="refresh" />Update ready</Button>}
+        <details className="notification-menu" onToggle={event => { if (event.currentTarget.open) setNotificationUnread(false) }}>
+          <summary aria-label={notificationUnread ? 'Notifications, new activity' : 'Notifications'} title={notificationUnread ? 'New activity' : 'Notifications'}>
+            <Icon name="bell" size={19} />
+            {notificationUnread && <span className="notification-badge"><span className="sr-only">New activity</span></span>}
+          </summary>
+          <div className="notification-panel">
+            <div className="notification-panel-heading"><strong>Notifications</strong><small>Recent app and connection activity</small></div>
+            {update?.state === 'Available' && <div className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>Stop hosted servers before updating.</p><Button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></div>}
+            {notice && <div className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></div>}
+            {!notice && update?.state !== 'Available' && <p className="notification-empty">No new notifications.</p>}
+          </div>
+        </details>
         <details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong>
           <div className="app-version"><span>Version {update?.currentVersion ?? 'checking…'}</span><Button className="text-button" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}>{updateBusy ? 'Checking…' : 'Check for updates'}</Button></div>
           <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>Starts quietly in the tray.</small>
@@ -1043,10 +1151,7 @@ function App() {
         <p>{snapshot?.mode === 'Friend' ? 'Connect to a server without interrupting anything you host on this PC.' : savedProfiles.length === 0 ? 'Set up a server, or switch to Join if a friend sent you a code.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Start a saved server when your group is ready.'}</p></div>
       </div>
 
-      {update?.state === 'Available' && <div className="update-notice" role="status"><div><strong>Update available · v{update.latestVersion}</strong><span>Download from the TogetherServer GitHub release, verify it, then restart. Stop hosted servers first.</span></div><Button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? 'Preparing update…' : 'Update and restart'}</Button></div>}
-
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
-      {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
       {!snapshot && !loadError && <section className="panel">Loading local state…</section>}
 
       {snapshot?.mode === 'Friend' && <>
@@ -1059,10 +1164,10 @@ function App() {
         <section className="panel friend-panel friend-primary">
           <div className="section-heading"><div><h2>{snapshot.endpoint && !showPairing ? 'Connection' : snapshot.endpoint ? 'Add another server' : 'Paste your server code'}</h2><p>{snapshot.endpoint && !showPairing ? snapshot.detail : "Ask the Host to copy this server's current code."}</p></div></div>
           {snapshot.endpoint && !showPairing ? <>
-            <div className="compact-status"><span className={`status ${statusTone(snapshot.state)}`}>{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state}</span>
+            <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state}</span>
               <span>{snapshot.lastConnectedUtc ? `Last reached ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'Waiting for a reply from the Host'}</span></div>
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked') && <details className="troubleshoot-block" open><summary>Troubleshoot connection</summary><FriendConnectionHelp code={snapshot.connectionCode} /></details>}
-            <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? 'Checking…' : 'Check connection'}</Button>
+            <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
               <Button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</Button></div>
           </> : <>
             <form className="join-row" onSubmit={event => { event.preventDefault(); void pairFriend() }}>
@@ -1074,17 +1179,26 @@ function App() {
           </>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
-          {snapshot.profiles.map(profile => <article className="profile-card" key={profile.id}>
-            <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs} /></div><span className={`status ${statusTone(profile.state)}`}>{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
-            <div className="actions server-actions">
-              {profile.state === 'Offline' && snapshot.state === 'Connected' && snapshot.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}><Icon name="play" />Start server</Button>}
-              {profile.state === 'Ready' && profile.joinAddress && <Button onClick={() => void copyText(profile.joinAddress!, 'Join address')}><Icon name="copy" />Copy join address</Button>}
-              {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}><Icon name="stop" />Stop server</Button>}
-            </div>
-            <FriendStopBlockers snapshot={snapshot} profile={profile} />
-            {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
-            {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
-          </article>)}
+          {snapshot.profiles.map(profile => {
+            const connectionKey = `friend-${snapshot.connectionId}-${profile.id}`
+            const activity = connectionActivity[connectionKey] ?? null
+            return <article className="profile-card" key={profile.id} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
+              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
+              {profile.state === 'Ready' && profile.joinAddress && <ConnectionDetails
+                fields={[{ label: 'Join address', value: profile.joinAddress }]}
+                revealed={!!revealedConnections[connectionKey]} copying={activity === 'copy'} revealing={false}
+                refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
+                onReveal={() => revealConnectionDetails(connectionKey)} onHide={() => hideConnectionDetails(connectionKey)}
+                onCopy={() => void copyConnectionValue(connectionKey, profile.joinAddress!, 'Join address')} />}
+              <div className="actions server-actions">
+                {profile.state === 'Offline' && snapshot.state === 'Connected' && snapshot.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && snapshot.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
+              </div>
+              <FriendStopBlockers snapshot={snapshot} profile={profile} />
+              {profile.state === 'Offline' && !snapshot.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start the server.</p>}
+              {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
+            </article>
+          })}
           </div>}
         </section>
       </>}
@@ -1098,18 +1212,29 @@ function App() {
           <div className="profile-list server-grid">
             {snapshot.settings.profiles.map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
-              return <article className="profile-card" key={profile.id}>
+              const connectionKey = `host-${profile.id}`
+              const activity = connectionActivity[connectionKey] ?? null
+              const gameAddress = detectedGameIp ? `${detectedGameIp}:${profile.gamePort}` : ''
+              const connectionFields = [{ label: 'Join address', value: gameAddress },
+                ...(profile.kind === 'Valheim' ? [{ label: 'Game password', value: revealedGamePasswords[connectionKey] ?? '' }] : [])]
+              return <article className="profile-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
                 <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={status?.onlinePlayers ?? null} capacity={status?.maxPlayers ?? null} deadline={status?.autoShutdownAtUtc ?? null} timerReason={status?.autoShutdownReason ?? null} nowMs={nowMs} /></div>
-                  <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
+                  <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
-                  busy={!!pending} onRefresh={() => void checkPorts()} onOpenConnection={() => openHostSettings('network')} />
+                  busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} />
+                {status?.state === 'Ready' && gameAddress && <ConnectionDetails fields={connectionFields}
+                  revealed={!!revealedConnections[connectionKey]} copying={activity === 'copy'} revealing={activity === 'reveal'}
+                  refreshing={checkingPorts || detectingPublicIp}
+                  note={profile.kind === 'Valheim' ? 'Copying includes the saved game password.' : undefined}
+                  onReveal={() => void revealHostConnectionDetails(profile, connectionKey)} onHide={() => hideConnectionDetails(connectionKey)}
+                  onCopy={() => profile.kind === 'Valheim'
+                    ? void copyGameDetails(profile, gameAddress, connectionKey)
+                    : void copyConnectionValue(connectionKey, gameAddress, 'Join address')} />}
                 {status?.autoShutdownAtUtc && <div className="timer-extension"><label>Extend this countdown<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Extra minutes for this countdown only.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
                 <div className="actions server-actions">
-                  {status?.state === 'Offline' && <Button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}><Icon name="play" /><span>Start server</span></Button>}
-                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}><Icon name="stop" /><span>Stop server</span></Button>}
+                  {status?.state === 'Offline' && <Button disabled={!!pending || dirty} onClick={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
+                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(connectionKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
                   <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
-                  {profile.kind === 'Valheim' && status?.state === 'Ready' && detectedGameIp && <Button className="secondary server-share-button" disabled={!!pending} onClick={() => void copyGameDetails(profile, `${detectedGameIp}:${profile.gamePort}`)}><Icon name="copy" />Copy join info</Button>}
-                  {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && status?.state === 'Ready' && detectedGameIp && <Button className="secondary server-share-button" onClick={() => void copyText(`${detectedGameIp}:${profile.gamePort}`, 'Join address')}><Icon name="copy" />Copy join address</Button>}
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">
                   {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : 'Server code copied'}</strong><p>{activeInviteWarning ? 'Fix the issue below before sharing this code.' : 'Send the copied code privately. Your Friend still needs to test Connect.'}</p></div></div>
@@ -1250,8 +1375,8 @@ function App() {
               <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {companion?.listenerActive ? 'listening on this PC, public route untested' : 'off'}.</p>
               {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
               {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
-              <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? 'Checking…' : 'Refresh public address'}</Button></div>
-              <div className="internet-route-test"><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? 'Testing TCP port…' : 'Test Friend app port from internet'}</Button>
+              <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Refresh public address</>}</Button></div>
+              <div className={checkingInternetRoute ? 'internet-route-test refreshing' : 'internet-route-test'} aria-busy={checkingInternetRoute}><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? <><Icon name="loader" />Testing TCP port…</> : 'Test Friend app port from internet'}</Button>
                 <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no invite or credential is sent.</small>
                 {internetRouteCheck && <p className={`internet-route-result ${previousRouteVerdict ? 'neutral' : internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
                   <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `TCP ${internetRouteCheck.port} reached` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
