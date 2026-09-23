@@ -671,3 +671,20 @@ Every Ready Host and Friend card now shows why its timer is not running. The rea
 | Browser and real-game acceptance | The in-app Browser listed no available browser, so browser screenshot inspection was skipped. The native rendered WebView check passed but does not replace it. No live real Valheim zero/one/disconnect transition, Friend game join, automatic Stop/save/restart, or outside-network test was run. |
 
 The owner's previous TogetherServer and Valheim processes were already closed before implementation. The updated app was installed but deliberately left closed, so no real process or public companion listener was restarted. No real world, credential, router, firewall, or DNS setting was changed.
+
+## 2026-09-22 - Prepared v0.1.5 GitHub release
+
+Starting Git HEAD: `8f4a770`, with the completed player-count and empty-server countdown changes committed on `main`. The owner explicitly authorized publication as `v0.1.5`. The app and UI package versions were raised from `0.1.4` to `0.1.5`, and the repository release script produced the fixed Windows asset name expected by the in-app updater.
+
+| Final check | Result |
+| --- | --- |
+| Release preparation | Pass: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1`; npm reported 0 vulnerabilities, 21 UI modules and three fixtures built, and the Windows x64 self-contained single-file publish completed with no errors. The existing WebView2/WindowsBase `MSB3277` warning remains. |
+| Prepared asset | `local-data/github-release/v0.1.5/TogetherServer-win-x64.exe`, file version `0.1.5.0`, 64,200,945 bytes, SHA-256 `E62BCC43830D8C8130179D424320D58997031EEBEFEDE6C5A6C5360B6441A106`. The adjacent `.sha256` file and `local-data/release-candidate/TogetherServer.exe` matched it. |
+| Updater checks | Pass: 6 groups, 0 failures. Covers no-release state, exact asset and digest acceptance, tag-to-EXE version matching, wrong digest, untrusted/prerelease metadata, and verified replacement with prior-EXE preservation. Disposable data: `local-data/update-checks/2cc825ac07e14b779a1f43eb5dc690ba`. |
+| Exact release EXE companion checks | Pass: 21 groups, 0 failures, including assigned-server visibility, count/deadline delivery, stale heartbeat handling, zero-only remote Stop, and graceful Ctrl+C. Disposable data: `local-data/companion-checks/d0946a1b35b94473bc079962caf9fce8`. |
+| Exact release EXE served smoke | Pass: 20 groups, 0 failures, including the bundled player-count and deadline snapshot. Disposable data: `local-data/served-smoke/123d17ba115f4ac0a76c9ac86f9d3341`. |
+| Exact release EXE native desktop smoke | Pass: 19 groups, 0 failures on an isolated port, including visible rendered React, compact sizing, native controls and pickers, updater guard, lifecycle, tray, and startup behavior. Disposable data: `local-data/desktop-smoke/5c28b3f772fe49a08e06d8c83cc97343`. The owner's already-running installed v0.1.4 app retained the default port and was left untouched. |
+| Included feature regressions | Pass before the version-only packaging change: Valheim 10 groups, Host lifecycle 11 groups, Minecraft 3 groups, and Minecraft setup 4 groups, all with 0 failures, as recorded in the preceding implementation section. |
+| GitHub publication | Authorized for `v0.1.5`; the tag, release, and uploads are pending this preparation commit. |
+
+No real game binary, world, credential, public listener, router, firewall, or DNS setting was changed. Real live player transitions, automatic Stop/save/restart, and an outside Friend connection remain separate acceptance work; fixture and saved-log evidence are not presented as those real-game tests.
