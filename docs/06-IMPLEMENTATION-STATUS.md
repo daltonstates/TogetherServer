@@ -765,7 +765,7 @@ One repeated Custom run exposed a race in `Process.WaitForExitAsync` for an exte
 
 No real game binary, valued world, credential, public listener, router, firewall, DNS setting, installed release, GitHub tag, or GitHub release was used or changed.
 
-## 2026-09-23 - Prepared v0.1.6 GitHub release
+## 2026-09-23 - Published v0.1.6 GitHub release
 
 Starting Git HEAD: `fd22ba9`, with the post-v0.1.5 server-safety, custom-game, connection-privacy, and black-and-orange UI work committed on clean `main` and matching `origin/main`. The owner explicitly authorized publication as `v0.1.6`. The app and UI package versions were raised from `0.1.5` to `0.1.6`, and the repository release script produced the fixed Windows asset name expected by the in-app updater.
 
@@ -778,6 +778,6 @@ Starting Git HEAD: `fd22ba9`, with the post-v0.1.5 server-safety, custom-game, c
 | Exact release EXE companion checks | Pass: 22 groups, 0 failures, including scoped assignments, per-server permissions, count-only remote Stop and timers, safe empty-port-conflict replacement, TLS/pairing, rate limiting, restart, and multi-Host behavior. Data: `local-data/companion-checks/dab8f58674644d4d93cf90a399f7c312`. |
 | Exact release EXE served and native desktop smokes | Pass: 21 served groups and 8 background native desktop groups, 0 failures. The bundled Custom UI, driver catalog, black-and-orange theme markers, protected actions, updater guard, hidden WebView render, tray behavior, lifecycle, relaunch, and clean Quit passed. Data: `local-data/served-smoke/235c5b7e8e5240f39d40aa95d44868e1` and `local-data/desktop-smoke/aa7465255d534ae3823730cfe27942d6`. |
 | Browser and external acceptance | Browser screenshot/click-through review was not run because no browser connection was available; the isolated native WebView render passed but does not replace visual browser review. No real game server/client, real player transition, valued-world save/restart, or outside-network Friend route was tested. Fixture evidence is not represented as those external passes. |
-| GitHub publication | Authorized for `v0.1.6`; the tag, release, and uploads are pending this preparation commit. |
+| GitHub publication | Pass: annotated tag `v0.1.6` resolves to tested release commit `cd928f1`; the public non-draft, non-prerelease release is marked latest at `https://github.com/daltonstates/TogetherServer/releases/tag/v0.1.6`. GitHub lists the EXE and checksum assets and reports the matching `sha256:e422a0f5f41d6c9b97314bac62d107936e3b85b6aa72308a7e312ef6be4b7ac4` digest. A fresh public EXE download matched 64,222,397 bytes, product version `0.1.6`, SHA-256 `E422A0F5F41D6C9B97314BAC62D107936E3B85B6AA72308A7E312EF6BE4B7AC4`, and Authenticode `NotSigned`. |
 
 No real game binary, valued world, credential, public listener, router, firewall, DNS setting, or installed release was used or changed. The exact release EXE is unsigned, so Windows may identify it as an unknown publisher even though the published checksum can verify its bytes.
