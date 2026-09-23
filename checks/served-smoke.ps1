@@ -95,6 +95,8 @@ try {
         'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
         'Extra minutes for this countdown only.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
+        'Custom game', 'local PowerShell actions', 'Status and players script',
+        'Player names/counts are shown, but remain display-only for safety.', 'TogetherServer never force-kills the game.',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {
@@ -114,6 +116,9 @@ try {
     if (!$css.Content.Contains('.connection-details-card{') -or !$css.Content.Contains('.notification-badge{') -or
         !$css.Content.Contains('@keyframes icon-spin')) {
         throw 'The private connection card, notification badge, or loading spinner styles were not bundled.'
+    }
+    if (!$css.Content.Contains('.custom-script-manager{') -or !$css.Content.Contains('.custom-port-row{')) {
+        throw 'The custom game script-manager or port-editor styles were not bundled.'
     }
     if ($js.Content.Contains('Servers this PC can control')) { throw 'The unbounded inline server checklist is still bundled.' }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
@@ -136,8 +141,58 @@ try {
     if ($installDenied.ok -or $installDenied.code -ne 'TermsRequired' -or (Test-Path -LiteralPath (Join-Path $caseRoot 'minecraft-servers'))) { throw 'Minecraft install ran without consent.' }
     Write-Host 'PASS Minecraft discovery and in-app install consent gate without a game download'
     $gameTypes = @(Invoke-RestMethod -Uri "$baseUrl/api/local/game-types")
-    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Fixture,MinecraftBedrock,MinecraftJava,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
-    Write-Host 'PASS explicit game-driver catalog exposes Valheim, Minecraft Java, Minecraft Bedrock, and the fixture'
+    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Custom,Fixture,MinecraftBedrock,MinecraftJava,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
+    Write-Host 'PASS explicit game-driver catalog exposes the custom script manager and reviewed built-in drivers'
+
+    $customId = [guid]::NewGuid().ToString()
+    $customDirectory = Join-Path $caseRoot 'custom-game'
+    New-Item -ItemType Directory -Path $customDirectory -Force | Out-Null
+    $customProfile = @{
+        id = $customId; kind = 'Custom'; name = 'HTTP custom game'; serverName = 'HTTP custom game';
+        worldId = 'http-custom'; worldSource = 'Existing'; worldDirectory = $customDirectory;
+        gamePort = ($gamePort + 40); executablePath = '';
+        custom = @{ gameName = 'Synthetic custom game'; primaryProtocol = 'UDP'; shareJoinAddress = $false;
+            additionalPorts = @(@{ protocol = 'TCP'; port = ($gamePort + 41); label = 'Query'; family = 'Any' }) }
+    }
+    $customSettings = @{ maxConcurrentServers = 1; idleMinutes = 1; autoShutdownEnabled = $true; profiles = @($customProfile) }
+    $customSaved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($customSettings | ConvertTo-Json -Depth 8)
+    if (!$customSaved.ok) { throw "Custom settings rejected: $($customSaved.message)" }
+    $startScript = @'
+$stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY 'stop.signal'
+Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
+'@
+    $statusScript = '@{ state = ''Ready''; detail = ''Packaged custom status''; onlinePlayers = 0; maxPlayers = 4; players = @(''Alice'') } | ConvertTo-Json -Compress'
+    $stopScript = '$stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ''stop.signal''; New-Item -ItemType File -Path $stop -Force | Out-Null'
+    $customScriptsBody = @{ start = $startScript; status = $statusScript; stop = $stopScript } | ConvertTo-Json
+    $customScriptsForbidden = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts" -Method Put -ContentType 'application/json' -Body $customScriptsBody -UseBasicParsing | Out-Null }
+    catch { $customScriptsForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$customScriptsForbidden) { throw 'Custom scripts bypassed the local mutation gate.' }
+    $customScriptsSaved = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts" -Method Put -Headers $headers -ContentType 'application/json' -Body $customScriptsBody
+    if (!$customScriptsSaved.ok -or (Get-Content (Join-Path $caseRoot 'host.json') -Raw).Contains('Packaged custom status')) { throw 'Custom scripts were rejected or stored in plaintext settings.' }
+    $customRevealForbidden = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts/reveal" -Method Post -UseBasicParsing | Out-Null }
+    catch { $customRevealForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$customRevealForbidden) { throw 'Custom scripts were revealed without local mutation headers.' }
+    $revealedScripts = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts/reveal" -Method Post -Headers $headers
+    if (!$revealedScripts.ok -or !$revealedScripts.scripts.status.Contains('Packaged custom status')) { throw 'Host could not reveal its protected custom scripts.' }
+    $customStarted = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/start" -Method Post -Headers $headers
+    if (!$customStarted.ok -or $customStarted.code -ne 'CustomStarting') { throw "Custom Start failed: $($customStarted.message)" }
+    $customReady = $null
+    for ($i = 0; $i -lt 50; $i++) {
+        $customReady = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").runs | Where-Object profileId -EQ $customId
+        if ($customReady.state -eq 'Ready') { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if ($customReady.state -ne 'Ready' -or $customReady.onlinePlayers -ne 0 -or
+        @($customReady.playerNames).Count -ne 1 -or $customReady.playerCountTrusted -ne $false -or
+        !$customReady.autoShutdownReason.Contains('display-only')) { throw 'Packaged custom status did not remain display-only and fail closed.' }
+    $customStopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/stop" -Method Post -Headers $headers
+    if (!$customStopped.ok -or $customStopped.code -ne 'CustomStopped') { throw "Custom Stop failed: $($customStopped.message)" }
+    $customRemoved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body (@{ profiles = @() } | ConvertTo-Json)
+    if (!$customRemoved.ok -or (Test-Path -LiteralPath (Join-Path $caseRoot ("custom-scripts-" + $customId.Replace('-', '') + '.protected')))) { throw 'Removing a custom profile retained its protected scripts.' }
+    Write-Host 'PASS packaged custom Start, status/player list, local Stop, protected storage, and fail-closed safety'
 
     $forbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/mode/friend" -Method Post -UseBasicParsing | Out-Null }

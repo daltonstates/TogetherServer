@@ -204,8 +204,8 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
     using var data = Data("drivers");
     var registry = new GameServerRegistry(data);
     Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[]
-        { GameKinds.Fixture, GameKinds.MinecraftBedrock, GameKinds.MinecraftJava, GameKinds.Valheim }),
-        "The built-in games and fixture were not separately registered");
+        { GameKinds.Custom, GameKinds.Fixture, GameKinds.MinecraftBedrock, GameKinds.MinecraftJava, GameKinds.Valheim }),
+        "The built-in, custom, and fixture games were not separately registered");
     var profile = Profile("unknown-game", "unknown-game", FreePort());
     profile.Kind = "UnregisteredGame";
     var manager = new HostManager(data, registry);

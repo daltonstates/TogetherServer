@@ -1,6 +1,6 @@
 # TogetherServer
 
-TogetherServer is one Windows app for hosting a Valheim, Minecraft Java, or Minecraft Bedrock server and connecting to a friend's server. The same EXE runs on every PC. It opens a borderless native window with app-styled minimize, maximize, and close controls around its bundled interface; Node and the .NET SDK are needed only to build it.
+TogetherServer is one Windows app for hosting a Valheim, Minecraft Java, Minecraft Bedrock, or owner-scripted custom game server and connecting to a friend's server. The same EXE runs on every PC. It opens a borderless native window with app-styled minimize, maximize, and close controls around its bundled interface; Node and the .NET SDK are needed only to build it.
 
 ## Open the app
 
@@ -34,6 +34,18 @@ Choose **Minecraft Java** or **Minecraft Bedrock** in the Host setup, then choos
 - **Existing Bedrock:** Choose `bedrock_server.exe` in its folder. TogetherServer reads `server-portv6` and `enable-lan-visibility` too, including the default discovery ports when LAN visibility is on. [Official Bedrock server setup](https://learn.microsoft.com/en-us/minecraft/creator/documents/bedrockserver/getting-started?view=minecraft-bedrock-stable) and [properties](https://learn.microsoft.com/en-us/minecraft/creator/documents/bedrockserver/server-properties?view=minecraft-bedrock-stable).
 
 TogetherServer checks for a local Java server-status reply or Bedrock RakNet status reply before showing **Ready**, and displays the online/max player count returned by that reply. This proves a local game response, not a Friend join. Local Stop sends the fixed `stop` command to the recorded server's isolated console and waits for exit. Friend Stop is available only when a fresh status reply reports zero players, and the count is checked again immediately before the stop command. The current Minecraft evidence uses disposable process fixtures; test the real installed editions, client joins, and recognizable world changes before relying on them for a valued world.
+
+## Host another game with custom scripts
+
+Choose **Custom game** for an advanced Host-only script profile. Enter the game and server names, an existing working/save directory, the primary and any additional TCP/UDP ports, then three PowerShell actions:
+
+- **Start** launches the real server and must keep its own PowerShell process alive until that server exits.
+- **Status and players** must finish within four seconds and output exactly one JSON object with `state` (`Ready`, `Starting`, or `Failed`) plus optional `detail`, `onlinePlayers`, `maxPlayers`, and `players` fields.
+- **Stop** must finish within 15 seconds after asking the game to save and exit; the Start process must then exit within 90 seconds.
+
+The app supplies `TOGETHERSERVER_ACTION`, `TOGETHERSERVER_PROFILE_ID`, `TOGETHERSERVER_WORLD_ID`, `TOGETHERSERVER_WORKING_DIRECTORY`, `TOGETHERSERVER_GAME_PORT`, and `TOGETHERSERVER_MANAGED_PID` environment values. Script bodies are protected with the current Windows account and are never sent to Friends. Scripts run with everything that Windows account can access, so use only code you wrote or reviewed.
+
+Friends may request Start only by the already saved profile ID. They cannot submit script text, paths, arguments, or environment values. Custom status/player data is displayed but deliberately cannot authorize Friend Stop, automatic shutdown, or empty-server replacement; the local Host owns the Stop decision. This first custom path is an advanced compatibility tool, not official support or save-safety proof for the selected game. See the [game support catalog](docs/08-GAME-SUPPORT-CATALOG.md) for the evaluated built-in backlog.
 
 ## Join a friend's server
 
@@ -72,6 +84,7 @@ dotnet run --project checks/TogetherServer.Checks/TogetherServer.Checks.csproj -
 dotnet run --project checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj -c Release
 dotnet run --project checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj -c Release
 dotnet run --project checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj -c Release
+dotnet run --project checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj -c Release
 dotnet run --project checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj -c Release
 dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release
 powershell -NoProfile -ExecutionPolicy Bypass -File checks/served-smoke.ps1
@@ -80,6 +93,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File checks/desktop-smoke.ps1
 
 The desktop smoke runs hidden in the tray by default so it does not take over the active screen. Add `-Interactive` only for an attended check of the visible window size, title-bar controls, native pickers, and manual-launch restore behavior.
 
-The Host lifecycle uses reviewed built-in game drivers. Valheim, Minecraft Java, and Minecraft Bedrock appear in setup; the synthetic driver exists only for isolated checks. See [adding a game](docs/07-ADDING-A-GAME.md) for the process, port, readiness, stop, and security contract.
+The Host lifecycle uses reviewed built-in game drivers plus one explicitly advanced local custom-script driver. Valheim, Minecraft Java, Minecraft Bedrock, and Custom game appear in setup; the synthetic driver exists only for isolated checks. See [adding a game](docs/07-ADDING-A-GAME.md) for the process, port, readiness, stop, and security contract.
 
 See [implementation status](docs/06-IMPLEMENTATION-STATUS.md) for the latest test evidence and remaining real-world acceptance checks.

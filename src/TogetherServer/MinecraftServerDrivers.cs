@@ -17,6 +17,7 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
     public string Kind => java ? GameKinds.MinecraftJava : GameKinds.MinecraftBedrock;
     public string DisplayName => java ? "Minecraft Java Edition" : "Minecraft Bedrock Edition";
     public bool ShowPortDiagnostics => true;
+    public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
     public IReadOnlyList<GamePort> Ports(ServerProfile profile)
     {
         if (java) return [new("TCP", profile.GamePort, "Game")];

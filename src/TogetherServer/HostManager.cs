@@ -6,7 +6,8 @@ namespace TogetherServer;
 public sealed record RunView(Guid ProfileId, string State, string Detail, int? ProcessId,
     IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
     DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null,
-    bool HostAddedTime = false);
+    bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
+    bool PlayerCountTrusted = true);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
 public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
@@ -92,7 +93,26 @@ public sealed class HostManager
                 if (oldProfile is null || newProfile is null || !SameProfile(oldProfile, newProfile))
                     return Result(false, "ProfileInUse", "Stop or resolve a managed run before changing its profile.");
             }
+            var retiredCustomProfileIds = settings.Profiles
+                .Where(profile => profile.Kind == GameKinds.Custom &&
+                    !next.Profiles.Any(candidate => candidate.Id == profile.Id && candidate.Kind == GameKinds.Custom))
+                .Select(profile => profile.Id)
+                .ToList();
             data.SaveSettings(next);
+            var customScriptCleanupFailed = false;
+            foreach (var profileId in retiredCustomProfileIds)
+            {
+                try
+                {
+                    data.DeleteCustomScripts(profileId);
+                    data.Audit($"custom-scripts-deleted {profileId} {clock.GetUtcNow():O}");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    customScriptCleanupFailed = true;
+                    data.Audit($"custom-scripts-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
+                }
+            }
             if (settings.RemoteControlsEnabled != next.RemoteControlsEnabled)
                 data.Audit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
@@ -103,7 +123,9 @@ public sealed class HostManager
                 hostAddedTime.Clear();
             }
             settings = next;
-            return Result(true, "SettingsSaved", "Host settings saved.");
+            return Result(true, "SettingsSaved", customScriptCleanupFailed
+                ? "Host settings saved, but one or more retired custom script records could not be removed."
+                : "Host settings saved.");
         }
         finally { gate.Release(); }
     }
@@ -141,6 +163,29 @@ public sealed class HostManager
                 return Result(false, "InvalidPassword", "Enter a server password of 5 to 64 characters without control characters.");
             data.SaveValheimPassword(profileId, password);
             return Result(true, "PasswordSaved", "Valheim password saved in Windows protected storage.");
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> SetCustomScriptsAsync(Guid profileId, CustomScriptBundle scripts)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Kind != GameKinds.Custom)
+                return Result(false, "InvalidProfile", "Choose a saved custom game profile first.");
+            if (runs.Any(run => run.ProfileId == profileId))
+                return Result(false, "ProfileInUse", "Stop or resolve this custom game before changing its scripts.");
+            var error = CustomGameScripts.Validate(scripts);
+            if (error is not null) return Result(false, "CustomScriptsInvalid", error);
+            data.SaveCustomScripts(profileId, scripts);
+            data.Audit($"custom-scripts-saved {profileId} {clock.GetUtcNow():O}");
+            return Result(true, "CustomScriptsSaved", "Custom game scripts saved in Windows protected storage.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.Cryptography.CryptographicException)
+        {
+            return Result(false, "CustomScriptsSaveFailed", "Custom scripts could not be saved: " + ex.Message);
         }
         finally { gate.Release(); }
     }
@@ -210,7 +255,8 @@ public sealed class HostManager
             return Result(false, "AlreadyManaged", "This profile already has a managed or unresolved run.");
         if (runs.Any(r => WorldConflict(r, profile)))
             return Result(false, "WorldConflict", "Another managed run owns this world or save directory.");
-        if (!File.Exists(profile.ExecutablePath))
+        var managedExecutable = driver.ManagedExecutablePath(profile);
+        if (string.IsNullOrWhiteSpace(managedExecutable) || !File.Exists(managedExecutable))
             return Result(false, "ExecutableMissing", "Selected server executable does not exist.");
         var validation = driver.ValidateForStart(profile);
         if (validation is not null) return Result(false, validation.Code, validation.Message);
@@ -249,7 +295,7 @@ public sealed class HostManager
             WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
             GamePort = profile.GamePort,
             DeclaredPorts = declaredPorts,
-            ExecutablePath = Path.GetFullPath(profile.ExecutablePath),
+            ExecutablePath = Path.GetFullPath(managedExecutable),
             ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
             StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
         };
@@ -380,7 +426,7 @@ public sealed class HostManager
             clock.GetUtcNow() < deadline ||
             !games.TryGet(run.Kind, out var driver)) return false;
         var health = driver.Health(run);
-        return health.Ok && health.State == "Ready" && health.OnlinePlayers == 0;
+        return health.Ok && health.State == "Ready" && health.PlayerCountTrusted && health.OnlinePlayers == 0;
     }
 
     public async Task<ActionResult> HealthAsync(Guid profileId)
@@ -461,6 +507,13 @@ public sealed class HostManager
                 views[index] = view with { AutoShutdownReason = "Automatic shutdown is off." };
                 continue;
             }
+            if (!view.PlayerCountTrusted)
+            {
+                shutdownDeadlines.Remove(view.ProfileId);
+                hostAddedTime.Remove(view.ProfileId);
+                views[index] = view with { AutoShutdownReason = "Script-reported player counts are display-only; automatic shutdown is unavailable for custom games." };
+                continue;
+            }
             if (view.OnlinePlayers is null)
             {
                 shutdownDeadlines.Remove(view.ProfileId);
@@ -494,7 +547,8 @@ public sealed class HostManager
 
     private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
         new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
-            health.OnlinePlayers, health.MaxPlayers);
+            health.OnlinePlayers, health.MaxPlayers, PlayerNames: health.PlayerNames,
+            PlayerCountTrusted: health.PlayerCountTrusted);
 
     private ActionResult Result(bool ok, string code, string message,
         IReadOnlyList<PortConflictView>? portConflicts = null) =>
@@ -520,9 +574,9 @@ public sealed class HostManager
             return false;
         }
         var health = driver.Health(run);
-        if (!health.Ok || health.State != "Ready" || health.OnlinePlayers is null)
+        if (!health.Ok || health.State != "Ready" || !health.PlayerCountTrusted || health.OnlinePlayers is null)
         {
-            reason = "The conflicting server does not have a reliable current player count.";
+            reason = "The conflicting server does not have a reliable current player count from a built-in driver.";
             return false;
         }
         if (health.OnlinePlayers != 0)
@@ -575,15 +629,33 @@ public sealed class HostManager
                 return "Valheim server name must be 1 to 80 characters without control characters.";
             if (profile.GamePort < 1024 || profile.GamePort > (profile.Kind == GameKinds.Valheim ? 65534 : 65535))
                 return "Game port is outside the valid range for this game.";
+            if (profile.Kind == GameKinds.Custom)
+            {
+                var custom = profile.Custom;
+                if (custom is null || string.IsNullOrWhiteSpace(custom.GameName) || custom.GameName.Length > 80 ||
+                    custom.GameName.Any(char.IsControl))
+                    return "Custom game name must be 1 to 80 characters without control characters.";
+                if (custom.PrimaryProtocol is not ("TCP" or "UDP"))
+                    return "Custom primary protocol must be TCP or UDP.";
+                if (custom.AdditionalPorts is null || custom.AdditionalPorts.Count > 15)
+                    return "A custom game may declare at most 15 additional ports.";
+                foreach (var port in custom.AdditionalPorts)
+                {
+                    if (port.Protocol is not ("TCP" or "UDP") || port.Port is < 1024 or > 65535 ||
+                        port.Family is not ("Any" or "IPv4" or "IPv6") ||
+                        string.IsNullOrWhiteSpace(port.Label) || port.Label.Length > 64 || port.Label.Any(char.IsControl))
+                        return "Each custom port needs TCP or UDP, a port from 1024 to 65535, a valid address family, and a short label.";
+                }
+            }
             if (string.IsNullOrWhiteSpace(profile.WorldDirectory))
                 return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
                     ? "Choose and copy an existing world in Setup step 1."
                     : "Choose an existing save directory in Setup step 1.";
             if (!Path.IsPathFullyQualified(profile.WorldDirectory))
                 return "The save directory needs a full path, such as C:\\ValheimSaves.";
-            if (string.IsNullOrWhiteSpace(profile.ExecutablePath))
+            if (profile.Kind != GameKinds.Custom && string.IsNullOrWhiteSpace(profile.ExecutablePath))
                 return "Select an installed server in Setup step 2.";
-            if (!Path.IsPathFullyQualified(profile.ExecutablePath))
+            if (profile.Kind != GameKinds.Custom && !Path.IsPathFullyQualified(profile.ExecutablePath))
                 return "The installed server path needs a full path to its .exe file.";
         }
         return null;
@@ -594,8 +666,18 @@ public sealed class HostManager
         a.Crossplay == b.Crossplay && a.PublicListing == b.PublicListing &&
         a.WorldId == b.WorldId && a.WorldSource == b.WorldSource && a.GamePort == b.GamePort &&
         (a.Minecraft?.ServerJarPath ?? "") == (b.Minecraft?.ServerJarPath ?? "") &&
+        SameCustom(a.Custom, b.Custom) &&
         Path.GetFullPath(a.WorldDirectory).Equals(Path.GetFullPath(b.WorldDirectory), StringComparison.OrdinalIgnoreCase) &&
-        Path.GetFullPath(a.ExecutablePath).Equals(Path.GetFullPath(b.ExecutablePath), StringComparison.OrdinalIgnoreCase);
+        (a.Kind == GameKinds.Custom && b.Kind == GameKinds.Custom ||
+         Path.GetFullPath(a.ExecutablePath).Equals(Path.GetFullPath(b.ExecutablePath), StringComparison.OrdinalIgnoreCase));
+
+    private static bool SameCustom(CustomGameOptions? a, CustomGameOptions? b)
+    {
+        if (a is null || b is null) return a is null && b is null;
+        return a.GameName == b.GameName && a.PrimaryProtocol == b.PrimaryProtocol &&
+            a.ShareJoinAddress == b.ShareJoinAddress &&
+            (a.AdditionalPorts ?? []).SequenceEqual(b.AdditionalPorts ?? []);
+    }
 
     private static bool WorldConflict(ManagedRun run, ServerProfile profile) =>
         Path.GetFullPath(run.WorldDirectory).Equals(Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase);

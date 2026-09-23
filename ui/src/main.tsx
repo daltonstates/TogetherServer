@@ -4,7 +4,7 @@ import { Button, Input, Select, TextArea } from './Controls'
 import { ConnectionDetails } from './ConnectionDetails'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
-import { gameLabel, type Profile } from './GameProfile'
+import { gameLabel, profileGameLabel, type CustomPort, type Profile } from './GameProfile'
 import { MinecraftWorldSetup, MinecraftServerSetup, minecraftSetupIssues, type MinecraftDiscovery, type MinecraftInstallation } from './MinecraftSetup'
 import './style.css'
 import './companion.css'
@@ -22,7 +22,7 @@ type Settings = {
   publicGameIpCheckedUtc: string | null
   profiles: Profile[]
 }
-type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean }
+type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean }
 type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
 type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean }
 type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean }
@@ -50,6 +50,8 @@ type HostSettingsSection = 'access' | 'stop' | 'network' | 'advanced'
 type BrowseResult = BasicResult & { path?: string | null }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean }>
+type CustomScriptBundle = { start: string; status: string; stop: string }
+type CustomScriptResult = BasicResult & { scripts: CustomScriptBundle }
 
 function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
   const ref = useRef<HTMLInputElement | null>(null)
@@ -59,11 +61,15 @@ function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputE
   return <Input ref={ref} aria-checked={mixed ? 'mixed' : props.checked} {...props} />
 }
 
-type PlannedPort = { protocol: 'TCP' | 'UDP'; port: number; family: 'Any' | 'IPv4' }
+type PlannedPort = { protocol: 'TCP' | 'UDP'; port: number; family: 'Any' | 'IPv4' | 'IPv6' }
 
 function plannedPorts(profile: Profile, basePort = profile.gamePort): PlannedPort[] {
   if (profile.kind === 'MinecraftJava') return [{ protocol: 'TCP', port: basePort, family: 'Any' }]
   if (profile.kind === 'MinecraftBedrock') return [{ protocol: 'UDP', port: basePort, family: 'IPv4' }]
+  if (profile.kind === 'Custom') return [
+    { protocol: profile.custom?.primaryProtocol ?? 'UDP', port: basePort, family: 'Any' },
+    ...(profile.custom?.additionalPorts ?? []).map(port => ({ protocol: port.protocol, port: port.port, family: port.family }))
+  ]
   return [
     { protocol: 'UDP', port: basePort, family: 'Any' },
     { protocol: 'UDP', port: basePort + 1, family: 'Any' }
@@ -182,8 +188,8 @@ function countdownLabel(deadline: string | null, nowMs: number) {
   return `Stops in ${hours > 0 ? `${hours}:` : ''}${hours > 0 ? String(minutes).padStart(2, '0') : minutes}:${String(remainder).padStart(2, '0')}`
 }
 
-function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs }: {
-  state: string; online: number | null; capacity: number | null; deadline: string | null; timerReason: string | null; nowMs: number
+function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs, players }: {
+  state: string; online: number | null; capacity: number | null; deadline: string | null; timerReason: string | null; nowMs: number; players?: string[] | null
 }) {
   if (state !== 'Ready') return null
   const countdown = online === 0 ? countdownLabel(deadline, nowMs) : null
@@ -191,6 +197,7 @@ function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs 
       <span className={`player-count ${online === null ? 'unknown' : ''}`}>{playerCount(online, capacity)}</span>
       {countdown && <span className="idle-countdown" role="timer" title="No players are online and automatic shutdown is on.">{countdown}</span>}
     </div>
+    {!!players?.length && <small className="player-names">Players: {players.join(', ')}</small>}
     {timerReason && <small className="idle-reason">Timer not running · {timerReason}</small>}
   </div>
 }
@@ -239,7 +246,8 @@ async function change<T extends BasicResult>(path: string, method: 'POST' | 'PUT
   return response.json()
 }
 
-function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword: string): string[] {
+function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword: string,
+  customScripts: CustomScriptBundle | undefined, customScriptsSaved: boolean): string[] {
   const issues: string[] = []
   if (profile.kind === 'Valheim') {
     if (!profile.serverName.trim()) issues.push('Name your world.')
@@ -255,6 +263,13 @@ function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword:
       issues.push('Use a game password of 5 to 64 characters.')
   } else if (profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') {
     issues.push(...minecraftSetupIssues(profile))
+  } else if (profile.kind === 'Custom') {
+    if (!profile.custom?.gameName.trim()) issues.push('Enter the game name.')
+    if (!profile.name.trim()) issues.push('Name this server.')
+    if (!profile.worldId.trim()) issues.push('Enter a save/world key.')
+    if (!profile.worldDirectory.trim()) issues.push('Choose the game working and save directory.')
+    if (!customScriptsSaved && (!customScripts?.start.trim() || !customScripts?.status.trim() || !customScripts?.stop.trim()))
+      issues.push('Enter and save all three custom game scripts.')
   } else {
     if (!profile.name.trim()) issues.push('Enter a test profile name in step 1.')
     if (!profile.worldId.trim()) issues.push('Enter a world ID in step 1.')
@@ -264,9 +279,10 @@ function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword:
   return issues
 }
 
-function getStepIssues(step: SetupStep, profile: Profile, hasPassword: boolean, enteredPassword: string): string[] {
+function getStepIssues(step: SetupStep, profile: Profile, hasPassword: boolean, enteredPassword: string,
+  customScripts: CustomScriptBundle | undefined, customScriptsSaved: boolean): string[] {
   if (step === 'game') return []
-  if (step === 'review') return getSetupIssues(profile, hasPassword, enteredPassword)
+  if (step === 'review') return getSetupIssues(profile, hasPassword, enteredPassword, customScripts, customScriptsSaved)
   if (step === 'world') {
     if (profile.kind === 'Valheim') {
       if (profile.worldSource === 'Existing' && (!profile.worldId || !profile.worldDirectory)) return ['Choose a world to copy.']
@@ -277,11 +293,16 @@ function getStepIssues(step: SetupStep, profile: Profile, hasPassword: boolean, 
     }
     if ((profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && !profile.name.trim())
       return ['Name this server.']
+    if (profile.kind === 'Custom' && (!profile.name.trim() || !profile.worldId.trim() || !profile.worldDirectory.trim()))
+      return ['Name the server, enter a save/world key, and choose its working directory.']
     return []
   }
   if (profile.kind === 'Valheim' && !profile.executablePath.trim()) return ['Choose the installed Valheim Dedicated Server.']
   if ((profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && !profile.executablePath.trim())
     return ['Choose or install the game server.']
+  if (profile.kind === 'Custom' && !customScriptsSaved &&
+      (!customScripts?.start.trim() || !customScripts?.status.trim() || !customScripts?.stop.trim()))
+    return ['Enter Start, Status/players, and Stop scripts.']
   if (profile.kind === 'Fixture' && !profile.executablePath.trim()) return ['Choose the fixture executable.']
   return []
 }
@@ -331,6 +352,8 @@ function App() {
   const [showPairing, setShowPairing] = useState(false)
   const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
   const [passwords, setPasswords] = useState<Record<string, string>>({})
+  const [customScripts, setCustomScripts] = useState<Record<string, CustomScriptBundle>>({})
+  const [customScriptsSaved, setCustomScriptsSaved] = useState<Record<string, boolean>>({})
   const [discovery, setDiscovery] = useState<Discovery | null>(null)
   const [minecraftDiscovery, setMinecraftDiscovery] = useState<MinecraftDiscovery | null>(null)
   const [minecraftTerms, setMinecraftTerms] = useState<Record<string, boolean>>({})
@@ -797,7 +820,8 @@ function App() {
     const profile = draft.profiles.find(item => item.id === activeProfileId) ?? draft.profiles[0]
     if (!profile) return
     const unmet = getSetupIssues(profile,
-      snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[profile.id], passwords[profile.id] ?? '')
+      snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[profile.id], passwords[profile.id] ?? '',
+      customScripts[profile.id], !!customScriptsSaved[profile.id])
       .map(message => ({ id: profile.id, message }))
     if (unmet.length) {
       setActiveProfileId(unmet[0].id)
@@ -827,6 +851,13 @@ function App() {
         setSnapshot(result.snapshot)
         if (!result.ok) { setNotice({ good: false, text: result.message }); return }
         setPasswords(current => ({ ...current, [profile.id]: '' }))
+      }
+      if (profile?.kind === 'Custom' && !customScriptsSaved[profile.id]) {
+        const scripts = customScripts[profile.id] ?? { start: '', status: '', stop: '' }
+        result = await change<ActionResult>(`/api/local/profiles/${profile.id}/custom-scripts`, 'PUT', scripts)
+        setSnapshot(result.snapshot)
+        if (!result.ok) { setNotice({ good: false, text: result.message }); return }
+        setCustomScriptsSaved(current => ({ ...current, [profile.id]: true }))
       }
       const passwordWasConfigured = snapshot?.mode === 'Host' && profile ? snapshot.passwordConfigured[profile.id] : false
       const needsPassword = profile?.kind === 'Valheim' && !password && !passwordWasConfigured
@@ -933,6 +964,51 @@ function App() {
     edit({ ...draft, profiles: draft.profiles.map(profile => profile.id === id ? { ...profile, ...patch } : profile) })
   }
 
+  const editCustomScripts = (id: string, patch: Partial<CustomScriptBundle>) => {
+    setCustomScripts(current => {
+      const existing = current[id] ?? { start: '', status: '', stop: '' }
+      return { ...current, [id]: { ...existing, ...patch } }
+    })
+    setCustomScriptsSaved(current => ({ ...current, [id]: false }))
+  }
+
+  const updateCustomPort = (profile: Profile, index: number, patch: Partial<CustomPort>) => {
+    const custom = profile.custom ?? { gameName: 'Custom game', primaryProtocol: 'UDP' as const, shareJoinAddress: true, additionalPorts: [] }
+    updateProfile(profile.id, { custom: { ...custom, additionalPorts: custom.additionalPorts.map((port, portIndex) =>
+      portIndex === index ? { ...port, ...patch } : port) } })
+  }
+
+  const addCustomPort = (profile: Profile) => {
+    const custom = profile.custom ?? { gameName: 'Custom game', primaryProtocol: 'UDP' as const, shareJoinAddress: true, additionalPorts: [] }
+    updateProfile(profile.id, { custom: { ...custom, additionalPorts: [...custom.additionalPorts,
+      { protocol: 'UDP', port: Math.min(65535, profile.gamePort + custom.additionalPorts.length + 1), label: 'Additional', family: 'Any' }] } })
+  }
+
+  const removeCustomPort = (profile: Profile, index: number) => {
+    const custom = profile.custom
+    if (!custom) return
+    updateProfile(profile.id, { custom: { ...custom, additionalPorts: custom.additionalPorts.filter((_, portIndex) => portIndex !== index) } })
+  }
+
+  const loadCustomScripts = async (profileId: string) => {
+    try {
+      const result = await change<CustomScriptResult>(`/api/local/profiles/${profileId}/custom-scripts/reveal`, 'POST')
+      if (!result.ok) { setNotice({ good: false, text: result.message }); return }
+      setCustomScripts(current => ({ ...current, [profileId]: result.scripts }))
+      setCustomScriptsSaved(current => ({ ...current, [profileId]: result.code === 'CustomScriptsLoaded' }))
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+  }
+
+  const browseCustomDirectory = async (profile: Profile) => {
+    setPending(profile.id)
+    try {
+      const result = await change<BrowseResult>('/api/local/custom/browse-working-directory', 'POST')
+      if (result.ok && result.path) updateProfile(profile.id, { worldDirectory: result.path })
+      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+
   const minecraftProfile = (profile: Profile, item: MinecraftInstallation): Profile => ({
     ...profile,
     name: profile.name || `${item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'} server`,
@@ -983,11 +1059,16 @@ function App() {
     setPasswords(current => ({ ...current, [profile.id]: '' }))
     setMinecraftTerms(current => ({ ...current, [profile.id]: false }))
     setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))
+    if (kind === 'Custom') {
+      setCustomScripts(current => ({ ...current, [profile.id]: current[profile.id] ?? { start: '', status: '', stop: '' } }))
+      setCustomScriptsSaved(current => ({ ...current, [profile.id]: false }))
+    }
     updateProfile(profile.id, { kind, name: '', serverName: '', crossplay: false, publicListing: false,
       worldId: '', worldSource: kind === 'Valheim' ? 'New' : 'Existing',
       worldDirectory: kind === 'Valheim' ? `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` : '',
       gamePort: kind === 'Valheim' ? 2456 : kind === 'MinecraftJava' ? 25565 : kind === 'MinecraftBedrock' ? 19132 : 2456,
-      executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null })
+      executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null,
+      custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null })
   }
 
   const addProfile = () => {
@@ -996,7 +1077,7 @@ function App() {
     const id = crypto.randomUUID()
     edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
       publicListing: false, worldId: '', worldSource: 'New',
-      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '' }] })
+      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '', custom: null }] })
     setActiveProfileId(id)
     setSetupStep('game')
     setMinecraftSetupMode(current => ({ ...current, [id]: 'existing' }))
@@ -1028,6 +1109,8 @@ function App() {
     setDraft(snapshot.settings)
     setActiveProfileId(snapshot.settings.profiles[0]?.id ?? '')
     setPasswords({})
+    setCustomScripts({})
+    setCustomScriptsSaved({})
     setMinecraftTerms({})
     setSourceRoots({})
     dirtyRef.current = false
@@ -1048,6 +1131,8 @@ function App() {
     setActiveProfileId(id)
     setSetupStep('review')
     setShowSetup(true)
+    if (snapshot?.mode === 'Host' && snapshot.settings.profiles.some(profile => profile.id === id && profile.kind === 'Custom'))
+      void loadCustomScripts(id)
   }
   const openHostSettings = (section: HostSettingsSection = 'access') => {
     setNotice(null)
@@ -1152,10 +1237,14 @@ function App() {
   const friendAppAddress = hostAddress(draft?.companionEndpoint ?? '') ||
     (detectedGameIp ? `${detectedGameIp}${draft?.companionPort === 5131 ? '' : `:${draft?.companionPort}`}` : '')
   const setupIssues = editedProfile ? getSetupIssues(editedProfile,
-    snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[editedProfile.id], passwords[editedProfile.id] ?? '')
+    snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[editedProfile.id], passwords[editedProfile.id] ?? '',
+    customScripts[editedProfile.id], !!customScriptsSaved[editedProfile.id])
     .map(message => ({ id: editedProfile.id, name: editedProfile.name || editedProfile.serverName || 'New server', message })) : []
   const stepIssues = editedProfile ? getStepIssues(setupStep, editedProfile,
-    snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[editedProfile.id], passwords[editedProfile.id] ?? '') : []
+    snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[editedProfile.id], passwords[editedProfile.id] ?? '',
+    customScripts[editedProfile.id], !!customScriptsSaved[editedProfile.id]) : []
+  const customScriptsChanged = !!editedProfile && editedProfile.kind === 'Custom' && !customScriptsSaved[editedProfile.id] &&
+    !!customScripts[editedProfile.id] && Object.values(customScripts[editedProfile.id]).some(value => value.trim().length > 0)
   const setupSteps: SetupStep[] = ['game', 'world', 'server', 'review']
   const setupStepIndex = setupSteps.indexOf(setupStep)
   const savedProfiles = snapshot?.mode === 'Host' ? snapshot.settings.profiles : []
@@ -1189,7 +1278,7 @@ function App() {
   const serverAccessDevice = companion?.devices.find(device => device.id === serverAccessDeviceId && !device.revoked)
   const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
-    `${profile.name} ${gameLabel(profile.kind)}`.toLocaleLowerCase().includes(normalizedServerSearch))
+    `${profile.name} ${profileGameLabel(profile)}`.toLocaleLowerCase().includes(normalizedServerSearch))
   const activeRuns = snapshot?.mode === 'Host'
     ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Ready'].includes(run.state)).length : 0
   const currentRouteResult = !dirty && companion?.listenerActive
@@ -1316,7 +1405,7 @@ function App() {
                 onHide: () => hideConnectionDetails(passwordKey),
                 onCopy: () => void copyGamePassword(profile, passwordKey) }] : [])]
               return <article className="profile-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
-                <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={status?.onlinePlayers ?? null} capacity={status?.maxPlayers ?? null} deadline={status?.autoShutdownAtUtc ?? null} timerReason={status?.autoShutdownReason ?? null} nowMs={nowMs} /></div>
+              <div className="profile-top"><div><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={status?.onlinePlayers ?? null} capacity={status?.maxPlayers ?? null} deadline={status?.autoShutdownAtUtc ?? null} timerReason={status?.autoShutdownReason ?? null} nowMs={nowMs} players={status?.playerNames} /></div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} />
@@ -1374,10 +1463,11 @@ function App() {
           <ol className="setup-progress" aria-label="Setup progress">{(['game', 'world', 'server', 'review'] as SetupStep[]).map((step, index) => <li className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
           {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={addProfile}>Set up a server</Button></div></div>}
           {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-            {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">TogetherServer uses reviewed built-in server controls. You can change technical defaults during Review.</p><div className="game-choice-grid">
+            {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">Choose a reviewed built-in game or an advanced Host-only script profile. You can change technical defaults during Review.</p><div className="game-choice-grid">
               <Button className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></Button>
               <Button className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
               <Button className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
+              <Button className={profile.kind === 'Custom' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'Custom')}><strong>Custom game</strong><small>Advanced · local PowerShell actions</small></Button>
               {profile.kind === 'Fixture' && <Button className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
             </div></div>}
             {setupStep === 'world' && <div className="setup-step world-step"><h3><Icon name="game" /> {profile.kind === 'Valheim' ? 'Choose a world' : 'Name this server'}</h3>
@@ -1399,6 +1489,12 @@ function App() {
               {profile.kind === 'Valheim' && profile.worldSource === 'New' && <div className="quick-setup-fields"><label className="invite-input">World name<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value, name: event.target.value, serverName: event.target.value })} placeholder="My Valheim world" /><small>Stored in TogetherServer's private data.</small></label>
                 <label className="invite-input">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label></div>}
               {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test profile name<Input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
+              {profile.kind === 'Custom' && <div className="settings-grid custom-game-basics">
+                <label>Game name<Input value={profile.custom?.gameName ?? ''} onChange={event => updateProfile(profile.id, { custom: { gameName: event.target.value, primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: profile.custom?.shareJoinAddress ?? true, additionalPorts: profile.custom?.additionalPorts ?? [] } })} placeholder="Palworld, Factorio, Terraria…" /></label>
+                <label>Server name<Input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Friends server" /></label>
+                <label>Save / world key<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="main-world" /><small>Used to prevent two managed profiles from writing the same save.</small></label>
+                <label className="wide">Working and save directory<div className="field-with-button"><Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} placeholder="C:\\GameServers\\MyServer" /><Button className="secondary" disabled={!!pending} onClick={() => void browseCustomDirectory(profile)}>Browse</Button></div><small>TogetherServer never deletes this folder.</small></label>
+              </div>}
               {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && <><div className="choice-pills">
                 <Button className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))}>Use an existing server</Button>
                 <Button className={minecraftSetupMode[profile.id] === 'install' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'install' }))}>Install a new official server</Button>
@@ -1420,13 +1516,24 @@ function App() {
                   onInstall={() => void installMinecraft(profile)} acceptedTerms={!!minecraftTerms[profile.id]}
                   onTermsChange={accepted => setMinecraftTerms(current => ({ ...current, [profile.id]: accepted }))}
                   installBusy={pending === 'install-minecraft'} />
+              : profile.kind === 'Custom' ? <div className="custom-script-manager">
+                <div className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></div>
+                <label>Start script<TextArea value={customScripts[profile.id]?.start ?? ''} onChange={event => editCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
+                <label>Status and players script<TextArea value={customScripts[profile.id]?.status ?? ''} onChange={event => editCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and output exactly one JSON object.\n@{ state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Player names/counts are shown, but remain display-only for safety.</small></label>
+                <label>Stop script<TextArea value={customScripts[profile.id]?.stop ?? ''} onChange={event => editCustomScripts(profile.id, { stop: event.target.value })} placeholder={'# Ask the real server to save and exit gracefully.\n# The Start script process must then exit within 90 seconds.'} /><small>Finish within 15 seconds after sending the game’s own save/stop command. TogetherServer never force-kills the game.</small></label>
+                <details className="advanced-block"><summary>Script environment and output contract</summary><p className="helper-text">Every action receives TOGETHERSERVER_ACTION, TOGETHERSERVER_PROFILE_ID, TOGETHERSERVER_WORLD_ID, TOGETHERSERVER_WORKING_DIRECTORY, TOGETHERSERVER_GAME_PORT, and TOGETHERSERVER_MANAGED_PID. Status output must be a single JSON object with optional detail, onlinePlayers, maxPlayers, and players fields.</p></details>
+              </div>
               : <label>Fixture executable path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
             </div>}
-            {setupStep === 'review' && <div className="setup-stage review-stage"><h3>Review and start</h3><div className="review-summary"><div><span>Game</span><strong>{gameLabel(profile.kind)}</strong></div><div><span>Server</span><strong>{profile.name || profile.serverName || 'Needs a name'}</strong></div><div><span>World</span><strong>{profile.worldId || 'Not selected'}</strong></div><div><span>Server app</span><strong>{profile.executablePath ? 'Selected' : 'Not selected'}</strong></div></div>
+            {setupStep === 'review' && <div className="setup-stage review-stage"><h3>Review and start</h3><div className="review-summary"><div><span>Game</span><strong>{profileGameLabel(profile)}</strong></div><div><span>Server</span><strong>{profile.name || profile.serverName || 'Needs a name'}</strong></div><div><span>World / save key</span><strong>{profile.worldId || 'Not selected'}</strong></div><div><span>Server control</span><strong>{profile.kind === 'Custom' ? (customScriptsSaved[profile.id] || customScriptsChanged ? 'Scripts ready' : 'Scripts needed') : profile.executablePath ? 'Selected' : 'Not selected'}</strong></div></div>
             <ConfiguredPortWarning profile={profile} profiles={draft.profiles} />
             <details className="advanced-block"><summary>Advanced server settings</summary>
               <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<Input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<Input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
               {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><Input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><Input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
+              {profile.kind === 'Custom' && <div className="custom-ports"><div className="settings-grid"><label>Primary protocol<Select value={profile.custom?.primaryProtocol ?? 'UDP'} onChange={event => updateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: event.target.value as 'TCP' | 'UDP', shareJoinAddress: profile.custom?.shareJoinAddress ?? true, additionalPorts: profile.custom?.additionalPorts ?? [] } })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select></label><label>Primary game port<Input type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label></div>
+                <label className="check-row"><Input type="checkbox" checked={profile.custom?.shareJoinAddress ?? true} onChange={event => updateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: event.target.checked, additionalPorts: profile.custom?.additionalPorts ?? [] } })} /> Share public IP and primary port with assigned Friends</label>
+                {(profile.custom?.additionalPorts ?? []).map((port, index) => <div className="custom-port-row" key={`${index}-${port.protocol}-${port.port}`}><Select aria-label={`Additional port ${index + 1} protocol`} value={port.protocol} onChange={event => updateCustomPort(profile, index, { protocol: event.target.value as 'TCP' | 'UDP' })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select><Input aria-label={`Additional port ${index + 1}`} type="number" min="1024" max="65535" value={port.port} onChange={event => updateCustomPort(profile, index, { port: Number(event.target.value) })} /><Input aria-label={`Additional port ${index + 1} label`} value={port.label} onChange={event => updateCustomPort(profile, index, { label: event.target.value })} placeholder="Query or RCON" /><Select aria-label={`Additional port ${index + 1} address family`} value={port.family} onChange={event => updateCustomPort(profile, index, { family: event.target.value as 'Any' | 'IPv4' | 'IPv6' })}><option value="Any">Any IP</option><option value="IPv4">IPv4</option><option value="IPv6">IPv6</option></Select><Button className="text-button" onClick={() => removeCustomPort(profile, index)}>Remove</Button></div>)}
+                <Button className="secondary" disabled={(profile.custom?.additionalPorts.length ?? 0) >= 15} onClick={() => addCustomPort(profile)}>Add another port</Button><p className="helper-text">Declared ports participate in conflict and local-listener checks. TogetherServer does not create firewall or router rules.</p></div>}
               {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
             </details></div>}
           </div>)}
@@ -1437,7 +1544,7 @@ function App() {
             : <Button className="text-button" disabled={!!pending} onClick={cancelSetup}>Cancel</Button>}<div className="actions">
             {setupStepIndex > 0 && <Button className="secondary" disabled={!!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex - 1])}>Back</Button>}
             {setupStep !== 'review' && <Button disabled={stepIssues.length > 0 || !!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex + 1])}>Continue</Button>}
-            {setupStep === 'review' && <><Button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup()}>Save for later</Button><Button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id]) || !!pending} onClick={() => void saveSetup(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Save and start'}</Button></>}
+            {setupStep === 'review' && <><Button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id] && !customScriptsChanged) || !!pending} onClick={() => void saveSetup()}>Save for later</Button><Button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id] && !customScriptsChanged) || !!pending} onClick={() => void saveSetup(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Save and start'}</Button></>}
           </div></div></>}
         </dialog>}
         {savedProfiles.length > 0 && showHostSettings && <dialog ref={hostSettingsRef} className="panel modal-dialog host-settings-dialog" aria-labelledby="host-settings-title" onCancel={event => { event.preventDefault(); closeHostSettings() }}>
@@ -1537,7 +1644,7 @@ function App() {
           <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
             const assigned = serverAccessDraft.includes(profile.id)
             const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop }
-            return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{gameLabel(profile.kind)}</small></span></label>
+            return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
               <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label></div></div>
           })}
             {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>

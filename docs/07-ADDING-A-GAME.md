@@ -1,6 +1,12 @@
 # Adding a built-in game
 
-TogetherServer has built-in Valheim, Minecraft Java, and Minecraft Bedrock drivers. Minecraft's current launch, status, and stop checks use disposable fixtures; real-game acceptance is still required. Its extension point remains a small, reviewed .NET game driver, not a plugin loader or a public script interface.
+TogetherServer has built-in Valheim, Minecraft Java, and Minecraft Bedrock drivers. Minecraft's current launch, status, and stop checks use disposable fixtures; real-game acceptance is still required. Its official-support extension point remains a small, reviewed .NET game driver, not a plugin loader or a public script interface. The separate Custom game manager is an advanced local compatibility path and never counts as built-in support.
+
+## Custom game versus built-in support
+
+Use **Custom game** to try an owner-installed server through protected Start, Status/players, and Stop PowerShell actions. It is appropriate when the owner understands and reviews the scripts and accepts that TogetherServer cannot validate the selected game's launch, readiness, player source, save, or Stop behavior. Friends still submit only a saved profile ID and typed Start/Stop request; they never submit script content. Script-reported player data is display-only, so remote Stop, automatic shutdown, and empty-server replacement fail closed.
+
+Promote a popular custom setup to a built-in driver only after replacing script trust with reviewed typed settings and the game-specific evidence below. Candidate priorities are tracked in [the game support catalog](08-GAME-SUPPORT-CATALOG.md).
 
 ## Driver contract
 

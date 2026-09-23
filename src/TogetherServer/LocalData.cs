@@ -34,12 +34,23 @@ public sealed class ServerProfile
     public int GamePort { get; set; } = 2456;
     public string ExecutablePath { get; set; } = "";
     public MinecraftOptions? Minecraft { get; set; }
+    public CustomGameOptions? Custom { get; set; }
 }
 
 public sealed class MinecraftOptions
 {
     public string ServerJarPath { get; set; } = "";
 }
+
+public sealed class CustomGameOptions
+{
+    public string GameName { get; set; } = "Custom game";
+    public string PrimaryProtocol { get; set; } = "UDP";
+    public bool ShareJoinAddress { get; set; } = true;
+    public List<GamePort> AdditionalPorts { get; set; } = [];
+}
+
+public sealed record CustomScriptBundle(string Start, string Status, string Stop);
 
 public sealed class ManagedRun
 {
@@ -114,6 +125,20 @@ public sealed class LocalData : IDisposable
     {
         var bytes = LoadProtected($"valheim-password-{profileId:N}.protected");
         return bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes);
+    }
+    public bool HasCustomScripts(Guid profileId) => HasProtected($"custom-scripts-{profileId:N}.protected");
+    public void SaveCustomScripts(Guid profileId, CustomScriptBundle scripts) =>
+        SaveProtected($"custom-scripts-{profileId:N}.protected", JsonSerializer.SerializeToUtf8Bytes(scripts, Json));
+    public CustomScriptBundle? LoadCustomScripts(Guid profileId)
+    {
+        var bytes = LoadProtected($"custom-scripts-{profileId:N}.protected");
+        return bytes is null ? null : JsonSerializer.Deserialize<CustomScriptBundle>(bytes, Json)
+            ?? throw new InvalidDataException("Invalid protected custom game scripts");
+    }
+    public void DeleteCustomScripts(Guid profileId)
+    {
+        var path = Path.Combine(root, $"custom-scripts-{profileId:N}.protected");
+        if (File.Exists(path)) File.Delete(path);
     }
     public List<PairedDevice> LoadDevices() => Load("devices.json", new List<PairedDevice>());
     public void SaveDevices(List<PairedDevice> devices) => Save("devices.json", devices);

@@ -14,6 +14,9 @@ public static class RemoteStopSafety
         var view = snapshot.Runs.SingleOrDefault(item => item.ProfileId == profileId);
         if (view?.State != "Ready")
             return StopPermit.Denied("ServerNotReady", "Remote Stop needs a running, ready server.");
+        if (!view.PlayerCountTrusted)
+            return StopPermit.Denied("PlayerCountUntrusted",
+                "This custom game's script-reported player count is display-only. Remote Stop is blocked; the Host can stop it locally.");
         if (view.OnlinePlayers is null)
             return StopPermit.Denied("PlayerCountUnknown",
                 "The server did not report a current online-player count. Remote Stop is blocked; the Host can stop it locally.");
@@ -59,7 +62,7 @@ public sealed class StopPermit : IDisposable
     public static StopPermit Denied(string code, string reason) => new(false, code, reason);
 
     public bool StillSafe(ManagedRun run) => Allowed && run.OperationId == operationId && driver is not null &&
-        driver.Health(run) is { Ok: true, State: "Ready", OnlinePlayers: 0 };
+        driver.Health(run) is { Ok: true, State: "Ready", OnlinePlayers: 0, PlayerCountTrusted: true };
 
     public void Dispose() { }
 }

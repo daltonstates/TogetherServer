@@ -164,7 +164,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     run.State,
                     games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
                     snapshot.Settings.RemoteControlsEnabled && canStop && permit.Allowed,
-                    permit.Allowed ? null : permit.Reason, profile.Kind, run.OnlinePlayers, run.MaxPlayers,
+                    permit.Allowed ? null : permit.Reason,
+                    profile.Kind == GameKinds.Custom ? profile.Custom?.GameName ?? "Custom game" : profile.Kind,
+                    run.OnlinePlayers, run.MaxPlayers,
                     run.AutoShutdownAtUtc, run.AutoShutdownReason, canStart, canStop);
             }).ToList();
             return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,

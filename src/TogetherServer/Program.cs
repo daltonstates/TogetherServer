@@ -245,6 +245,29 @@ app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => 
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
+app.MapPut("/api/local/profiles/{id:guid}/custom-scripts", (Guid id, CustomScriptBundle scripts) =>
+    HostOnly(() => manager.SetCustomScriptsAsync(id, scripts)));
+app.MapPost("/api/local/profiles/{id:guid}/custom-scripts/reveal", async (Guid id) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+        var snapshot = await manager.SnapshotAsync();
+        if (!snapshot.Settings.Profiles.Any(profile => profile.Id == id && profile.Kind == GameKinds.Custom))
+            return Results.NotFound(new { ok = false, code = "ProfileNotFound", message = "Saved custom game was not found." });
+        var scripts = data.LoadCustomScripts(id);
+        return Results.Json(new { ok = true, code = scripts is null ? "CustomScriptsEmpty" : "CustomScriptsLoaded",
+            message = scripts is null ? "No custom scripts have been saved yet." : "Custom scripts loaded from Windows protected storage.",
+            scripts = scripts ?? new CustomScriptBundle("", "", "") });
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                               System.Security.Cryptography.CryptographicException or JsonException)
+    {
+        return Results.Json(new { ok = false, code = "CustomScriptsUnavailable", message = "Custom scripts could not be read: " + ex.Message });
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/profiles/{id:guid}/game-password/reveal", async (Guid id) =>
 {
     await modeGate.WaitAsync();
@@ -318,6 +341,19 @@ app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request
             : new { ok = true, code = "PathSelected", message = "Path selected. Save setup before starting.", path = (string?)path });
     }
     catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows picker: " + ex.Message }); }
+});
+app.MapPost("/api/local/custom/browse-working-directory", async () =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse folders." });
+    try
+    {
+        var path = await desktop.PickFolderAsync("Choose custom game working and save folder");
+        return Results.Json(path is null
+            ? new { ok = false, code = "Canceled", message = "No folder selected.", path = (string?)null }
+            : new { ok = true, code = "PathSelected", message = "Working directory selected. Save setup before starting.", path = (string?)path });
+    }
+    catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows folder picker: " + ex.Message, path = (string?)null }); }
 });
 app.MapPost("/api/local/valheim/browse-world", async () =>
 {

@@ -12,6 +12,7 @@ public static class GameKinds
     public const string Valheim = "Valheim";
     public const string MinecraftJava = "MinecraftJava";
     public const string MinecraftBedrock = "MinecraftBedrock";
+    public const string Custom = "Custom";
     public const string Fixture = "Fixture";
 }
 
@@ -20,7 +21,8 @@ public sealed record GameValidation(string Code, string Message);
 public sealed record GameLaunchResult(string Code, string Message, int ProcessId);
 public sealed record GamePlayerCount(int Online, int? Capacity = null);
 public sealed record GameHealthResult(bool Ok, string Code, string State, string Detail,
-    int? OnlinePlayers = null, int? MaxPlayers = null);
+    int? OnlinePlayers = null, int? MaxPlayers = null, IReadOnlyList<string>? PlayerNames = null,
+    bool PlayerCountTrusted = true);
 public sealed record GameStopResult(string Code, string Message, uint ExitCode);
 
 // A game driver owns only game-specific validation, launch, readiness, ports, and
@@ -31,6 +33,7 @@ public interface IGameServerDriver
     string Kind { get; }
     string DisplayName { get; }
     bool ShowPortDiagnostics { get; }
+    string ManagedExecutablePath(ServerProfile profile);
     IReadOnlyList<GamePort> Ports(ServerProfile profile);
     string? JoinAddress(ServerProfile profile, string? publicIp);
     GameValidation? ValidateForStart(ServerProfile profile);
@@ -51,6 +54,7 @@ public sealed class GameServerRegistry
             new ValheimServerDriver(data),
             new MinecraftJavaServerDriver(),
             new MinecraftBedrockServerDriver(),
+            new CustomGameServerDriver(data),
             new FixtureServerDriver()
         };
         drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
@@ -88,6 +92,7 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
     public string Kind => GameKinds.Valheim;
     public string DisplayName => "Valheim";
     public bool ShowPortDiagnostics => true;
+    public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
     public IReadOnlyList<GamePort> Ports(ServerProfile profile) =>
     [
         new("UDP", profile.GamePort, "Game"),
@@ -423,6 +428,7 @@ internal sealed class FixtureServerDriver : IGameServerDriver
     public string Kind => GameKinds.Fixture;
     public string DisplayName => "Synthetic test fixture";
     public bool ShowPortDiagnostics => false;
+    public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
     public IReadOnlyList<GamePort> Ports(ServerProfile profile) =>
     [
         new("UDP", profile.GamePort, "Synthetic game"),
