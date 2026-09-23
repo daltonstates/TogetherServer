@@ -7,9 +7,9 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
     DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
-    string Evidence, string Mode, bool? OwnerGameRunning, DateTimeOffset OwnerCheckedUtc,
-    IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
+    string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot);
+public sealed record CountdownExtensionRequest(long Minutes);
 
 public sealed class HostManager
 {
@@ -17,20 +17,17 @@ public sealed class HostManager
     private readonly LocalData data;
     private readonly GameServerRegistry games;
     private readonly TimeProvider clock;
-    private readonly Func<Guid, string?>? idleBlocker;
     private HostSettings settings;
     private readonly List<ManagedRun> runs;
-    private readonly Dictionary<Guid, DateTimeOffset> emptySince = [];
+    private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
 
     public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
-    public HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock = null,
-        Func<Guid, string?>? idleBlocker = null)
+    public HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock = null)
     {
         this.data = data;
         this.games = games;
         this.clock = clock ?? TimeProvider.System;
-        this.idleBlocker = idleBlocker;
         settings = data.LoadSettings();
         runs = data.LoadRuns();
     }
@@ -93,7 +90,7 @@ public sealed class HostManager
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
                 data.Audit($"auto-shutdown {(next.AutoShutdownEnabled ? "enabled" : "disabled")} idle-minutes={next.IdleMinutes} {clock.GetUtcNow():O}");
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
-                emptySince.Clear();
+                shutdownDeadlines.Clear();
             settings = next;
             return Result(true, "SettingsSaved", "Host settings saved.");
         }
@@ -181,7 +178,7 @@ public sealed class HostManager
                 ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
                 StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
             };
-            emptySince.Remove(profileId);
+            shutdownDeadlines.Remove(profileId);
             driver.PrepareStart(profile, run);
             runs.Add(run);
             data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
@@ -221,7 +218,7 @@ public sealed class HostManager
         {
             if (!settings.AutoShutdownEnabled)
             {
-                emptySince.Clear();
+                shutdownDeadlines.Clear();
                 return [];
             }
             var snapshot = Snapshot();
@@ -232,13 +229,39 @@ public sealed class HostManager
             var results = new List<ActionResult>(due.Count);
             foreach (var profileId in due)
             {
-                if (!emptySince.Remove(profileId, out var observedEmptySince)) continue;
+                if (!shutdownDeadlines.Remove(profileId, out var deadline)) continue;
                 var result = await StopUnderGateAsync(profileId,
-                    run => AutoShutdownStillSafe(run, observedEmptySince));
+                    run => AutoShutdownStillSafe(run, deadline));
                 data.Audit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
                 results.Add(result);
             }
             return results;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> ExtendAutoShutdownAsync(Guid profileId, long minutes)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (minutes < 1)
+                return Result(false, "InvalidExtension", "Enter a positive whole number of minutes to add.");
+            if (!settings.AutoShutdownEnabled)
+                return Result(false, "TimerNotRunning", "Automatic shutdown is off, so there is no countdown to extend.");
+            var view = Snapshot().Runs.SingleOrDefault(run => run.ProfileId == profileId);
+            if (view is null || view.State != "Ready" || view.OnlinePlayers != 0 ||
+                view.AutoShutdownAtUtc is null || !shutdownDeadlines.TryGetValue(profileId, out var deadline))
+                return Result(false, "TimerNotRunning",
+                    "The server needs an active zero-player countdown before time can be added.");
+            try { shutdownDeadlines[profileId] = deadline.AddMinutes(minutes); }
+            catch (ArgumentOutOfRangeException)
+            {
+                return Result(false, "InvalidExtension", "That extension would put the countdown outside the supported date range.");
+            }
+            data.Audit($"auto-shutdown-extended {profileId} minutes={minutes} {clock.GetUtcNow():O}");
+            var profileName = settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Name ?? "Server";
+            return Result(true, "CountdownExtended", $"Added {minutes} minute{(minutes == 1 ? "" : "s")} to {profileName}'s countdown.");
         }
         finally { gate.Release(); }
     }
@@ -263,7 +286,7 @@ public sealed class HostManager
             var stopped = await driver.StopAsync(process, run);
             if (stopped.ExitCode != 0) return Result(false, stopped.Code, stopped.Message);
             runs.Remove(run);
-            emptySince.Remove(profileId);
+            shutdownDeadlines.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, stopped.Code, stopped.Message);
         }
@@ -273,11 +296,10 @@ public sealed class HostManager
         }
     }
 
-    private bool AutoShutdownStillSafe(ManagedRun run, DateTimeOffset observedEmptySince)
+    private bool AutoShutdownStillSafe(ManagedRun run, DateTimeOffset deadline)
     {
         if (!settings.AutoShutdownEnabled ||
-            clock.GetUtcNow() < observedEmptySince.AddMinutes(settings.IdleMinutes) ||
-            AutoShutdownBlocker(run.ProfileId) is not null ||
+            clock.GetUtcNow() < deadline ||
             !games.TryGet(run.Kind, out var driver)) return false;
         var health = driver.Health(run);
         return health.Ok && health.State == "Ready" && health.OnlinePlayers == 0;
@@ -314,7 +336,7 @@ public sealed class HostManager
             if (Identity(run) == "Matched")
                 return Result(false, "StillRunning", "The recorded process is still running and cannot be forgotten.");
             runs.Remove(run);
-            emptySince.Remove(profileId);
+            shutdownDeadlines.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, "RecordCleared", "The unresolved record was cleared by the local owner.");
         }
@@ -339,50 +361,42 @@ public sealed class HostManager
             };
         }).ToList();
         var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
-        foreach (var profileId in emptySince.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
-            emptySince.Remove(profileId);
+        foreach (var profileId in shutdownDeadlines.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
+            shutdownDeadlines.Remove(profileId);
         for (var index = 0; index < views.Count; index++)
         {
             var view = views[index];
             if (view.State != "Ready")
             {
-                emptySince.Remove(view.ProfileId);
+                shutdownDeadlines.Remove(view.ProfileId);
                 continue;
             }
             if (!settings.AutoShutdownEnabled)
             {
-                emptySince.Remove(view.ProfileId);
+                shutdownDeadlines.Remove(view.ProfileId);
                 views[index] = view with { AutoShutdownReason = "Automatic shutdown is off." };
                 continue;
             }
             if (view.OnlinePlayers is null)
             {
-                emptySince.Remove(view.ProfileId);
+                shutdownDeadlines.Remove(view.ProfileId);
                 views[index] = view with { AutoShutdownReason = "Waiting for a reliable player count." };
                 continue;
             }
             if (view.OnlinePlayers != 0)
             {
-                emptySince.Remove(view.ProfileId);
+                shutdownDeadlines.Remove(view.ProfileId);
                 views[index] = view with { AutoShutdownReason = "Waiting for the server to be empty." };
                 continue;
             }
-            var blocker = AutoShutdownBlocker(view.ProfileId);
-            if (blocker is not null)
+            if (!shutdownDeadlines.TryGetValue(view.ProfileId, out var deadline))
             {
-                emptySince.Remove(view.ProfileId);
-                views[index] = view with { AutoShutdownReason = blocker };
-                continue;
+                deadline = now.AddMinutes(settings.IdleMinutes);
+                shutdownDeadlines[view.ProfileId] = deadline;
             }
-            if (!emptySince.TryGetValue(view.ProfileId, out var observedEmptySince))
-            {
-                observedEmptySince = now;
-                emptySince[view.ProfileId] = observedEmptySince;
-            }
-            views[index] = view with { AutoShutdownAtUtc = observedEmptySince.AddMinutes(settings.IdleMinutes) };
+            views[index] = view with { AutoShutdownAtUtc = deadline };
         }
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
-            ClientMonitor.IsRunning(settings.OwnerClientExecutablePath), now,
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
                 .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
             data.ManagedWorldsRoot);
@@ -391,14 +405,6 @@ public sealed class HostManager
     private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
         new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
             health.OnlinePlayers, health.MaxPlayers);
-
-    private string? AutoShutdownBlocker(Guid profileId)
-    {
-        var ownerGameRunning = ClientMonitor.IsRunning(settings.OwnerClientExecutablePath);
-        if (ownerGameRunning == true) return "The Host game is running.";
-        if (ownerGameRunning is null) return "The Host game activity check is not configured.";
-        return idleBlocker?.Invoke(profileId);
-    }
 
     private ActionResult Result(bool ok, string code, string message) => new(ok, code, message, Snapshot());
 
@@ -417,8 +423,6 @@ public sealed class HostManager
             return "Set the companion endpoint before enabling its listener.";
         if (next.RemoteControlsEnabled && !next.CompanionListeningEnabled)
             return "Enable the authenticated companion listener before remote controls.";
-        if (!string.IsNullOrWhiteSpace(next.OwnerClientExecutablePath) && !Path.IsPathFullyQualified(next.OwnerClientExecutablePath))
-            return "Owner game client path must be absolute.";
         if (next.Profiles is null || next.Profiles.Select(p => p.Id).Distinct().Count() != next.Profiles.Count)
             return "Each profile needs a unique ID.";
         foreach (var profile in next.Profiles)

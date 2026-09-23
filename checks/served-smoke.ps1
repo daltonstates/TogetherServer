@@ -82,14 +82,15 @@ try {
         'Browse for a world folder', 'Use an existing server', 'TogetherServer installs the latest official server',
         'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
         'Start server', 'Invite friends',
-        'Paste your server code', 'Saved servers', 'Game activity check', 'Browse for game',
+        'Paste your server code', 'Saved servers',
         'Friend access and settings', 'PC name', 'Server access', 'Choose servers', 'Search servers',
         'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop',
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Maximum servers running at once',
         'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
-        'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Remote Stop safety', 'There are no player IDs to enter',
+        'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
+        'Extra minutes for this countdown only.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {
@@ -105,10 +106,13 @@ try {
     }
     if ($js.Content.Contains('Servers this PC can control')) { throw 'The unbounded inline server checklist is still bundled.' }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
+    if ($js.Content.Contains('Game activity check') -or $js.Content.Contains('Browse for game')) {
+        throw 'The removed game-running controls are still bundled.'
+    }
     Write-Host 'PASS standalone EXE, published HTML, embedded React JS, and CSS over loopback'
 
     $discovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
-    if ($null -eq $discovery.installations -or $null -eq $discovery.clients -or $null -eq $discovery.worlds) { throw 'Valheim discovery route returned no result shape.' }
+    if ($null -eq $discovery.installations -or $null -eq $discovery.worlds -or $null -ne $discovery.clients) { throw 'Valheim discovery route returned the wrong result shape.' }
     Write-Host 'PASS loopback-only Valheim discovery route and bundled setup controls'
     $minecraftDiscovery = Invoke-RestMethod -Uri "$baseUrl/api/local/minecraft/discover"
     if ($null -eq $minecraftDiscovery.installations -or $null -eq $minecraftDiscovery.javaRuntimePath) { throw 'Minecraft discovery route returned no result shape.' }
@@ -165,7 +169,7 @@ try {
     Write-Host 'PASS loopback cannot be saved as a public Friend game address'
 
     $profile = @{ id = $profileId; name = 'HTTP fixture'; worldId = 'http-smoke'; worldDirectory = $worldDirectory; gamePort = $gamePort; executablePath = $fixturePath }
-    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; ownerClientExecutablePath = $fixturePath; publicGameIp = '1.2.3.4'; publicGameIpCheckedUtc = (Get-Date).ToUniversalTime().ToString('o'); profiles = @($profile) }
+    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $false; remoteControlsEnabled = $false; publicGameIp = '1.2.3.4'; publicGameIpCheckedUtc = (Get-Date).ToUniversalTime().ToString('o'); profiles = @($profile) }
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw "Settings rejected: $($saved.message)" }
     if ((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings.publicGameIp -ne '1.2.3.4') { throw 'Friend game address was not saved.' }
@@ -261,7 +265,15 @@ try {
     if ($valheimView.onlinePlayers -ne 0 -or $valheimView.maxPlayers -ne 10 -or $null -eq $valheimView.autoShutdownAtUtc) {
         throw 'Published EXE did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
     }
-    Write-Host 'PASS published GUI snapshot exposes the synthetic Valheim player count and shutdown deadline'
+    $originalDeadline = [DateTimeOffset]::Parse($valheimView.autoShutdownAtUtc)
+    $extension = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/countdown/extend" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"minutes":23}'
+    $extendedView = @($extension.snapshot.runs) | Where-Object profileId -EQ $valheimId
+    $extendedDeadline = [DateTimeOffset]::Parse($extendedView.autoShutdownAtUtc)
+    $addedMinutes = ($extendedDeadline - $originalDeadline).TotalMinutes
+    if (!$extension.ok -or $addedMinutes -lt 22.99 -or $addedMinutes -gt 23.01) {
+        throw 'Published EXE did not extend the active countdown by the requested number of minutes.'
+    }
+    Write-Host 'PASS published GUI snapshot exposes server count and supports an exact Host countdown extension'
     $ports = Invoke-RestMethod -Uri "$baseUrl/api/local/network/ports"
     $gameCheck = @($ports.games) | Where-Object profileId -EQ $valheimId
     if ($gameCheck.state -ne 'Open on PC' -or @($gameCheck.ports).Count -ne 2 -or $ports.control.state -ne 'Off' -or $ports.control.remoteState -ne 'Not verified') {
@@ -283,7 +295,7 @@ try {
     catch { $friendReadGamePassword = [int]$_.Exception.Response.StatusCode -eq 409 }
     if (!$friendReadGamePassword) { throw 'Friend mode revealed the Host game password.' }
     $friendDiscovery = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/discover"
-    if ($null -eq $friendDiscovery.clients) { throw 'Friend mode could not discover its installed Valheim game client.' }
+    if ($null -eq $friendDiscovery.installations -or $null -ne $friendDiscovery.clients) { throw 'Friend mode returned the wrong server discovery shape.' }
     $friendInstallDenied = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/minecraft/install" -Method Post -Headers $headers -ContentType 'application/json' -Body $installBody -UseBasicParsing | Out-Null }
     catch { $friendInstallDenied = [int]$_.Exception.Response.StatusCode -eq 409 }

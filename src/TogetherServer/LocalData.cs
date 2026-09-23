@@ -17,7 +17,6 @@ public sealed class HostSettings
     public int CompanionPort { get; set; } = 5131;
     public string PublicGameIp { get; set; } = "";
     public DateTimeOffset? PublicGameIpCheckedUtc { get; set; }
-    public string OwnerClientExecutablePath { get; set; } = "";
     public List<ServerProfile> Profiles { get; set; } = [];
 }
 

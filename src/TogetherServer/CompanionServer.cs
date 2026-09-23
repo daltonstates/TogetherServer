@@ -166,8 +166,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             }).ToList();
             return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled,
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",
-                profiles, snapshot.OwnerGameRunning, own?.GameRunning,
-                own?.CanStart == true, own?.CanStop == true, DateTimeOffset.UtcNow);
+                profiles, own?.CanStart == true, own?.CanStop == true, DateTimeOffset.UtcNow);
         }
 
         var companion = app.MapGroup("/api/companion").RequireRateLimiting("companion");

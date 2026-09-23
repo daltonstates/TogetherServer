@@ -5,8 +5,6 @@ var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the Minecraft console fixture first.", fixture);
 var root = Path.GetFullPath("local-data/minecraft-checks/" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
-var idleClientPath = Path.Combine(root, "OwnerGameNotRunning.exe");
-File.WriteAllText(idleClientPath, "synthetic client marker; never executed");
 var passed = 0;
 var failed = 0;
 
@@ -119,7 +117,7 @@ await Check("two games can share a world name and numeric port on different prot
     using var data = new LocalData(Path.Combine(root, "concurrent-data"));
     var manager = new HostManager(data);
     Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2,
-        AutoShutdownEnabled = true, IdleMinutes = 15, OwnerClientExecutablePath = idleClientPath,
+        AutoShutdownEnabled = true, IdleMinutes = 15,
         Profiles = [java, bedrock] })).Ok,
         "two game profiles were rejected");
     try
@@ -143,7 +141,7 @@ await Check("two games can share a world name and numeric port on different prot
         File.WriteAllText(Path.Combine(extra.WorldDirectory, "server.properties"),
             $"level-name=other\nserver-port={extra.GamePort}\nserver-portv6={port + 1}\nenable-lan-visibility=false\n");
         Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 3,
-            AutoShutdownEnabled = true, IdleMinutes = 15, OwnerClientExecutablePath = idleClientPath,
+            AutoShutdownEnabled = true, IdleMinutes = 15,
             Profiles = [java, bedrock, extra] })).Ok,
             "third Bedrock profile rejected");
         Require((await manager.StartAsync(extra.Id)).Code == "PortConflict",

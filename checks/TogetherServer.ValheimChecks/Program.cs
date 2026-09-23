@@ -61,12 +61,7 @@ try
         "\"libraryfolders\" { \"1\" { \"path\" \"" + secondLibrary.Replace("\\", "\\\\") + "\" } }");
     File.WriteAllText(Path.Combine(secondLibrary, "steamapps", "appmanifest_896660.acf"),
         "\"AppState\" { \"installdir\" \"Valheim dedicated server\" }");
-    File.WriteAllText(Path.Combine(secondLibrary, "steamapps", "appmanifest_892970.acf"),
-        "\"AppState\" { \"installdir\" \"Valheim\" }");
     File.WriteAllText(Path.Combine(installed, "valheim_server.exe"), "synthetic discovery marker; never executed");
-    var gameClient = Path.Combine(secondLibrary, "steamapps", "common", "Valheim", "valheim.exe");
-    Directory.CreateDirectory(Path.GetDirectoryName(gameClient)!);
-    File.WriteAllText(gameClient, "synthetic client discovery marker; never executed");
     var chunkedSource = Path.Combine(sourceWorld, "worlds_local", "chunked-world");
     CreateChunkedWorld(chunkedSource, 7);
     var cloudRoot = Path.Combine(steam, "userdata", "synthetic-account", "892970", "remote");
@@ -75,8 +70,6 @@ try
     var found = ValheimSetup.ScanRoots([steam], [sourceWorld]);
     Require(found.Installations.Single().ExecutablePath == Path.Combine(installed, "valheim_server.exe"),
         "Steam library path on another root was not found");
-    Require(found.Clients.Single().ExecutablePath == gameClient,
-        "Valheim game client in the Steam library was not found");
     Require(found.Worlds.Count == 3 &&
         found.Worlds.Any(item => item.Name == "fixture-world" && item.Format == "Pair") &&
         found.Worlds.Any(item => item.Name == "chunked-world" && item.Format == "Folder") &&
@@ -274,8 +267,7 @@ try
     {
         var games = new GameServerRegistry(stopData);
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero));
-        string? presenceBlocker = null;
-        var host = new HostManager(stopData, games, clock, _ => presenceBlocker);
+        var host = new HostManager(stopData, games, clock);
         var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
             ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
             GamePort = FreePort(), ExecutablePath = fixture };
@@ -349,25 +341,9 @@ try
             "restarting an app-owned world changed its disposable saved data");
         Console.WriteLine("PASS remote Stop needs two zero-player reports; local Host override and app-owned restart work"); passes++;
 
-        DeviceView FriendPresence(IReadOnlyList<Guid> assigned, DateTimeOffset? heartbeat, bool? gameRunning,
-            bool revoked = false, bool paired = true) => new(Guid.NewGuid(), stopProfile.Id, assigned,
-                "Synthetic Friend", true, true, revoked, paired, clock.GetUtcNow().AddDays(1), heartbeat, gameRunning);
-        Require(AutoShutdownPresence.FriendBlocker(stopProfile.Id,
-                [FriendPresence([stopProfile.Id], null, false)])?.Contains("fresh report", StringComparison.Ordinal) == true &&
-            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
-                [FriendPresence([stopProfile.Id], clock.GetUtcNow(), null)])?.Contains("current game check", StringComparison.Ordinal) == true &&
-            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
-                [FriendPresence([stopProfile.Id], clock.GetUtcNow(), true)])?.Contains("game is running", StringComparison.Ordinal) == true &&
-            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
-                [FriendPresence([stopProfile.Id], clock.GetUtcNow(), false)]) is null &&
-            AutoShutdownPresence.FriendBlocker(stopProfile.Id,
-                [FriendPresence([Guid.NewGuid()], null, true), FriendPresence([stopProfile.Id], null, true, revoked: true)]) is null,
-            "assigned Friend heartbeat coverage did not fail closed or ignored unrelated/revoked devices");
-
         var timerSettings = stopData.LoadSettings();
         timerSettings.AutoShutdownEnabled = true;
         timerSettings.IdleMinutes = 1;
-        timerSettings.OwnerClientExecutablePath = unrelatedFixture;
         Require((await host.UpdateSettingsAsync(timerSettings)).Ok, "empty-server timer settings were rejected");
         var timerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
         var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");
@@ -381,14 +357,22 @@ try
             Require(first.OnlinePlayers == 0 && first.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
                 "a zero-player Ready server did not publish its shutdown deadline");
 
-            presenceBlocker = "Waiting for a fresh Friend report.";
-            var presencePaused = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
-            Require(presencePaused.AutoShutdownAtUtc is null && presencePaused.AutoShutdownReason == presenceBlocker,
-                "missing companion coverage did not pause and explain the countdown");
-            presenceBlocker = null;
-            var presenceRecovered = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
-            Require(presenceRecovered.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
-                "fresh companion coverage did not start a full new idle window");
+            var invalidExtension = await host.ExtendAutoShutdownAsync(stopProfile.Id, 0);
+            Require(!invalidExtension.Ok && invalidExtension.Code == "InvalidExtension",
+                "a zero-minute countdown extension was accepted");
+            var extended = await host.ExtendAutoShutdownAsync(stopProfile.Id, 30);
+            Require(extended.Ok && extended.Snapshot.Runs.Single(run => run.ProfileId == stopProfile.Id)
+                    .AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(31),
+                "the Host could not extend the active countdown by an exact number of minutes");
+
+            File.WriteAllText(timerCountPath, "1");
+            var canceledExtension = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(canceledExtension.OnlinePlayers == 1 && canceledExtension.AutoShutdownAtUtc is null,
+                "an online player did not cancel the extended countdown");
+            File.WriteAllText(timerCountPath, "0");
+            Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id)
+                    .AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "an extension leaked into the next empty-server countdown");
 
             var longerTimerSettings = stopData.LoadSettings();
             longerTimerSettings.IdleMinutes = 2;
@@ -437,7 +421,7 @@ try
             if ((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State != "Offline")
                 await host.StopAsync(stopProfile.Id);
         }
-        Console.WriteLine("PASS empty-server countdown resets for players/Unknown and stops gracefully only after a final zero check"); passes++;
+        Console.WriteLine("PASS server-count-only countdown extends, resets for players/Unknown, and stops gracefully after a final zero check"); passes++;
     }
 
     using (var logData = new LocalData(Path.Combine(root, "private-log-count-host")))
@@ -471,7 +455,6 @@ try
             var timerSettings = logData.LoadSettings();
             timerSettings.AutoShutdownEnabled = true;
             timerSettings.IdleMinutes = 1;
-            timerSettings.OwnerClientExecutablePath = unrelatedFixture;
             Require((await host.UpdateSettingsAsync(timerSettings)).Ok,
                 "private log-count timer settings were rejected");
             Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).AutoShutdownAtUtc is not null,

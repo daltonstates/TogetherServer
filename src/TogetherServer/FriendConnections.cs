@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace TogetherServer;
 
-// Each saved invite has its own protected credential, heartbeat sequence, and
-// game-client check. The visible connection can change without pausing others.
+// Each saved invite has its own protected credential and heartbeat sequence.
+// The visible connection can change without pausing others.
 public sealed class FriendService
 {
     private const string IndexFile = "friend-connections.protected";
@@ -40,16 +40,16 @@ public sealed class FriendService
                 ?? connections.FirstOrDefault();
             return selected is null
                 ? new FriendView("Friend", "Not paired", "Paste the server invite code from the Host PC.",
-                    "", null, null, false, false, false, [], Connections: connections)
+                    "", null, false, false, false, [], Connections: connections)
                 : selected with { Connections = connections };
         }
     }
 
-    public async Task<FriendActionResult> PairAsync(string invitation, string clientExecutablePath, string? hostAddress = null)
+    public async Task<FriendActionResult> PairAsync(string invitation, string? hostAddress = null)
     {
         var id = Guid.NewGuid();
         var link = new FriendLink(data, FileName(id));
-        var result = await link.PairAsync(invitation, clientExecutablePath, hostAddress);
+        var result = await link.PairAsync(invitation, hostAddress);
         if (!result.Ok) return result;
         lock (sync)
         {
@@ -77,17 +77,6 @@ public sealed class FriendService
             selectedId = connectionId;
             SaveIndex();
             return new(true, "ConnectionSelected", "Friend connection selected.", null);
-        }
-    }
-
-    public Task<FriendActionResult> SetClientPathAsync(string path)
-    {
-        lock (sync)
-        {
-            var selected = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return selected is null
-                ? Task.FromResult(new FriendActionResult(false, "NotPaired", "Pair with a Host first.", null))
-                : selected.SetClientPathAsync(path);
         }
     }
 

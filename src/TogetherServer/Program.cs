@@ -38,8 +38,7 @@ var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() 
 var games = new GameServerRegistry(data);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
-var manager = new HostManager(data, games,
-    idleBlocker: profileId => AutoShutdownPresence.FriendBlocker(profileId, pairing.Views()));
+var manager = new HostManager(data, games);
 var identity = new HostIdentity(data);
 var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
@@ -240,6 +239,8 @@ app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => 
 })));
 app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => manager.StartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, CountdownExtensionRequest request) =>
+    HostOnly(() => manager.ExtendAutoShutdownAsync(id, request.Minutes)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
@@ -491,36 +492,10 @@ app.MapPut("/api/local/devices/{id:guid}/name", async (Guid id, DeviceNameReques
     finally { modeGate.Release(); }
 });
 app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>
-    friendMode ? Results.Json(await friend.PairAsync(request.Invitation, request.ClientExecutablePath, request.HostAddress))
+    friendMode ? Results.Json(await friend.PairAsync(request.Invitation, request.HostAddress))
     : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/connections/{id:guid}/select", (Guid id) =>
     friendMode ? Results.Json(friend.Select(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
-app.MapPost("/api/local/friend/client-path", async (ClientPathRequest request) =>
-    friendMode ? Results.Json(await friend.SetClientPathAsync(request.Path))
-        : Results.Conflict(new { ok = false, code = "HostMode" }));
-app.MapPost("/api/local/friend/browse-client", async (FriendClientBrowseRequest request) =>
-{
-    if (!friendMode) return Results.Conflict(new { ok = false, code = "HostMode", message = "Switch to Join first." });
-    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
-    var (title, filter) = request.Kind switch
-    {
-        GameKinds.Valheim => ("Choose the Valheim game client", "Valheim (valheim.exe)|valheim.exe|Applications (*.exe)|*.exe"),
-        GameKinds.MinecraftJava => ("Choose the Minecraft Java game client", "Java applications (javaw.exe;java.exe)|javaw.exe;java.exe|Applications (*.exe)|*.exe"),
-        GameKinds.MinecraftBedrock => ("Choose the Minecraft Bedrock game client", "Minecraft (Minecraft.Windows.exe)|Minecraft.Windows.exe|Applications (*.exe)|*.exe"),
-        _ => ("Choose the installed game client", "Applications (*.exe)|*.exe")
-    };
-    try
-    {
-        var selected = await desktop.PickFileAsync(title, filter);
-        return Results.Json(selected is null
-            ? new { ok = false, code = "Canceled", message = "No game client was selected.", path = (string?)null }
-            : new { ok = true, code = "ClientSelected", message = "Game client selected.", path = (string?)selected });
-    }
-    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException)
-    {
-        return Results.BadRequest(new { ok = false, code = "BrowseFailed", message = ex.Message, path = (string?)null });
-    }
-});
 app.MapPost("/api/local/friend/poll", async () =>
     friendMode ? Results.Json(await friend.PollAsync()) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/{action}", async (Guid id, string action) =>
@@ -560,7 +535,7 @@ var friendPollTask = Task.Run(async () =>
     {
         try { await friend.PollAsync(); }
         catch (Exception ex) { Console.Error.WriteLine("Friend poll failed: " + ex.GetType().Name); }
-        try { await Task.Delay(TimeSpan.FromSeconds(15), pollStop.Token); }
+        try { await Task.Delay(TimeSpan.FromSeconds(5), pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
 });
@@ -571,6 +546,16 @@ var idleShutdownTask = Task.Run(async () =>
         try { await manager.MaintainIdleShutdownAsync(); }
         catch (Exception ex) { Console.Error.WriteLine("Empty-server timer failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(3), pollStop.Token); }
+        catch (OperationCanceledException) { break; }
+    }
+});
+var updateCheckTask = Task.Run(async () =>
+{
+    while (!pollStop.IsCancellationRequested)
+    {
+        try { await updater.CheckAsync(); }
+        catch (Exception ex) { Console.Error.WriteLine("Update check failed: " + ex.GetType().Name); }
+        try { await Task.Delay(AppUpdater.AutomaticCheckInterval, pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
 });
@@ -585,4 +570,4 @@ catch (Exception ex) when (openWindow)
     DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
     Environment.ExitCode = 1;
 }
-finally { pollStop.Cancel(); await Task.WhenAll(friendPollTask, idleShutdownTask); await companionServer.StopAsync(); }
+finally { pollStop.Cancel(); await Task.WhenAll(friendPollTask, idleShutdownTask, updateCheckTask); await companionServer.StopAsync(); }

@@ -40,39 +40,21 @@ public sealed class ServerInviteState
 
 public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> AssignedProfileIds,
     string Name, bool CanStart, bool CanStop, bool Revoked,
-    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc, bool? GameRunning);
-
-public static class AutoShutdownPresence
-{
-    public static string? FriendBlocker(Guid profileId, IEnumerable<DeviceView> devices)
-    {
-        var assigned = devices.Where(device => device.Paired && !device.Revoked &&
-            device.AssignedProfileIds.Contains(profileId)).ToList();
-        if (assigned.Any(device => device.LastHeartbeatUtc is null))
-            return "Waiting for a fresh report from every assigned Friend PC.";
-        if (assigned.Any(device => device.GameRunning == true))
-            return "An assigned Friend's game is running.";
-        if (assigned.Any(device => device.GameRunning is null))
-            return "Every assigned Friend PC needs a current game check.";
-        return null;
-    }
-}
+    bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc);
 
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
     bool ServerScope = false);
 public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart);
 public sealed record PairingActivation(Guid DeviceId, string Code, bool ServerScope = false);
 public sealed record PairingCredential(Guid DeviceId, string Credential, DateTimeOffset ExpiresUtc);
-public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version, bool? GameRunning);
-public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc, bool? GameRunning);
+public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version);
+public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop);
 public sealed record DeviceServerAccessRequest(IReadOnlyList<Guid>? ProfileIds);
 public sealed record DeviceNameRequest(string? Name);
-public sealed record FriendPairRequest(string Invitation, string ClientExecutablePath, string? HostAddress = null);
-public sealed record ClientPathRequest(string Path);
-public sealed record FriendClientBrowseRequest(string? Kind);
+public sealed record FriendPairRequest(string Invitation, string? HostAddress = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
 
@@ -358,7 +340,7 @@ public sealed class PairingService
             return new DeviceView(device.Id, device.ProfileId, device.AssignedProfileIds!.ToArray(),
                 device.Name, device.CanStart, device.CanStop, IsRevoked(device),
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
-                fresh ? heartbeat!.ReceivedUtc : null, fresh ? heartbeat!.GameRunning : null);
+                fresh ? heartbeat!.ReceivedUtc : null);
         }).ToList();
     }
 
@@ -467,7 +449,7 @@ public sealed class PairingService
             if (heartbeats.TryGetValue(device.Id, out var prior) && prior.InstanceId == request.InstanceId &&
                 request.Sequence <= prior.Sequence)
                 return new PairingDecision(false, "Replay", "Heartbeat sequence did not advance.");
-            heartbeats[device.Id] = new HeartbeatReceipt(request.InstanceId, request.Sequence, DateTimeOffset.UtcNow, request.GameRunning);
+            heartbeats[device.Id] = new HeartbeatReceipt(request.InstanceId, request.Sequence, DateTimeOffset.UtcNow);
             return new PairingDecision(true, "Received", "Heartbeat recorded.");
         }
     }

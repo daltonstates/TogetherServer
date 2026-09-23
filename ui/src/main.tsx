@@ -19,20 +19,19 @@ type Settings = {
   companionPort: number
   publicGameIp: string
   publicGameIpCheckedUtc: string | null
-  ownerClientExecutablePath: string
   profiles: Profile[]
 }
 type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; ownerGameRunning: boolean | null; ownerCheckedUtc: string; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
+type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
 type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null }
-type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null; gameRunning: boolean | null }
+type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; lastHeartbeatUtc: string | null }
 type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
-type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; localGameRunning: boolean | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; clientExecutablePath: string; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null }
+type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null }
 type Snapshot = HostSnapshot | FriendSnapshot
 type BasicResult = { ok: boolean; code: string; message: string }
 type ActionResult = { ok: boolean; code: string; message: string; snapshot: HostSnapshot }
 type PublicIpDetection = BasicResult & { address: string | null; snapshot?: HostSnapshot }
-type Discovery = { installations: { executablePath: string; source: string }[]; clients: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
+type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
 type ImportResult = BasicResult & { worldDirectory: string | null }
 type ServerBrowseResult = BasicResult & { executablePath?: string }
 type MinecraftBrowseResult = BasicResult & { path?: string }
@@ -259,7 +258,7 @@ function App() {
   const [friendHostAddress, setFriendHostAddress] = useState('')
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
   const [showPairing, setShowPairing] = useState(false)
-  const [friendClientPath, setFriendClientPath] = useState('')
+  const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
   const [passwords, setPasswords] = useState<Record<string, string>>({})
   const [discovery, setDiscovery] = useState<Discovery | null>(null)
   const [minecraftDiscovery, setMinecraftDiscovery] = useState<MinecraftDiscovery | null>(null)
@@ -281,7 +280,6 @@ function App() {
   const setupRef = useModalDialog(showSetup)
   const hostSettingsRef = useModalDialog(showHostSettings)
   const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
-  const friendClientEdited = useRef(false)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
@@ -323,7 +321,7 @@ function App() {
       } catch { /* An update check must not interrupt hosting or joining. */ }
     }
     void check()
-    const timer = window.setInterval(() => void check(), 6 * 60 * 60 * 1000)
+    const timer = window.setInterval(() => void check(), 30 * 60 * 1000)
     return () => { alive = false; window.clearInterval(timer) }
   }, [])
 
@@ -395,25 +393,12 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (snapshot?.mode !== 'Friend' || discovery) return
-    let alive = true
-    void fetch('/api/local/valheim/discover', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() as Promise<Discovery> : null)
-      .then(result => { if (alive && result) setDiscovery(result) })
-      .catch(() => { /* The editable client path remains available if discovery fails. */ })
-    return () => { alive = false }
-  }, [snapshot?.mode, discovery])
-
-  useEffect(() => {
     if (snapshot?.mode !== 'Host' || !showSetup || !draft || !discovery) return
     const serverPath = discovery.installations.length === 1 ? discovery.installations[0].executablePath : ''
-    const clientPath = draft.profiles.some(profile => profile.kind === 'Valheim') && discovery.clients.length === 1
-      ? discovery.clients[0].executablePath : ''
     const profiles = draft.profiles.map(profile => profile.kind === 'Valheim' && !profile.executablePath && serverPath
       ? { ...profile, executablePath: serverPath } : profile)
-    const ownerClientExecutablePath = draft.ownerClientExecutablePath || clientPath
-    if (profiles.some((profile, index) => profile !== draft.profiles[index]) || ownerClientExecutablePath !== draft.ownerClientExecutablePath) {
-      setDraft({ ...draft, profiles, ownerClientExecutablePath })
+    if (profiles.some((profile, index) => profile !== draft.profiles[index])) {
+      setDraft({ ...draft, profiles })
       dirtyRef.current = true
       setDirty(true)
     }
@@ -443,15 +428,6 @@ function App() {
       setDirty(true)
     }
   }, [snapshot?.mode, showSetup, draft, minecraftDiscovery])
-
-  useEffect(() => {
-    if (snapshot?.mode !== 'Friend' || friendClientEdited.current) return
-    const detected = snapshot.profiles[0]?.kind === 'Valheim' && discovery?.clients.length === 1
-      ? discovery.clients[0].executablePath : ''
-    setFriendClientPath(snapshot.clientExecutablePath || detected)
-  }, [snapshot?.mode, snapshot?.mode === 'Friend' ? snapshot.clientExecutablePath : '',
-    snapshot?.mode === 'Friend' ? snapshot.connectionId : '',
-    snapshot?.mode === 'Friend' ? snapshot.profiles[0]?.kind : '', discovery])
 
   useEffect(() => {
     if (snapshot?.mode === 'Friend' && snapshot.endpoint && !friendHostAddress)
@@ -627,7 +603,7 @@ function App() {
     setNotice(null)
     try {
       const response = await fetch('/api/local/friend/pair', { method: 'POST', headers: localHeaders,
-        body: JSON.stringify({ invitation: friendInvite, clientExecutablePath: '', hostAddress: friendHostAddress || null }) })
+        body: JSON.stringify({ invitation: friendInvite, hostAddress: friendHostAddress || null }) })
       const result: BasicResult = await response.json()
       if (!response.ok || !result.ok) {
         const message = result.message || `Local app returned ${response.status} while connecting.`
@@ -636,7 +612,6 @@ function App() {
       }
       setNotice({ good: true, text: result.message })
       if (result.ok) {
-        friendClientEdited.current = false
         setFriendInvite('')
         setShowPairing(false)
         await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
@@ -662,36 +637,9 @@ function App() {
       const result = await change<BasicResult>(`/api/local/friend/connections/${id}/select`, 'POST')
       if (!result.ok) setNotice({ good: false, text: result.message })
       else {
-        friendClientEdited.current = false
         setShowPairing(false)
         setSnapshot(await readSnapshot())
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const saveFriendClientPath = async () => {
-    setPending('client-path')
-    try {
-      const result = await change<BasicResult>('/api/local/friend/client-path', 'POST', { path: friendClientPath })
-      setNotice({ good: result.ok, text: result.message })
-      if (result.ok) {
-        friendClientEdited.current = false
-        await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
-        setSnapshot(await readSnapshot())
-      }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const browseFriendClient = async () => {
-    if (snapshot?.mode !== 'Friend') return
-    setPending('browse-client')
-    try {
-      const result = await change<BrowseResult>('/api/local/friend/browse-client', 'POST', { kind: snapshot.profiles[0]?.kind ?? '' })
-      if (result.ok && result.path) {
-        friendClientEdited.current = true
-        setFriendClientPath(result.path)
-      }
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
@@ -818,6 +766,14 @@ function App() {
       }
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
+  }
+  const extendCountdown = async (profileId: string) => {
+    const minutes = Number(countdownExtensions[profileId] ?? '15')
+    if (!Number.isSafeInteger(minutes) || minutes < 1) {
+      setNotice({ good: false, text: 'Enter a positive whole number of extra minutes.' })
+      return
+    }
+    await run(`extend-${profileId}`, `/api/local/profiles/${profileId}/countdown/extend`, 'POST', { minutes })
   }
 
   const updateProfile = (id: string, patch: Partial<Profile>) => {
@@ -1057,7 +1013,6 @@ function App() {
     `${profile.name} ${gameLabel(profile.kind)}`.toLocaleLowerCase().includes(normalizedServerSearch))
   const activeRuns = snapshot?.mode === 'Host'
     ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Ready'].includes(run.state)).length : 0
-  const friendGame = snapshot?.mode === 'Friend' ? snapshot.profiles[0]?.kind : undefined
   const currentRouteResult = !dirty && companion?.listenerActive
     ? currentOutsideResult(portDiagnostics?.control, internetRouteCheck) : null
   const previousRouteVerdict = !currentRouteResult &&
@@ -1117,12 +1072,6 @@ function App() {
             {pairIssue && <div className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></div>}
             <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<Input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
-          {snapshot.endpoint && <details className="advanced-block"><summary>Game activity check · {snapshot.localGameRunning === null ? 'Not configured' : snapshot.localGameRunning ? 'Game running' : 'Game closed'}</summary>
-            <p className="helper-text">Remote Stop uses the server player count. If the Host enables automatic shutdown, every assigned Friend PC also needs a fresh Game closed report so a missing app pauses the timer.</p>
-            <div className="settings-grid"><label>{gameLabel(friendGame || 'Game')} client<Input value={friendClientPath} onChange={event => { friendClientEdited.current = true; setFriendClientPath(event.target.value) }} placeholder="Choose the installed game client" /></label></div>
-            {friendGame === 'Valheim' && discovery && discovery.clients.length > 1 && <div className="choices"><strong>Valheim installs found</strong>{discovery.clients.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><Button className="secondary" onClick={() => { friendClientEdited.current = true; setFriendClientPath(item.executablePath) }}>Use this install</Button></div>)}</div>}
-            <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void browseFriendClient()}>Browse for game</Button><Button disabled={!snapshot.endpoint || !!pending || !friendClientPath} onClick={() => void saveFriendClientPath()}>Save game check</Button></div>
-          </details>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
           {snapshot.profiles.map(profile => <article className="profile-card" key={profile.id}>
@@ -1154,6 +1103,7 @@ function App() {
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={!!pending} onRefresh={() => void checkPorts()} onOpenConnection={() => openHostSettings('network')} />
+                {status?.autoShutdownAtUtc && <div className="timer-extension"><label>Extend this countdown<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Extra minutes for this countdown only.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
                 <div className="actions server-actions">
                   {status?.state === 'Offline' && <Button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/start`, 'POST')}><Icon name="play" /><span>Start server</span></Button>}
                   {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/stop`, 'POST')}><Icon name="stop" /><span>Stop server</span></Button>}
@@ -1318,7 +1268,7 @@ function App() {
               </section>}
 
               {hostSettingsSection === 'stop' && <section className="settings-section"><h3>Empty-server countdown</h3>
-                <p>When a Ready server reports 0 players, TogetherServer can count down and stop it gracefully. Any player, unavailable count, running Host game, or missing/running assigned Friend game check cancels the timer. A fresh zero-player check is required again at the end.</p>
+                <p>When a Ready server reports 0 players, TogetherServer counts down and stops it gracefully. Friend apps do not gate the timer. A player or unavailable server count cancels it, and a fresh zero-player server check is required again at the end.</p>
                 <div className="idle-settings"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong><small>Off by default. Host and Friend cards share the countdown or explain why it is paused.</small></span><Input type="checkbox" checked={draft.autoShutdownEnabled} disabled={!!pending || dirty} onChange={event => void saveHostFlags({ autoShutdownEnabled: event.target.checked })} /></label>
                   <label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" value={draft.idleMinutes} disabled={!!pending} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Minutes, from 1 to 1440.</small></label>
                   <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save-idle', '/api/local/settings', 'PUT', draft)}>Save timer</Button></div></div>
@@ -1352,7 +1302,6 @@ function App() {
                 }} /></label>
                 <label>Custom HTTPS endpoint<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /></label>
                 <label>Bind IP<Input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
-                <label>Owner game client path<Input value={draft.ownerClientExecutablePath} onChange={event => edit({ ...draft, ownerClientExecutablePath: event.target.value })} placeholder="Choose the exact installed game client" /><small>Required for automatic shutdown so this PC can report Game closed.</small></label>
               </div>
               {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
               <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</Button></div>

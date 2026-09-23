@@ -15,6 +15,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 {
     public const string AssetName = "TogetherServer-win-x64.exe";
     public const long MaximumBytes = 200L * 1024 * 1024;
+    public static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromMinutes(30);
     private const string LatestUrl = "https://api.github.com/repos/daltonstates/TogetherServer/releases/latest";
     private readonly SemaphoreSlim gate = new(1, 1);
     private UpdateView view = new("Checking", currentVersion.ToString(3), null, "Checking for updates.");
@@ -32,7 +33,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         await gate.WaitAsync();
         try
         {
-            if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < TimeSpan.FromHours(6)) return view;
+            if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < AutomaticCheckInterval) return view;
             checkedUtc = DateTimeOffset.UtcNow;
             if (!IsStandalone)
                 return view = new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.");

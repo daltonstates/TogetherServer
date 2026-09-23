@@ -101,7 +101,7 @@ try
     using var owner = LocalClient(hostPort);
     var settings = new HostSettings { MaxConcurrentServers = 1, Profiles = [profile, joinProfile], CompanionEndpoint = endpoint,
         PublicGameIp = "1.2.3.4", PublicGameIpCheckedUtc = DateTimeOffset.UtcNow.AddHours(-2),
-        CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1", OwnerClientExecutablePath = fixturePath };
+        CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1" };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
     var inviteA = await ServerInvite(owner, profile.Id, true, enableConnections: true);
     var inviteB = await ServerInvite(owner, joinProfile.Id, false);
@@ -159,23 +159,23 @@ try
         !HostIdentity.TryAddress("http://127.0.0.1", out _),
         "Host IP with optional control port was not normalized safely");
     var wrongAddress = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(JsonSerializer.Serialize(inviteA, webJson), fixturePath, "127.0.0.1:9999"));
+        new(JsonSerializer.Serialize(inviteA, webJson), "127.0.0.1:9999"));
     Require(wrongAddress.Code == "HostAddressMismatch", "pairing ignored an address that differed from the pinned invite");
     var wrongPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(JsonSerializer.Serialize(tampered, webJson), fixturePath));
+        new(JsonSerializer.Serialize(tampered, webJson)));
     Require(!wrongPin.Ok && wrongPin.Code == "HostIdentityMismatch", "wrong Host pin was accepted");
     var rejectedCode = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(inviteA with { Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }), fixturePath));
+        new(PairingPassword.Encode(inviteA with { Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) })));
     Require(!rejectedCode.Ok && rejectedCode.Code == "PairingRejected" && rejectedCode.Message.Contains("current server code"),
         "a rejected server code was mistaken for a network or TLS failure");
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(passwordA, fixturePath));
+        new(passwordA));
     Require(pairedA.Ok, "a current invite did not pair without a separate Host IP");
     var wrongPasswordPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(tampered), fixturePath, $"127.0.0.1:{companionPort}"));
+        new(PairingPassword.Encode(tampered), $"127.0.0.1:{companionPort}"));
     Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "HostIdentityMismatch", "password pairing accepted the wrong Host TLS pin");
     var pairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
-        new(passwordA, fixturePath));
+        new(passwordA));
     Require(pairedA.Ok && pairedB.Ok, $"separate Friend processes did not pair: A={pairedA.Code} {pairedA.Message}, B={pairedB.Code} {pairedB.Message}");
     var pairedDevices = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
         .Where(device => device.GetProperty("profileId").GetGuid() == profile.Id).ToArray();
@@ -243,7 +243,7 @@ try
         "the Host could not restore multiple server assignments");
     Console.WriteLine("PASS codes grant one server and the Host can reassign zero, one, or multiple saved servers"); passes++;
     var pairedSecondGame = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(inviteB), fixturePath));
+        new(PairingPassword.Encode(inviteB)));
     Require(pairedSecondGame.Ok, "second server pairing replaced the first or failed");
     var multiple = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(multiple.Connections?.Count == 2 && multiple.Profiles.Single().Kind == GameKinds.Valheim &&
@@ -286,7 +286,7 @@ try
     Require(joinStatus.Profiles.Count == 1 && joinStatus.Profiles.Single().Id == joinProfile.Id &&
         joinStatus.Profiles.Single().JoinAddress == $"1.2.3.4:{joinProfile.GamePort}",
         "a credential did not remain scoped to its server and current join address");
-    var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check", false);
+    var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check");
     async Task<HttpStatusCode> SendHeartbeat()
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/heartbeat")
@@ -324,7 +324,6 @@ try
     var first = await PublicAction(publicClient, credentialC, profile.Id, requestId, "start");
     var runningHost = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
     var firstPid = runningHost.Runs.Single(run => run.ProfileId == profile.Id).ProcessId;
-    Require(runningHost.OwnerGameRunning == true, "Host did not perform its local synthetic game-client check");
     var retry = await PublicAction(publicClient, credentialC, profile.Id, requestId, "start");
     using (var conflicting = new HttpRequestMessage(HttpMethod.Post, "/api/companion/stop"))
     {
@@ -343,9 +342,7 @@ try
     var unknownStop = await OwnerPost<object, FriendActionResult>(bLocal, $"/api/local/friend/{profile.Id}/stop", new { });
     Require(deniedStop.Code == "PermissionDenied" && unknownStop.Code == "ServerNotReady",
         $"remote Stop safety or permissions failed: denied={deniedStop.Code}, unsupported={unknownStop.Code}");
-    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
-    Require(aView.LocalGameRunning == true, "synthetic client-running transition was missed");
-    Console.WriteLine("PASS permissions, idempotent Start, duplicate guard, Stop denial, synthetic true signal"); passes++;
+    Console.WriteLine("PASS permissions, idempotent Start, duplicate guard, and guarded Stop denial"); passes++;
 
     StopApp(host);
     host = null;
@@ -417,7 +414,7 @@ try
         "mode change without local owner headers was accepted");
     var runningMode = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/friend", new { });
     var ownFriendLink = await OwnerPost<FriendPairRequest, FriendActionResult>(owner, "/api/local/friend/pair",
-        new(PairingPassword.Encode(peerInvite), fixturePath, $"127.0.0.1:{peerCompanionPort}"));
+        new(PairingPassword.Encode(peerInvite), $"127.0.0.1:{peerCompanionPort}"));
     var joinedPeer = await OwnerPost<object, FriendView>(owner, "/api/local/friend/poll", new { });
     var hostWhileJoining = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
@@ -435,11 +432,7 @@ try
         "owner could not return to Host view with a managed server running");
     var localStop = await OwnerPost<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { });
     Require(localStop.Ok, "local fixture stop failed");
-    Require((await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.OwnerGameRunning == false,
-        "Host did not observe its local synthetic client close");
-    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(bView.LocalGameRunning == false, "synthetic client-closed transition was missed");
-    Console.WriteLine("PASS isolated revocation and synthetic false signal"); passes++;
+    Console.WriteLine("PASS isolated revocation and concurrent Host/Friend operation"); passes++;
 
     var friendViewAfterStop = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/friend", new { });
     var listenerAfterStop = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
@@ -491,7 +484,7 @@ try
         otherServerResponse.IsSuccessStatusCode && bView.State == "Revoked",
         "refresh did not revoke the old server code and access while preserving the other server");
     var repairedB = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(rotationInvite), fixturePath));
+        new(PairingPassword.Encode(rotationInvite)));
     Require(repairedB.Ok, "Friend could not reconnect with the refreshed server code");
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(bView.State == "Connected" && bView.Connections?.Count == 2,
@@ -524,7 +517,7 @@ try
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(bView.State == "Disconnected/Unknown", "a disabled listener was falsely reported as credential revocation");
     var closedPortPair = await OwnerPost<FriendPairRequest, FriendActionResult>(bLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(rotationInvite), fixturePath));
+        new(PairingPassword.Encode(rotationInvite)));
     Require(!closedPortPair.Ok && closedPortPair.Code == "HostPortClosed" &&
         !closedPortPair.Message.Contains("Test from internet", StringComparison.OrdinalIgnoreCase),
         "a closed Host listener was not reported as a local TCP refusal");
@@ -532,17 +525,9 @@ try
     settings.RemoteControlsEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "companion re-enable failed");
-    var clearPath = await OwnerPost<ClientPathRequest, FriendActionResult>(bLocal,
-        "/api/local/friend/client-path", new(""));
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(clearPath.Ok && bView.LocalGameRunning is null && bView.ClientExecutablePath == "",
-        "cleared Friend client path was not Unknown");
-    var restorePath = await OwnerPost<ClientPathRequest, FriendActionResult>(bLocal,
-        "/api/local/friend/client-path", new(fixturePath));
-    bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(restorePath.Ok && bView.LocalGameRunning == false && bView.ClientExecutablePath == fixturePath,
-        "Friend client path did not recover");
-    Console.WriteLine("PASS immediate companion disable and Friend client-path recovery"); passes++;
+    Require(bView.State == "Connected", "Friend did not recover after companion re-enable");
+    Console.WriteLine("PASS immediate companion disable and Friend reconnect recovery"); passes++;
 
     StopApp(friendB);
     friendB = null;
@@ -551,8 +536,8 @@ try
     var staleDevice = staleInfo.GetProperty("devices").EnumerateArray()
         .Single(device => device.GetProperty("id").GetGuid() == deviceBId);
     Require(staleDevice.GetProperty("lastHeartbeatUtc").ValueKind == JsonValueKind.Null &&
-        staleDevice.GetProperty("gameRunning").ValueKind == JsonValueKind.Null,
-        "missed Friend heartbeat was treated as a fresh false signal");
+        !staleDevice.TryGetProperty("gameRunning", out _),
+        "missed Friend heartbeat was treated as fresh or retained the removed game-running field");
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
     await WaitLocal(friendBPort);
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
@@ -583,8 +568,6 @@ try
         ExecutablePath = valheimFixturePath, GamePort = gamePort + 20 };
     stopProfileId = stopProfile.Id;
     stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
-    var inactiveClientPath = Path.Combine(root, "InactiveGameClient.exe");
-    File.WriteAllText(inactiveClientPath, "synthetic client marker; never executed");
     stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 7000);
     stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
     await WaitLocal(stopHostPort); await WaitLocal(stopFriendPort);
@@ -592,7 +575,7 @@ try
     using var stopFriendLocal = LocalClient(stopFriendPort);
     var stopSettings = new HostSettings { Profiles = [stopProfile], CompanionEndpoint = stopEndpoint,
         CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort,
-        AutoShutdownEnabled = true, IdleMinutes = 15, OwnerClientExecutablePath = inactiveClientPath };
+        AutoShutdownEnabled = true, IdleMinutes = 15 };
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
         "restricted Host settings failed");
     Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
@@ -600,7 +583,7 @@ try
         "restricted Host password failed");
     var stopInvite = await ServerInvite(stopOwner, stopProfile.Id, true, enableConnections: true);
     var stopPair = await OwnerPost<FriendPairRequest, FriendActionResult>(stopFriendLocal, "/api/local/friend/pair",
-        new(PairingPassword.Encode(stopInvite), inactiveClientPath));
+        new(PairingPassword.Encode(stopInvite)));
     Require(stopPair.Ok, "restricted Friend did not pair from the server code");
     var stopBeforePermission = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     Require(!stopBeforePermission.CanStop && !stopBeforePermission.Profiles.Single().CanStopNow &&
@@ -635,7 +618,13 @@ try
     var hostDeadline = hostRun.AutoShutdownAtUtc;
     Require(hostRun.OnlinePlayers == 0 && hostRun.MaxPlayers == 10 &&
         hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(14),
-        "Host API did not expose the server-reported player count and empty-server deadline");
+        "Host API did not start a server-count-only empty-server deadline without game-client settings");
+    var extendedCountdown = await OwnerPost<CountdownExtensionRequest, ActionResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/countdown/extend", new(37));
+    Require(extendedCountdown.Ok, "Host could not extend an active countdown");
+    hostDeadline = extendedCountdown.Snapshot.Runs.Single().AutoShutdownAtUtc;
+    Require(hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(51),
+        "Host countdown extension did not add the requested 37 minutes");
     var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     var friendProfile = stopView.Profiles.Single();
     Require(friendProfile.OnlinePlayers == 0 && friendProfile.MaxPlayers == 10 &&
@@ -658,7 +647,7 @@ try
     Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
-    Console.WriteLine("PASS paired Friend sees player counts/countdown and can stop only at zero through HTTPS and Ctrl+C"); passes++;
+    Console.WriteLine("PASS Host extends the count-only timer; Friend sees counts/deadline and stops only at zero through HTTPS and Ctrl+C"); passes++;
 
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;

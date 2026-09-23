@@ -17,7 +17,6 @@ public sealed class FriendConfiguration
     public Guid DeviceId { get; set; }
     public string Credential { get; set; } = "";
     public DateTimeOffset CredentialExpiresUtc { get; set; }
-    public string ClientExecutablePath { get; set; } = "";
 }
 
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
@@ -25,10 +24,10 @@ public sealed record PublicProfile(Guid Id, string Name, string State, string? J
     int? OnlinePlayers = null, int? MaxPlayers = null, DateTimeOffset? AutoShutdownAtUtc = null,
     string? AutoShutdownReason = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
-    bool? OwnerGameRunning, bool? YourGameRunning, bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
+    bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
-    bool? LocalGameRunning, bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
-    string ClientExecutablePath = "", Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
+    bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
+    Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
     string? ConnectionCode = null);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status);
 
@@ -49,31 +48,14 @@ internal sealed class FriendLink
         this.configFile = configFile;
         config = LoadConfig(data, configFile);
         view = config is null
-            ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, null, false, false, false, [])
+            ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
-                null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [], config.ClientExecutablePath);
+                null, false, false, false, []);
     }
 
     public FriendView View() => view;
 
-    public async Task<FriendActionResult> SetClientPathAsync(string path)
-    {
-        await gate.WaitAsync();
-        try
-        {
-            if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
-            if (path is null || (path.Length > 0 && (!Path.IsPathFullyQualified(path) || !File.Exists(path))))
-                return new(false, "InvalidClientPath", "Choose an installed game client executable by absolute path.", null);
-            config.ClientExecutablePath = path.Length == 0 ? "" : Path.GetFullPath(path);
-            data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
-            view = view with { ClientExecutablePath = config.ClientExecutablePath,
-                LocalGameRunning = ClientMonitor.IsRunning(config.ClientExecutablePath) };
-            return new(true, "ClientPathSaved", "Game client path saved in Windows protected storage.", null);
-        }
-        finally { gate.Release(); }
-    }
-
-    public async Task<FriendActionResult> PairAsync(string invitation, string clientExecutablePath, string? hostAddress = null)
+    public async Task<FriendActionResult> PairAsync(string invitation, string? hostAddress = null)
     {
         await gate.WaitAsync();
         try
@@ -92,10 +74,8 @@ internal sealed class FriendLink
             }
             if (invite is null || !HostIdentity.TryEndpoint(invite.Endpoint, out _) ||
                 !ValidFingerprint(invite.Fingerprint) || string.IsNullOrWhiteSpace(invite.Code) ||
-                invite.DeviceId == Guid.Empty || invite.ExpiresUtc <= DateTimeOffset.UtcNow ||
-                clientExecutablePath is null ||
-                (clientExecutablePath.Length > 0 && !Path.IsPathFullyQualified(clientExecutablePath)))
-                return new(false, "InvalidInvite", "Invite or game client path is invalid or expired.", null);
+                invite.DeviceId == Guid.Empty || invite.ExpiresUtc <= DateTimeOffset.UtcNow)
+                return new(false, "InvalidInvite", "Invite is invalid or expired.", null);
             if (!string.IsNullOrWhiteSpace(hostAddress) &&
                 (!HostIdentity.TryAddress(hostAddress, out var enteredEndpoint) ||
                  !string.Equals(enteredEndpoint, invite.Endpoint, StringComparison.OrdinalIgnoreCase)))
@@ -118,15 +98,13 @@ internal sealed class FriendLink
                 config = new FriendConfiguration
                 {
                     Endpoint = invite.Endpoint, Fingerprint = invite.Fingerprint, DeviceId = credential.DeviceId,
-                    Credential = credential.Credential, CredentialExpiresUtc = credential.ExpiresUtc,
-                    ClientExecutablePath = clientExecutablePath
+                    Credential = credential.Credential, CredentialExpiresUtc = credential.ExpiresUtc
                 };
                 data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
                 instanceId = Guid.NewGuid();
                 sequence = 0;
                 view = new FriendView("Friend", "Disconnected/Unknown", "Paired; waiting for an authenticated heartbeat.",
-                    config.Endpoint, null, ClientMonitor.IsRunning(config.ClientExecutablePath), false, false, false, [],
-                    config.ClientExecutablePath);
+                    config.Endpoint, null, false, false, false, []);
                 return new(true, "Paired", "Device paired and credential saved in Windows protected storage.", null);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
@@ -143,18 +121,17 @@ internal sealed class FriendLink
         try
         {
             if (config is null) return view;
-            var localRunning = ClientMonitor.IsRunning(config.ClientExecutablePath);
             if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
             {
                 view = view with { State = "Disconnected/Unknown", Detail = "Device credential expired; ask the Host for the current server code.", ConnectionCode = "CredentialExpired",
-                    LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return view;
             }
             try
             {
                 using var client = MakeClient(config.Endpoint, config.Fingerprint);
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
-                var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence, "0.2", localRunning);
+                var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence, "0.2");
                 var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/heartbeat")
                 {
                     Content = new StringContent(JsonSerializer.Serialize(heartbeat, Json), Encoding.UTF8, "application/json")
@@ -169,7 +146,7 @@ internal sealed class FriendLink
                     var revoked = denial?.Code == "Revoked";
                     view = view with { State = revoked ? "Revoked" : "Disconnected/Unknown",
                         Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code." : "Host access is unavailable or denied.",
-                        ConnectionCode = revoked ? "Revoked" : "HostAccessDenied", LocalGameRunning = localRunning,
+                        ConnectionCode = revoked ? "Revoked" : "HostAccessDenied",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return view;
                 }
@@ -182,22 +159,22 @@ internal sealed class FriendLink
                         _ => new ConnectionIssue("HostUnavailable", $"The Host app returned {(int)response.StatusCode}. Ask the Host to check its app.")
                     };
                     view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                        LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                     return view;
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
                 view = new FriendView("Friend", status.RemoteControlsEnabled ? "Connected" : "Disabled",
                     status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
-                    config.Endpoint, DateTimeOffset.UtcNow, localRunning, status.RemoteControlsEnabled,
-                    status.CanStart, status.CanStop, status.Profiles, config.ClientExecutablePath);
+                    config.Endpoint, DateTimeOffset.UtcNow, status.RemoteControlsEnabled,
+                    status.CanStart, status.CanStop, status.Profiles);
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 var issue = ConnectionFailure(ex);
                 view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                    LocalGameRunning = localRunning, RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return view;
             }
         }

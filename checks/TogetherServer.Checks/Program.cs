@@ -224,9 +224,9 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     settings.PublicGameIp = "1.2.3.4";
     settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     var snapshot = new HostSnapshot(settings, [new RunView(profile.Id, "Ready", "fixture", 1)],
-        "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
+        "fixture", "Host", new Dictionary<Guid, bool>(), root);
     var device = new DeviceView(Guid.NewGuid(), profile.Id, [profile.Id], "Friend PC", true, false, false, true,
-        DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow, false);
+        DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow);
     var diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
     Require(diagnostics.Games.Single().State == "Open on PC" &&
         diagnostics.Games.Single().RouteKind == "Direct" && diagnostics.Games.Single().Kind == GameKinds.Valheim,
@@ -261,7 +261,7 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         GamePort = ((IPEndPoint)loopbackGame.LocalEndpoint).Port };
     var javaSnapshot = new HostSnapshot(Settings(javaProfile),
         [new RunView(javaProfile.Id, "Ready", "fixture", 1)],
-        "fixture", "Host", false, DateTimeOffset.UtcNow, new Dictionary<Guid, bool>(), root);
+        "fixture", "Host", new Dictionary<Guid, bool>(), root);
     var javaPorts = PortDiagnostics.Read(javaSnapshot, new GameServerRegistry(data), false, []);
     Require(javaPorts.Games.Single().State == "Loopback only" &&
         javaPorts.Games.Single().Kind == GameKinds.MinecraftJava,

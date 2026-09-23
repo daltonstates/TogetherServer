@@ -37,6 +37,13 @@ AppUpdater Updater(string name, HttpMessageHandler handler)
     return new AppUpdater(new HttpClient(handler), directory, installed, new Version(0, 1, 0));
 }
 
+await Check("automatic checks use the startup loop's 30-minute cadence", () =>
+{
+    Require(AppUpdater.AutomaticCheckInterval == TimeSpan.FromMinutes(30),
+        "automatic update checks are not scheduled every 30 minutes");
+    return Task.CompletedTask;
+});
+
 await Check("no GitHub release is a normal state", async () =>
 {
     var updater = Updater("no-release", new FakeHandler(_ => new(HttpStatusCode.NotFound)));

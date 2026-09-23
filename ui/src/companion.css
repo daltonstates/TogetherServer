@@ -751,5 +751,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .player-count.unknown { border-color: #73563f; background: #3a2c21; color: #f0c493; }
 .idle-countdown { display: inline-flex; border: 1px solid #53718a; border-radius: 999px; padding: 4px 8px; background: #1f3443; color: #c9e5f6; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .idle-reason { display: block; margin-top: 5px; max-width: 48ch; color: #dfbd8f; font-size: 11px; line-height: 1.35; }
+.timer-extension { display: flex; align-items: end; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid #405342; border-radius: 9px; background: #152119; }
+.timer-extension label { display: grid; flex: 1; gap: 4px; min-width: 0; color: #dce9d8; font-size: 12px; }
+.timer-extension .ui-input { width: 100%; }
+.timer-extension small { color: #9eb29c; font-size: 10px; }
+.timer-extension button { flex: 0 0 auto; min-height: 38px; }
 .idle-settings { display: grid; gap: 12px; margin: 14px 0 24px; padding: 14px; border: 1px solid #3c4c3f; border-radius: 10px; background: #121c15; }
 .idle-settings > label:not(.setting-toggle) { display: grid; gap: 6px; max-width: 320px; }
+
+@media (max-width: 480px) {
+  .timer-extension { align-items: stretch; flex-direction: column; }
+  .timer-extension button { width: 100%; }
+}

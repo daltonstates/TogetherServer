@@ -4,8 +4,7 @@ $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release/TogetherServer.exe' }
 $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $fixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
-$idleClientPath = Join-Path $repository 'src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe'
-if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath) -or !(Test-Path -LiteralPath $idleClientPath)) { throw 'Run scripts/build.ps1 first.' }
+if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath)) { throw 'Run scripts/build.ps1 first.' }
 
 # The default checks the exact no-argument Explorer path; an isolated port uses --desktop for parallel testing.
 if ($Port -eq 0) {
@@ -109,7 +108,11 @@ function Get-ChromeButton($process, [string]$name) {
 }
 
 function Invoke-ChromeButton($process, [string]$name) {
-    $button = Get-ChromeButton $process $name
+    $button = $null
+    for ($i = 0; $i -lt 30 -and $null -eq $button; $i++) {
+        $button = Get-ChromeButton $process $name
+        if ($null -eq $button) { Start-Sleep -Milliseconds 100 }
+    }
     if ($null -eq $button) { throw "Custom title-bar control was not found: $name" }
     $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
     $pattern.Invoke()
@@ -294,7 +297,7 @@ try {
     $import = Invoke-RestMethod -Uri "$baseUrl/api/local/valheim/import" -Method Post -Headers $headers -ContentType 'application/json' -Body (@{ profileId = $profileId; sourceSaveRoot = $saveRoot; worldId = 'fixture-world' } | ConvertTo-Json)
     if (!$import.ok) { throw 'Desktop synthetic world import failed.' }
     $profile = @{ id = $profileId; kind = 'Valheim'; name = 'Desktop fixture'; serverName = 'Fixture "Valheim"'; worldId = 'fixture-world'; worldDirectory = $import.worldDirectory; gamePort = (Get-FreeUdpPair); executablePath = $fixturePath }
-    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $true; remoteControlsEnabled = $false; ownerClientExecutablePath = $idleClientPath; profiles = @($profile) }
+    $settings = @{ maxConcurrentServers = 1; idleMinutes = 15; autoShutdownEnabled = $true; remoteControlsEnabled = $false; profiles = @($profile) }
     $saved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($settings | ConvertTo-Json -Depth 8)
     if (!$saved.ok) { throw 'Desktop synthetic Valheim settings failed.' }
     $password = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/password" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"password":"fixture-pass-123"}'
@@ -335,6 +338,13 @@ try {
     if ($desktopRun.onlinePlayers -ne 0 -or $desktopRun.maxPlayers -ne 10 -or $null -eq $desktopRun.autoShutdownAtUtc) {
         throw 'Desktop GUI snapshot did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
     }
+    $desktopDeadline = [DateTimeOffset]::Parse($desktopRun.autoShutdownAtUtc)
+    $extended = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/countdown/extend" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"minutes":45}'
+    $extendedDeadline = [DateTimeOffset]::Parse((@($extended.snapshot.runs) | Where-Object profileId -EQ $profileId).autoShutdownAtUtc)
+    if (!$extended.ok -or ($extendedDeadline - $desktopDeadline).TotalMinutes -lt 44.99) {
+        throw 'Desktop Host could not extend the active empty-server countdown.'
+    }
+    Write-Host 'PASS desktop Host receives server count and extends its active countdown'
     $stopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/stop" -Method Post -Headers $headers -TimeoutSec 15
     if (!$stopped.ok -or !(Test-Path -LiteralPath (Join-Path $import.worldDirectory 'synthetic-stop.marker'))) {
         throw "Desktop synthetic Ctrl+C stop failed: $($stopped.message)"
@@ -375,33 +385,6 @@ try {
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
         throw 'Friend mode selection failed.'
-    }
-    foreach ($gameKind in @('Valheim', 'MinecraftJava', 'MinecraftBedrock')) {
-        $picker = Start-Job -ArgumentList $baseUrl, $gameKind -ScriptBlock {
-            param($url, $kind)
-            Invoke-RestMethod -Uri "$url/api/local/friend/browse-client" -Method Post -ContentType 'application/json' -Body (@{ kind = $kind } | ConvertTo-Json) -Headers @{ Origin = $url; 'X-TogetherServer-Local' = '1' } -TimeoutSec 30
-        }
-        try {
-            $popup = [IntPtr]::Zero
-            for ($i = 0; $i -lt 100; $i++) {
-                $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
-                $first.Refresh()
-                $popup = [TogetherServerWindowCheck]::FindDialog($first.Id)
-                if ($windowState.fileDialogOpen -and $popup -ne [IntPtr]::Zero -and $popup -ne $first.MainWindowHandle) { break }
-                Start-Sleep -Milliseconds 100
-            }
-            if (!$windowState.fileDialogOpen -or $popup -eq [IntPtr]::Zero -or $popup -eq $first.MainWindowHandle) {
-                throw "$gameKind client Browse did not open a native picker."
-            }
-            if (![TogetherServerWindowCheck]::PostMessage($popup, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) {
-                throw "Could not cancel the $gameKind client picker."
-            }
-            if (!(Wait-Job -Job $picker -Timeout 10)) { throw "Canceled $gameKind client picker did not return." }
-            $choice = Receive-Job -Job $picker
-            if ($choice.code -ne 'Canceled') { throw "Canceled $gameKind client picker returned $($choice.code)." }
-            Write-Host "PASS Friend $gameKind client Browse opens and cancels a native Windows picker"
-        }
-        finally { Stop-Job -Job $picker -ErrorAction SilentlyContinue; Remove-Job -Job $picker -Force -ErrorAction SilentlyContinue }
     }
     $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
     if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }
