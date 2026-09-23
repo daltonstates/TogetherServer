@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Icon } from './Icon'
 import { Button } from './Controls'
 
@@ -292,6 +293,21 @@ function SummaryLine({ summary, icon }: { summary: ReadinessSummary; icon: 'game
   </div>
 }
 
+function TechnicalDetail({ label, value, detail, tone = 'neutral' }: {
+  label: string
+  value: ReactNode
+  detail?: ReactNode
+  tone?: ReadinessTone
+}) {
+  return <div className="technical-detail-row">
+    <dt>{label}</dt>
+    <dd>
+      <span className={`technical-detail-value ${tone}`}>{value}</span>
+      {detail !== undefined && detail !== null && <span className="technical-detail-description">{detail}</span>}
+    </dd>
+  </div>
+}
+
 export function ServerReadiness({ profileId, status, ports, routeCheck, onRefresh, onOpenConnection, busy }: {
   profileId: string
   status: string
@@ -310,6 +326,18 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   const friend = friendSummary(control, checkedRoute)
   const gameAccess = gameSummary(status, game)
   const issue = connectionIssue(control, checkedRoute, hadPreviousResult) ?? gameIssue(status, game)
+  const friendListenerDetail = control
+    ? <>{control.detail}{control.bindAddress && <> Bound to <code>{control.bindAddress}</code> ({control.bindScope ?? 'scope unknown'}).</>}</>
+    : 'Waiting for a listener check.'
+  const outsideValue = checkedRoute?.state ?? (routeCheck ? 'Previous result expired' : 'Not checked')
+  const outsideTone: ReadinessTone = checkedRoute?.state === 'Reachable' ? 'good'
+    : checkedRoute?.state === 'Not reachable' ? 'bad'
+      : checkedRoute || routeCheck ? 'warning' : 'neutral'
+  const outsideDetail = checkedRoute
+    ? <>{checkedRoute.detail}<small>Checked at {new Date(checkedRoute.checkedUtc).toLocaleTimeString()}.</small></>
+    : routeCheck
+      ? 'The earlier result expired or no longer matches the current listener and invite address.'
+      : guidance.summary
 
   return <div className="server-readiness" aria-label="Server connection status">
     <div className="readiness-overview">
@@ -325,21 +353,51 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
 
     <div className="readiness-footer">
       <details className="readiness-details">
-        <summary>Technical details</summary>
+        <summary><span>Technical details</span><small>Ports, addresses, and connection checks</small></summary>
         <div className="readiness-details-content">
-          <p><strong>Server:</strong> {status}</p>
-          <p><strong>Game {gamePortLabel}:</strong> {game?.detail ?? 'Waiting for a game port check.'}</p>
-          <p><strong>Friend HTTPS TCP {control?.port ?? '…'}:</strong> {control?.detail ?? 'Waiting for a listener check.'}{control?.bindAddress && ` Bound to ${control.bindAddress} (${control.bindScope ?? 'scope unknown'}).`}</p>
-          <p><strong>Invite address:</strong> {control?.endpointDetail ?? 'Waiting for a public address check.'}</p>
-          <p><strong>Router target:</strong> {control?.lanForwardDetail ?? 'Waiting for this PC’s LAN address.'}</p>
-          {control?.lanAddresses?.map(item => <p key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code> on {item.interfaceName} (gateway {item.gateway})</p>)}
-          <p><strong>Friend heartbeat:</strong> {control?.remoteDetail ?? 'Waiting for an authenticated Friend connection.'}</p>
-          {checkedRoute && <p><strong>Outside TCP check:</strong> {checkedRoute.state} at {new Date(checkedRoute.checkedUtc).toLocaleTimeString()}. {checkedRoute.detail}</p>}
-          {!checkedRoute && routeCheck && <p><strong>Previous outside TCP check:</strong> Expired or no longer matches the current listener and invite address.</p>}
-          <p><strong>Outside access:</strong> {guidance.summary}</p>
-          <p><strong>Next diagnostic step:</strong> {guidance.next}</p>
-          <p><strong>Game route:</strong> {gameGuidance(game, control?.port)}</p>
-          <p>Only the Host forwards a port when needed. Friend PCs connect outbound.</p>
+          <div className="technical-details-grid">
+            <section className="technical-detail-card" aria-labelledby={`game-details-${profileId}`}>
+              <div className="technical-detail-heading">
+                <span><Icon name="game" /></span>
+                <div><h4 id={`game-details-${profileId}`}>Game server</h4><p>State and player connection</p></div>
+              </div>
+              <dl>
+                <TechnicalDetail label="Current state" value={status} detail={gameAccess.detail} tone={gameAccess.tone} />
+                <TechnicalDetail label="Local game ports" value={gamePortLabel} detail={game?.detail ?? 'Waiting for a game port check.'} />
+                <TechnicalDetail label="Player route" value={game?.routeKind ?? 'Checking'} detail={gameGuidance(game, control?.port)} />
+              </dl>
+            </section>
+
+            <section className="technical-detail-card" aria-labelledby={`friend-details-${profileId}`}>
+              <div className="technical-detail-heading">
+                <span><Icon name="plug" /></span>
+                <div><h4 id={`friend-details-${profileId}`}>Friend app</h4><p>Secure control connection</p></div>
+              </div>
+              <dl>
+                <TechnicalDetail label="Listener" value={control ? `HTTPS TCP ${control.port} · ${control.state}` : 'Checking'} detail={friendListenerDetail} tone={friend.tone} />
+                <TechnicalDetail label="Invite address" value={control?.endpoint ? <code>{control.endpoint}</code> : control?.endpointState ?? 'Checking'} detail={control?.endpointDetail ?? 'Waiting for a public address check.'} />
+                <TechnicalDetail label="Friend heartbeat" value={control?.remoteState ?? 'Not verified'} detail={control?.remoteDetail ?? 'Waiting for an authenticated Friend connection.'} />
+              </dl>
+            </section>
+
+            <section className="technical-detail-card technical-detail-card-wide" aria-labelledby={`outside-details-${profileId}`}>
+              <div className="technical-detail-heading">
+                <span><Icon name="link" /></span>
+                <div><h4 id={`outside-details-${profileId}`}>Outside connection</h4><p>Router target and internet evidence</p></div>
+              </div>
+              <dl>
+                <TechnicalDetail label="Router target" value={control?.lanAddresses?.length === 1
+                  ? <code>{control.lanAddresses[0].address}</code>
+                  : control?.lanAddresses?.length ? `${control.lanAddresses.length} local addresses found` : 'Checking'}
+                  detail={<>{control?.lanForwardDetail ?? 'Waiting for this PC\'s LAN address.'}
+                    {!!control?.lanAddresses?.length && <span className="technical-addresses">{control.lanAddresses.map(item => <span key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code><small>{item.interfaceName} · gateway {item.gateway}</small></span>)}</span>}</>} />
+                <TechnicalDetail label="Outside TCP check" value={outsideValue} detail={outsideDetail} tone={outsideTone} />
+                <TechnicalDetail label="Outside access" value={friend.state} detail={guidance.summary} tone={friend.tone} />
+              </dl>
+            </section>
+          </div>
+          <div className="technical-next-step"><span><Icon name="refresh" /></span><div><strong>Recommended next step</strong><p>{guidance.next}</p></div></div>
+          <p className="technical-note">Only the Host forwards a port when needed. Friend PCs connect outbound.</p>
         </div>
       </details>
       <Button className="readiness-refresh" type="button" disabled={busy} onClick={onRefresh}>

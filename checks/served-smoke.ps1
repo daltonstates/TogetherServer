@@ -87,6 +87,7 @@ try {
         'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop',
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
+        'Game server', 'Friend app', 'Outside connection', 'Recommended next step',
         'Maximum servers running at once',
         'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
@@ -103,6 +104,9 @@ try {
     }
     if (!$css.Content.Contains('.idle-countdown{') -or !$css.Content.Contains('font-variant-numeric:tabular-nums')) {
         throw 'The shared empty-server countdown styles were not bundled.'
+    }
+    if (!$css.Content.Contains('.technical-details-grid{') -or !$css.Content.Contains('.technical-detail-card{')) {
+        throw 'The grouped Host technical-detail styles were not bundled.'
     }
     if ($js.Content.Contains('Servers this PC can control')) { throw 'The unbounded inline server checklist is still bundled.' }
     if ($js.Content.Contains('Public IPv4 address for Valheim')) { throw 'The old manual game IP field is still bundled.' }
