@@ -117,6 +117,11 @@ try {
         !$css.Content.Contains('@keyframes icon-spin')) {
         throw 'The private connection card, notification badge, or loading spinner styles were not bundled.'
     }
+    if ($css.Content -notmatch '\.join-row\{[^}]*align-items:flex-end' -or
+        $css.Content -notmatch '\.friend-panel \.join-row \.invite-input\{[^}]*margin-bottom:0' -or
+        $css.Content -notmatch '\.notification-item>span\{[^}]*background:var\(--color-accent\);[^}]*color:var\(--color-accent-ink\)') {
+        throw 'The aligned Connect row or orange notification icon styles were not bundled.'
+    }
     if (!$css.Content.Contains('.custom-script-manager{') -or !$css.Content.Contains('.custom-port-row{')) {
         throw 'The custom game script-manager or port-editor styles were not bundled.'
     }

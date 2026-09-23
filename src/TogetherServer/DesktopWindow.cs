@@ -12,6 +12,15 @@ namespace TogetherServer;
 internal sealed class DesktopWindow
 {
     private const string RuntimeDownload = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/";
+    private static readonly Color WindowBorderColor = Color.FromArgb(48, 46, 44);
+    private static readonly Color WindowCanvasColor = Color.FromArgb(14, 14, 15);
+    private static readonly Color TitleBarColor = Color.FromArgb(17, 17, 18);
+    private static readonly Color TextColor = Color.FromArgb(243, 240, 237);
+    private static readonly Color SecondaryTextColor = Color.FromArgb(215, 210, 205);
+    private static readonly Color AccentColor = Color.FromArgb(255, 138, 31);
+    private static readonly Color AccentInkColor = Color.FromArgb(26, 14, 5);
+    private static readonly Color AccentHoverColor = Color.FromArgb(73, 41, 19);
+    private static readonly Color AccentPressedColor = Color.FromArgb(52, 32, 20);
     private readonly Uri address;
     private readonly string browserDataDirectory;
     private readonly Action stopApplication;
@@ -175,7 +184,7 @@ internal sealed class DesktopWindow
                 StartPosition = FormStartPosition.CenterScreen,
                 Size = new Size(1180, 820),
                 MinimumSize = new Size(380, 560),
-                BackColor = Color.FromArgb(40, 51, 44),
+                BackColor = WindowBorderColor,
                 FormBorderStyle = FormBorderStyle.None,
                 Padding = new Padding(1),
                 Opacity = startInTray ? 0 : 1,
@@ -184,6 +193,7 @@ internal sealed class DesktopWindow
             form = window;
             var content = BuildChrome(window);
             using var trayIconImage = CreateTrayIcon();
+            window.Icon = trayIconImage;
             using var trayMenu = new ContextMenuStrip();
             using var tray = new NotifyIcon
             {
@@ -234,7 +244,7 @@ internal sealed class DesktopWindow
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(16, 22, 19),
+            BackColor = WindowCanvasColor,
             ColumnCount = 1,
             RowCount = 2,
             Margin = Padding.Empty,
@@ -244,12 +254,12 @@ internal sealed class DesktopWindow
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var titleBar = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(17, 25, 20), Margin = Padding.Empty };
+        var titleBar = new Panel { Dock = DockStyle.Fill, BackColor = TitleBarColor, Margin = Padding.Empty };
         var mark = new Label
         {
             Text = "T",
-            ForeColor = Color.FromArgb(19, 33, 23),
-            BackColor = Color.FromArgb(172, 216, 137),
+            ForeColor = AccentInkColor,
+            BackColor = AccentColor,
             Font = new Font("Segoe UI", 10, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleCenter,
             Location = new Point(11, 8),
@@ -258,7 +268,7 @@ internal sealed class DesktopWindow
         var title = new Label
         {
             Text = "TogetherServer",
-            ForeColor = Color.FromArgb(232, 237, 232),
+            ForeColor = TextColor,
             BackColor = Color.Transparent,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             AutoSize = true,
@@ -270,7 +280,7 @@ internal sealed class DesktopWindow
         close.Dock = DockStyle.Right;
         maximize.Dock = DockStyle.Right;
         minimize.Dock = DockStyle.Right;
-        close.ForeColor = Color.FromArgb(222, 231, 222);
+        close.ForeColor = SecondaryTextColor;
         close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(160, 52, 52);
         close.MouseLeave += (_, _) => close.BackColor = Color.Transparent;
         minimize.MouseEnter += ChromeHover;
@@ -308,7 +318,7 @@ internal sealed class DesktopWindow
         titleBar.Controls.Add(close);
         mark.BringToFront();
         title.BringToFront();
-        var content = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(16, 22, 19), Margin = Padding.Empty };
+        var content = new Panel { Dock = DockStyle.Fill, BackColor = WindowCanvasColor, Margin = Padding.Empty };
         layout.Controls.Add(titleBar, 0, 0);
         layout.Controls.Add(content, 0, 1);
         window.Controls.Add(layout);
@@ -325,19 +335,19 @@ internal sealed class DesktopWindow
             Width = 46,
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.Transparent,
-            ForeColor = Color.FromArgb(186, 200, 188),
+            ForeColor = SecondaryTextColor,
             Font = new Font("Segoe UI Symbol", 11),
             Margin = Padding.Empty,
             UseVisualStyleBackColor = false
         };
         button.FlatAppearance.BorderSize = 0;
-        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(52, 79, 57);
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(43, 70, 48);
+        button.FlatAppearance.MouseDownBackColor = AccentPressedColor;
+        button.FlatAppearance.MouseOverBackColor = AccentHoverColor;
         return button;
     }
 
     private static void ChromeHover(object? sender, EventArgs _) =>
-        ((Button)sender!).BackColor = Color.FromArgb(43, 70, 48);
+        ((Button)sender!).BackColor = AccentHoverColor;
 
     private static void ChromeLeave(object? sender, EventArgs _) =>
         ((Button)sender!).BackColor = Color.Transparent;
@@ -355,7 +365,7 @@ internal sealed class DesktopWindow
         var loading = new Label
         {
             Dock = DockStyle.Fill,
-            ForeColor = Color.FromArgb(216, 240, 205),
+            ForeColor = TextColor,
             BackColor = content.BackColor,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 15),
@@ -430,7 +440,8 @@ internal sealed class DesktopWindow
             Text = "Get WebView2 from Microsoft",
             Dock = DockStyle.Bottom,
             Height = 52,
-            BackColor = Color.FromArgb(172, 216, 137)
+            BackColor = AccentColor,
+            ForeColor = AccentInkColor
         };
         button.Click += (_, _) =>
         {
@@ -465,8 +476,8 @@ internal sealed class DesktopWindow
     {
         using var bitmap = new Bitmap(32, 32);
         using (var graphics = Graphics.FromImage(bitmap))
-        using (var background = new SolidBrush(Color.FromArgb(172, 216, 137)))
-        using (var foreground = new SolidBrush(Color.FromArgb(19, 33, 23)))
+        using (var background = new SolidBrush(AccentColor))
+        using (var foreground = new SolidBrush(AccentInkColor))
         using (var font = new Font("Segoe UI", 20, FontStyle.Bold, GraphicsUnit.Pixel))
         using (var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
         {

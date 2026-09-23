@@ -99,9 +99,9 @@
 .friend-panel { max-width: none; }
 .friend-primary { padding-top: 20px; padding-bottom: 20px; }
 .friend-primary .section-heading { margin-bottom: 12px; }
-.join-row { display: flex; align-items: end; gap: 9px; max-width: 720px; }
-.join-row .invite-input { flex: 1; margin: 6px 0 0; }
-.join-row > button { border: 1px solid var(--color-accent); border-radius: 8px; padding: 11px 18px; background: var(--color-accent); color: var(--color-accent-ink); font-size: 12px; font-weight: 750; }
+.join-row { display: flex; align-items: flex-end; gap: 9px; max-width: 720px; }
+.join-row .invite-input { flex: 1; min-width: 0; margin: 6px 0 0; }
+.join-row > button { min-height: 40px; align-self: flex-end; border: 1px solid var(--color-accent); border-radius: 8px; padding: 11px 18px; background: var(--color-accent); color: var(--color-accent-ink); font-size: 12px; font-weight: 750; }
 .inline-invite { margin-top: 14px; padding: 14px; border: 1px solid var(--color-border-strong); border-radius: 9px; background: var(--color-accent-soft); }
 .inline-invite p { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; margin: 0 0 10px; }
 .inline-invite > button { border: 1px solid var(--color-accent); border-radius: 8px; padding: 9px 15px; background: var(--color-accent); color: var(--color-accent-ink); font-size: 12px; font-weight: 750; margin-top: 10px; }
@@ -123,6 +123,7 @@
 .invite-input input:focus, .settings-content > label input:focus, .device label input:focus { border-color: var(--color-accent-hover); box-shadow: 0 0 0 3px var(--color-focus-ring); }
 .invite-input small, .settings-content > label small { display: block; color: var(--color-text-muted); font-weight: 400; margin-top: 7px; line-height: 1.5; }
 .friend-panel .invite-input { margin-bottom: 19px; }
+.friend-panel .join-row .invite-input { margin-bottom: 0; }
 .main-settings { margin: -5px; padding: 5px; }
 .main-settings > summary { padding: 8px 4px; font-size: 13px; color: var(--color-text-secondary); cursor: pointer; font-weight: 700; }
 .settings-content { border-top: 1px solid var(--color-border-subtle); margin-top: 14px; padding-top: 8px; }
@@ -380,7 +381,7 @@ main { padding-top: 24px; }
 .notification-panel-heading small { margin-top: 2px; color: var(--color-text-subtle); font-size: 10px; }
 .notification-item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; padding: 12px 14px; }
 .notification-item + .notification-item { border-top: 1px solid var(--color-border-subtle); }
-.notification-item > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--color-success-bg-strong); color: var(--color-success-bright); }
+.notification-item > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--color-accent); color: var(--color-accent-ink); }
 .notification-item.bad > span { background: var(--color-danger-bg-strong); color: var(--color-danger); }
 .notification-item.update > span { background: var(--color-info-bg); color: var(--color-info); }
 .notification-item strong, .notification-item p { display: block; margin: 0; }
