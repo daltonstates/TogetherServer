@@ -567,16 +567,15 @@ function App() {
       delete next[key]
       return next
     })
-  const copyGameDetails = async (profile: Profile, address: string, key: string) => {
+  const copyGamePassword = async (profile: Profile, key: string) => {
     setConnectionBusy(key, 'copy')
     try {
       const password = await readGamePassword(profile)
-      await copyText(`Valheim Join IP: ${address}\nGame password: ${password}`, 'Game details', 'Reveal the details, then select and copy them instead.')
+      await copyText(password, 'Game password', 'Show the password, then select and copy it instead.')
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setConnectionBusy(key, null) }
   }
-  const revealHostConnectionDetails = async (profile: Profile, key: string) => {
-    if (profile.kind !== 'Valheim') { revealConnectionDetails(key); return }
+  const revealGamePassword = async (profile: Profile, key: string) => {
     const request = (connectionRevealRequestRef.current[key] ?? 0) + 1
     connectionRevealRequestRef.current[key] = request
     setConnectionBusy(key, 'reveal')
@@ -591,7 +590,7 @@ function App() {
   }
   const copyConnectionValue = async (key: string, value: string, label: string) => {
     setConnectionBusy(key, 'copy')
-    try { await copyText(value, label, 'Reveal the details, then select and copy them instead.') }
+    try { await copyText(value, label, 'Show the value, then select and copy it instead.') }
     finally { setConnectionBusy(key, null) }
   }
   const detectPublicIp = async () => {
@@ -782,7 +781,7 @@ function App() {
   const friendAction = async (id: string, action: 'start' | 'stop' | 'replace') => {
     const key = `friend-${action}-${id}`
     setPending(key)
-    if (action === 'stop') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}`)
+    if (action === 'stop') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}-address`)
     try {
       const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
@@ -1161,9 +1160,10 @@ function App() {
   const setupStepIndex = setupSteps.indexOf(setupStep)
   const savedProfiles = snapshot?.mode === 'Host' ? snapshot.settings.profiles : []
   const liveConnectionKeySignature = JSON.stringify((snapshot?.mode === 'Host'
-    ? snapshot.runs.filter(run => run.state === 'Ready' && detectedGameIp).map(run => `host-${run.profileId}`)
+    ? snapshot.runs.filter(run => run.state === 'Ready' && detectedGameIp)
+      .flatMap(run => [`host-${run.profileId}-address`, `host-${run.profileId}-password`])
     : snapshot?.profiles.filter(profile => profile.state === 'Ready' && profile.joinAddress)
-      .map(profile => `friend-${snapshot.connectionId}-${profile.id}`) ?? []).sort())
+      .map(profile => `friend-${snapshot.connectionId}-${profile.id}-address`) ?? []).sort())
   useEffect(() => {
     const liveKeys = new Set<string>(JSON.parse(liveConnectionKeySignature) as string[])
     liveConnectionKeysRef.current = liveKeys
@@ -1263,15 +1263,17 @@ function App() {
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
           {snapshot.profiles.map(profile => {
             const connectionKey = `friend-${snapshot.connectionId}-${profile.id}`
-            const activity = connectionActivity[connectionKey] ?? null
+            const addressKey = `${connectionKey}-address`
+            const addressActivity = connectionActivity[addressKey] ?? null
             return <article className="profile-card" key={profile.id} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
               <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
               {profile.state === 'Ready' && profile.joinAddress && <ConnectionDetails
-                fields={[{ label: 'Join address', value: profile.joinAddress }]}
-                revealed={!!revealedConnections[connectionKey]} copying={activity === 'copy'} revealing={false}
+                fields={[{ id: addressKey, label: 'Server IP', value: profile.joinAddress,
+                  revealed: !!revealedConnections[addressKey], copying: addressActivity === 'copy', revealing: false,
+                  onReveal: () => revealConnectionDetails(addressKey), onHide: () => hideConnectionDetails(addressKey),
+                  onCopy: () => void copyConnectionValue(addressKey, profile.joinAddress!, 'Server IP') }]}
                 refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
-                onReveal={() => revealConnectionDetails(connectionKey)} onHide={() => hideConnectionDetails(connectionKey)}
-                onCopy={() => void copyConnectionValue(connectionKey, profile.joinAddress!, 'Join address')} />}
+                />}
               <div className="actions server-actions">
                 {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
@@ -1298,27 +1300,32 @@ function App() {
             {snapshot.settings.profiles.map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
               const connectionKey = `host-${profile.id}`
-              const activity = connectionActivity[connectionKey] ?? null
+              const addressKey = `${connectionKey}-address`
+              const passwordKey = `${connectionKey}-password`
+              const addressActivity = connectionActivity[addressKey] ?? null
+              const passwordActivity = connectionActivity[passwordKey] ?? null
               const gameAddress = detectedGameIp ? `${detectedGameIp}:${profile.gamePort}` : ''
-              const connectionFields = [{ label: 'Join address', value: gameAddress },
-                ...(profile.kind === 'Valheim' ? [{ label: 'Game password', value: revealedGamePasswords[connectionKey] ?? '' }] : [])]
+              const connectionFields = [{ id: addressKey, label: 'Server IP', value: gameAddress,
+                revealed: !!revealedConnections[addressKey], copying: addressActivity === 'copy', revealing: false,
+                onReveal: () => revealConnectionDetails(addressKey), onHide: () => hideConnectionDetails(addressKey),
+                onCopy: () => void copyConnectionValue(addressKey, gameAddress, 'Server IP') },
+              ...(profile.kind === 'Valheim' ? [{ id: passwordKey, label: 'Game password',
+                value: revealedGamePasswords[passwordKey] ?? '', revealed: !!revealedConnections[passwordKey],
+                copying: passwordActivity === 'copy', revealing: passwordActivity === 'reveal',
+                onReveal: () => void revealGamePassword(profile, passwordKey),
+                onHide: () => hideConnectionDetails(passwordKey),
+                onCopy: () => void copyGamePassword(profile, passwordKey) }] : [])]
               return <article className="profile-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
                 <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={status?.onlinePlayers ?? null} capacity={status?.maxPlayers ?? null} deadline={status?.autoShutdownAtUtc ?? null} timerReason={status?.autoShutdownReason ?? null} nowMs={nowMs} /></div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} />
                 {status?.state === 'Ready' && gameAddress && <ConnectionDetails fields={connectionFields}
-                  revealed={!!revealedConnections[connectionKey]} copying={activity === 'copy'} revealing={activity === 'reveal'}
-                  refreshing={checkingPorts || detectingPublicIp}
-                  note={profile.kind === 'Valheim' ? 'Copying includes the saved game password.' : undefined}
-                  onReveal={() => void revealHostConnectionDetails(profile, connectionKey)} onHide={() => hideConnectionDetails(connectionKey)}
-                  onCopy={() => profile.kind === 'Valheim'
-                    ? void copyGameDetails(profile, gameAddress, connectionKey)
-                    : void copyConnectionValue(connectionKey, gameAddress, 'Join address')} />}
+                  refreshing={checkingPorts || detectingPublicIp} />}
                 {status?.autoShutdownAtUtc && <div className="timer-extension"><label>Extend this countdown<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Extra minutes for this countdown only.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
                 <div className="actions server-actions">
                   {status?.state === 'Offline' && <Button disabled={!!pending || dirty} onClick={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
-                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(connectionKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
+                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
                   <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">

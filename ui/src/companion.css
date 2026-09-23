@@ -299,22 +299,22 @@ main { padding-top: 24px; }
 .readiness-details code { color: #d7f3c5; }
 .readiness-refresh { flex: 0 0 auto; }
 .connection-details-card { margin: 12px 0 2px; overflow: hidden; border: 1px solid #4b654e; border-radius: 9px; background: #17231a; }
-.connection-details-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border-bottom: 1px solid #3b4d3d; background: #1c2b20; }
-.connection-details-heading > div:first-child { min-width: 0; }
+.connection-details-heading { padding: 10px 11px; border-bottom: 1px solid #3b4d3d; background: #1c2b20; }
 .connection-details-heading strong, .connection-details-heading small { display: block; }
 .connection-details-heading strong { color: #dff0d7; font-size: 12px; }
 .connection-details-heading strong .icon { margin-right: 6px; color: #b9dda4; }
 .connection-details-heading small { margin-top: 2px; color: #91a294; font-size: 10px; }
-.connection-details-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
-.connection-details-actions .privacy-toggle { width: 34px; min-width: 34px; min-height: 34px; padding: 0; }
-.connection-details-actions .private-copy { min-height: 34px; padding: 7px 10px; font-size: 11px; }
 .connection-refreshing { display: flex; align-items: center; gap: 6px; padding: 7px 11px; border-bottom: 1px solid #344638; background: #203126; color: #c6dfbb; font-size: 10px; font-weight: 700; }
 .connection-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 0; transition: opacity .18s ease; }
 .connection-fields.refreshing { opacity: .56; }
 .connection-field { min-width: 0; padding: 10px 11px; }
 .connection-field + .connection-field { border-left: 1px solid #344638; }
-.connection-field dt { margin-bottom: 4px; color: #8fa191; font-size: 9px; font-weight: 800; letter-spacing: .65px; text-transform: uppercase; }
-.connection-field dd { min-width: 0; min-height: 20px; margin: 0; color: #dcedd7; font-size: 12px; font-weight: 750; overflow-wrap: anywhere; }
+.connection-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.connection-field-label { margin: 0; color: #8fa191; font-size: 9px; font-weight: 800; letter-spacing: .65px; text-transform: uppercase; }
+.connection-field-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+.connection-field-actions .privacy-toggle { width: 32px; min-width: 32px; min-height: 30px; padding: 0; }
+.connection-field-actions .private-copy { min-height: 30px; padding: 5px 8px; font-size: 10px; }
+.connection-field-value { min-width: 0; min-height: 20px; margin: 6px 0 0; color: #dcedd7; font-size: 12px; font-weight: 750; overflow-wrap: anywhere; }
 .connection-field code { color: #d9f1ca; font: inherit; }
 .privacy-mask { color: #adc1ad; letter-spacing: 2px; user-select: none; }
 .connection-privacy-note { margin: 0; padding: 8px 11px; border-top: 1px solid #344638; color: #8fa091; font-size: 10px; line-height: 1.45; }
@@ -485,8 +485,6 @@ main { padding-top: 24px; }
 @media (max-width: 480px) {
   .server-grid .server-actions button { gap: 4px; padding: 6px 4px; font-size: 11px; }
   .server-grid .server-actions .server-settings-button { padding: 0; }
-  .connection-details-heading { align-items: stretch; flex-direction: column; }
-  .connection-details-actions { display: grid; grid-template-columns: 34px minmax(0, 1fr); }
   .connection-fields { grid-template-columns: 1fr; }
   .connection-field + .connection-field { border-top: 1px solid #344638; border-left: 0; }
 }

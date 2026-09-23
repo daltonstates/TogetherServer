@@ -1,4 +1,4 @@
-param([string]$AppPath = '', [int]$Port = 5127)
+param([string]$AppPath = '', [int]$Port = 5127, [switch]$Interactive)
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release/TogetherServer.exe' }
@@ -6,15 +6,19 @@ $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $fixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
 if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath)) { throw 'Run scripts/build.ps1 first.' }
 
-# The default checks the exact no-argument Explorer path; an isolated port uses --desktop for parallel testing.
+# Routine runs stay in the tray so they do not interrupt the desktop. -Interactive exercises the visible
+# no-argument Explorer path, custom window controls, sizing, and native file pickers.
 if ($Port -eq 0) {
     $freePortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $freePortProbe.Start()
     $Port = ([Net.IPEndPoint]$freePortProbe.LocalEndpoint).Port
     $freePortProbe.Stop()
 }
-$launchArguments = if ($Port -eq 5127) { @() } else { @('--desktop', '--port', "$Port") }
-$launchLabel = if ($launchArguments.Count -eq 0) { 'no-argument EXE' } else { 'isolated desktop EXE' }
+$launchArguments = if (!$Interactive) {
+    if ($Port -eq 5127) { @('--startup') } else { @('--startup', '--port', "$Port") }
+} elseif ($Port -eq 5127) { @() } else { @('--desktop', '--port', "$Port") }
+$launchLabel = if (!$Interactive) { 'background desktop EXE' }
+    elseif ($launchArguments.Count -eq 0) { 'no-argument EXE' } else { 'isolated desktop EXE' }
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
 try { $probe.Start() }
 catch { throw "Local GUI port $Port is in use; choose another port for this desktop smoke." }
@@ -169,60 +173,74 @@ function Wait-ForWindow($process) {
     throw 'The native TogetherServer window did not visibly render React.'
 }
 
+function Wait-ForBackgroundWindow($process) {
+    for ($i = 0; $i -lt 100; $i++) {
+        if ($process.HasExited) { throw 'The background TogetherServer process exited.' }
+        try {
+            $window = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
+            if (!$window.visible -and $window.rendered -and $window.customChrome) { return }
+        }
+        catch { }
+        Start-Sleep -Milliseconds 100
+    }
+    throw 'The background TogetherServer window did not render while hidden.'
+}
+
 try {
     $first = Start-Gui
     $state = Wait-ForGui $first
     if ($state.mode -ne 'Host') { throw 'First desktop launch did not default to Host mode.' }
-    Wait-ForWindow $first
-    Write-Host "PASS $launchLabel opens a visible native window with custom chrome and rendered React"
+    if ($Interactive) {
+        Wait-ForWindow $first
+        Write-Host "PASS $launchLabel opens a visible native window with custom chrome and rendered React"
 
-    $originalRect = [TogetherServerWindowCheck+WindowRect]::new()
-    if (![TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$originalRect)) {
-        throw 'Could not read the native window size.'
-    }
-    $windowDpi = [TogetherServerWindowCheck]::GetDpiForWindow($first.MainWindowHandle)
-    if ($windowDpi -eq 0) { $windowDpi = 96 }
-    $compactWidth = [int][Math]::Round(390 * $windowDpi / 96)
-    $compactHeight = [int][Math]::Round(600 * $windowDpi / 96)
-    if (![TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
-        $compactWidth, $compactHeight, $true)) { throw 'Could not resize the native window.' }
-    $compactRect = [TogetherServerWindowCheck+WindowRect]::new()
-    for ($i = 0; $i -lt 30; $i++) {
-        [TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$compactRect) | Out-Null
-        $actualWidth = $compactRect.Right - $compactRect.Left
-        $actualHeight = $compactRect.Bottom - $compactRect.Top
-        if ([Math]::Abs($actualWidth - $compactWidth) -le 8 -and [Math]::Abs($actualHeight - $compactHeight) -le 8) { break }
-        Start-Sleep -Milliseconds 100
-    }
-    if ([Math]::Abs($actualWidth - $compactWidth) -gt 8 -or [Math]::Abs($actualHeight - $compactHeight) -gt 8) {
-        throw "Native window rejected the compact size: requested ${compactWidth}x${compactHeight}, received ${actualWidth}x${actualHeight}."
-    }
-    [TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
-        $originalRect.Right - $originalRect.Left, $originalRect.Bottom - $originalRect.Top, $true) | Out-Null
-    Write-Host 'PASS native window accepts a compact 390x600 logical-pixel size'
+        $originalRect = [TogetherServerWindowCheck+WindowRect]::new()
+        if (![TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$originalRect)) {
+            throw 'Could not read the native window size.'
+        }
+        $windowDpi = [TogetherServerWindowCheck]::GetDpiForWindow($first.MainWindowHandle)
+        if ($windowDpi -eq 0) { $windowDpi = 96 }
+        $compactWidth = [int][Math]::Round(390 * $windowDpi / 96)
+        $compactHeight = [int][Math]::Round(600 * $windowDpi / 96)
+        if (![TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
+            $compactWidth, $compactHeight, $true)) { throw 'Could not resize the native window.' }
+        $compactRect = [TogetherServerWindowCheck+WindowRect]::new()
+        for ($i = 0; $i -lt 30; $i++) {
+            [TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$compactRect) | Out-Null
+            $actualWidth = $compactRect.Right - $compactRect.Left
+            $actualHeight = $compactRect.Bottom - $compactRect.Top
+            if ([Math]::Abs($actualWidth - $compactWidth) -le 8 -and [Math]::Abs($actualHeight - $compactHeight) -le 8) { break }
+            Start-Sleep -Milliseconds 100
+        }
+        if ([Math]::Abs($actualWidth - $compactWidth) -gt 8 -or [Math]::Abs($actualHeight - $compactHeight) -gt 8) {
+            throw "Native window rejected the compact size: requested ${compactWidth}x${compactHeight}, received ${actualWidth}x${actualHeight}."
+        }
+        [TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
+            $originalRect.Right - $originalRect.Left, $originalRect.Bottom - $originalRect.Top, $true) | Out-Null
+        Write-Host 'PASS native window accepts a compact 390x600 logical-pixel size'
 
-    foreach ($control in @('Minimize TogetherServer', 'Maximize TogetherServer', 'Close TogetherServer')) {
-        if ($null -eq (Get-ChromeButton $first $control)) { throw "Missing accessible title-bar control: $control" }
-    }
-    Invoke-ChromeButton $first 'Maximize TogetherServer'
-    for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
-        Start-Sleep -Milliseconds 100
-    }
-    if (![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom maximize did not maximize.' }
-    Invoke-ChromeButton $first 'Restore TogetherServer'
-    for ($i = 0; $i -lt 30 -and [TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
-        Start-Sleep -Milliseconds 100
-    }
-    if ([TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom restore did not restore.' }
-    Invoke-ChromeButton $first 'Minimize TogetherServer'
-    for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle); $i++) {
-        Start-Sleep -Milliseconds 100
-    }
-    if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { throw 'Custom minimize did not minimize.' }
-    [TogetherServerWindowCheck]::ShowWindow($first.MainWindowHandle, 9) | Out-Null
-    Write-Host 'PASS custom minimize, maximize, and restore controls are accessible and functional'
+        foreach ($control in @('Minimize TogetherServer', 'Maximize TogetherServer', 'Close TogetherServer')) {
+            if ($null -eq (Get-ChromeButton $first $control)) { throw "Missing accessible title-bar control: $control" }
+        }
+        Invoke-ChromeButton $first 'Maximize TogetherServer'
+        for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom maximize did not maximize.' }
+        Invoke-ChromeButton $first 'Restore TogetherServer'
+        for ($i = 0; $i -lt 30 -and [TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
+            Start-Sleep -Milliseconds 100
+        }
+        if ([TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom restore did not restore.' }
+        Invoke-ChromeButton $first 'Minimize TogetherServer'
+        for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle); $i++) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { throw 'Custom minimize did not minimize.' }
+        [TogetherServerWindowCheck]::ShowWindow($first.MainWindowHandle, 9) | Out-Null
+        Write-Host 'PASS custom minimize, maximize, and restore controls are accessible and functional'
 
-    foreach ($pickerKind in @('world', 'world-folder', 'server')) {
+        foreach ($pickerKind in @('world', 'world-folder', 'server')) {
         $picker = Start-Job -ArgumentList $baseUrl, $pickerKind -ScriptBlock {
             param($url, $kind)
             Invoke-RestMethod -Uri "$url/api/local/valheim/browse-$kind" -Method Post -Headers @{ Origin = $url; 'X-TogetherServer-Local' = '1' } -TimeoutSec 30
@@ -254,9 +272,9 @@ try {
             Write-Host "PASS Browse $pickerKind opens and cancels a native Windows file picker"
         }
         finally { Stop-Job -Job $picker -ErrorAction SilentlyContinue; Remove-Job -Job $picker -Force -ErrorAction SilentlyContinue }
-    }
+        }
 
-    foreach ($browse in @(
+        foreach ($browse in @(
         @{ kind = 'MinecraftJava'; target = 'jar' },
         @{ kind = 'MinecraftJava'; target = 'folder' },
         @{ kind = 'MinecraftBedrock'; target = 'executable' }
@@ -286,6 +304,11 @@ try {
             Write-Host "PASS Minecraft $($browse.kind) $($browse.target) opens and cancels a native Windows picker"
         }
         finally { Stop-Job -Job $picker -ErrorAction SilentlyContinue; Remove-Job -Job $picker -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    else {
+        Wait-ForBackgroundWindow $first
+        Write-Host "PASS $launchLabel renders React with custom chrome while hidden in the tray"
     }
 
     $saveRoot = Join-Path $caseRoot 'source-save'
@@ -310,22 +333,31 @@ try {
 
     $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":true}'
     if (!$preference.ok -or !$preference.preferences.closeToTray) { throw 'Close-to-tray preference was not saved.' }
-    Invoke-ChromeButton $first 'Close TogetherServer'
-    $hidden = $false
-    for ($i = 0; $i -lt 40; $i++) {
-        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
-        if (!$windowState.visible) { $hidden = $true; break }
-        Start-Sleep -Milliseconds 100
+    if ($Interactive) {
+        Invoke-ChromeButton $first 'Close TogetherServer'
+        $hidden = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+            if (!$windowState.visible) { $hidden = $true; break }
+            Start-Sleep -Milliseconds 100
+        }
+        if (!$hidden -or $first.HasExited) { throw 'Closing to tray stopped the app instead of hiding the window.' }
     }
-    if (!$hidden -or $first.HasExited) { throw 'Closing to tray stopped the app instead of hiding the window.' }
+    else {
+        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+        if ($windowState.visible -or $first.HasExited) { throw 'The background desktop run did not remain hidden.' }
+    }
     $stillHosting = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
-    if (@($stillHosting.runs | Where-Object profileId -EQ $profileId).Count -ne 1) { throw 'The managed server disappeared after closing to tray.' }
+    if (@($stillHosting.runs | Where-Object profileId -EQ $profileId).Count -ne 1) { throw 'The managed server disappeared while the window was hidden.' }
     $trayQuitBlocked = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
     if ($trayQuitBlocked.ok -or $trayQuitBlocked.code -ne 'ManagedRunPresent') { throw 'Quit bypassed the managed-server safety check while hidden.' }
-    $shownAgain = Invoke-RestMethod -Uri "$baseUrl/api/local/show" -Method Post -Headers $headers
-    if (!$shownAgain.ok) { throw 'The hidden app did not reopen.' }
-    Wait-ForWindow $first
-    Write-Host 'PASS Close hides to tray while hosting; reopen and guarded Quit keep the managed server safe'
+    if ($Interactive) {
+        $shownAgain = Invoke-RestMethod -Uri "$baseUrl/api/local/show" -Method Post -Headers $headers
+        if (!$shownAgain.ok) { throw 'The hidden app did not reopen.' }
+        Wait-ForWindow $first
+        Write-Host 'PASS Close hides to tray while hosting; reopen and guarded Quit keep the managed server safe'
+    }
+    else { Write-Host 'PASS hidden tray run keeps the managed server active and guarded Quit remains enforced' }
     $valheimRun = (Get-Content (Join-Path $caseRoot 'runs.json') -Raw | ConvertFrom-Json) | Where-Object profileId -EQ $profileId
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
@@ -367,64 +399,89 @@ try {
     $valheimRun = $null
     Write-Host "PASS $launchLabel restarts and stops synthetic Valheim again"
 
-    $first.Refresh()
-    [TogetherServerWindowCheck]::ShowWindow($first.MainWindowHandle, 6) | Out-Null
-    if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { throw 'The first window did not minimize.' }
-    $second = Start-Gui
-    if (!$second.WaitForExit(10000) -or $first.HasExited) {
-        throw 'Second desktop launch did not return to the running app.'
-    }
-    $restored = $false
-    for ($i = 0; $i -lt 40; $i++) {
-        if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { $restored = $true; break }
-        Start-Sleep -Milliseconds 100
-    }
-    if (!$restored) { throw 'Second desktop launch did not restore the minimized TogetherServer window.' }
-    Write-Host 'PASS second launch restores the existing native window'
+    if ($Interactive) {
+        $first.Refresh()
+        [TogetherServerWindowCheck]::ShowWindow($first.MainWindowHandle, 6) | Out-Null
+        if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { throw 'The first window did not minimize.' }
+        $second = Start-Gui
+        if (!$second.WaitForExit(10000) -or $first.HasExited) {
+            throw 'Second desktop launch did not return to the running app.'
+        }
+        $restored = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            if (![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle)) { $restored = $true; break }
+            Start-Sleep -Milliseconds 100
+        }
+        if (!$restored) { throw 'Second desktop launch did not restore the minimized TogetherServer window.' }
+        Write-Host 'PASS second launch restores the existing native window'
 
-    $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
-    if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
-        throw 'Friend mode selection failed.'
-    }
-    $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
-    if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }
-    Invoke-ChromeButton $first 'Close TogetherServer'
-    if (!$first.WaitForExit(10000)) {
-        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
-        throw "Closing the native window did not exit: visible=$($windowState.visible), rendered=$($windowState.rendered), title=$($first.MainWindowTitle)"
-    }
+        $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
+        if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
+            throw 'Friend mode selection failed.'
+        }
+        $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
+        if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }
+        Invoke-ChromeButton $first 'Close TogetherServer'
+        if (!$first.WaitForExit(10000)) {
+            $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+            throw "Closing the native window did not exit: visible=$($windowState.visible), rendered=$($windowState.rendered), title=$($first.MainWindowTitle)"
+        }
 
-    $reopened = Start-Gui
-    $state = Wait-ForGui $reopened
-    Wait-ForWindow $reopened
-    if ($state.mode -ne 'Friend') { throw 'Friend mode was not restored after a relaunch.' }
-    $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
-    if (!$closed.ok -or !$reopened.WaitForExit(10000)) { throw 'Quit app did not close the Friend instance.' }
-    Write-Host 'PASS Friend mode persists; custom title-bar close and local Quit both exit'
+        $reopened = Start-Gui
+        $state = Wait-ForGui $reopened
+        Wait-ForWindow $reopened
+        if ($state.mode -ne 'Friend') { throw 'Friend mode was not restored after a relaunch.' }
+        $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+        if (!$closed.ok -or !$reopened.WaitForExit(10000)) { throw 'Quit app did not close the Friend instance.' }
+        Write-Host 'PASS Friend mode persists; custom title-bar close and local Quit both exit'
 
-    $login = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
-    $state = Wait-ForGui $login
-    if ($state.mode -ne 'Friend') { throw 'Windows startup launch lost the saved Friend page.' }
-    $created = $false
-    for ($i = 0; $i -lt 40; $i++) {
-        if ($login.HasExited) { throw 'The Windows startup app exited unexpectedly.' }
-        $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
-        if ($windowState.visible) { throw 'Windows startup opened a visible window instead of starting in the tray.' }
-        if ($windowState.customChrome) { $created = $true }
-        Start-Sleep -Milliseconds 100
+        $login = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
+        $state = Wait-ForGui $login
+        if ($state.mode -ne 'Friend') { throw 'Windows startup launch lost the saved Friend page.' }
+        $created = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            if ($login.HasExited) { throw 'The Windows startup app exited unexpectedly.' }
+            $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
+            if ($windowState.visible) { throw 'Windows startup opened a visible window instead of starting in the tray.' }
+            if ($windowState.customChrome) { $created = $true }
+            Start-Sleep -Milliseconds 100
+        }
+        if (!$created) { throw 'Windows startup did not create a native window for later reopening.' }
+        $loginDuplicate = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
+        if (!$loginDuplicate.WaitForExit(10000) -or $login.HasExited -or
+            (Invoke-RestMethod -Uri "$baseUrl/api/local/window").visible) {
+            throw 'A duplicate Windows startup launch opened the existing hidden window.'
+        }
+        $loginSecond = Start-Gui
+        if (!$loginSecond.WaitForExit(10000) -or $login.HasExited) { throw 'A manual launch did not return to the app started in the tray.' }
+        Wait-ForWindow $login
+        $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+        if (!$closed.ok -or !$login.WaitForExit(10000)) { throw 'Quit app did not close the login-started instance.' }
+        Write-Host 'PASS Windows startup stays in tray; manual launch opens that same running app'
     }
-    if (!$created) { throw 'Windows startup did not create a native window for later reopening.' }
-    $loginDuplicate = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
-    if (!$loginDuplicate.WaitForExit(10000) -or $login.HasExited -or
-        (Invoke-RestMethod -Uri "$baseUrl/api/local/window").visible) {
-        throw 'A duplicate Windows startup launch opened the existing hidden window.'
+    else {
+        $second = Start-Gui
+        if (!$second.WaitForExit(10000) -or $first.HasExited -or
+            (Invoke-RestMethod -Uri "$baseUrl/api/local/window").visible) {
+            throw 'A duplicate background launch opened the hidden window.'
+        }
+        Write-Host 'PASS duplicate background launch leaves the running window hidden'
+
+        $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
+        if (!$mode.ok -or (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").mode -ne 'Friend') {
+            throw 'Friend mode selection failed.'
+        }
+        $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+        if (!$closed.ok -or !$first.WaitForExit(10000)) { throw 'Quit app did not close the hidden Friend instance.' }
+
+        $reopened = Start-Gui
+        $state = Wait-ForGui $reopened
+        Wait-ForBackgroundWindow $reopened
+        if ($state.mode -ne 'Friend') { throw 'Friend mode was not restored in a background relaunch.' }
+        $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
+        if (!$closed.ok -or !$reopened.WaitForExit(10000)) { throw 'Quit app did not close the background relaunch.' }
+        Write-Host 'PASS Friend mode persists across hidden relaunches and local Quit exits cleanly'
     }
-    $loginSecond = Start-Gui
-    if (!$loginSecond.WaitForExit(10000) -or $login.HasExited) { throw 'A manual launch did not return to the app started in the tray.' }
-    Wait-ForWindow $login
-    $closed = Invoke-RestMethod -Uri "$baseUrl/api/local/quit" -Method Post -Headers $headers
-    if (!$closed.ok -or !$login.WaitForExit(10000)) { throw 'Quit app did not close the login-started instance.' }
-    Write-Host 'PASS Windows startup stays in tray; manual launch opens that same running app'
     Write-Host "Desktop smoke data: $caseRoot"
 }
 finally {

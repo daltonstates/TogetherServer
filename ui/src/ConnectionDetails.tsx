@@ -3,27 +3,23 @@ import { Button } from './Controls'
 import { Icon } from './Icon'
 
 export type ConnectionField = {
+  id: string
   label: string
   value: string
-}
-
-export function ConnectionDetails({ fields, revealed, copying, revealing, refreshing = false, note,
-  onReveal, onHide, onCopy }: {
-  fields: ConnectionField[]
   revealed: boolean
   copying: boolean
   revealing: boolean
-  refreshing?: boolean
-  note?: string
   onReveal: () => void
   onHide: () => void
   onCopy: () => void
-}) {
-  const hideRef = useRef(onHide)
-  hideRef.current = onHide
+}
+
+function PrivateConnectionField({ field }: { field: ConnectionField }) {
+  const hideRef = useRef(field.onHide)
+  hideRef.current = field.onHide
 
   useEffect(() => {
-    if (!revealed) return
+    if (!field.revealed) return
     const hide = () => hideRef.current()
     const hideWhenBackgrounded = () => { if (document.hidden) hide() }
     const timer = window.setTimeout(hide, 30_000)
@@ -34,34 +30,47 @@ export function ConnectionDetails({ fields, revealed, copying, revealing, refres
       window.removeEventListener('blur', hide)
       document.removeEventListener('visibilitychange', hideWhenBackgrounded)
     }
-  }, [revealed])
+  }, [field.revealed])
 
-  const busy = copying || revealing
-  return <section className="connection-details-card" aria-label="Connection details" aria-busy={busy || refreshing}>
-    <div className="connection-details-heading">
-      <div><strong><Icon name="link" />Connection details</strong><small>Hidden for stream safety</small></div>
-      <div className="connection-details-actions">
-        <Button className="icon-button privacy-toggle" disabled={busy} onClick={revealed ? onHide : onReveal}
-          aria-label={revealed ? 'Hide connection details' : 'Reveal connection details'}
-          title={revealed ? 'Hide connection details' : 'Reveal connection details'}>
-          <Icon name={revealing ? 'loader' : revealed ? 'eyeOff' : 'eye'} />
+  const busy = field.copying || field.revealing
+  const visibilityLabel = `${field.revealed ? 'Hide' : 'Show'} ${field.label}`
+  const labelId = `connection-field-${field.id}`
+  return <div className="connection-field" aria-busy={busy} role="group" aria-labelledby={labelId}>
+    <div className="connection-field-heading">
+      <span className="connection-field-label" id={labelId}>{field.label}</span>
+      <div className="connection-field-actions">
+        <Button className="icon-button privacy-toggle" disabled={busy}
+          onClick={field.revealed ? field.onHide : field.onReveal}
+          aria-label={visibilityLabel} title={visibilityLabel} aria-pressed={field.revealed}>
+          <Icon name={field.revealing ? 'loader' : field.revealed ? 'eyeOff' : 'eye'} />
         </Button>
-        <Button className="secondary private-copy" disabled={busy} onClick={onCopy}>
-          <Icon name={copying ? 'loader' : 'copy'} />{copying ? 'Copying…' : 'Copy without revealing'}
+        <Button className="secondary private-copy" disabled={busy} onClick={field.onCopy}
+          aria-label={`Copy ${field.label}`} title={`Copy ${field.label}`}>
+          <Icon name={field.copying ? 'loader' : 'copy'} />{field.copying ? 'Copying…' : 'Copy'}
         </Button>
       </div>
     </div>
+    <div className="connection-field-value">{field.revealed
+      ? <code>{field.value}</code>
+      : <><span className="privacy-mask" aria-hidden="true">••••••••••••</span><span className="sr-only">Hidden</span></>}</div>
+  </div>
+}
+
+export function ConnectionDetails({ fields, refreshing = false, note }: {
+  fields: ConnectionField[]
+  refreshing?: boolean
+  note?: string
+}) {
+  const busy = fields.some(field => field.copying || field.revealing)
+  return <section className="connection-details-card" aria-label="Connection details" aria-busy={busy || refreshing}>
+    <div className="connection-details-heading">
+      <strong><Icon name="link" />Connection details</strong>
+      <small>Hidden for stream safety · each value has its own controls</small>
+    </div>
     {refreshing && <div className="connection-refreshing" role="status"><Icon name="loader" />Refreshing connection details…</div>}
-    <dl className={refreshing ? 'connection-fields refreshing' : 'connection-fields'}>
-      {fields.map(field => <div className="connection-field" key={field.label}>
-        <dt>{field.label}</dt>
-        <dd>{revealed
-          ? <code>{field.value}</code>
-          : <><span className="privacy-mask" aria-hidden="true">••••••••••••</span><span className="sr-only">Hidden</span></>}</dd>
-      </div>)}
-    </dl>
-    <p className="connection-privacy-note">{revealed
-      ? 'Automatically hides after 30 seconds or when the app loses focus.'
-      : 'Copying keeps these values hidden on screen.'}{note && <> {note}</>}</p>
+    <div className={refreshing ? 'connection-fields refreshing' : 'connection-fields'}>
+      {fields.map(field => <PrivateConnectionField field={field} key={field.id} />)}
+    </div>
+    <p className="connection-privacy-note">Use an eye to show only that value. Shown values hide after 30 seconds or when the app loses focus. Copy keeps it hidden.{note && <> {note}</>}</p>
   </section>
 }
