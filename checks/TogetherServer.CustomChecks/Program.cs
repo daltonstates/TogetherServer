@@ -56,9 +56,9 @@ ServerProfile Profile(string name, int port)
 CustomScriptBundle Scripts(string status = "") => new(
     """
     if ($env:TOGETHERSERVER_MANAGED_PID -ne [string]$PID) { exit 19 }
-    $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY 'stop.signal'
-    Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+    $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
     while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
+    Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
     exit 0
     """,
     string.IsNullOrWhiteSpace(status) ?
@@ -66,7 +66,7 @@ CustomScriptBundle Scripts(string status = "") => new(
     @{ state = 'Ready'; detail = 'Synthetic custom status'; onlinePlayers = 0; maxPlayers = 4; players = @('Alice', 'Bob') } | ConvertTo-Json -Compress
     """ : status,
     """
-    $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY 'stop.signal'
+    $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
     New-Item -ItemType File -Path $stop -Force | Out-Null
     """);
 
@@ -268,6 +268,39 @@ await Check("script count cannot replace a conflicting server", async () =>
     }
 });
 
+await Check("operation-scoped Stop survives an immediate Custom start race", async () =>
+{
+    using var data = new LocalData(Path.Combine(root, "immediate-stop-data"));
+    var manager = new HostManager(data);
+    var profile = Profile("custom-immediate-stop", FreePort());
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "settings failed");
+    Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts())).Ok, "scripts failed");
+    var operationIds = new HashSet<Guid>();
+
+    for (var attempt = 0; attempt < 5; attempt++)
+    {
+        Require((await manager.StartAsync(profile.Id)).Ok, $"immediate start {attempt + 1} failed");
+        try
+        {
+            var run = data.LoadRuns().Single(item => item.ProfileId == profile.Id);
+            Require(operationIds.Add(run.OperationId), "a Custom restart reused its operation identity");
+            var stopped = await manager.StopAsync(profile.Id);
+            Require(stopped.Ok,
+                $"immediate Stop {attempt + 1} failed: {stopped.Code} {stopped.Message}");
+            Require(data.LoadRuns().All(item => item.ProfileId != profile.Id),
+                "an immediately stopped Custom run remained recorded");
+        }
+        finally
+        {
+            // If an assertion fails after launch, retry the owner-provided stop
+            // path so this disposable check never leaves its exact run behind.
+            if (data.LoadRuns().Any(item => item.ProfileId == profile.Id))
+                await manager.StopAsync(profile.Id);
+        }
+    }
+});
+
 await Check("owner certification enables guarded Custom lifecycle and invalidates on change", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "certified-lifecycle-data"));
@@ -367,7 +400,11 @@ await Check("owner certification enables guarded Custom lifecycle and invalidate
         "certified empty Custom conflict was not replaceable");
     var replaced = await manager.ReplaceEmptyPortConflictsAndStartAsync(requested.Id);
     Require(replaced.Ok && replaced.Code == "PortConflictReplaced", "certified Custom replacement failed");
-    Require((await manager.StopAsync(requested.Id)).Ok, "replacement cleanup failed");
+    var replacementCleanup = await manager.StopAsync(requested.Id);
+    Require(replacementCleanup.Ok,
+        $"replacement cleanup failed: {replacementCleanup.Code} {replacementCleanup.Message}");
+    Require(data.LoadRuns().All(item => item.ProfileId != requested.Id),
+        "replacement cleanup left its exact managed run recorded");
 
     Require((await manager.SetCustomScriptsAsync(profile.Id, ContractV2Scripts())).Ok,
         "script resave failed");
