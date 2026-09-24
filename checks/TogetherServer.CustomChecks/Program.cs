@@ -91,6 +91,7 @@ async Task<RunView> WaitForState(HostManager manager, Guid profileId, string sta
     RunView? view = null;
     while (DateTime.UtcNow < deadline)
     {
+        await manager.RefreshObservationsAsync();
         view = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profileId);
         if (view.State == state) return view;
         await Task.Delay(150);
@@ -139,6 +140,7 @@ await Check("protected scripts are required and never authorize remote stop", as
         Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts())).Code == "ProfileInUse",
             "running scripts were editable");
         activeManager = new HostManager(data, games);
+        await activeManager.RefreshObservationsAsync();
         var reattached = (await activeManager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
         Require(reattached.State == "Ready" && reattached.OnlinePlayers == 0 && !reattached.PlayerCountTrusted,
             "a restarted Host did not reattach the exact custom Start wrapper safely");
@@ -285,11 +287,13 @@ await Check("owner certification enables guarded Custom lifecycle and invalidate
         "custom-certification-*.protected").Single();
     Require(!File.ReadAllText(protectedCertification).Contains("recognizable-owner-change", StringComparison.Ordinal),
         "certification stored private test data");
+    await manager.RefreshObservationsAsync();
     var certified = await manager.SnapshotAsync();
     var certifiedRun = certified.Runs.Single(run => run.ProfileId == profile.Id);
     Require(certifiedRun.PlayerCountTrusted && certifiedRun.OnlinePlayers == 0,
         "certified contract-v2 count was not authoritative");
     var reattachedManager = new HostManager(data, games, clock);
+    await reattachedManager.RefreshObservationsAsync();
     var reattachedCertified = (await reattachedManager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
     Require(reattachedCertified.PlayerCountTrusted &&
         (await reattachedManager.SnapshotAsync()).CustomCertifications![profile.Id].Certified,

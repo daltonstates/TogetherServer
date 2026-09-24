@@ -8,12 +8,13 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
     DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null,
     bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
-    bool PlayerCountTrusted = true);
+    bool PlayerCountTrusted = true, int FriendAddedMinutes = 0);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot,
     IReadOnlyDictionary<Guid, CustomCertificationState>? CustomCertifications = null,
     IReadOnlyDictionary<Guid, CrashRecoveryState>? CrashRecovery = null,
-    IReadOnlyDictionary<Guid, WorldBackupStatus>? Backups = null);
+    IReadOnlyDictionary<Guid, WorldBackupStatus>? Backups = null,
+    IReadOnlyList<ActivityEvent>? Activity = null);
 public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
     bool CanReplace, string? BlockReason = null);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
@@ -33,6 +34,7 @@ public sealed class HostManager
     private readonly List<ManagedRun> runs;
     private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
     private readonly HashSet<Guid> hostAddedTime = [];
+    private readonly Dictionary<Guid, int> friendAddedMinutes = [];
     private readonly Dictionary<Guid, ServerObservation> observations = [];
     private readonly SemaphoreSlim observationRefresh = new(1, 1);
     private readonly Dictionary<Guid, CustomCertificationSession> customCertificationSessions = [];
@@ -109,8 +111,17 @@ public sealed class HostManager
                 {
                     var run = runs.SingleOrDefault(run => run.ProfileId == result.ProfileId && run.OperationId == result.OperationId);
                     if (run is null) continue;
+                    var previousState = observations.TryGetValue(result.ProfileId, out var previousObservation)
+                        ? previousObservation.State : null;
                     observations[result.ProfileId] = ToObservation(result.ProfileId, result.OperationId,
                         result.Health, clock.GetUtcNow());
+                    if (previousState is not null && !string.Equals(previousState, result.Health.State, StringComparison.Ordinal))
+                    {
+                        var profileName = settings.Profiles.SingleOrDefault(item => item.Id == result.ProfileId)?.Name ?? "Server";
+                        Activity("Lifecycle", "StateChanged", $"{profileName} changed from {previousState} to {result.Health.State}.",
+                            result.Health.State is "Failed" or "Unknown" ? ActivitySeverity.Warning : ActivitySeverity.Info,
+                            result.ProfileId, visibility: ActivityVisibility.AssignedFriends);
+                    }
                     if (result.Health.State == "Ready" && !run.WasReady)
                     {
                         run.WasReady = true;
@@ -125,6 +136,9 @@ public sealed class HostManager
                         recovery.LastFailure = null;
                         recoveryChanged = true;
                         data.Audit($"crash-recovery-ready {run.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} {clock.GetUtcNow():O}");
+                        Activity("Recovery", "CrashRecovered", "Crash recovery reached Ready.",
+                            ActivitySeverity.Important, run.ProfileId,
+                            visibility: ActivityVisibility.AssignedFriends);
                     }
                 }
                 if (runsChanged) data.SaveRuns(runs);
@@ -147,6 +161,7 @@ public sealed class HostManager
             {
                 profile.CrashRecovery ??= new CrashRecoveryOptions();
                 profile.Backups ??= new BackupOptions();
+                profile.Maintenance ??= new MaintenanceOptions();
             }
             if (settings.PublicGameIpCheckedUtc is { } recorded &&
                 (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
@@ -221,6 +236,7 @@ public sealed class HostManager
                 customCertificationSessions.Remove(profileId);
                 shutdownDeadlines.Remove(profileId);
                 hostAddedTime.Remove(profileId);
+                friendAddedMinutes.Remove(profileId);
                 try
                 {
                     data.DeleteCustomCertification(profileId);
@@ -233,13 +249,44 @@ public sealed class HostManager
                 }
             }
             if (settings.RemoteControlsEnabled != next.RemoteControlsEnabled)
+            {
                 data.Audit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
+                Activity("Access", next.RemoteControlsEnabled ? "RemoteControlsEnabled" : "RemoteControlsDisabled",
+                    next.RemoteControlsEnabled ? "Remote controls were enabled." : "Remote controls were paused.",
+                    ActivitySeverity.Important);
+            }
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
+            {
                 data.Audit($"auto-shutdown {(next.AutoShutdownEnabled ? "enabled" : "disabled")} idle-minutes={next.IdleMinutes} {clock.GetUtcNow():O}");
+                Activity("Countdown", "PolicyChanged",
+                    next.AutoShutdownEnabled
+                        ? $"Automatic shutdown was enabled with a {next.IdleMinutes}-minute empty-server countdown."
+                        : "Automatic shutdown was disabled.", ActivitySeverity.Important);
+            }
+            var previousRoute = ConnectionRoutes.Normalize(settings.ConnectionRoute);
+            var nextRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
+            if (previousRoute.Mode != nextRoute.Mode ||
+                !string.Equals(previousRoute.Address, nextRoute.Address, StringComparison.OrdinalIgnoreCase))
+                Activity("Network", "RouteChanged", $"Friend route changed to {ConnectionRoutes.DisplayName(nextRoute.Mode)}.",
+                    ActivitySeverity.Important);
+            foreach (var profile in next.Profiles)
+            {
+                var previous = settings.Profiles.SingleOrDefault(item => item.Id == profile.Id);
+                if (!profile.Maintenance.Enabled && previous?.Maintenance?.Enabled != true) continue;
+                if (previous?.Maintenance?.Enabled == profile.Maintenance.Enabled &&
+                    string.Equals(previous?.Maintenance?.Message ?? "", profile.Maintenance.Message, StringComparison.Ordinal)) continue;
+                Activity("Maintenance", profile.Maintenance.Enabled ? "Enabled" : "Disabled",
+                    profile.Maintenance.Enabled
+                        ? string.IsNullOrWhiteSpace(profile.Maintenance.Message) ? "The Host enabled maintenance mode."
+                            : "Maintenance: " + profile.Maintenance.Message
+                        : "The Host ended maintenance mode.",
+                    ActivitySeverity.Important, profile.Id, visibility: ActivityVisibility.AssignedFriends);
+            }
             if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
             {
                 shutdownDeadlines.Clear();
                 hostAddedTime.Clear();
+                friendAddedMinutes.Clear();
             }
             settings = next;
             var allowedRecoveryProfiles = settings.Profiles
@@ -308,6 +355,7 @@ public sealed class HostManager
             customCertificationSessions.Remove(profileId);
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
+            friendAddedMinutes.Remove(profileId);
             data.Audit($"custom-scripts-saved {profileId} {clock.GetUtcNow():O}");
             data.Audit($"custom-certification-invalidated {profileId} scripts-changed {clock.GetUtcNow():O}");
             return Result(true, "CustomScriptsSaved",
@@ -350,6 +398,7 @@ public sealed class HostManager
             customCertificationSessions.Remove(profileId);
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
+            friendAddedMinutes.Remove(profileId);
             var fingerprint = CustomCertification.Fingerprint(profile, scripts!, driver.Ports(profile));
             var started = StartUnderGate(profileId, false);
             if (!started.Ok)
@@ -579,6 +628,7 @@ public sealed class HostManager
             data.DeleteCustomCertification(profileId);
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
+            friendAddedMinutes.Remove(profileId);
             observations.Remove(profileId);
             data.Audit($"custom-certification-canceled {profileId} {clock.GetUtcNow():O}");
             var profile = settings.Profiles.SingleOrDefault(candidate =>
@@ -607,6 +657,7 @@ public sealed class HostManager
             data.DeleteCustomCertification(profileId);
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
+            friendAddedMinutes.Remove(profileId);
             observations.Remove(profileId);
             data.Audit($"custom-certification-revoked {profileId} {clock.GetUtcNow():O}");
             return CertificationResult(true, "CustomCertificationRevoked",
@@ -646,9 +697,12 @@ public sealed class HostManager
             {
                 if (HostAddedTimeIsActive(conflict.ProfileId))
                     return Result(false, "PortConflictProtected",
-                        $"{conflict.ProfileName} is being kept alive with time added by the Host.", initial.PortConflicts);
+                        $"{conflict.ProfileName} is being kept alive with time added by " +
+                        (friendAddedMinutes.GetValueOrDefault(conflict.ProfileId) > 0 ? "a Friend." : "the Host."),
+                        initial.PortConflicts);
                 var operation = await StopUnderGateAsync(conflict.ProfileId, run =>
                     !HostAddedTimeIsActive(conflict.ProfileId) &&
+                    settings.Profiles.SingleOrDefault(profile => profile.Id == conflict.ProfileId)?.Maintenance?.Enabled != true &&
                     games.TryGet(run.Kind, out var driver) &&
                     driver.Health(run) is
                     {
@@ -734,6 +788,7 @@ public sealed class HostManager
         };
         shutdownDeadlines.Remove(profileId);
         hostAddedTime.Remove(profileId);
+        friendAddedMinutes.Remove(profileId);
         observations.Remove(profileId);
         driver.PrepareStart(profile, run);
         runs.Add(run);
@@ -745,6 +800,8 @@ public sealed class HostManager
             using (var started = Process.GetProcessById(run.ProcessId.Value))
                 run.StartTimeUtcTicks = started.StartTime.ToUniversalTime().Ticks;
             data.SaveRuns(runs);
+            Activity("Lifecycle", "Started", $"{profile.Name} started.", ActivitySeverity.Important,
+                profile.Id, visibility: ActivityVisibility.AssignedFriends);
             return Result(true, launch.Code, launch.Message);
         }
         catch (Exception ex)
@@ -796,6 +853,7 @@ public sealed class HostManager
             {
                 shutdownDeadlines.Clear();
                 hostAddedTime.Clear();
+                friendAddedMinutes.Clear();
                 return [];
             }
             var snapshot = Snapshot();
@@ -808,9 +866,15 @@ public sealed class HostManager
             {
                 if (!shutdownDeadlines.Remove(profileId, out var deadline)) continue;
                 hostAddedTime.Remove(profileId);
+                friendAddedMinutes.Remove(profileId);
                 var result = await StopUnderGateAsync(profileId,
                     run => AutoShutdownStillSafe(run, deadline));
                 data.Audit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
+                Activity("Countdown", result.Ok ? "AutomaticStopCompleted" : "AutomaticStopFailed",
+                    result.Ok ? "The empty-server countdown completed and the server stopped."
+                        : "The empty-server countdown reached zero, but the safe Stop did not complete.",
+                    result.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning,
+                    profileId, visibility: ActivityVisibility.AssignedFriends);
                 results.Add(result);
             }
             return results;
@@ -844,6 +908,8 @@ public sealed class HostManager
                 recovery.NextAttemptUtc = null;
                 data.SaveCrashRecoveryStates(crashRecovery);
                 data.Audit($"crash-recovery-attempt {profile.Id} cycle={recovery.CycleId} attempt={recovery.Attempts} {now:O}");
+                Activity("Recovery", "CrashRestartAttempt", $"Crash recovery attempt {recovery.Attempts} of 3 started.",
+                    ActivitySeverity.Warning, profile.Id, visibility: ActivityVisibility.AssignedFriends);
                 var result = StartUnderGate(profile.Id, true);
                 results.Add(result);
                 if (!result.Ok)
@@ -886,6 +952,9 @@ public sealed class HostManager
             if (saveDirectory is null)
                 return Result(false, "BackupsUnsupported", "The selected driver does not expose a reviewed save-only directory.");
             var restored = backups.Restore(profile, backupId, saveDirectory);
+            Activity("Backup", restored.Ok ? "RestoreCompleted" : "RestoreFailed",
+                restored.Ok ? "A local-owner backup restore completed." : "A local-owner backup restore failed. Review details locally.",
+                restored.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
             return Result(restored.Ok, restored.Code, restored.Message);
         }
         finally { gate.Release(); }
@@ -912,8 +981,49 @@ public sealed class HostManager
             }
             hostAddedTime.Add(profileId);
             data.Audit($"auto-shutdown-extended {profileId} minutes={minutes} {clock.GetUtcNow():O}");
+            Activity("Countdown", "OwnerExtended", $"The Host added {minutes} minute{(minutes == 1 ? "" : "s")} to the countdown.",
+                ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             var profileName = settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Name ?? "Server";
             return Result(true, "CountdownExtended", $"Added {minutes} minute{(minutes == 1 ? "" : "s")} to {profileName}'s countdown.");
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> ExtendAutoShutdownForFriendAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var increment = settings.FriendTimerExtensionMinutes;
+            var maximum = settings.FriendTimerExtensionMaximumMinutes;
+            if (!settings.AutoShutdownEnabled)
+                return Result(false, "TimerNotRunning", "Automatic shutdown is off, so there is no countdown to extend.");
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+            if (profile.Maintenance?.Enabled == true)
+                return Result(false, "MaintenanceMode", "Remote timer extension is paused while this server is in maintenance mode.");
+            var view = Snapshot().Runs.SingleOrDefault(run => run.ProfileId == profileId);
+            if (view is null || view.State != "Ready" || !view.PlayerCountTrusted || view.OnlinePlayers != 0 ||
+                view.AutoShutdownAtUtc is null || !shutdownDeadlines.TryGetValue(profileId, out var deadline))
+                return Result(false, "TimerNotRunning",
+                    "A fresh authoritative zero-player countdown is required before time can be added.");
+            var alreadyAdded = friendAddedMinutes.GetValueOrDefault(profileId);
+            if (increment < 1 || maximum < increment || alreadyAdded + increment > maximum)
+                return Result(false, "ExtensionLimitReached",
+                    $"The Host allows at most {maximum} minutes of Friend-added time per countdown.");
+            try { shutdownDeadlines[profileId] = deadline.AddMinutes(increment); }
+            catch (ArgumentOutOfRangeException)
+            {
+                return Result(false, "InvalidExtension", "The configured extension would put the countdown outside the supported date range.");
+            }
+            friendAddedMinutes[profileId] = alreadyAdded + increment;
+            hostAddedTime.Add(profileId);
+            data.Audit($"auto-shutdown-friend-extended {profileId} minutes={increment} total={alreadyAdded + increment} {clock.GetUtcNow():O}");
+            Activity("Countdown", "FriendExtended", $"A Friend added the fixed {increment}-minute extension.",
+                ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
+            return Result(true, "CountdownExtended",
+                $"Added the Host-configured {increment} minutes to {profile.Name}'s countdown. " +
+                $"{maximum - alreadyAdded - increment} Friend-added minutes remain for this countdown.");
         }
         finally { gate.Release(); }
     }
@@ -964,8 +1074,14 @@ public sealed class HostManager
             if (profile is not null && profile.Backups.Enabled && driver.SupportsBackups && saveDirectory is not null)
                 backup = backups.Create(profile, BackupKinds.Rolling, saveDirectory);
             ArchiveCompletedRun(run, "GracefulStop", false);
+            Activity("Lifecycle", "Stopped", $"{profile?.Name ?? "Server"} stopped gracefully.",
+                ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             if (backup is { Ok: false })
+            {
+                Activity("Backup", "BackupFailed", "The rolling backup after Stop failed. Review it locally on the Host.",
+                    ActivitySeverity.Warning, profileId);
                 return Result(true, "StoppedBackupFailed", stopped.Message + " " + backup.Message);
+            }
             return Result(true, stopped.Code, backup?.Ok == true
                 ? stopped.Message + " A rolling backup completed."
                 : stopped.Message);
@@ -1001,7 +1117,7 @@ public sealed class HostManager
                 return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
             return Identity(run) switch
             {
-                "Matched" => DriverHealth(driver.Health(run)),
+                "Matched" => DriverHealth(run, driver.Health(run)),
                 "Missing" => Result(false, "ProcessExited", "The recorded process is no longer running."),
                 _ => Result(false, "IdentityUnknown", "The recorded process identity cannot be verified.")
             };
@@ -1009,7 +1125,11 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
-    private ActionResult DriverHealth(GameHealthResult health) => Result(health.Ok, health.Code, health.Detail);
+    private ActionResult DriverHealth(ManagedRun run, GameHealthResult health)
+    {
+        observations[run.ProfileId] = ToObservation(run.ProfileId, run.OperationId, health, clock.GetUtcNow());
+        return Result(health.Ok, health.Code, health.Detail);
+    }
 
     public async Task<ActionResult> ForgetAsync(Guid profileId)
     {
@@ -1042,37 +1162,31 @@ public sealed class HostManager
                 return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId, run.DeclaredPorts);
             return identity switch
             {
-                "Matched" => DriverView(profile.Id, run, ObservedHealth(run, driver)),
+                "Matched" => DriverView(profile.Id, run, ObservedHealth(run)),
                 "Missing" => new RunView(profile.Id, "Failed", "Recorded process exited; owner can clear the record", run.ProcessId, run.DeclaredPorts),
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId, run.DeclaredPorts)
             };
         }).ToList();
         var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
         foreach (var profileId in shutdownDeadlines.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
-        {
-            shutdownDeadlines.Remove(profileId);
-            hostAddedTime.Remove(profileId);
-        }
+            CancelCountdown(profileId, "The saved server is no longer available.");
         for (var index = 0; index < views.Count; index++)
         {
             var view = views[index];
             if (view.State != "Ready")
             {
-                shutdownDeadlines.Remove(view.ProfileId);
-                hostAddedTime.Remove(view.ProfileId);
+                CancelCountdown(view.ProfileId, "The server is no longer Ready.");
                 continue;
             }
             if (!settings.AutoShutdownEnabled)
             {
-                shutdownDeadlines.Remove(view.ProfileId);
-                hostAddedTime.Remove(view.ProfileId);
+                CancelCountdown(view.ProfileId, "Automatic shutdown was turned off.");
                 views[index] = view with { AutoShutdownReason = "Automatic shutdown is off." };
                 continue;
             }
             if (!view.PlayerCountTrusted)
             {
-                shutdownDeadlines.Remove(view.ProfileId);
-                hostAddedTime.Remove(view.ProfileId);
+                CancelCountdown(view.ProfileId, "The authoritative player count became unavailable.");
                 views[index] = view with { AutoShutdownReason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
                     ? "Owner certification and a fresh valid Custom contract-v2 player count are required for automatic shutdown."
                     : "A fresh authoritative player count is required for automatic shutdown." };
@@ -1080,15 +1194,13 @@ public sealed class HostManager
             }
             if (view.OnlinePlayers is null)
             {
-                shutdownDeadlines.Remove(view.ProfileId);
-                hostAddedTime.Remove(view.ProfileId);
+                CancelCountdown(view.ProfileId, "The current player count became unknown.");
                 views[index] = view with { AutoShutdownReason = "Waiting for a reliable player count." };
                 continue;
             }
             if (view.OnlinePlayers != 0)
             {
-                shutdownDeadlines.Remove(view.ProfileId);
-                hostAddedTime.Remove(view.ProfileId);
+                CancelCountdown(view.ProfileId, "A player joined the server.");
                 views[index] = view with { AutoShutdownReason = "Waiting for the server to be empty." };
                 continue;
             }
@@ -1096,11 +1208,16 @@ public sealed class HostManager
             {
                 deadline = now.AddMinutes(settings.IdleMinutes);
                 shutdownDeadlines[view.ProfileId] = deadline;
+                Activity("Countdown", "Started",
+                    $"The empty-server countdown started for {settings.IdleMinutes} minutes.",
+                    ActivitySeverity.Important, view.ProfileId,
+                    visibility: ActivityVisibility.AssignedFriends);
             }
             views[index] = view with
             {
                 AutoShutdownAtUtc = deadline,
-                HostAddedTime = HostAddedTimeIsActive(view.ProfileId)
+                HostAddedTime = HostAddedTimeIsActive(view.ProfileId),
+                FriendAddedMinutes = friendAddedMinutes.GetValueOrDefault(view.ProfileId)
             };
         }
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
@@ -1110,13 +1227,34 @@ public sealed class HostManager
             settings.Profiles.Where(profile => profile.Kind == GameKinds.Custom)
                 .ToDictionary(profile => profile.Id, CertificationState),
             crashRecovery.ToDictionary(item => item.ProfileId, item => item),
-            settings.Profiles.ToDictionary(profile => profile.Id, profile => backups.Status(profile.Id)));
+            settings.Profiles.ToDictionary(profile => profile.Id, profile => backups.Status(profile.Id)),
+            data.LoadActivity(100));
     }
 
     private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
         new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
             health.OnlinePlayers, health.MaxPlayers, PlayerNames: health.PlayerNames,
             PlayerCountTrusted: health.PlayerCountTrusted);
+
+    private void CancelCountdown(Guid profileId, string reason)
+    {
+        var wasRunning = shutdownDeadlines.Remove(profileId);
+        hostAddedTime.Remove(profileId);
+        friendAddedMinutes.Remove(profileId);
+        if (wasRunning)
+            Activity("Countdown", "Canceled", "The empty-server countdown was canceled. " + reason,
+                ActivitySeverity.Important, profileId,
+                visibility: ActivityVisibility.AssignedFriends);
+    }
+
+    private void Activity(string category, string action, string message,
+        string severity = ActivitySeverity.Info, Guid? profileId = null,
+        Guid? deviceId = null, string visibility = ActivityVisibility.Local)
+    {
+        try { data.RecordActivity(category, action, message, severity, profileId, deviceId, visibility); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
+        { data.Audit($"activity-write-failed {category} {action} {ex.GetType().Name} {clock.GetUtcNow():O}"); }
+    }
 
     private ActionResult Result(bool ok, string code, string message,
         IReadOnlyList<PortConflictView>? portConflicts = null) =>
@@ -1131,9 +1269,18 @@ public sealed class HostManager
 
     private bool CanReplacePortConflict(ManagedRun run, out string? reason)
     {
+        var profile = settings.Profiles.SingleOrDefault(item => item.Id == run.ProfileId);
+        if (profile?.Maintenance?.Enabled == true)
+        {
+            reason = string.IsNullOrWhiteSpace(profile.Maintenance.Message)
+                ? $"{profile.Name} is in maintenance mode."
+                : $"{profile.Name} maintenance: {profile.Maintenance.Message}";
+            return false;
+        }
         if (HostAddedTimeIsActive(run.ProfileId))
         {
-            reason = $"{settings.Profiles.SingleOrDefault(profile => profile.Id == run.ProfileId)?.Name ?? "The conflicting server"} is being kept alive with time added by the Host.";
+            reason = $"{profile?.Name ?? "The conflicting server"} is being kept alive with time added by " +
+                (friendAddedMinutes.GetValueOrDefault(run.ProfileId) > 0 ? "a Friend." : "the Host.");
             return false;
         }
         if (Identity(run) != "Matched" || !games.TryGet(run.Kind, out var driver))
@@ -1141,7 +1288,7 @@ public sealed class HostManager
             reason = "The conflicting server's process or game driver cannot be verified.";
             return false;
         }
-        var health = ObservedHealth(run, driver);
+        var health = ObservedHealth(run);
         if (!health.Ok || health.State != "Ready" || !health.PlayerCountTrusted || health.OnlinePlayers is null)
         {
             reason = "The conflicting server does not have a fresh authoritative player count.";
@@ -1159,7 +1306,7 @@ public sealed class HostManager
     private bool HostAddedTimeIsActive(Guid profileId) => hostAddedTime.Contains(profileId) &&
         shutdownDeadlines.TryGetValue(profileId, out var deadline) && deadline > clock.GetUtcNow();
 
-    private GameHealthResult ObservedHealth(ManagedRun run, IGameServerDriver driver)
+    private GameHealthResult ObservedHealth(ManagedRun run)
     {
         var now = clock.GetUtcNow();
         if (observations.TryGetValue(run.ProfileId, out var observation) &&
@@ -1173,18 +1320,8 @@ public sealed class HostManager
                 "The last server observation is stale. Waiting for a fresh probe.", PlayerCountTrusted: false);
         }
 
-        // The first view of a newly attached run performs one bounded probe so
-        // startup and direct manager users have useful state before the shared
-        // supervisor's first pass. Subsequent readers consume the cache.
-        GameHealthResult health;
-        try { health = driver.Health(run); }
-        catch (Exception ex)
-        {
-            health = new(false, "HealthProbeFailed", "Unknown",
-                "The server status probe failed: " + ex.GetType().Name + ".", PlayerCountTrusted: false);
-        }
-        observations[run.ProfileId] = ToObservation(run.ProfileId, run.OperationId, health, now);
-        return health;
+        return new(false, "ObservationPending", "Unknown",
+            "Waiting for the shared server observation supervisor.", PlayerCountTrusted: false);
     }
 
     private static ServerObservation ToObservation(Guid profileId, Guid operationId,
@@ -1205,6 +1342,7 @@ public sealed class HostManager
         session.OnlinePlayers = null;
         shutdownDeadlines.Remove(profile.Id);
         hostAddedTime.Remove(profile.Id);
+        friendAddedMinutes.Remove(profile.Id);
         observations.Remove(profile.Id);
         try { data.DeleteCustomCertification(profile.Id); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -1281,6 +1419,11 @@ public sealed class HostManager
     {
         if (next.MaxConcurrentServers < 1 || next.MaxConcurrentServers > 16) return "Maximum servers must be between 1 and 16.";
         if (next.IdleMinutes < 1 || next.IdleMinutes > 1440) return "Idle minutes must be between 1 and 1440.";
+        if (next.FriendTimerExtensionMinutes is < 1 or > 120)
+            return "Friend countdown increments must be between 1 and 120 minutes.";
+        if (next.FriendTimerExtensionMaximumMinutes < next.FriendTimerExtensionMinutes ||
+            next.FriendTimerExtensionMaximumMinutes > 1440)
+            return "The Friend countdown maximum must be at least one increment and no more than 1440 minutes.";
         if (next.CompanionPort < 1024 || next.CompanionPort > 65535) return "Companion port must be between 1024 and 65535.";
         if (!string.IsNullOrWhiteSpace(next.PublicGameIp) && !GameConnection.IsPublicIpv4(next.PublicGameIp))
             return "The Valheim friend address must be public IPv4; 127.0.0.1, local, shared, and test addresses cannot be used.";
@@ -1314,6 +1457,10 @@ public sealed class HostManager
             if (!games.TryGet(profile.Kind, out var profileDriver)) return "Choose a supported game type for the server.";
             profile.CrashRecovery ??= new CrashRecoveryOptions();
             profile.Backups ??= new BackupOptions();
+            profile.Maintenance ??= new MaintenanceOptions();
+            profile.Maintenance.Message = profile.Maintenance.Message?.Trim() ?? "";
+            if (profile.Maintenance.Message.Length > 200 || profile.Maintenance.Message.Any(char.IsControl))
+                return "Maintenance messages must be at most 200 characters without line breaks.";
             if (profile.CrashRecovery.Enabled && !profileDriver.SupportsCrashRecovery)
                 return "Automatic crash recovery is available only for reviewed built-in game drivers.";
             if (profile.Backups.Enabled && !profileDriver.SupportsBackups)
@@ -1432,6 +1579,8 @@ public sealed class HostManager
                 crashRecovery.Add(state);
                 data.SaveCrashRecoveryStates(crashRecovery);
                 data.Audit($"crash-recovery-scheduled {run.ProfileId} cycle={state.CycleId} delay=1m {clock.GetUtcNow():O}");
+                Activity("Recovery", "CrashDetected", "The exact managed process exited unexpectedly; crash recovery is scheduled in 1 minute.",
+                    ActivitySeverity.Warning, run.ProfileId, visibility: ActivityVisibility.AssignedFriends);
                 preserveRecoveryState = true;
                 recoveryScheduled = true;
             }
@@ -1452,6 +1601,8 @@ public sealed class HostManager
             recovery.State = CrashRecoveryStates.Suspended;
             recovery.NextAttemptUtc = null;
             data.Audit($"crash-recovery-suspended {recovery.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} {clock.GetUtcNow():O}");
+            Activity("Recovery", "CrashRecoverySuspended", "Crash recovery was suspended after three failed attempts.",
+                ActivitySeverity.Warning, recovery.ProfileId, visibility: ActivityVisibility.AssignedFriends);
         }
         else
         {
@@ -1459,6 +1610,8 @@ public sealed class HostManager
             recovery.State = CrashRecoveryStates.Pending;
             recovery.NextAttemptUtc = clock.GetUtcNow().Add(delay);
             data.Audit($"crash-recovery-rescheduled {recovery.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} delay={(int)delay.TotalMinutes}m {clock.GetUtcNow():O}");
+            Activity("Recovery", "CrashRecoveryRescheduled", $"Crash recovery failed and will retry in {(int)delay.TotalMinutes} minutes.",
+                ActivitySeverity.Warning, recovery.ProfileId, visibility: ActivityVisibility.AssignedFriends);
         }
         data.SaveCrashRecoveryStates(crashRecovery);
     }
@@ -1478,6 +1631,7 @@ public sealed class HostManager
         runs.Remove(run);
         shutdownDeadlines.Remove(run.ProfileId);
         hostAddedTime.Remove(run.ProfileId);
+        friendAddedMinutes.Remove(run.ProfileId);
         observations.Remove(run.ProfileId);
         if (!preserveRecoveryState)
             crashRecovery.RemoveAll(item => item.ProfileId == run.ProfileId);

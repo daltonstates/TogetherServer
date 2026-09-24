@@ -64,7 +64,8 @@ public sealed class RemoteOperationCoordinator
             operation.CompletedUtc = DateTimeOffset.UtcNow;
             interrupted = true;
         }
-        if (interrupted || PruneLocked()) data.SaveRemoteOperations(operations);
+        var pruned = PruneLocked();
+        if (interrupted || pruned) data.SaveRemoteOperations(operations);
     }
 
     public RemoteOperationSubmission Submit(Guid deviceId, Guid requestId, Guid profileId, string action,
@@ -91,10 +92,21 @@ public sealed class RemoteOperationCoordinator
             };
             operations.Add(operation);
             PruneLocked();
+            if (operations.Count > MaximumEntries)
+            {
+                // Never discard an unfinished operation merely to make room.
+                // If all 500 retained entries are still active, reject new work
+                // before it is journaled or scheduled.
+                operations.Remove(operation);
+                return new(false, false, "OperationQueueFull",
+                    "The Host already has 500 unfinished remote operations. Wait for an operation to finish before trying again.", null);
+            }
             data.SaveRemoteOperations(operations);
         }
 
         data.Audit($"remote-operation-accepted {operation.Id} {deviceId} {profileId} {action} {operation.RequestedUtc:O}");
+        RecordActivity("RemoteActionAccepted", $"A Friend requested {ActionLabel(action)}.",
+            ActivitySeverity.Important, profileId);
         var acceptedView = View(operation);
         _ = Task.Run(() => ExecuteAsync(operation.Id, execute));
         return new(true, false, acceptedView.Code, acceptedView.Message, acceptedView);
@@ -168,6 +180,9 @@ public sealed class RemoteOperationCoordinator
             data.SaveRemoteOperations(operations);
         }
         data.Audit($"remote-operation-complete {operation.Id} {operation.DeviceId} {operation.ProfileId} {operation.Action} {operation.Code} {operation.CompletedUtc:O}");
+        RecordActivity(outcome.Ok ? "RemoteActionSucceeded" : "RemoteActionFailed",
+            $"Friend {ActionLabel(operation.Action)} {(outcome.Ok ? "completed" : "failed")}.",
+            outcome.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, operation.ProfileId);
     }
 
     private bool PruneLocked()
@@ -188,4 +203,22 @@ public sealed class RemoteOperationCoordinator
         new(operation.Id, operation.ProfileId, operation.Action, operation.State, operation.Ok,
             operation.Code, operation.Message, operation.RequestedUtc, operation.StartedUtc,
             operation.CompletedUtc, operation.PortConflicts);
+
+    private static string ActionLabel(string action) => action switch
+    {
+        "start" => "Start",
+        "stop" => "Stop",
+        "restart" => "Restart",
+        "replace" => "empty-server replacement",
+        "extend" => "countdown extension",
+        _ => "server action"
+    };
+
+    private void RecordActivity(string action, string message, string severity, Guid profileId)
+    {
+        try { data.RecordActivity("Remote", action, message, severity, profileId,
+            visibility: ActivityVisibility.AssignedFriends); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
+        { data.Audit($"activity-write-failed Remote {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
+    }
 }

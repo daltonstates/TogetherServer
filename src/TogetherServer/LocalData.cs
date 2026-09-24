@@ -9,6 +9,8 @@ public sealed class HostSettings
 {
     public int MaxConcurrentServers { get; set; } = 1;
     public int IdleMinutes { get; set; } = 15;
+    public int FriendTimerExtensionMinutes { get; set; } = 15;
+    public int FriendTimerExtensionMaximumMinutes { get; set; } = 60;
     public bool AutoShutdownEnabled { get; set; }
     public bool RemoteControlsEnabled { get; set; }
     public bool CompanionListeningEnabled { get; set; }
@@ -38,6 +40,13 @@ public sealed class ServerProfile
     public CustomGameOptions? Custom { get; set; }
     public CrashRecoveryOptions CrashRecovery { get; set; } = new();
     public BackupOptions Backups { get; set; } = new();
+    public MaintenanceOptions Maintenance { get; set; } = new();
+}
+
+public sealed class MaintenanceOptions
+{
+    public bool Enabled { get; set; }
+    public string Message { get; set; } = "";
 }
 
 public sealed class CrashRecoveryOptions
@@ -94,6 +103,7 @@ public sealed class LocalData : IDisposable
     private readonly FileStream gate;
     private readonly string root;
     private readonly object auditSync = new();
+    private readonly object activitySync = new();
     private readonly object stateSync = new();
     public string WorldImportsRoot => Path.Combine(root, "world-imports");
     public string ManagedWorldsRoot => Path.Combine(root, "worlds");
@@ -228,6 +238,53 @@ public sealed class LocalData : IDisposable
     public void Audit(string entry)
     {
         lock (auditSync) File.AppendAllText(Path.Combine(root, "audit.log"), entry + Environment.NewLine);
+    }
+
+    public IReadOnlyList<ActivityEvent> LoadActivity(int maximum = 500)
+    {
+        lock (activitySync)
+        {
+            var events = Load("activity.json", new List<ActivityEvent>());
+            var retained = events.Where(item => item.OccurredUtc >= DateTimeOffset.UtcNow.AddDays(-30))
+                .OrderByDescending(item => item.OccurredUtc).Take(500).ToList();
+            if (retained.Count != events.Count) Save("activity.json", retained);
+            return retained.Take(Math.Clamp(maximum, 1, 500)).ToList();
+        }
+    }
+
+    public ActivityEvent RecordActivity(string category, string action, string message,
+        string severity = ActivitySeverity.Info, Guid? profileId = null,
+        Guid? deviceId = null, string visibility = ActivityVisibility.Local)
+    {
+        static string Clean(string value, int maximum, string field)
+        {
+            var cleaned = value?.Trim() ?? "";
+            if (cleaned.Length is < 1 || cleaned.Length > maximum || cleaned.Any(char.IsControl))
+                throw new ArgumentException($"Activity {field} is invalid.");
+            return cleaned;
+        }
+        category = Clean(category, 40, nameof(category));
+        action = Clean(action, 64, nameof(action));
+        message = Clean(message, 240, nameof(message));
+        if (severity is not (ActivitySeverity.Info or ActivitySeverity.Important or ActivitySeverity.Warning))
+            throw new ArgumentException("Activity severity is invalid.");
+        if (visibility is not (ActivityVisibility.Local or ActivityVisibility.AssignedFriends or ActivityVisibility.Device))
+            throw new ArgumentException("Activity visibility is invalid.");
+        if (visibility == ActivityVisibility.AssignedFriends && profileId is null ||
+            visibility == ActivityVisibility.Device && deviceId is null)
+            throw new ArgumentException("Activity visibility scope is incomplete.");
+        var created = new ActivityEvent(Guid.NewGuid(), DateTimeOffset.UtcNow, category,
+            action, message, severity, profileId, deviceId, visibility);
+        lock (activitySync)
+        {
+            var events = Load("activity.json", new List<ActivityEvent>());
+            events.Add(created);
+            var cutoff = DateTimeOffset.UtcNow.AddDays(-30);
+            events = events.Where(item => item.OccurredUtc >= cutoff)
+                .OrderByDescending(item => item.OccurredUtc).Take(500).ToList();
+            Save("activity.json", events);
+        }
+        return created;
     }
 
     private T Load<T>(string name, T fallback)

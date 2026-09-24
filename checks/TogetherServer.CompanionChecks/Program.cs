@@ -97,6 +97,38 @@ try
     }
     Console.WriteLine("PASS existing scoped access is preserved while legacy unscoped access fails closed"); passes++;
 
+    var pairingPolicyRoot = Path.Combine(root, "pairing-policy");
+    using (var pairingData = new LocalData(pairingPolicyRoot))
+    {
+        var pairingProfile = Guid.NewGuid();
+        var pairingService = new PairingService(pairingData);
+        var window = pairingService.IssueServer(pairingProfile, true, false,
+            "https://127.0.0.1:5131", new string('A', 64), false,
+            durationMinutes: 30, deviceLimit: 2, requireApproval: true);
+        var policyFirst = pairingService.Activate(new(pairingProfile, window.Code, true));
+        var policySecond = pairingService.Activate(new(pairingProfile, window.Code, true));
+        var overLimit = pairingService.Activate(new(pairingProfile, window.Code, true));
+        Require(policyFirst?.ApprovalPending == true && policySecond?.ApprovalPending == true && overLimit is null,
+            "pairing window approval or device limit was not enforced");
+        var pending = pairingService.Authenticate(policyFirst!.DeviceId, policyFirst.Credential, out _);
+        Require(!pending.Ok && pending.Code == "ApprovalPending" && pairingService.Approve(policyFirst.DeviceId).Ok &&
+            pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Ok,
+            "a waiting PC authenticated before local approval or remained blocked afterward");
+        var reopened = pairingService.IssueServer(pairingProfile, true, false,
+            window.Endpoint, window.Fingerprint, false, durationMinutes: 60, deviceLimit: 1);
+        Require(reopened.Code != window.Code && reopened.ExpiresUtc > DateTimeOffset.UtcNow.AddMinutes(59),
+            "changing the pairing duration did not open a new bounded window");
+        Require(pairingService.ClosePairing(pairingProfile).Ok &&
+            pairingService.Activate(new(pairingProfile, reopened.Code, true)) is null &&
+            pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Ok,
+            "closing pairing revoked an existing PC or left the shared code usable");
+        Require(pairingService.EmergencyRevoke(pairingProfile).Ok &&
+            pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Code == "Revoked" &&
+            pairingData.LoadActivity().All(item => !item.Message.Contains(window.Code, StringComparison.Ordinal)),
+            "emergency revoke did not invalidate code-issued credentials or activity exposed a code");
+    }
+    Console.WriteLine("PASS bounded pairing windows separate approval, close, per-PC credentials, and emergency revoke"); passes++;
+
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
@@ -135,7 +167,7 @@ try
         "remote control pause failed");
     var listener = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     Require(listener.GetProperty("listenerActive").GetBoolean(), "companion listener did not start");
-    Console.WriteLine("PASS one persistent code per server starts the loopback HTTPS listener without restart"); passes++;
+    Console.WriteLine("PASS one current bounded code per server starts the loopback HTTPS listener without restart"); passes++;
     var copiedWhilePaused = await ServerInvite(owner, profile.Id, true, enableConnections: true);
     var pausedSnapshot = await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
     Require(copiedWhilePaused.Code == inviteA.Code && pausedSnapshot?.Settings.RemoteControlsEnabled == false &&
@@ -284,16 +316,20 @@ try
     Require((await OwnerPost<object, FriendActionResult>(aLocal,
         $"/api/local/friend/connections/{firstConnection.ConnectionId}/select", new { })).Ok,
         "Friend could not select the earlier saved connection");
+    var renamedConnection = await OwnerPut<DeviceNameRequest, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{firstConnection.ConnectionId}/name", new("Weekend Host"));
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
-    Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
+    Require(renamedConnection.Ok && aView.ConnectionName == "Weekend Host" &&
+        aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
         "selecting the earlier server lost its pairing: " + JsonSerializer.Serialize(aView, webJson));
+    var secondConnection = multiple.Connections!.Single(connection => connection.ConnectionId != firstConnection.ConnectionId);
     settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "fresh Host address update failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.Profiles.Single().JoinAddress is null,
         "a fixture server exposed a Valheim join address");
-    Console.WriteLine("PASS separate Friend credentials, saved connections, and game kinds"); passes++;
+    Console.WriteLine("PASS saved Friend connections can be selected and renamed"); passes++;
 
     using var publicClient = PinnedClient(endpoint, inviteA.Fingerprint);
     using var invalid = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
@@ -683,6 +719,13 @@ try
         "the owner could not retire the previous certificate pin after the grace path");
     Console.WriteLine("PASS staged certificate rotation and credential-bound endpoint recovery fail closed"); passes++;
 
+    var forgotten = await OwnerPost<object, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{secondConnection.ConnectionId}/forget", new { });
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(forgotten.Ok && forgotten.Code == "ConnectionForgottenAndRevoked" && aView.Connections?.Count == 1,
+        "reachable Forget did not revoke the device credential before removing the saved connection");
+    Console.WriteLine("PASS reachable Forget revokes the credential before removing the saved connection"); passes++;
+
     var stopHostData = Path.Combine(root, "stop-host");
     var stopFriendData = Path.Combine(root, "stop-friend");
     stopHostPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
@@ -706,7 +749,8 @@ try
     using var stopFriendLocal = LocalClient(stopFriendPort);
     var stopSettings = new HostSettings { Profiles = [stopProfile, replacementProfile], CompanionEndpoint = stopEndpoint,
         CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort,
-        AutoShutdownEnabled = true, IdleMinutes = 15 };
+        AutoShutdownEnabled = true, IdleMinutes = 15,
+        FriendTimerExtensionMinutes = 5, FriendTimerExtensionMaximumMinutes = 5 };
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
         "restricted Host settings failed");
     Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
@@ -726,8 +770,25 @@ try
     var stopDeviceId = (await stopOwner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
         .Single(device => device.GetProperty("profileId").GetGuid() == stopProfile.Id).GetProperty("id").GetGuid();
     Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
-        $"/api/local/devices/{stopDeviceId}/permissions", new(true, true))).Ok,
+        $"/api/local/devices/{stopDeviceId}/permissions", new(true, true, CanExtendTimer: true))).Ok,
         "restricted Friend Stop permission was not saved");
+    var pairedStopSnapshot = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
+    stopSettings = pairedStopSnapshot.Settings;
+    stopProfile = stopSettings.Profiles.Single(item => item.Id == stopProfileId);
+    replacementProfile = stopSettings.Profiles.Single(item => item.Id == replacementProfileId);
+    stopProfile.Maintenance = new MaintenanceOptions { Enabled = true, Message = "Owner maintenance check" };
+    Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
+        "maintenance mode could not be enabled while Offline");
+    var maintenanceView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    var maintenanceStart = await FriendAction(stopFriendLocal, stopProfile.Id, "start");
+    Require(maintenanceView.Profiles.Single().MaintenanceEnabled &&
+        maintenanceView.Profiles.Single().MaintenanceMessage == "Owner maintenance check" &&
+        maintenanceView.Activity?.Any(item => item.Category == "Maintenance" && item.ProfileId == stopProfile.Id) == true &&
+        !maintenanceStart.Ok && maintenanceStart.Code == "MaintenanceMode",
+        "maintenance did not remain visible while denying remote lifecycle actions");
+    stopProfile.Maintenance = new MaintenanceOptions();
+    Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
+        "maintenance mode could not be ended");
     var stopPreparing = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     Require(stopPreparing.CanStop && !stopPreparing.Profiles.Single().CanStopNow &&
         !string.IsNullOrWhiteSpace(stopPreparing.Profiles.Single().StopReason),
@@ -735,7 +796,7 @@ try
     var prematureStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(!prematureStop.Ok && prematureStop.Code == "ServerNotReady",
         "Host accepted Stop before the server was ready");
-    Console.WriteLine("PASS early Stop permission remains blocked until Host safety setup is complete"); passes++;
+    Console.WriteLine("PASS maintenance stays visible while remote actions are denied, then releases cleanly"); passes++;
     Require((await OwnerPost<object, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/start", new { })).Ok, "restricted synthetic start failed");
     var ready = false;
@@ -763,6 +824,11 @@ try
     Require(hostRun.OnlinePlayers == 0 && hostRun.MaxPlayers == 10 &&
         hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(14),
         "Host API did not start a server-count-only empty-server deadline without game-client settings");
+    var friendExtended = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
+    var friendLimit = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
+    Require(friendExtended.Ok && friendExtended.Code == "CountdownExtended" &&
+        !friendLimit.Ok && friendLimit.Code == "ExtensionLimitReached",
+        "fixed Friend timer increment or per-countdown maximum was not enforced");
     var extendedCountdown = await OwnerPost<CountdownExtensionRequest, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/countdown/extend", new(37));
     Require(extendedCountdown.Ok, "Host could not extend an active countdown");
@@ -799,11 +865,14 @@ try
         if (emptyView.Profiles.Single().OnlinePlayers == 0 && emptyView.Profiles.Single().CanStopNow) break;
         await Task.Delay(100);
     }
+    var resetFriendExtension = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
+    Require(resetFriendExtension.Ok,
+        "a positive-player cancellation did not reset the Friend extension allowance for the next zero-player countdown");
     var remoteStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
-    Console.WriteLine("PASS Host extends the count-only timer; Friend sees counts/deadline and stops only at zero through HTTPS and Ctrl+C"); passes++;
+    Console.WriteLine("PASS fixed Friend timer extensions reset on occupancy while Stop still requires fresh zero through HTTPS and Ctrl+C"); passes++;
 
     var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");
     File.Delete(stopMarker);
@@ -905,6 +974,17 @@ try
     Require(replacementCleanup.Ok,
         $"replacement fixture cleanup failed: {replacementCleanup.Code} {replacementCleanup.Message}");
     Console.WriteLine("PASS Start-only Friend can replace an unassigned empty port conflict, but Host-added time blocks it"); passes++;
+
+    StopApp(host);
+    host = null;
+    var offlineForgotten = await OwnerPost<object, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{firstConnection.ConnectionId}/forget", new { });
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(offlineForgotten.Ok && offlineForgotten.Code == "ConnectionForgottenLocally" &&
+        offlineForgotten.Message.Contains("Host owner to revoke", StringComparison.Ordinal) &&
+        aView.Connections?.Count == 0,
+        "offline Forget did not remove the protected local credential with an explicit stale-Host warning");
+    Console.WriteLine("PASS offline Forget removes the local credential and warns about Host revocation"); passes++;
 
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;
@@ -1022,7 +1102,7 @@ async Task<PairingInvite> ServerInvite(HttpClient owner, Guid profileId, bool st
     bool enableConnections = false)
 {
     var result = await OwnerPost<ServerInviteRequest, JsonElement>(owner, $"/api/local/servers/{profileId}/invite",
-        new(refresh, start, enableConnections));
+        new(refresh, start, enableConnections, DurationMinutes: 30, DeviceLimit: 4));
     Require(result.GetProperty("ok").GetBoolean(), "server code creation failed: " + result.GetProperty("message").GetString());
     var password = result.GetProperty("password").GetString();
     Require(PairingPassword.TryDecode(password, null, out var invite) && invite!.ServerScope && invite.DeviceId == profileId,

@@ -30,6 +30,7 @@ export type Profile = {
   custom?: CustomGameOptions | null
   crashRecovery?: { enabled: boolean } | null
   backups?: { enabled: boolean; retentionCount: number; minimumFreeSpaceMb: number } | null
+  maintenance?: { enabled: boolean; message: string } | null
 }
 
 export function gameLabel(kind: string): string {

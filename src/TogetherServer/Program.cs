@@ -524,17 +524,23 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
     if (current is not null && !string.IsNullOrWhiteSpace(snapshot.Settings.CompanionEndpoint))
     {
         using var currentCertificate = identity.Ensure(snapshot.Settings.CompanionEndpoint);
-        var refreshed = pairing.IssueServer(profileId, current.CanStart, false,
-            snapshot.Settings.CompanionEndpoint, HostIdentity.Fingerprint(currentCertificate), false);
-        current = new ServerInviteView(refreshed, current.CanStart);
+        current = pairing.CurrentServerInvite(profileId, snapshot.Settings.CompanionEndpoint,
+            HostIdentity.Fingerprint(currentCertificate));
     }
     return Results.Json(new { ok = true, exists = current is not null,
-        password = current is null ? null : PairingPassword.Encode(current.Invitation),
-        canStart = current?.CanStart ?? true });
+        open = current?.Open ?? false,
+        password = current?.Open == true ? PairingPassword.Encode(current.Invitation) : null,
+        canStart = current?.CanStart ?? true,
+        expiresUtc = current?.Invitation.ExpiresUtc,
+        durationMinutes = current?.DurationMinutes ?? 30,
+        deviceLimit = current?.DeviceLimit ?? 1,
+        activatedDevices = current?.ActivatedDevices ?? 0,
+        requireApproval = current?.RequireApproval ?? false });
 });
 app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId, ServerInviteRequest request) =>
 {
     var password = "";
+    DateTimeOffset? pairingExpiresUtc = null;
     await modeGate.WaitAsync();
     try
     {
@@ -564,8 +570,10 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
             using var certificate = identity.Ensure(settings.CompanionEndpoint);
             var firstHostInvite = !pairing.HasInviteOrCredential();
             var invite = pairing.IssueServer(profileId, request.CanStart, false,
-                settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh);
+                settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh,
+                request.DurationMinutes, request.DeviceLimit, request.RequireApproval);
             password = PairingPassword.Encode(invite);
+            pairingExpiresUtc = invite.ExpiresUtc;
             if (request.EnableConnections)
             {
                 settings.CompanionListeningEnabled = true;
@@ -584,9 +592,28 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
     finally { modeGate.Release(); }
     if (request.EnableConnections) await companionServer.SyncAsync();
     return Results.Json(new { ok = true, code = request.Refresh ? "InviteRefreshed" : "InviteReady",
-        message = request.Refresh ? "Server code refreshed. Previous code and paired access for this server were revoked." : "This server code can be shared with Friend PCs until you refresh it.",
-        password,
+        message = request.Refresh ? "Earlier credentials from this server code were revoked and a new pairing window opened."
+            : $"Pairing is open until {pairingExpiresUtc:u}, or until its device limit is reached.",
+        password, expiresUtc = pairingExpiresUtc,
         listenerActive = companionServer.Active, listenerWarning = companionServer.Warning });
+});
+app.MapPost("/api/local/servers/{profileId:guid}/pairing/close", async (Guid profileId) =>
+{
+    await modeGate.WaitAsync();
+    PairingDecision result;
+    try { result = friendMode ? new(false, "FriendMode", "Switch to Host mode first.") : pairing.ClosePairing(profileId); }
+    finally { modeGate.Release(); }
+    if (result.Ok) await companionServer.SyncAsync();
+    return Results.Json(result);
+});
+app.MapPost("/api/local/servers/{profileId:guid}/pairing/emergency-revoke", async (Guid profileId) =>
+{
+    await modeGate.WaitAsync();
+    PairingDecision result;
+    try { result = friendMode ? new(false, "FriendMode", "Switch to Host mode first.") : pairing.EmergencyRevoke(profileId); }
+    finally { modeGate.Release(); }
+    if (result.Ok) await companionServer.SyncAsync();
+    return Results.Json(result);
 });
 app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
 {
@@ -594,11 +621,18 @@ app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Revoke(id)); }
     finally { modeGate.Release(); }
 });
+app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
+{
+    await modeGate.WaitAsync();
+    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Approve(id)); }
+    finally { modeGate.Release(); }
+});
 app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePermissionRequest request) =>
 {
     await modeGate.WaitAsync();
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop, request.Scope)); }
+        Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop, request.Scope,
+            request.CanExtendTimer)); }
     finally { modeGate.Release(); }
 });
 app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerAccessRequest request) =>
@@ -621,6 +655,10 @@ app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>
     : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/connections/{id:guid}/select", (Guid id) =>
     friendMode ? Results.Json(friend.Select(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPut("/api/local/friend/connections/{id:guid}/name", async (Guid id, DeviceNameRequest request) =>
+    friendMode ? Results.Json(await friend.RenameAsync(id, request.Name)) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPost("/api/local/friend/connections/{id:guid}/forget", async (Guid id) =>
+    friendMode ? Results.Json(await friend.ForgetAsync(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPut("/api/local/friend/connections/{id:guid}/endpoint", async (Guid id, EndpointRecoveryRequest request) =>
     friendMode ? Results.Json(await friend.RecoverEndpointAsync(id, request.Endpoint)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/poll", async () =>
@@ -692,6 +730,36 @@ var updateCheckTask = Task.Run(async () =>
         catch (OperationCanceledException) { break; }
     }
 });
+var notificationStartedUtc = DateTimeOffset.UtcNow;
+var notifiedActivity = new HashSet<Guid>();
+var notificationTask = Task.Run(async () =>
+{
+    while (!pollStop.IsCancellationRequested)
+    {
+        if (desktop is not null)
+        {
+            try
+            {
+                var visible = (friendMode
+                        ? friend.View().Activity ?? []
+                        : data.LoadActivity(100).Where(item => item.Visibility != ActivityVisibility.Device))
+                    .Where(item => item.OccurredUtc >= notificationStartedUtc &&
+                        item.Severity is ActivitySeverity.Important or ActivitySeverity.Warning)
+                    .DistinctBy(item => item.Id)
+                    .OrderBy(item => item.OccurredUtc)
+                    .ToList();
+                foreach (var item in visible.Where(item => notifiedActivity.Add(item.Id)))
+                    desktop.Notify($"TogetherServer - {item.Category}", item.Message,
+                        item.Severity == ActivitySeverity.Warning);
+                if (notifiedActivity.Count > 1000)
+                    notifiedActivity.IntersectWith(visible.Select(item => item.Id));
+            }
+            catch (Exception ex) { Console.Error.WriteLine("Tray notification check failed: " + ex.GetType().Name); }
+        }
+        try { await Task.Delay(TimeSpan.FromSeconds(5), pollStop.Token); }
+        catch (OperationCanceledException) { break; }
+    }
+});
 if (desktop is not null)
 {
     app.Lifetime.ApplicationStarted.Register(desktop.Start);
@@ -703,4 +771,4 @@ catch (Exception ex) when (openWindow)
     DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
     Environment.ExitCode = 1;
 }
-finally { pollStop.Cancel(); await Task.WhenAll(friendPollTask, idleShutdownTask, updateCheckTask); await companionServer.StopAsync(); }
+finally { pollStop.Cancel(); await Task.WhenAll(friendPollTask, idleShutdownTask, updateCheckTask, notificationTask); await companionServer.StopAsync(); }

@@ -27,6 +27,7 @@ internal sealed class DesktopWindow
     private readonly bool startInTray;
     private readonly TaskCompletionSource<bool> shown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Form? form;
+    private NotifyIcon? trayIcon;
     private bool closing;
     private bool requestingQuit;
     private bool trayHintShown;
@@ -172,6 +173,23 @@ internal sealed class DesktopWindow
         catch (InvalidOperationException) { }
     }
 
+    public void Notify(string title, string message, bool warning = false)
+    {
+        var target = form;
+        var tray = trayIcon;
+        if (target is null || tray is null || target.IsDisposed || !target.IsHandleCreated) return;
+        try
+        {
+            target.BeginInvoke(new Action(() =>
+            {
+                if (!target.IsDisposed && tray.Visible)
+                    tray.ShowBalloonTip(6000, title, message,
+                        warning ? ToolTipIcon.Warning : ToolTipIcon.Info);
+            }));
+        }
+        catch (InvalidOperationException) { }
+    }
+
     private void Run()
     {
         try
@@ -202,6 +220,7 @@ internal sealed class DesktopWindow
                 ContextMenuStrip = trayMenu,
                 Visible = true
             };
+            trayIcon = tray;
             trayMenu.Items.Add("Open TogetherServer", null, (_, _) => _ = ShowAsync());
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add("Quit TogetherServer", null, (_, _) =>
@@ -236,7 +255,11 @@ internal sealed class DesktopWindow
             DesktopLaunch.ShowError("TogetherServer could not open its window.\n\n" + ex.Message);
             stopApplication();
         }
-        finally { visible = false; }
+        finally
+        {
+            trayIcon = null;
+            visible = false;
+        }
     }
 
     private Control BuildChrome(Form window)

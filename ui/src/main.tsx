@@ -13,6 +13,8 @@ import './companion.css'
 type Settings = {
   maxConcurrentServers: number
   idleMinutes: number
+  friendTimerExtensionMinutes: number
+  friendTimerExtensionMaximumMinutes: number
   autoShutdownEnabled: boolean
   remoteControlsEnabled: boolean
   companionListeningEnabled: boolean
@@ -24,20 +26,21 @@ type Settings = {
   publicGameIpCheckedUtc: string | null
   profiles: Profile[]
 }
-type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean }
+type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean; friendAddedMinutes: number }
 type CustomCertificationState = { profileId: string; stage: string; message: string; inProgress: boolean; certified: boolean; certifiedUtc: string | null; onlinePlayers: number | null; blockReason: string | null }
 type CrashRecoveryState = { profileId: string; cycleId: string; state: 'Pending' | 'Starting' | 'Recovered' | 'Suspended'; attempts: number; crashDetectedUtc: string; nextAttemptUtc: string | null; recoveredUtc: string | null; lastFailure: string | null }
 type WorldBackupStatus = { profileId: string; lastSuccessfulUtc: string | null; lastFailureUtc: string | null; lastFailure: string | null; completedCount: number }
 type WorldBackupRecord = { id: string; profileId: string; kind: string; worldId: string; backupKind: 'Rolling' | 'PreRestore'; createdUtc: string; sizeBytes: number; fileCount: number }
 type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState>; crashRecovery?: Record<string, CrashRecoveryState>; backups?: Record<string, WorldBackupStatus> }
+type ActivityEvent = { id: string; occurredUtc: string; category: string; action: string; message: string; severity: 'Info' | 'Important' | 'Warning'; profileId: string | null; deviceId: string | null; visibility: string }
+type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState>; crashRecovery?: Record<string, CrashRecoveryState>; backups?: Record<string, WorldBackupStatus>; activity?: ActivityEvent[] }
 type RemoteOperation = { id: string; action: string; state: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Interrupted'; ok: boolean | null; code: string; message: string; requestedUtc: string; completedUtc: string | null }
-type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean; canRestartNow: boolean; restartReason: string | null; operation?: RemoteOperation | null }
-type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean }
-type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; revoked: boolean; paired: boolean; credentialExpiresUtc: string | null; lastHeartbeatUtc: string | null; serverPermissions: ServerPermission[] }
+type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean; canRestartNow: boolean; restartReason: string | null; operation?: RemoteOperation | null; maintenanceEnabled: boolean; maintenanceMessage: string | null; canExtendTimer: boolean; timerExtensionMinutes: number; timerExtensionRemainingMinutes: number }
+type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean }
+type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; revoked: boolean; paired: boolean; approvalPending: boolean; credentialExpiresUtc: string | null; lastHeartbeatUtc: string | null; serverPermissions: ServerPermission[] }
 type HostCertificateState = { hostId: string; activeFingerprint: string; activeExpiresUtc: string; nextFingerprint: string | null; nextExpiresUtc: string | null; previousFingerprint: string | null; previousAcceptedUntilUtc: string | null }
 type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; certificates: HostCertificateState | null; route: { mode: string; address: string }; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
-type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null; hostVersion?: string | null; friendVersion?: string; hostProtocolVersion?: number | null; protocolCompatible?: boolean; credentialExpiresUtc?: string | null; certificateExpiresUtc?: string | null; expiryWarning?: string | null; routeMode?: string; routeAddress?: string | null; hostId?: string }
+type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null; hostVersion?: string | null; friendVersion?: string; hostProtocolVersion?: number | null; protocolCompatible?: boolean; credentialExpiresUtc?: string | null; certificateExpiresUtc?: string | null; expiryWarning?: string | null; routeMode?: string; routeAddress?: string | null; hostId?: string; connectionName?: string | null; activity?: ActivityEvent[] }
 type Snapshot = HostSnapshot | FriendSnapshot
 type GamePort = { protocol: string; port: number; label: string; family: string }
 type PortConflict = { profileId: string; profileName: string; sharedPorts: GamePort[]; canReplace: boolean; blockReason: string | null }
@@ -58,7 +61,7 @@ type SetupStep = 'game' | 'world' | 'server' | 'review'
 type HostSettingsSection = 'access' | 'stop' | 'network' | 'advanced'
 type BrowseResult = BasicResult & { path?: string | null }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
-type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean }>
+type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean }>
 type CustomScriptBundle = { start: string; status: string; stop: string }
 type CustomScriptResult = BasicResult & { scripts: CustomScriptBundle }
 type CustomCertificationResult = BasicResult & { snapshot: HostSnapshot; certification: CustomCertificationState }
@@ -223,10 +226,10 @@ function serverAssignmentPreview(device: Device, profiles: Profile[]) {
 
 function devicePermission(device: Device, profileId: string) {
   return device.serverPermissions?.find(permission => permission.profileId === profileId) ??
-    { profileId, canStart: device.canStart, canStop: device.canStop }
+    { profileId, canStart: device.canStart, canStop: device.canStop, canExtendTimer: device.canExtendTimer }
 }
 
-function permissionMix(device: Device, action: 'canStart' | 'canStop') {
+function permissionMix(device: Device, action: 'canStart' | 'canStop' | 'canExtendTimer') {
   const values = device.assignedProfileIds.map(profileId => devicePermission(device, profileId)[action])
   const global = device[action]
   return { mixed: values.some(value => value !== global), all: global }
@@ -358,10 +361,16 @@ function App() {
   const [inviteProfileId, setInviteProfileId] = useState('')
   const [inviteListenerWarning, setInviteListenerWarning] = useState<string | null>(null)
   const [deviceNames, setDeviceNames] = useState<Record<string, string>>({})
+  const [maintenanceMessages, setMaintenanceMessages] = useState<Record<string, string>>({})
   const [invitation, setInvitation] = useState('')
+  const [pairingDurationMinutes, setPairingDurationMinutes] = useState('30')
+  const [pairingDeviceLimit, setPairingDeviceLimit] = useState('1')
+  const [pairingRequireApproval, setPairingRequireApproval] = useState(false)
+  const [pairingExpiresUtc, setPairingExpiresUtc] = useState<string | null>(null)
   const [friendInvite, setFriendInvite] = useState('')
   const [friendHostAddress, setFriendHostAddress] = useState('')
   const [recoveryEndpoint, setRecoveryEndpoint] = useState('')
+  const [friendConnectionName, setFriendConnectionName] = useState('')
   const [gameEndpointResults, setGameEndpointResults] = useState<Record<string, GameEndpointResult>>({})
   const [backupLists, setBackupLists] = useState<Record<string, WorldBackupList>>({})
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
@@ -406,6 +415,11 @@ function App() {
   useEffect(() => {
     if (notice || update?.state === 'Available') setNotificationUnread(true)
   }, [notice, update?.state, update?.latestVersion])
+
+  const latestActivityId = snapshot?.activity?.[0]?.id ?? null
+  useEffect(() => {
+    if (latestActivityId) setNotificationUnread(true)
+  }, [latestActivityId])
 
   useEffect(() => {
     let alive = true
@@ -556,6 +570,10 @@ function App() {
   }, [snapshot?.mode, snapshot?.mode === 'Friend' ? snapshot.endpoint : ''])
 
   useEffect(() => {
+    if (snapshot?.mode === 'Friend') setFriendConnectionName(snapshot.connectionName ?? hostAddress(snapshot.endpoint))
+  }, [snapshot?.mode, snapshot?.mode === 'Friend' ? snapshot.connectionId : '', snapshot?.mode === 'Friend' ? snapshot.connectionName : ''])
+
+  useEffect(() => {
     if (snapshot?.mode !== 'Host' || snapshot.settings.profiles.length !== 0 || !dirty || !draft) return
     try { window.localStorage.setItem(setupDraftKey, JSON.stringify(draft)) }
     catch { /* Setup remains usable even when browser storage is unavailable. */ }
@@ -678,22 +696,36 @@ function App() {
         port: draft?.companionPort ?? 0, checkedUtc: new Date().toISOString() })
     } finally { setCheckingInternetRoute(false) }
   }
-  const issueInvite = async (profileId: string, refresh = false): Promise<string | null> => {
+  const issueInvite = async (profileId: string, refresh = false, preserveActivePolicy = false): Promise<string | null> => {
     if (refresh && !window.confirm('Refresh this server code? Every Friend PC that connected with this code will lose its credential and need to connect again. Any extra servers assigned to those credentials will also be removed.')) return null
     setPending('invite')
     setNotice(null)
     try {
-      let canStart = true
-      if (refresh) {
-        const currentResponse = await fetch(`/api/local/servers/${profileId}/invite/current`, { method: 'POST', headers: localHeaders })
-        if (!currentResponse.ok) throw new Error('Could not read this server code before refreshing access.')
-        const current: { canStart: boolean } = await currentResponse.json()
-        if (typeof current.canStart !== 'boolean') throw new Error('Could not confirm this invite’s Start permission before refreshing access.')
-        canStart = current.canStart
+      let durationMinutes = Number(pairingDurationMinutes)
+      let deviceLimit = Number(pairingDeviceLimit)
+      let requireApproval = pairingRequireApproval
+      if (!Number.isSafeInteger(durationMinutes) || durationMinutes < 5 || durationMinutes > 1440 ||
+          !Number.isSafeInteger(deviceLimit) || deviceLimit < 1 || deviceLimit > 25) {
+        setNotice({ good: false, text: 'Use 5 to 1440 minutes and a limit of 1 to 25 PCs.' })
+        return null
+      }
+      const currentResponse = await fetch(`/api/local/servers/${profileId}/invite/current`, { method: 'POST', headers: localHeaders })
+      if (!currentResponse.ok) throw new Error('Could not read this server’s current pairing state.')
+      const current: { exists: boolean; open: boolean; canStart: boolean; durationMinutes: number; deviceLimit: number; requireApproval: boolean } = await currentResponse.json()
+      if (typeof current.canStart !== 'boolean') throw new Error('Could not confirm this invite’s Start permission.')
+      const canStart = current.canStart
+      if (preserveActivePolicy && current.exists && current.open) {
+        durationMinutes = current.durationMinutes
+        deviceLimit = current.deviceLimit
+        requireApproval = current.requireApproval
+        setPairingDurationMinutes(String(durationMinutes))
+        setPairingDeviceLimit(String(deviceLimit))
+        setPairingRequireApproval(requireApproval)
       }
       const response = await fetch(`/api/local/servers/${profileId}/invite`, { method: 'POST', headers: localHeaders,
-        body: JSON.stringify({ refresh, canStart, enableConnections: true }) })
-      const result: { ok: boolean; code: string; message: string; password?: string; listenerActive?: boolean; listenerWarning?: string } = await response.json()
+        body: JSON.stringify({ refresh, canStart, enableConnections: true, durationMinutes, deviceLimit,
+          requireApproval }) })
+      const result: { ok: boolean; code: string; message: string; password?: string; expiresUtc?: string; listenerActive?: boolean; listenerWarning?: string } = await response.json()
       const listenerWarning = result.ok && result.listenerActive !== true
         ? result.listenerWarning || `The HTTPS listener on TCP ${draft?.companionPort ?? 'the configured port'} did not start. Check Connection help before sharing this code.`
         : null
@@ -701,6 +733,7 @@ function App() {
       setNotice({ good: result.ok && !listenerWarning, text: listenerWarning || result.message })
       if (result.ok && result.password) {
         setInvitation(result.password)
+        setPairingExpiresUtc(result.expiresUtc ?? new Date(Date.now() + durationMinutes * 60_000).toISOString())
         const latest = await fetch('/api/local/companion')
         if (latest.ok) setCompanion(await latest.json())
         const host = await readSnapshot()
@@ -727,6 +760,28 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
+  const approveDevice = async (id: string) => {
+    setPending(id)
+    try {
+      const result = await change<BasicResult>(`/api/local/devices/${id}/approve`, 'POST')
+      setNotice({ good: result.ok, text: result.message })
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const pairingPolicyAction = async (profileId: string, action: 'close' | 'emergency-revoke') => {
+    if (action === 'emergency-revoke' && !window.confirm('Emergency-revoke every PC credential issued through this server code? This does not affect PCs paired through other server codes.')) return
+    setPending('invite')
+    try {
+      const result = await change<BasicResult>(`/api/local/servers/${profileId}/pairing/${action}`, 'POST')
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) { setInvitation(''); setPairingExpiresUtc(null); setInviteProfileId('') }
+      const latest = await fetch('/api/local/companion')
+      if (latest.ok) setCompanion(await latest.json())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
   const saveDeviceName = async (id: string) => {
     setPending(id)
     try {
@@ -739,11 +794,12 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
-  const setDevicePermissions = async (device: Device, canStart: boolean, canStop: boolean, scope: 'start' | 'stop') => {
+  const setDevicePermissions = async (device: Device, canStart: boolean, canStop: boolean,
+    canExtendTimer: boolean, scope: 'start' | 'stop' | 'extend') => {
     setPending(device.id)
     try {
       const result = await change<BasicResult>(`/api/local/devices/${device.id}/permissions`, 'PUT',
-        { canStart, canStop, scope })
+        { canStart, canStop, canExtendTimer, scope })
       setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
       if (latest.ok) setCompanion(await latest.json())
@@ -832,6 +888,28 @@ function App() {
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
   }
+  const renameFriendConnection = async () => {
+    if (snapshot?.mode !== 'Friend' || !snapshot.connectionId) return
+    setPending('rename-connection')
+    try {
+      const result = await change<BasicResult>(`/api/local/friend/connections/${snapshot.connectionId}/name`, 'PUT',
+        { name: friendConnectionName.trim() })
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) setSnapshot(await readSnapshot())
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const forgetFriendConnection = async () => {
+    if (snapshot?.mode !== 'Friend' || !snapshot.connectionId ||
+        !window.confirm('Forget this saved Host? TogetherServer will first try to revoke this PC on the Host.')) return
+    setPending('forget-connection')
+    try {
+      const result = await change<BasicResult>(`/api/local/friend/connections/${snapshot.connectionId}/forget`, 'POST')
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) { setShowPairing(false); setSnapshot(await readSnapshot()) }
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
   const probeGameEndpoint = async (profileId: string) => {
     setPending(`probe-game-${profileId}`)
     try {
@@ -844,7 +922,7 @@ function App() {
         code: 'ProbeFailed', message: String(error), checkedUtc: new Date().toISOString(), onlinePlayers: null, maxPlayers: null } }))
     } finally { setPending('') }
   }
-  const friendAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'replace') => {
+  const friendAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'replace' | 'extend') => {
     const key = `friend-${action}-${id}`
     setPending(key)
     if (action === 'stop' || action === 'restart') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}-address`)
@@ -993,7 +1071,8 @@ function App() {
     setServerAccessDraft(device.assignedProfileIds.filter(id => savedIds.has(id)))
     setServerPermissionDraft(Object.fromEntries([...savedIds].map(profileId => {
       const permission = devicePermission(device, profileId)
-      return [profileId, { canStart: permission.canStart, canStop: permission.canStop }]
+      return [profileId, { canStart: permission.canStart, canStop: permission.canStop,
+        canExtendTimer: permission.canExtendTimer }]
     })))
     setServerAccessDeviceId(device.id)
   }
@@ -1013,7 +1092,8 @@ function App() {
         { profileIds: serverAccessDraft, permissions: serverAccessDraft.map(profileId => ({
           profileId,
           canStart: serverPermissionDraft[profileId]?.canStart ?? serverAccessDevice?.canStart ?? false,
-          canStop: serverPermissionDraft[profileId]?.canStop ?? serverAccessDevice?.canStop ?? false
+          canStop: serverPermissionDraft[profileId]?.canStop ?? serverAccessDevice?.canStop ?? false,
+          canExtendTimer: serverPermissionDraft[profileId]?.canExtendTimer ?? serverAccessDevice?.canExtendTimer ?? false
         })) })
       setNotice({ good: result.ok, text: result.message })
       const latest = await fetch('/api/local/companion')
@@ -1034,6 +1114,23 @@ function App() {
       return
     }
     await run(`extend-${profileId}`, `/api/local/profiles/${profileId}/countdown/extend`, 'POST', { minutes })
+  }
+
+  const saveMaintenance = async (profile: Profile, enabled: boolean) => {
+    if (snapshot?.mode !== 'Host' || dirty) return
+    const message = (maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? '').trim()
+    setPending(`maintenance-${profile.id}`)
+    try {
+      const next = { ...snapshot.settings, profiles: snapshot.settings.profiles.map(item => item.id === profile.id
+        ? { ...item, maintenance: { enabled, message } } : item) }
+      const result = await change<ActionResult>('/api/local/settings', 'PUT', next)
+      setSnapshot(result.snapshot)
+      setDraft(result.snapshot.settings)
+      setNotice({ good: result.ok, text: result.ok
+        ? enabled ? 'Maintenance mode enabled. Friends can still see status, but remote actions are paused.' : 'Maintenance mode ended.'
+        : result.message })
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
   }
 
   const updateProfile = (id: string, patch: Partial<Profile>) => {
@@ -1146,7 +1243,8 @@ function App() {
       gamePort: kind === 'Valheim' ? 2456 : kind === 'MinecraftJava' ? 25565 : kind === 'MinecraftBedrock' ? 19132 : 2456,
       executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null,
       custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null,
-      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 } })
+      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
+      maintenance: { enabled: false, message: '' } })
   }
 
   const addProfile = () => {
@@ -1156,7 +1254,8 @@ function App() {
     edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
       publicListing: false, worldId: '', worldSource: 'New',
       worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '', custom: null,
-      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 } }] })
+      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
+      maintenance: { enabled: false, message: '' } }] })
     setActiveProfileId(id)
     setSetupStep('game')
     setMinecraftSetupMode(current => ({ ...current, [id]: 'existing' }))
@@ -1256,7 +1355,7 @@ function App() {
     setInviteListenerWarning(null)
     try {
       // Reissuing without refresh keeps the current code and also starts the HTTPS listener.
-      const ready = await issueInvite(profileId)
+      const ready = await issueInvite(profileId, false, true)
       if (ready && request === inviteLoad.current) {
         try {
           await navigator.clipboard.writeText(ready)
@@ -1389,6 +1488,7 @@ function App() {
   const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false
     ? companion.listenerWarning || 'Friend app connections are off. Choose Invite friends again to start the HTTPS listener.'
     : null)
+  const recentActivity = snapshot?.activity ?? []
 
   return <div className="shell">
     <header className="topbar">
@@ -1406,7 +1506,8 @@ function App() {
             <div className="notification-panel-heading"><strong>Notifications</strong><small>Recent app and connection activity</small></div>
             {update?.state === 'Available' && <div className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>Stop hosted servers before updating.</p><Button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></div>}
             {notice && <div className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></div>}
-            {!notice && update?.state !== 'Available' && <p className="notification-empty">No new notifications.</p>}
+            {recentActivity.slice(0, 8).map(item => <div className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}</small></div></div>)}
+            {!notice && update?.state !== 'Available' && recentActivity.length === 0 && <p className="notification-empty">No recent activity.</p>}
           </div>
         </details>
         <details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong>
@@ -1429,7 +1530,7 @@ function App() {
       {snapshot?.mode === 'Friend' && <>
         {(snapshot.connections?.length ?? 0) > 1 && <section className="panel saved-connections"><div className="section-heading"><div><h2>Saved servers</h2><p>Choose which Host you want to view.</p></div></div>
           <div className="choices">{snapshot.connections!.map(connection => <div className="choice" key={connection.connectionId}>
-            <span><strong>{connection.profiles[0]?.name ?? hostAddress(connection.endpoint)}</strong><small>{gameLabel(connection.profiles[0]?.kind ?? 'Server')} · {connection.state}</small></span>
+            <span><strong>{connection.connectionName ?? connection.profiles[0]?.name ?? hostAddress(connection.endpoint)}</strong><small>{gameLabel(connection.profiles[0]?.kind ?? 'Server')} · {connection.state}</small></span>
             <Button className="secondary" disabled={!!pending || connection.connectionId === snapshot.connectionId} onClick={() => void selectFriendConnection(connection.connectionId)}>{connection.connectionId === snapshot.connectionId ? 'Showing' : 'Show'}</Button>
           </div>)}</div>
         </section>}
@@ -1439,14 +1540,16 @@ function App() {
             <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state}</span>
               <span>{snapshot.lastConnectedUtc ? `Last reached ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'Waiting for a reply from the Host'}</span></div>
             {snapshot.expiryWarning && <div className="notice bad" role="status">{snapshot.expiryWarning}</div>}
-            {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked') && <details className="troubleshoot-block" open><summary>Troubleshoot connection</summary><FriendConnectionHelp code={snapshot.connectionCode} /></details>}
+            {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>The credential is saved. Ask the Host owner to approve this PC in Friend access; no new code is needed.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
             <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
               <Button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</Button></div>
             <details className="advanced-block"><summary>Connection identity and recovery</summary>
-              <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} Â· this app {snapshot.friendVersion ?? 'unknown'} Â· protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
+              <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}>Rename</Button></div></label>
+              <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
               <p className="helper-text">Credential expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Certificate expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
               <label>New Host endpoint<Input value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder="https://100.64.0.2:5131" /><small>The existing Host certificate pin and this PC's credential must both work at the new address. A different certificate is never trusted silently.</small></label>
               <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Verifying...' : 'Verify and update endpoint'}</Button>
+              <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
             </details>
           </> : <>
             <form className="join-row" onSubmit={event => { event.preventDefault(); void pairFriend() }}>
@@ -1466,6 +1569,7 @@ function App() {
               <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
               {profile.operation && (profile.operation.state === 'Pending' || profile.operation.state === 'Running' || profile.operation.state === 'Interrupted') &&
                 <div className={`notice ${profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
+              {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
               {profile.state === 'Ready' && profile.joinAddress && <ConnectionDetails
                 fields={[{ id: addressKey, label: 'Server IP', value: profile.joinAddress,
                   revealed: !!revealedConnections[addressKey], copying: addressActivity === 'copy', revealing: false,
@@ -1474,9 +1578,10 @@ function App() {
                 refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                 />}
               <div className="actions server-actions">
-                {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
+                {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
+                {profile.autoShutdownAtUtc && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game endpoint...' : 'Check game endpoint from this PC'}</Button>}
               </div>
               {gameEndpointResults[profile.id] && <p className={gameEndpointResults[profile.id].answered ? 'helper-text' : 'warning-text'}>{gameEndpointResults[profile.id].message}</p>}
@@ -1526,6 +1631,11 @@ function App() {
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} />
+                {profile.maintenance?.enabled && <div className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote lifecycle actions are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
+                <details className="advanced-block"><summary>Friend coordination and maintenance</summary>
+                  <label>Message for assigned Friends<Input maxLength={200} value={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''} onChange={event => setMaintenanceMessages(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="Updating mods until 8 PM" /><small>Up to 200 characters. Status remains visible while remote Start, Stop, Restart, replacement, and timer extension are denied.</small></label>
+                  <div className="actions"><Button className="secondary" disabled={!!pending || dirty || profile.maintenance?.enabled} onClick={() => void saveMaintenance(profile, true)}>Enable maintenance</Button>{profile.maintenance?.enabled && <Button className="text-button" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button>}</div>
+                </details>
                 {status?.state === 'Ready' && gameAddress && <ConnectionDetails fields={connectionFields}
                   refreshing={checkingPorts || detectingPublicIp} />}
                 {status?.autoShutdownAtUtc && <div className="timer-extension"><label>Extend this countdown<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Extra minutes for this countdown only.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
@@ -1537,14 +1647,17 @@ function App() {
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">
                   {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : 'Server code copied'}</strong><p>{activeInviteWarning ? 'Fix the issue below before sharing this code.' : 'Send the copied code privately. Your Friend still needs to test Connect.'}</p></div></div>
+                    {pairingExpiresUtc && <p className="helper-text">This window closes {new Date(pairingExpiresUtc).toLocaleString()}, or sooner when its device limit is reached.</p>}
                     {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
                     {!activeInviteWarning && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
                     <div className="actions">{activeInviteWarning
                       ? <Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</Button>
                       : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</Button>}
-                      <Button className="danger-outline" disabled={!!pending || !!activeInviteWarning} onClick={() => void issueInvite(profile.id, true)}><Icon name="refresh" />Revoke all access and create a new code</Button>
+                      <Button className="secondary" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'close')}>Close pairing</Button>
+                      <Button className="danger-outline" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'emergency-revoke')}>Emergency-revoke code credentials</Button>
                       <Button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</Button></div>
-                    <p>Creating a new code revokes every PC credential issued by the old code, including any extra servers later assigned to those credentials.</p></>
+                    <details className="advanced-block"><summary>Pairing window options</summary><div className="settings-grid"><label>Window minutes<Input type="number" min="5" max="1440" value={pairingDurationMinutes} onChange={event => setPairingDurationMinutes(event.target.value)} /></label><label>New PC limit<Input type="number" min="1" max="25" value={pairingDeviceLimit} onChange={event => setPairingDeviceLimit(event.target.value)} /></label></div><label className="check-row"><Input type="checkbox" checked={pairingRequireApproval} onChange={event => setPairingRequireApproval(event.target.checked)} />Require local Host approval for each new PC</label><Button className="secondary" disabled={!!pending} onClick={() => void issueInvite(profile.id)}>Apply options and copy code</Button><small>The same active policy keeps its current window. Changing the policy opens a replacement window without revoking already paired PCs.</small></details>
+                    <p>Close pairing only blocks future PCs. Revoke a single PC under Friend access. Emergency revoke affects every PC issued through this server code.</p></>
                     : inviteListenerWarning ? <><p className="connection-warning" role="alert">{inviteListenerWarning}</p>
                       <div className="actions"><Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</Button>
                         <Button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</Button></div></>
@@ -1557,7 +1670,7 @@ function App() {
                   {certification?.onlinePlayers != null && <small>Latest certification observation: {certification.onlinePlayers} player{certification.onlinePlayers === 1 ? '' : 's'} online.</small>}
                   <div className="actions">
                     {!certification?.certified && !certification?.inProgress && certification?.stage !== 'Failed' && <Button className="secondary" disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void customCertificationAction(profile.id, 'begin')}>Begin live certification</Button>}
-                    {certification?.inProgress && <Button className="secondary" disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'status')}>{pending === `certification-status-${profile.id}` ? 'Checkingâ€¦' : 'Check certification step'}</Button>}
+                    {certification?.inProgress && <Button className="secondary" disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'status')}>{pending === `certification-status-${profile.id}` ? 'Checking…' : 'Check certification step'}</Button>}
                     {certification?.inProgress && ['ConfirmFirstChange', 'ConfirmSecondChange'].includes(certification.stage) && <Button disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'confirm')}>{certification.stage === 'ConfirmFirstChange' ? 'Confirm change was made' : 'Confirm change survived'}</Button>}
                     {(certification?.inProgress || certification?.stage === 'Failed') && <Button className="text-button" disabled={!!pending} onClick={() => void customCertificationAction(profile.id, 'cancel')}>Cancel certification</Button>}
                     {certification?.certified && <Button className="danger-outline" disabled={!!pending} onClick={() => { if (window.confirm('Revoke remote lifecycle authority for this Custom server? Local owner controls will remain available.')) void customCertificationAction(profile.id, 'revoke') }}>Revoke certification</Button>}
@@ -1709,11 +1822,12 @@ function App() {
                 <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /></label>
                   <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
                 {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
-                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
-                    <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Credential expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
-                  <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, permissionMix(device, 'canStart').mixed ? true : event.target.checked, device.canStop, 'start')} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired} onChange={event => void setDevicePermissions(device, device.canStart, permissionMix(device, 'canStop').mixed ? true : event.target.checked, 'stop')} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label></div>
+                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
+                    <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Credential expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
+                  <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, permissionMix(device, 'canStart').mixed ? true : event.target.checked, device.canStop, device.canExtendTimer, 'start')} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, device.canStart, permissionMix(device, 'canStop').mixed ? true : event.target.checked, device.canExtendTimer, 'stop')} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, device.canStart, device.canStop, permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked, 'extend')} /><span><strong>Extend empty-server timer</strong><small>Off by default. Friends get only the fixed increment and maximum configured by the Host.</small></span></label></div>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
@@ -1723,7 +1837,7 @@ function App() {
                   <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option>
                 </Select><small>Mesh and advanced routes use networking you install and manage. TogetherServer still requires TLS pins, credentials, assignments, and permissions.</small></label>
                 {(draft.connectionRoute?.mode ?? 'DirectInternet') !== 'DirectInternet' && <label>Selected route IPv4<Input value={draft.connectionRoute?.address ?? ''} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /><small>TogetherServer only reads adapters; it does not install clients or change network policy.</small></label>}
-                {draft.connectionRoute?.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>{routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} Â· {candidate.address} Â· {candidate.interfaceName}</option>)}</Select><small>{routeDiscovery?.privateMeshCandidates.length ? 'Selecting an address does not configure that network.' : 'No known Tailscale or ZeroTier adapter is currently up; enter an address manually if appropriate.'}</small></label>}
+                {draft.connectionRoute?.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>{routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select><small>{routeDiscovery?.privateMeshCandidates.length ? 'Selecting an address does not configure that network.' : 'No known Tailscale or ZeroTier adapter is currently up; enter an address manually if appropriate.'}</small></label>}
               </div>
               <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {portDiagnostics?.control.remoteState === 'Friend connected' ? 'Friend connected' : currentRouteResult?.state === 'Reachable' ? 'reachable outside this network; Friend pairing untested' : companion?.listenerActive ? 'listening on this PC, outside route unconfirmed' : 'off'}.</p>
               {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
@@ -1749,6 +1863,8 @@ function App() {
                 <p>When a Ready server reports 0 players, TogetherServer counts down and stops it gracefully. Friend apps do not gate the timer. A player or unavailable server count cancels it, and a fresh zero-player server check is required again at the end.</p>
                 <div className="idle-settings"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong><small>Off by default. Host and Friend cards share the countdown or explain why it is paused.</small></span><Input type="checkbox" checked={draft.autoShutdownEnabled} disabled={!!pending || dirty} onChange={event => void saveHostFlags({ autoShutdownEnabled: event.target.checked })} /></label>
                   <label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" value={draft.idleMinutes} disabled={!!pending} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Minutes, from 1 to 1440.</small></label>
+                  <label>Friend extension increment<Input type="number" min="1" max="120" value={draft.friendTimerExtensionMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMinutes: Number(event.target.value) })} /><small>Fixed minutes added per approved Friend request.</small></label>
+                  <label>Friend extension maximum<Input type="number" min="1" max="1440" value={draft.friendTimerExtensionMaximumMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMaximumMinutes: Number(event.target.value) })} /><small>Total Friend-added minutes allowed during one countdown.</small></label>
                   <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save-idle', '/api/local/settings', 'PUT', draft)}>Save timer</Button></div></div>
                 <h3>Remote Stop safety</h3>
                 <p>There are no player IDs to enter. Each game server reports its current online-player count. A Friend Stop request is allowed only at 0, then TogetherServer checks the count again immediately before sending the graceful stop command.</p>
@@ -1803,9 +1919,9 @@ function App() {
           <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!!pending || visibleServerAccessProfiles.length === 0} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!!pending || serverAccessDraft.length === 0} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
           <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
             const assigned = serverAccessDraft.includes(profile.id)
-            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop }
+            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer }
             return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
-              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label></div></div>
+              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label><label><Input type="checkbox" checked={permission.canExtendTimer} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canExtendTimer: event.target.checked } }))} /> Extend timer</label></div></div>
           })}
             {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>
           <div className="server-picker-footer"><span>Changes apply when you save.</span><div className="actions"><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button><Button disabled={!!pending} onClick={() => void saveDeviceServerAccess()}>{pending === serverAccessDevice.id ? 'Saving…' : 'Save access'}</Button></div></div>

@@ -12,6 +12,11 @@ public static class RemoteStopSafety
     {
         var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
         if (profile is null) return StopPermit.Denied("InvalidProfile", "The saved server is unavailable.");
+        if (profile.Maintenance?.Enabled == true)
+            return StopPermit.Denied("MaintenanceMode",
+                string.IsNullOrWhiteSpace(profile.Maintenance.Message)
+                    ? "The Host has placed this server in maintenance mode. Remote lifecycle actions are paused."
+                    : "Maintenance: " + profile.Maintenance.Message);
         var view = snapshot.Runs.SingleOrDefault(item => item.ProfileId == profileId);
         if (view?.State != "Ready")
             return StopPermit.Denied("ServerNotReady", "Remote Stop needs a running, ready server.");

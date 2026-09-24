@@ -50,7 +50,11 @@ public sealed class FriendService
         var id = Guid.NewGuid();
         var link = new FriendLink(data, FileName(id));
         var result = await link.PairAsync(invitation, hostAddress);
-        if (!result.Ok) return result;
+        if (!result.Ok)
+        {
+            link.Dispose();
+            return result;
+        }
         lock (sync)
         {
             links.Add((id, link));
@@ -78,6 +82,31 @@ public sealed class FriendService
             SaveIndex();
             return new(true, "ConnectionSelected", "Friend connection selected.", null);
         }
+    }
+
+    public async Task<FriendActionResult> RenameAsync(Guid connectionId, string? name)
+    {
+        FriendLink? link;
+        lock (sync) link = links.SingleOrDefault(item => item.Id == connectionId).Link;
+        return link is null
+            ? new(false, "UnknownConnection", "Choose a saved Host connection.", null)
+            : await link.RenameAsync(name);
+    }
+
+    public async Task<FriendActionResult> ForgetAsync(Guid connectionId)
+    {
+        FriendLink? link;
+        lock (sync) link = links.SingleOrDefault(item => item.Id == connectionId).Link;
+        if (link is null) return new(false, "UnknownConnection", "Choose a saved Host connection.", null);
+        var result = await link.ForgetAsync();
+        if (!result.Ok) return result;
+        lock (sync)
+        {
+            links.RemoveAll(item => item.Id == connectionId);
+            if (selectedId == connectionId) selectedId = links.FirstOrDefault().Id;
+            SaveIndex();
+        }
+        return result;
     }
 
     public Task<FriendActionResult> RecoverEndpointAsync(Guid connectionId, string endpoint)

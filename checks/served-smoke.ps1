@@ -92,7 +92,10 @@ try {
         'Use an eye to show only that value', 'Copy keeps it hidden', 'Notifications', 'Recent app and connection activity',
         'Refreshing connection details', 'Connection details updated.',
         'Maximum servers running at once', 'Duplicate saved game port', 'Stop empty server and start this one',
-        'Revoke all access and create a new code', 'Empty-server countdown', 'Stop empty servers automatically',
+        'Pairing window options', 'Close pairing', 'Emergency-revoke code credentials',
+        'Require local Host approval for each new PC', 'Saved connection name', 'Forget this Host',
+        'Maintenance mode', 'Extend empty-server timer', 'Friend extension increment',
+        'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
         'Extra minutes for this countdown only.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
         'Custom game', 'local PowerShell actions', 'Status and players script',
@@ -250,11 +253,11 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/servers/$profileId/invite/current" -Method Post -UseBasicParsing | Out-Null }
     catch { $inviteReadForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     $invitedSettings = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings
-    if (!$invite.ok -or !$invite.password.StartsWith('TS3-') -or !$sameInvite.exists -or $sameInvite.password -ne $invite.password -or !$sameInvite.canStart -or !$inviteReadForbidden -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating a server code did not keep one protected current code and permission default or prepare the standard Host address safely.' }
+    if (!$invite.ok -or !$invite.password.StartsWith('TS3-') -or !$sameInvite.exists -or !$sameInvite.open -or $sameInvite.password -ne $invite.password -or !$sameInvite.canStart -or $sameInvite.durationMinutes -ne 30 -or $sameInvite.deviceLimit -ne 1 -or !$inviteReadForbidden -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating a pairing window did not keep one protected bounded code and permission default or prepare the standard Host address safely.' }
     $settings.companionEndpoint = $invitedSettings.companionEndpoint
     $settings.companionBindAddress = $invitedSettings.companionBindAddress
     $settings.companionPort = $invitedSettings.companionPort
-    Write-Host 'PASS one persistent server code prepares the standard app address without opening a listener'
+    Write-Host 'PASS one current bounded server code prepares the standard app address without opening a listener'
     $started = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/start" -Method Post -Headers $headers
     if (!$started.ok -or $started.code -ne 'FixtureStarted') { throw "Start failed: $($started.message)" }
     $fixtureStarted = $true

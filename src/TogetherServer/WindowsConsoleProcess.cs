@@ -56,8 +56,7 @@ internal static class WindowsConsoleProcess
         FreeConsole();
         try
         {
-            if (!AttachConsole((uint)processId))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not attach to the managed server console.");
+            AttachManagedConsole(process, processId);
             try
             {
                 var members = ConsoleMembers();
@@ -94,8 +93,7 @@ internal static class WindowsConsoleProcess
         FreeConsole();
         try
         {
-            if (!AttachConsole((uint)process.Id))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not attach to the managed server console.");
+            AttachManagedConsole(process, process.Id);
             try
             {
                 var members = ConsoleMembers();
@@ -124,6 +122,25 @@ internal static class WindowsConsoleProcess
             finally { FreeConsole(); }
         }
         finally { if (previous != 0) AttachConsole((uint)previous); }
+    }
+
+    private static void AttachManagedConsole(Process process, int processId)
+    {
+        // CREATE_NEW_CONSOLE returns once the process exists, but Windows may
+        // need a brief moment before another process can attach to that new
+        // console. This is common when Stop follows Start immediately. Retry
+        // only the exact recorded process; never fall back to a named process.
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        var error = 0;
+        while (true)
+        {
+            if (AttachConsole((uint)processId)) return;
+            error = Marshal.GetLastWin32Error();
+            process.Refresh();
+            if (process.HasExited || DateTime.UtcNow >= deadline)
+                throw new Win32Exception(error, "Could not attach to the managed server console.");
+            Thread.Sleep(50);
+        }
     }
 
     public static uint ExitCode(IntPtr processHandle)

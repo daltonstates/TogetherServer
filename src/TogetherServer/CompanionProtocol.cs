@@ -13,7 +13,11 @@ public static class CompanionProtocol
         "durable-operations",
         "operation-status",
         "restart",
-        "cached-observations"
+        "cached-observations",
+        "maintenance",
+        "activity-feed",
+        "timer-extension",
+        "pairing-windows"
     ];
 
     public static string AppVersion => typeof(CompanionProtocol).Assembly.GetName().Version?.ToString(3) ?? "unknown";

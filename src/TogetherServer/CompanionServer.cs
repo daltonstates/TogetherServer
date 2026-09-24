@@ -147,6 +147,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
 
     private void MapRoutes(WebApplication app)
     {
+        static int AuthenticationStatus(PairingDecision decision) =>
+            decision.Code is "Revoked" or "ApprovalPending" ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
+
         bool Authenticate(HttpContext context, out PairedDevice? device, out PairingDecision decision)
         {
             if (!Guid.TryParse(context.Request.Headers["X-Device-Id"], out var id))
@@ -174,6 +177,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var permission = own?.ServerPermissions?.SingleOrDefault(item => item.ProfileId == profile.Id);
                 var canStart = permission?.CanStart ?? own?.CanStart == true;
                 var canStop = permission?.CanStop ?? own?.CanStop == true;
+                var canExtendTimer = permission?.CanExtendTimer ?? own?.CanExtendTimer == true;
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
                 return new PublicProfile(profile.Id, profile.Name,
                     run.State,
@@ -185,14 +189,25 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     run.AutoShutdownAtUtc, run.AutoShutdownReason, canStart, canStop,
                     snapshot.Settings.RemoteControlsEnabled && canStart && canStop && permit.Allowed,
                     permit.Allowed ? null : permit.Reason,
-                    recentOperations.FirstOrDefault(operation => operation.ProfileId == profile.Id));
+                    recentOperations.FirstOrDefault(operation => operation.ProfileId == profile.Id),
+                    profile.Maintenance?.Enabled == true,
+                    string.IsNullOrWhiteSpace(profile.Maintenance?.Message) ? null : profile.Maintenance.Message,
+                    canExtendTimer,
+                    snapshot.Settings.FriendTimerExtensionMinutes,
+                    Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes));
             }).ToList();
             var protocol = CompanionProtocol.Describe(own?.ProtocolVersion);
+            var assigned = own?.AssignedProfileIds.ToHashSet() ?? [];
+            var activity = data.LoadActivity(100).Where(item =>
+                    item.Visibility == ActivityVisibility.Device && item.DeviceId == deviceId ||
+                    item.Visibility == ActivityVisibility.AssignedFriends && item.ProfileId is { } profileId && assigned.Contains(profileId))
+                .Take(50).ToList();
             return new CompanionStatus(snapshot.Settings.RemoteControlsEnabled && protocol.Compatible,
                 !protocol.Compatible ? protocol.CompatibilityMessage :
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",
                 profiles, profiles.Any(profile => profile.CanStart), profiles.Any(profile => profile.CanStop),
-                DateTimeOffset.UtcNow, protocol, identity.State(), ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute));
+                DateTimeOffset.UtcNow, protocol, identity.State(), ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute),
+                activity);
         }
 
         var companion = app.MapGroup("/api/companion");
@@ -204,22 +219,22 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         companion.MapPost("/heartbeat", async (HttpContext context, HeartbeatRequest request) =>
         {
             if (!Authenticate(context, out var device, out var decision))
-                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id) return Results.BadRequest(new { code = "DeviceMismatch" });
             decision = pairing.RecordHeartbeat(device, request);
             return decision.Ok ? Results.Json(await PublicStatus(device.Id)) :
-                Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 409);
+                Results.Json(decision, statusCode: decision.Code is "Revoked" or "ApprovalPending" ? 403 : 409);
         }).RequireRateLimiting("device");
         companion.MapGet("/status", async (HttpContext context) =>
         {
             if (!Authenticate(context, out var device, out var decision))
-                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(await PublicStatus(device!.Id));
         }).RequireRateLimiting("device");
         companion.MapPost("/credential/renew", (HttpContext context, CredentialRenewalRequest request) =>
         {
             if (!Authenticate(context, out var device, out var decision))
-                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id)
                 return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
             var renewed = pairing.Renew(device, request);
@@ -227,10 +242,18 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 ? Results.Json(new PairingDecision(false, "RenewalRejected", "The credential could not be renewed."), statusCode: 409)
                 : Results.Json(renewed);
         }).RequireRateLimiting("device");
+        companion.MapPost("/credential/revoke", (HttpContext context, DeviceSelfRequest request) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (request.DeviceId != device!.Id)
+                return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
+            return Results.Json(pairing.Revoke(device.Id));
+        }).RequireRateLimiting("device");
         companion.MapPost("/endpoint/recover", async (HttpContext context, EndpointRecoveryProofRequest request) =>
         {
             if (!Authenticate(context, out var device, out var decision))
-                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id)
                 return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
             var snapshot = await manager.SnapshotAsync();
@@ -254,10 +277,16 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var snapshot = await manager.SnapshotAsync();
                 if (!snapshot.Settings.RemoteControlsEnabled)
                     return new(false, "RemoteControlsDisabled", "The Host has paused remote controls.");
+                var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+                if (profile?.Maintenance?.Enabled == true)
+                    return new(false, "MaintenanceMode", string.IsNullOrWhiteSpace(profile.Maintenance.Message)
+                        ? "The Host has placed this server in maintenance mode. Remote actions are paused."
+                        : "Maintenance: " + profile.Maintenance.Message);
                 if (!pairing.CanAccess(device, profileId) ||
                     action is "start" or "replace" && !pairing.CanStart(device, profileId) ||
                     action == "stop" && !pairing.CanStop(device, profileId) ||
-                    action == "restart" && (!pairing.CanStart(device, profileId) || !pairing.CanStop(device, profileId)))
+                    action == "restart" && (!pairing.CanStart(device, profileId) || !pairing.CanStop(device, profileId)) ||
+                    action == "extend" && !pairing.CanExtendTimer(device, profileId))
                     return new(false, "PermissionDenied", "The Host has not granted this action for this server to this PC.");
 
                 ActionResult result;
@@ -272,6 +301,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 }
                 else if (action == "replace")
                     result = await manager.ReplaceEmptyPortConflictsAndStartAsync(profileId);
+                else if (action == "extend")
+                    result = await manager.ExtendAutoShutdownForFriendAsync(profileId);
                 else
                     result = await manager.StartAsync(profileId);
                 data.Audit($"remote-{action} {deviceId} {profileId} {result.Code} {DateTimeOffset.UtcNow:O}");
@@ -287,7 +318,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     statusCode: 503);
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
-                    statusCode: decision.Code == "Revoked" ? 403 : 401);
+                    statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id || request.ProfileId == Guid.Empty)
                 return Results.BadRequest(new FriendActionResult(false, "InvalidRequest", "Device or profile ID is invalid.", null));
             if (!pairing.CanAccess(device, request.ProfileId))
@@ -310,9 +341,17 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!snapshot.Settings.RemoteControlsEnabled)
                 return Results.Json(new FriendActionResult(false, "RemoteControlsDisabled", "The Host has paused remote controls.",
                     await PublicStatus(device.Id)), statusCode: 403);
+            var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == request.ProfileId);
+            if (profile?.Maintenance?.Enabled == true)
+                return Results.Json(new FriendActionResult(false, "MaintenanceMode",
+                    string.IsNullOrWhiteSpace(profile.Maintenance.Message)
+                        ? "The Host has placed this server in maintenance mode. Remote actions are paused."
+                        : "Maintenance: " + profile.Maintenance.Message,
+                    await PublicStatus(device.Id)), statusCode: 403);
             if (action is "start" or "replace" && !pairing.CanStart(device, request.ProfileId) ||
                 action == "stop" && !pairing.CanStop(device, request.ProfileId) ||
-                action == "restart" && (!pairing.CanStart(device, request.ProfileId) || !pairing.CanStop(device, request.ProfileId)))
+                action == "restart" && (!pairing.CanStart(device, request.ProfileId) || !pairing.CanStop(device, request.ProfileId)) ||
+                action == "extend" && !pairing.CanExtendTimer(device, request.ProfileId))
                 return Results.Json(new FriendActionResult(false, "PermissionDenied",
                     "The Host has not granted this action for this server to this PC.", await PublicStatus(device.Id)), statusCode: 403);
             var submission = operations.Submit(device.Id, key, request.ProfileId, action,
@@ -329,7 +368,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         companion.MapGet("/operations/{id:guid}", (HttpContext context, Guid id) =>
         {
             if (!Authenticate(context, out var device, out var decision))
-                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             var operation = operations.Find(device!.Id, id);
             return operation is null ? Results.NotFound(new { code = "UnknownOperation" }) : Results.Json(operation);
         }).RequireRateLimiting("device");
@@ -340,6 +379,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         companion.MapPost("/restart", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "restart"))
             .RequireRateLimiting("device");
         companion.MapPost("/replace", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "replace"))
+            .RequireRateLimiting("device");
+        companion.MapPost("/extend", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "extend"))
             .RequireRateLimiting("device");
     }
 }

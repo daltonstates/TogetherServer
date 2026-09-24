@@ -65,6 +65,32 @@ await Check("duplicate start is serialized", async () =>
     }
 });
 
+await Check("snapshots consume the observation supervisor cache", async () =>
+{
+    using var data = Data("observation-cache");
+    var manager = new HostManager(data);
+    var profile = Profile("observation-cache", "observation-cache", FreePort());
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
+    try
+    {
+        var first = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
+        var second = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
+        Require(first.State == "Unknown" && second.State == "Unknown" &&
+            first.Detail.Contains("observation supervisor", StringComparison.Ordinal),
+            "a UI snapshot probed the game instead of waiting for the shared observation cache");
+        await manager.RefreshObservationsAsync();
+        var observed = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
+        Require(observed is { State: "Process running", PlayerCountTrusted: true },
+            "the observation supervisor did not populate the shared cache");
+    }
+    finally
+    {
+        var cleanup = await manager.StopAsync(profile.Id);
+        Require(cleanup.Ok, $"fixture cleanup failed: {cleanup.Code} {cleanup.Message}");
+    }
+});
+
 await Check("one writer per world", async () =>
 {
     using var data = Data("world");
@@ -316,22 +342,26 @@ await Check("remote operations persist idempotency and interrupt unfinished work
     using var data = Data("remote-operations");
     var interruptedId = Guid.NewGuid();
     var interruptedDevice = Guid.NewGuid();
-    data.SaveRemoteOperations([
+    var seeded = Enumerable.Range(0, 501).Select(index =>
         new RemoteOperation
         {
-            Id = interruptedId,
-            DeviceId = interruptedDevice,
+            DeviceId = Guid.NewGuid(),
             RequestId = Guid.NewGuid(),
             ProfileId = Guid.NewGuid(),
             Action = "stop",
             State = RemoteOperationStates.Running,
+            RequestedUtc = DateTimeOffset.UtcNow.AddSeconds(index - 501),
             StartedUtc = DateTimeOffset.UtcNow.AddMinutes(-1)
-        }
-    ]);
+        }).ToList();
+    seeded[^1].Id = interruptedId;
+    seeded[^1].DeviceId = interruptedDevice;
+    data.SaveRemoteOperations(seeded);
     var coordinator = new RemoteOperationCoordinator(data);
     var interrupted = coordinator.Find(interruptedDevice, interruptedId);
     Require(interrupted is { State: RemoteOperationStates.Interrupted, Code: "HostRestarted", Ok: false },
         "unfinished operation was not interrupted after Host restart");
+    Require(data.LoadRemoteOperations().Count == 500,
+        "operation journal did not retain an exact bounded newest-500 set");
 
     var deviceId = Guid.NewGuid();
     var requestId = Guid.NewGuid();
