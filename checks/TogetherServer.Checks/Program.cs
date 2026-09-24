@@ -367,12 +367,14 @@ await Check("remote operations persist idempotency and interrupt unfinished work
     var requestId = Guid.NewGuid();
     var profileId = Guid.NewGuid();
     var executions = 0;
+    var secondExecutions = 0;
     var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var submitted = coordinator.Submit(deviceId, requestId, profileId, "restart", async () =>
     {
         Interlocked.Increment(ref executions);
         await release.Task;
-        return new RemoteOperationOutcome(true, "ServerRestarted", "Restart completed once.");
+        return new RemoteOperationOutcome(true, "ServerRestarted",
+            @"Restart completed using C:\private\world and secret script output.");
     });
     Require(submitted.Accepted && submitted.Operation is not null, "operation was not accepted");
     var submittedOperation = submitted.Operation ?? throw new Exception("accepted operation had no view");
@@ -385,6 +387,15 @@ await Check("remote operations persist idempotency and interrupt unfinished work
         Task.FromResult(new RemoteOperationOutcome(true, "Wrong", "must not execute")));
     Require(!conflict.Accepted && conflict.Code == "IdempotencyConflict",
         "request ID reuse for another action was accepted");
+    var second = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", () =>
+    {
+        Interlocked.Increment(ref secondExecutions);
+        return Task.FromResult(new RemoteOperationOutcome(true, "FixtureStarted", "Second operation completed."));
+    });
+    Require(second.Accepted && second.Operation is not null, "second queued operation was not accepted");
+    await Task.Delay(100);
+    Require(secondExecutions == 0 && coordinator.Find(deviceId, second.Operation!.Id)?.State == RemoteOperationStates.Pending,
+        "the in-process executor ran more than one remote operation at a time or skipped Pending");
     release.SetResult();
     RemoteOperationView? completed = null;
     for (var attempt = 0; attempt < 100; attempt++)
@@ -393,10 +404,80 @@ await Check("remote operations persist idempotency and interrupt unfinished work
         if (completed is not null && RemoteOperationStates.Terminal(completed.State)) break;
         await Task.Delay(20);
     }
+    RemoteOperationView? secondCompleted = null;
+    for (var attempt = 0; attempt < 100; attempt++)
+    {
+        secondCompleted = coordinator.Find(deviceId, second.Operation!.Id);
+        if (secondCompleted is not null && RemoteOperationStates.Terminal(secondCompleted.State)) break;
+        await Task.Delay(20);
+    }
     Require(completed is { State: RemoteOperationStates.Succeeded, Code: "ServerRestarted", Ok: true } &&
-        executions == 1, "operation did not persist one terminal execution");
+        !completed.Message.Contains("private", StringComparison.OrdinalIgnoreCase) &&
+        !completed.Message.Contains("script output", StringComparison.OrdinalIgnoreCase) &&
+        secondCompleted is { State: RemoteOperationStates.Succeeded } && executions == 1 && secondExecutions == 1,
+        "FIFO execution, one terminal execution, or operation-result redaction failed");
     var reloaded = new RemoteOperationCoordinator(data).Find(deviceId, submittedOperation.Id);
     Require(reloaded is { State: RemoteOperationStates.Succeeded }, "terminal operation did not survive reload");
+});
+
+await Check("remote operation execution survives an unavailable audit log", async () =>
+{
+    var dataRoot = Path.Combine(root, "remote-operation-audit");
+    using var data = new LocalData(dataRoot);
+    var coordinator = new RemoteOperationCoordinator(data);
+    using var auditLock = new FileStream(Path.Combine(dataRoot, "audit.log"), FileMode.OpenOrCreate,
+        FileAccess.ReadWrite, FileShare.None);
+    var executions = 0;
+    var deviceId = Guid.NewGuid();
+    var submitted = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", () =>
+    {
+        Interlocked.Increment(ref executions);
+        return Task.FromResult(new RemoteOperationOutcome(true, "FixtureStarted", "Started."));
+    });
+    Require(submitted.Accepted && submitted.Operation is not null, "audit lock prevented operation acceptance");
+    RemoteOperationView? completed = null;
+    for (var attempt = 0; attempt < 100; attempt++)
+    {
+        completed = coordinator.Find(deviceId, submitted.Operation!.Id);
+        if (completed is not null && RemoteOperationStates.Terminal(completed.State)) break;
+        await Task.Delay(20);
+    }
+    Require(executions == 1 && completed is { State: RemoteOperationStates.Succeeded },
+        "an audit write failure stranded or suppressed an accepted operation");
+});
+
+await Check("remote operation rejects safely when its journal cannot commit", async () =>
+{
+    var dataRoot = Path.Combine(root, "remote-operation-journal");
+    using var data = new LocalData(dataRoot);
+    data.SaveRemoteOperations([]);
+    var coordinator = new RemoteOperationCoordinator(data);
+    using var journalLock = new FileStream(Path.Combine(dataRoot, "remote-operations.json"), FileMode.Open,
+        FileAccess.Read, FileShare.Read);
+    var executions = 0;
+    var submitted = coordinator.Submit(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "stop", () =>
+    {
+        Interlocked.Increment(ref executions);
+        return Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."));
+    });
+    await Task.Delay(100);
+    Require(!submitted.Accepted && submitted.Code == "OperationJournalUnavailable" &&
+        executions == 0 && coordinator.Recent().Count == 0,
+        "an uncommitted operation remained in memory or executed without a durable journal entry");
+});
+
+await Check("authenticated request limiting is isolated per verified device", async () =>
+{
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var limiter = new AuthenticatedDeviceRateLimiter(3, TimeSpan.FromMinutes(1), clock);
+    var first = Guid.NewGuid();
+    var second = Guid.NewGuid();
+    Require(limiter.TryAcquire(first) && limiter.TryAcquire(first) && limiter.TryAcquire(first) &&
+        !limiter.TryAcquire(first), "one authenticated device did not reach its own request limit");
+    Require(limiter.TryAcquire(second), "one device's limit throttled another verified device");
+    clock.Advance(TimeSpan.FromMinutes(1));
+    Require(limiter.TryAcquire(first), "the authenticated device limit did not reset after its fixed window");
+    await Task.CompletedTask;
 });
 
 await Check("definitive exits archive and crash recovery is bounded", async () =>
@@ -434,6 +515,40 @@ await Check("definitive exits archive and crash recovery is bounded", async () =
     Require(state.State == CrashRecoveryStates.Suspended && state.Attempts == 3 && state.NextAttemptUtc is null,
         "recovery did not suspend after exactly three failed launches");
     Require(data.LoadRunArchive().Count == 4, "each definitively absent exact fixture run was not archived");
+});
+
+await Check("crash recovery suspends a live process that never becomes Ready", async () =>
+{
+    using var data = Data("crash-readiness-timeout");
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var profile = Profile("crash-readiness-timeout", "crash-readiness-timeout", FreePort());
+    profile.CrashRecovery.Enabled = true;
+    var starter = new HostManager(data, new GameServerRegistry(data), clock);
+    Require((await starter.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await starter.StartAsync(profile.Id)).Ok, "initial start failed");
+    var original = data.LoadRuns().Single();
+    original.WasReady = true;
+    data.SaveRuns([original]);
+    await KillFixture(original);
+
+    var manager = new HostManager(data, new GameServerRegistry(data), clock);
+    await manager.RefreshObservationsAsync();
+    clock.Advance(TimeSpan.FromMinutes(1));
+    Require((await manager.MaintainCrashRecoveryAsync()).Single().Ok, "recovery launch failed");
+    var starting = data.LoadCrashRecoveryStates().Single();
+    Require(starting.State == CrashRecoveryStates.Starting &&
+        starting.ReadinessDeadlineUtc == clock.GetUtcNow().AddMinutes(5),
+        "recovery launch did not record a bounded readiness deadline");
+    var recoveredRun = data.LoadRuns().Single();
+    clock.Advance(TimeSpan.FromMinutes(5));
+    var timeout = await manager.MaintainCrashRecoveryAsync();
+    var suspended = data.LoadCrashRecoveryStates().Single();
+    Require(timeout.Any(result => result.Code == "RecoveryStartupTimedOut") &&
+        suspended.State == CrashRecoveryStates.Suspended && suspended.ReadinessDeadlineUtc is null &&
+        data.LoadRuns().Single().ProcessId == recoveredRun.ProcessId &&
+        !Process.GetProcessById(recoveredRun.ProcessId!.Value).HasExited,
+        "a never-Ready recovery stayed Starting forever or its live process was force-stopped");
+    Require((await manager.StopAsync(profile.Id)).Ok, "timed-out recovery fixture cleanup failed");
 });
 
 await Check("graceful stop backup and offline restore protect the world", async () =>

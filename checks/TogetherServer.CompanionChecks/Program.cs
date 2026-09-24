@@ -348,10 +348,11 @@ try
     var credentialC = await activation.Content.ReadFromJsonAsync<PairingCredential>(webJson) ?? throw new Exception("empty activation");
     var priorCredentialC = credentialC;
     var renewalId = Guid.NewGuid();
-    async Task<(HttpStatusCode Status, CredentialRenewal? Renewal)> RenewCredential(PairingCredential credential)
+    async Task<(HttpStatusCode Status, CredentialRenewal? Renewal)> RenewCredential(PairingCredential credential,
+        Guid? requestId = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/credential/renew")
-            { Content = JsonContent.Create(new CredentialRenewalRequest(credential.DeviceId, renewalId), options: webJson) };
+            { Content = JsonContent.Create(new CredentialRenewalRequest(credential.DeviceId, requestId ?? renewalId), options: webJson) };
         request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
         using var response = await publicClient.SendAsync(request);
@@ -368,10 +369,16 @@ try
         "credential renewal was not idempotent or did not retain the old-token overlap");
     credentialC = new PairingCredential(credentialC.DeviceId, firstRenewal.Renewal!.Credential,
         firstRenewal.Renewal.ExpiresUtc);
-    Require((await PublicStatus(publicClient, priorCredentialC)).Protocol?.Compatible == true &&
-        (await PublicStatus(publicClient, credentialC)).Protocol?.Compatible == true,
-        "credential renewal stranded either the old overlap token or the new token");
-    Console.WriteLine("PASS credential renewal is idempotent with a bounded old-token overlap"); passes++;
+    var oldTokenNewRenewal = await RenewCredential(priorCredentialC, Guid.NewGuid());
+    var priorCredentialStatus = await PublicStatus(publicClient, priorCredentialC);
+    var currentCredentialStatus = await PublicStatus(publicClient, credentialC);
+    Require(priorCredentialStatus.Protocol?.Compatible == true &&
+        currentCredentialStatus.Protocol?.Compatible == true &&
+        oldTokenNewRenewal.Status == HttpStatusCode.Conflict && oldTokenNewRenewal.Renewal is null,
+        $"credential renewal stranded a token or let the overlap token mint another credential: " +
+        $"oldCompatible={priorCredentialStatus.Protocol?.Compatible}, newCompatible={currentCredentialStatus.Protocol?.Compatible}, " +
+        $"secondRenewal={(int)oldTokenNewRenewal.Status}");
+    Console.WriteLine("PASS credential renewal is idempotent and the overlap token cannot renew itself"); passes++;
     var joinActivation = await publicClient.PostAsJsonAsync("/api/companion/pair",
         new PairingActivation(inviteB.DeviceId, inviteB.Code, true), webJson);
     Require(joinActivation.IsSuccessStatusCode, "second server code activation failed");
@@ -644,20 +651,30 @@ try
         "Friend did not restore its selected connection after a stale heartbeat and app restart");
     Console.WriteLine("PASS stale heartbeat becomes Unknown and fresh reconnect recovers"); passes++;
 
+    for (var i = 0; i < 25; i++)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
+        request.Headers.Add("X-Device-Id", joinCredential.DeviceId.ToString());
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "invalid-token");
+        using var response = await publicClient.SendAsync(request);
+        Require(response.StatusCode == HttpStatusCode.Unauthorized,
+            "an unauthenticated spoof was not rejected before device limiting");
+    }
+    Require((await PublicStatus(publicClient, joinCredential)).Protocol?.Compatible == true,
+        "spoofed device headers consumed the victim's authenticated request allowance");
     var limited = false;
     for (var i = 0; i < 220; i++)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
-        request.Headers.Add("X-Device-Id", deviceBId.ToString());
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "invalid-token");
+        request.Headers.Add("X-Device-Id", rotatedCredential.DeviceId.ToString());
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", rotatedCredential.Credential);
         using var response = await publicClient.SendAsync(request);
         if (response.StatusCode == HttpStatusCode.TooManyRequests) limited = true;
     }
-    Require(limited, "companion authentication was not rate limited");
-    var independentDeviceStatus = await PublicStatus(publicClient, joinCredential);
-    Require(independentDeviceStatus.Protocol?.Compatible == true,
-        "one device's authentication burst throttled another device behind the same source IP");
-    Console.WriteLine("PASS per-device authentication limiting preserves another device behind one source IP"); passes++;
+    Require(limited, "an authenticated device did not reach its own request limit");
+    Require((await PublicStatus(publicClient, joinCredential)).Protocol?.Compatible == true,
+        "one authenticated device's burst throttled another device behind the same source IP");
+    Console.WriteLine("PASS authenticated per-device limiting ignores spoofed headers and isolates one source IP"); passes++;
 
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     var recoveryConnection = aView.Connections!.Single(connection =>
@@ -742,7 +759,7 @@ try
     replacementProfileId = replacementProfile.Id;
     stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
     replacementProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", replacementProfile.Id.ToString("N"));
-    stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 7000);
+    stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 10000);
     stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
     await WaitLocal(stopHostPort); await WaitLocal(stopFriendPort);
     using var stopOwner = LocalClient(stopHostPort);
@@ -868,11 +885,66 @@ try
     var resetFriendExtension = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
     Require(resetFriendExtension.Ok,
         "a positive-player cancellation did not reset the Friend extension allowance for the next zero-player countdown");
-    var remoteStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
-    Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{stopDeviceId}/servers", new([stopProfile.Id, replacementProfile.Id],
+        [new DeviceServerPermissionRequest(stopProfile.Id, true, true, true),
+            new DeviceServerPermissionRequest(replacementProfile.Id, true, false)]))).Ok,
+        "could not assign the queued-start profile for shutdown-race coverage");
+    var stopSubmitted = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    var startSubmitted = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
+        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    Require(stopSubmitted.Code == "OperationAccepted" && stopSubmitted.OperationId is not null &&
+        startSubmitted.Code == "OperationAccepted" && startSubmitted.OperationId is not null,
+        "long Stop and queued Start were not accepted as durable operations");
+    using var quittingOwner = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{stopHostPort}"),
+        Timeout = TimeSpan.FromSeconds(30) };
+    var quitTask = OwnerPost<object, JsonElement>(quittingOwner, "/api/local/quit", new { });
+    StopApp(stopFriend);
+    stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
+    await WaitLocal(stopFriendPort);
+    var operationPollTimer = Stopwatch.StartNew();
+    var runningOperations = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    operationPollTimer.Stop();
+    var stopProgress = runningOperations.Profiles.Select(item => item.Operation)
+        .Single(operation => operation?.Id == stopSubmitted.OperationId);
+    var startProgress = runningOperations.Profiles.Select(item => item.Operation)
+        .Single(operation => operation?.Id == startSubmitted.OperationId);
+    Require(operationPollTimer.Elapsed < TimeSpan.FromSeconds(4) &&
+        stopProgress?.State is RemoteOperationStates.Running or RemoteOperationStates.Succeeded &&
+        startProgress?.State == RemoteOperationStates.Pending,
+        "a restarted Friend could not observe durable operation progress without waiting on the locked heartbeat");
+    var quitDuringQueue = await quitTask;
+    Require(quitDuringQueue.GetProperty("ok").GetBoolean() &&
+        quitDuringQueue.GetProperty("code").GetString() == "Closing",
+        "Host Quit did not take ownership of shutdown after the long Stop completed");
+    using (var exitTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+        await stopHost.WaitForExitAsync(exitTimeout.Token);
+    StopApp(stopHost);
+    stopHost = StartApp(appPath, "--host", stopHostPort, stopHostData, stopDelayMs: 1000);
+    await WaitLocal(stopHostPort);
+    FriendView? recoveredOperations = null;
+    for (var i = 0; i < 80; i++)
+    {
+        recoveredOperations = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+        var states = recoveredOperations.Profiles.Select(item => item.Operation)
+            .Where(operation => operation?.Id == stopSubmitted.OperationId || operation?.Id == startSubmitted.OperationId)
+            .ToList();
+        if (states.Count == 2 && states.All(operation => operation is not null && RemoteOperationStates.Terminal(operation.State))) break;
+        await Task.Delay(100);
+    }
+    var recoveredStop = recoveredOperations!.Profiles.Select(item => item.Operation)
+        .Single(operation => operation?.Id == stopSubmitted.OperationId);
+    var blockedStart = recoveredOperations.Profiles.Select(item => item.Operation)
+        .Single(operation => operation?.Id == startSubmitted.OperationId);
+    var afterShutdownRace = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    Require(recoveredStop is { State: RemoteOperationStates.Succeeded, Code: "ValheimStopped" } &&
+        blockedStart is not null && blockedStart.State is RemoteOperationStates.Failed or RemoteOperationStates.Interrupted &&
+        afterShutdownRace!.Runs.All(run => run.State == "Offline"),
+        "a queued remote Start launched during shutdown or unfinished work was not recovered as terminal");
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
-    Console.WriteLine("PASS fixed Friend timer extensions reset on occupancy while Stop still requires fresh zero through HTTPS and Ctrl+C"); passes++;
+    Console.WriteLine("PASS long remote Stop survives Friend restart and queued Start cannot race Host shutdown"); passes++;
 
     var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");
     File.Delete(stopMarker);
@@ -956,9 +1028,10 @@ try
         conflictId == stopProfile.Id,
         "an empty unextended conflicting server was not offered as an explicit replacement");
     var replaced = await FriendAction(stopFriendLocal, replacementProfile.Id, "replace");
+    var replacedRun = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+        .Single(run => run.ProfileId == replacementProfile.Id);
     Require(replaced.Ok && replaced.Code == "PortConflictReplaced" && File.Exists(stopMarker) &&
-        (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
-            .Single(run => run.ProfileId == replacementProfile.Id).State is "Starting" or "Ready",
+        replacedRun.ProcessId is not null && replacedRun.State is "Unknown" or "Starting" or "Ready",
         $"Start-only Friend could not explicitly replace the unassigned empty conflict: {replaced.Code} {replaced.Message}");
     ready = false;
     for (var i = 0; i < 60; i++)
@@ -1005,7 +1078,7 @@ finally
             using var stopOwner = LocalClient(stopHostPort);
             var snapshot = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
             foreach (var profileId in new[] { stopProfileId, replacementProfileId })
-                if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == profileId)?.State is "Ready" or "Starting" or "Process running")
+                if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == profileId)?.State is "Ready" or "Starting" or "Process running" or "Unknown")
                     await OwnerPost<object, ActionResult>(stopOwner, $"/api/local/profiles/{profileId}/stop", new { });
         }
         catch { Console.WriteLine("Restricted fixture cleanup via Host failed; inspect the recorded process."); }

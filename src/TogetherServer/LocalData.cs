@@ -240,6 +240,20 @@ public sealed class LocalData : IDisposable
         lock (auditSync) File.AppendAllText(Path.Combine(root, "audit.log"), entry + Environment.NewLine);
     }
 
+    public bool TryAudit(string entry)
+    {
+        try
+        {
+            Audit(entry);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
     public IReadOnlyList<ActivityEvent> LoadActivity(int maximum = 500)
     {
         lock (activitySync)

@@ -52,7 +52,9 @@ using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) 
 var minecraftInstaller = new MinecraftInstaller(minecraftClient, data);
 var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
-var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port, () => updatePending);
+var shutdownPending = false;
+var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port,
+    () => updatePending, () => shutdownPending);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
@@ -444,9 +446,12 @@ app.MapPost("/api/local/quit", async (HttpContext context) =>
     await modeGate.WaitAsync();
     try
     {
+        if (shutdownPending)
+            return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
         if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
             return Results.Json(new { ok = false, code = "ManagedRunPresent",
                 message = "Stop or resolve every managed server before quitting TogetherServer." });
+        shutdownPending = true;
         context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
         return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
     }

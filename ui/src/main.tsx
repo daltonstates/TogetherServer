@@ -28,13 +28,13 @@ type Settings = {
 }
 type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean; friendAddedMinutes: number }
 type CustomCertificationState = { profileId: string; stage: string; message: string; inProgress: boolean; certified: boolean; certifiedUtc: string | null; onlinePlayers: number | null; blockReason: string | null }
-type CrashRecoveryState = { profileId: string; cycleId: string; state: 'Pending' | 'Starting' | 'Recovered' | 'Suspended'; attempts: number; crashDetectedUtc: string; nextAttemptUtc: string | null; recoveredUtc: string | null; lastFailure: string | null }
+type CrashRecoveryState = { profileId: string; cycleId: string; state: 'Pending' | 'Starting' | 'Recovered' | 'Suspended'; attempts: number; crashDetectedUtc: string; nextAttemptUtc: string | null; readinessDeadlineUtc: string | null; recoveredUtc: string | null; lastFailure: string | null }
 type WorldBackupStatus = { profileId: string; lastSuccessfulUtc: string | null; lastFailureUtc: string | null; lastFailure: string | null; completedCount: number }
 type WorldBackupRecord = { id: string; profileId: string; kind: string; worldId: string; backupKind: 'Rolling' | 'PreRestore'; createdUtc: string; sizeBytes: number; fileCount: number }
 type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
 type ActivityEvent = { id: string; occurredUtc: string; category: string; action: string; message: string; severity: 'Info' | 'Important' | 'Warning'; profileId: string | null; deviceId: string | null; visibility: string }
 type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState>; crashRecovery?: Record<string, CrashRecoveryState>; backups?: Record<string, WorldBackupStatus>; activity?: ActivityEvent[] }
-type RemoteOperation = { id: string; action: string; state: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Interrupted'; ok: boolean | null; code: string; message: string; requestedUtc: string; completedUtc: string | null }
+type RemoteOperation = { id: string; action: string; state: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Interrupted'; ok: boolean | null; code: string; message: string; requestedUtc: string; completedUtc: string | null; portConflicts?: PortConflict[] | null }
 type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean; canRestartNow: boolean; restartReason: string | null; operation?: RemoteOperation | null; maintenanceEnabled: boolean; maintenanceMessage: string | null; canExtendTimer: boolean; timerExtensionMinutes: number; timerExtensionRemainingMinutes: number }
 type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean }
 type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; revoked: boolean; paired: boolean; approvalPending: boolean; credentialExpiresUtc: string | null; lastHeartbeatUtc: string | null; serverPermissions: ServerPermission[] }
@@ -44,7 +44,7 @@ type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint:
 type Snapshot = HostSnapshot | FriendSnapshot
 type GamePort = { protocol: string; port: number; label: string; family: string }
 type PortConflict = { profileId: string; profileName: string; sharedPorts: GamePort[]; canReplace: boolean; blockReason: string | null }
-type BasicResult = { ok: boolean; code: string; message: string; portConflicts?: PortConflict[] | null }
+type BasicResult = { ok: boolean; code: string; message: string; portConflicts?: PortConflict[] | null; operationId?: string | null; operationState?: RemoteOperation['state'] | null }
 type ActionResult = BasicResult & { snapshot: HostSnapshot }
 type PublicIpDetection = BasicResult & { address: string | null; snapshot?: HostSnapshot }
 type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
@@ -389,7 +389,6 @@ function App() {
   const [serverAccessDraft, setServerAccessDraft] = useState<string[]>([])
   const [serverPermissionDraft, setServerPermissionDraft] = useState<PermissionDraft>({})
   const [serverAccessSearch, setServerAccessSearch] = useState('')
-  const [portConflictAction, setPortConflictAction] = useState<{ profileId: string; message: string; conflicts: PortConflict[] } | null>(null)
   const [setupStep, setSetupStep] = useState<SetupStep>('game')
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('access')
   const [minecraftSetupMode, setMinecraftSetupMode] = useState<Record<string, 'existing' | 'install'>>({})
@@ -929,9 +928,6 @@ function App() {
     try {
       const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      if (action === 'start' && result.code === 'PortConflict' && result.portConflicts?.length)
-        setPortConflictAction({ profileId: id, message: result.message, conflicts: result.portConflicts })
-      else if (result.ok || action === 'replace') setPortConflictAction(null)
       setSnapshot(await readSnapshot())
     } catch (error) { setNotice({ good: false, text: String(error) }) }
     finally { setPending('') }
@@ -1565,10 +1561,12 @@ function App() {
             const connectionKey = `friend-${snapshot.connectionId}-${profile.id}`
             const addressKey = `${connectionKey}-address`
             const addressActivity = connectionActivity[addressKey] ?? null
+            const operationBusy = profile.operation?.state === 'Pending' || profile.operation?.state === 'Running'
+            const operationConflict = profile.operation?.code === 'PortConflict' && profile.operation.portConflicts?.length
+              ? { message: profile.operation.message, conflicts: profile.operation.portConflicts } : null
             return <article className="profile-card" key={profile.id} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
               <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
-              {profile.operation && (profile.operation.state === 'Pending' || profile.operation.state === 'Running' || profile.operation.state === 'Interrupted') &&
-                <div className={`notice ${profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
+              {profile.operation && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
               {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
               {profile.state === 'Ready' && profile.joinAddress && <ConnectionDetails
                 fields={[{ id: addressKey, label: 'Server IP', value: profile.joinAddress,
@@ -1578,16 +1576,16 @@ function App() {
                 refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                 />}
               <div className="actions server-actions">
-                {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
-                {profile.autoShutdownAtUtc && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
+                {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
+                {profile.autoShutdownAtUtc && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game endpoint...' : 'Check game endpoint from this PC'}</Button>}
               </div>
               {gameEndpointResults[profile.id] && <p className={gameEndpointResults[profile.id].answered ? 'helper-text' : 'warning-text'}>{gameEndpointResults[profile.id].message}</p>}
-              {portConflictAction?.profileId === profile.id && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{portConflictAction.message}</p>
-                {portConflictAction.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
-                  : <small>{portConflictAction.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
+              {operationConflict && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{operationConflict.message}</p>
+                {operationConflict.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending || operationBusy} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
+                  : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
               <FriendStopBlockers snapshot={snapshot} profile={profile} />
               {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
               {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}

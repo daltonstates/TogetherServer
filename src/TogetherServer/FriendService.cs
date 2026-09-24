@@ -23,6 +23,17 @@ public sealed class FriendConfiguration
     public DateTimeOffset? CertificateExpiresUtc { get; set; }
     public Guid? PendingRenewalRequestId { get; set; }
     public ConnectionRoute? Route { get; set; }
+    public List<PendingFriendOperation>? PendingOperations { get; set; }
+    public List<PublicProfile>? CachedProfiles { get; set; }
+}
+
+public sealed class PendingFriendOperation
+{
+    public Guid RequestId { get; set; }
+    public Guid ProfileId { get; set; }
+    public string Action { get; set; } = "";
+    public Guid? OperationId { get; set; }
+    public DateTimeOffset RequestedUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
@@ -75,6 +86,12 @@ internal sealed class FriendLink : IDisposable
             config.AcceptedFingerprints = ValidFingerprints(config.AcceptedFingerprints)
                 .Append(config.Fingerprint).Where(ValidFingerprint).Distinct(StringComparer.Ordinal).ToList();
             config.Route = ConnectionRoutes.Normalize(config.Route);
+            config.PendingOperations = (config.PendingOperations ?? [])
+                .Where(item => item.RequestId != Guid.Empty && item.ProfileId != Guid.Empty &&
+                    item.Action is "start" or "stop" or "restart" or "replace" or "extend" &&
+                    item.RequestedUtc >= DateTimeOffset.UtcNow.AddDays(-30))
+                .OrderBy(item => item.RequestedUtc).TakeLast(20).ToList();
+            config.CachedProfiles ??= [];
         }
         view = config is null
             ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, false, false, false, [])
@@ -138,7 +155,7 @@ internal sealed class FriendLink : IDisposable
                     Endpoint = invite.Endpoint, Fingerprint = invite.Fingerprint, DeviceId = credential.DeviceId,
                     AcceptedFingerprints = [invite.Fingerprint], Credential = credential.Credential,
                     CredentialExpiresUtc = credential.ExpiresUtc,
-                    Route = new ConnectionRoute()
+                    Route = new ConnectionRoute(), PendingOperations = [], CachedProfiles = []
                 };
                 data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
                 client?.Dispose();
@@ -177,6 +194,7 @@ internal sealed class FriendLink : IDisposable
             try
             {
                 await RenewCredentialIfNeededAsync();
+                if (await PollPendingOperationsAsync()) return view;
                 var hostClient = HostClient();
                 var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence,
                     CompanionProtocol.AppVersion, CompanionProtocol.Current, CompanionProtocol.Capabilities);
@@ -214,6 +232,7 @@ internal sealed class FriendLink : IDisposable
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
+                config.CachedProfiles = status.Profiles.ToList();
                 ApplyHostMetadata(status.Certificates, status.Route);
                 var compatible = CompanionProtocol.Supports(status.Protocol);
                 var warning = ExpiryWarning();
@@ -236,7 +255,7 @@ internal sealed class FriendLink : IDisposable
             {
                 var issue = ConnectionFailure(ex);
                 view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
                 return view;
             }
         }
@@ -346,46 +365,186 @@ internal sealed class FriendLink : IDisposable
             if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
             if (action is not ("start" or "stop" or "restart" or "replace" or "extend"))
                 return new(false, "InvalidAction", "Only fixed server lifecycle and countdown-extension actions are available.", null);
+            config.PendingOperations ??= [];
+            var pending = config.PendingOperations.FirstOrDefault(item => item.ProfileId == profileId);
+            if (pending is not null && !pending.Action.Equals(action, StringComparison.Ordinal))
+                return new(false, "OperationInProgress",
+                    "Wait for the current remote operation on this server to finish before requesting another action.", null,
+                    OperationId: pending.OperationId, OperationState: RemoteOperationStates.Pending);
+            if (pending is null)
+            {
+                pending = new PendingFriendOperation
+                {
+                    RequestId = Guid.NewGuid(), ProfileId = profileId, Action = action,
+                    RequestedUtc = DateTimeOffset.UtcNow
+                };
+                config.PendingOperations.Add(pending);
+                SaveConfig();
+            }
             try
             {
-                var hostClient = HostClient();
-                var requestId = Guid.NewGuid();
-                using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + action)
+                var submitted = await SubmitPendingOperationAsync(pending);
+                if (submitted.OperationId is { } operationId)
                 {
-                    Content = new StringContent(JsonSerializer.Serialize(new { deviceId = config.DeviceId, profileId }, Json), Encoding.UTF8, "application/json")
-                };
-                request.Headers.Add("Idempotency-Key", requestId.ToString());
-                using var response = await hostClient.SendAsync(request);
-                if (response.StatusCode == HttpStatusCode.Forbidden)
-                {
-                    FriendActionResult? denied = null;
-                    try { denied = JsonSerializer.Deserialize<FriendActionResult>(await response.Content.ReadAsStringAsync(), Json); }
-                    catch (JsonException) { /* A generic 403 has no action result. */ }
-                    if (denied?.Code == "Revoked") view = view with { State = "Revoked", Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.", ConnectionCode = "Revoked",
-                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                    else if (denied is null) view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.", ConnectionCode = "HostAccessDenied",
-                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                    return denied ?? new(false, "Disconnected", "Host access is unavailable or denied.", null);
+                    pending.OperationId = operationId;
+                    var operation = OperationFromSubmission(pending, submitted);
+                    ApplyOperation(operation);
+                    if (RemoteOperationStates.Terminal(operation.State))
+                        config.PendingOperations.Remove(pending);
+                    SaveConfig();
                 }
-                if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                    view = view with { State = "Disconnected/Unknown", Detail = "Host companion access is paused.", ConnectionCode = "HostUnavailable",
-                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                if (response.StatusCode == HttpStatusCode.Unauthorized)
-                    view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.", ConnectionCode = "CredentialRejected",
-                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                var submitted = await response.Content.ReadFromJsonAsync<FriendActionResult>(Json)
-                    ?? new(false, "InvalidResponse", "Host returned an empty action result.", null);
+                else if (submitted.Code != "InvalidResponse")
+                {
+                    config.PendingOperations.Remove(pending);
+                    SaveConfig();
+                }
                 return submitted;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 var issue = ConnectionFailure(ex);
                 view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
                 return new(false, issue.Code, issue.Message + " The action result is unknown; check Host status before retrying.", null);
             }
         }
         finally { gate.Release(); }
+    }
+
+    private async Task<FriendActionResult> SubmitPendingOperationAsync(PendingFriendOperation pending)
+    {
+        if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
+        var hostClient = HostClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + pending.Action)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(new
+                { deviceId = config.DeviceId, profileId = pending.ProfileId }, Json), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("Idempotency-Key", pending.RequestId.ToString());
+        using var response = await hostClient.SendAsync(request);
+        FriendActionResult? result = null;
+        try { result = await response.Content.ReadFromJsonAsync<FriendActionResult>(Json); }
+        catch (JsonException) { /* Converted into a bounded invalid-response result below. */ }
+        result ??= new(false, "InvalidResponse", "Host returned an unreadable action result.", null);
+        ApplyActionConnectionState(response.StatusCode, result);
+        return result;
+    }
+
+    private async Task<bool> PollPendingOperationsAsync()
+    {
+        if (config?.PendingOperations is not { Count: > 0 } pendingOperations) return false;
+        var reachedHost = false;
+        foreach (var pending in pendingOperations.ToList())
+        {
+            if (pending.OperationId is null)
+            {
+                var submitted = await SubmitPendingOperationAsync(pending);
+                if (submitted.OperationId is not { } acceptedId)
+                {
+                    if (submitted.Code != "InvalidResponse") pendingOperations.Remove(pending);
+                    continue;
+                }
+                reachedHost = true;
+                pending.OperationId = acceptedId;
+                var submittedOperation = OperationFromSubmission(pending, submitted);
+                ApplyOperation(submittedOperation);
+                if (RemoteOperationStates.Terminal(submittedOperation.State))
+                {
+                    pendingOperations.Remove(pending);
+                    continue;
+                }
+            }
+
+            using var response = await HostClient().GetAsync("api/companion/operations/" + pending.OperationId);
+            reachedHost = true;
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                ApplyOperation(new RemoteOperationView(pending.OperationId!.Value, pending.ProfileId, pending.Action,
+                    RemoteOperationStates.Interrupted, false, "UnknownOperation",
+                    "The Host no longer has this operation. It was not replayed; refresh server status before trying again.",
+                    pending.RequestedUtc, null, DateTimeOffset.UtcNow));
+                pendingOperations.Remove(pending);
+                continue;
+            }
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"Operation status returned {(int)response.StatusCode}.", null, response.StatusCode);
+            var operation = await response.Content.ReadFromJsonAsync<RemoteOperationView>(Json)
+                ?? throw new IOException("Host operation status was empty.");
+            if (operation.Id != pending.OperationId || operation.ProfileId != pending.ProfileId ||
+                !operation.Action.Equals(pending.Action, StringComparison.Ordinal))
+                throw new IOException("Host operation status did not match the saved request.");
+            ApplyOperation(operation);
+            if (RemoteOperationStates.Terminal(operation.State)) pendingOperations.Remove(pending);
+        }
+        SaveConfig();
+        if (!reachedHost) return false;
+        var active = pendingOperations.Count > 0;
+        view = view with
+        {
+            State = "Connected",
+            Detail = active ? "Authenticated Host connection; a remote operation is still in progress."
+                : "Authenticated Host connection; the latest remote operation finished.",
+            ConnectionCode = null,
+            LastConnectedUtc = DateTimeOffset.UtcNow,
+            Profiles = ProfilesWithPendingOperations()
+        };
+        return true;
+    }
+
+    private RemoteOperationView OperationFromSubmission(PendingFriendOperation pending, FriendActionResult submitted)
+    {
+        var state = submitted.OperationState is RemoteOperationStates.Pending or RemoteOperationStates.Running or
+            RemoteOperationStates.Succeeded or RemoteOperationStates.Failed or RemoteOperationStates.Interrupted
+            ? submitted.OperationState : RemoteOperationStates.Pending;
+        return new(submitted.OperationId ?? pending.OperationId ?? Guid.Empty, pending.ProfileId, pending.Action, state,
+            RemoteOperationStates.Terminal(state) ? submitted.Ok : null, submitted.Code, submitted.Message,
+            pending.RequestedUtc, state == RemoteOperationStates.Pending ? null : DateTimeOffset.UtcNow,
+            RemoteOperationStates.Terminal(state) ? DateTimeOffset.UtcNow : null, submitted.PortConflicts);
+    }
+
+    private void ApplyOperation(RemoteOperationView operation)
+    {
+        if (config is null) return;
+        var profiles = (view.Profiles.Count > 0 ? view.Profiles : config.CachedProfiles ?? []).ToList();
+        var index = profiles.FindIndex(item => item.Id == operation.ProfileId);
+        if (index >= 0) profiles[index] = profiles[index] with { Operation = operation };
+        else profiles.Add(new PublicProfile(operation.ProfileId, "Server", "Unknown", null, Operation: operation));
+        config.CachedProfiles = profiles;
+        view = view with { Profiles = profiles };
+    }
+
+    private IReadOnlyList<PublicProfile> ProfilesWithPendingOperations()
+    {
+        if (config is null) return [];
+        var profiles = (view.Profiles.Count > 0 ? view.Profiles : config.CachedProfiles ?? []).ToList();
+        foreach (var pending in config.PendingOperations ?? [])
+        {
+            var index = profiles.FindIndex(item => item.Id == pending.ProfileId);
+            var existing = index >= 0 ? profiles[index].Operation : null;
+            if (existing is not null && existing.Id == pending.OperationId) continue;
+            var operation = new RemoteOperationView(pending.OperationId ?? Guid.Empty, pending.ProfileId, pending.Action,
+                RemoteOperationStates.Pending, null, "OperationPending",
+                "Waiting for the Host to confirm this saved request.", pending.RequestedUtc, null, null);
+            if (index >= 0) profiles[index] = profiles[index] with { Operation = operation };
+            else profiles.Add(new PublicProfile(pending.ProfileId, "Server", "Unknown", null, Operation: operation));
+        }
+        return profiles;
+    }
+
+    private void ApplyActionConnectionState(HttpStatusCode statusCode, FriendActionResult result)
+    {
+        if (statusCode == HttpStatusCode.Forbidden && result.Code == "Revoked")
+            view = view with { State = "Revoked", Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.", ConnectionCode = "Revoked",
+                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+        else if (statusCode == HttpStatusCode.Forbidden && result.Code is "Unauthorized" or "Disconnected")
+            view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.", ConnectionCode = "HostAccessDenied",
+                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+        else if (statusCode == HttpStatusCode.ServiceUnavailable)
+            view = view with { State = "Disconnected/Unknown", Detail = "Host companion access is paused.", ConnectionCode = "HostUnavailable",
+                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+        else if (statusCode == HttpStatusCode.Unauthorized)
+            view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.", ConnectionCode = "CredentialRejected",
+                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
     }
 
     private HttpClient HostClient()

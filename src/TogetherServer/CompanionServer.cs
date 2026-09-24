@@ -9,7 +9,8 @@ namespace TogetherServer;
 // It starts only after the owner enables Friend connections and pairing/TLS
 // material is ready; the local GUI remains bound to loopback.
 public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
-    GameServerRegistry games, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null)
+    GameServerRegistry games, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
+    Func<bool>? isShuttingDown = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -17,6 +18,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     private string? activeAddress;
     private readonly SemaphoreSlim listenerGate = new(1, 1);
     private readonly RemoteOperationCoordinator operations = new(data);
+    private readonly AuthenticatedDeviceRateLimiter deviceRateLimiter = new(180, TimeSpan.FromMinutes(1));
 
     public bool Active => active is not null && manager.CompanionListeningEnabled;
     public string? Warning { get; private set; }
@@ -74,10 +76,6 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 options.AddPolicy("pairing", context => RateLimitPartition.GetFixedWindowLimiter(
                     context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
                     { PermitLimit = 12, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
-                options.AddPolicy("device", context => RateLimitPartition.GetFixedWindowLimiter(
-                    Guid.TryParse(context.Request.Headers["X-Device-Id"], out var deviceId)
-                        ? deviceId.ToString("N") : "unauthenticated", _ => new FixedWindowRateLimiterOptions
-                    { PermitLimit = 180, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
             });
             nextApp = builder.Build();
             nextApp.Use(async (context, next) =>
@@ -148,10 +146,16 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     private void MapRoutes(WebApplication app)
     {
         static int AuthenticationStatus(PairingDecision decision) =>
+            decision.Code == "RateLimited" ? StatusCodes.Status429TooManyRequests :
             decision.Code is "Revoked" or "ApprovalPending" ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
 
         bool Authenticate(HttpContext context, out PairedDevice? device, out PairingDecision decision)
+            => AuthenticateDetailed(context, out device, out decision, out _);
+
+        bool AuthenticateDetailed(HttpContext context, out PairedDevice? device, out PairingDecision decision,
+            out bool usedPreviousCredential)
         {
+            usedPreviousCredential = false;
             if (!Guid.TryParse(context.Request.Headers["X-Device-Id"], out var id))
             {
                 device = null;
@@ -160,8 +164,12 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             }
             var auth = context.Request.Headers.Authorization.ToString();
             var token = auth.StartsWith("Bearer ", StringComparison.Ordinal) ? auth[7..] : null;
-            decision = pairing.Authenticate(id, token, out device);
-            return decision.Ok;
+            decision = pairing.Authenticate(id, token, out device, out usedPreviousCredential);
+            if (!decision.Ok) return false;
+            if (deviceRateLimiter.TryAcquire(id)) return true;
+            device = null;
+            decision = new(false, "RateLimited", "This PC is sending too many requests. Wait a moment and try again.");
+            return false;
         }
 
         async Task<CompanionStatus> PublicStatus(Guid deviceId)
@@ -224,24 +232,24 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             decision = pairing.RecordHeartbeat(device, request);
             return decision.Ok ? Results.Json(await PublicStatus(device.Id)) :
                 Results.Json(decision, statusCode: decision.Code is "Revoked" or "ApprovalPending" ? 403 : 409);
-        }).RequireRateLimiting("device");
+        });
         companion.MapGet("/status", async (HttpContext context) =>
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(await PublicStatus(device!.Id));
-        }).RequireRateLimiting("device");
+        });
         companion.MapPost("/credential/renew", (HttpContext context, CredentialRenewalRequest request) =>
         {
-            if (!Authenticate(context, out var device, out var decision))
+            if (!AuthenticateDetailed(context, out var device, out var decision, out var usedPreviousCredential))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id)
                 return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
-            var renewed = pairing.Renew(device, request);
+            var renewed = pairing.Renew(device, request, usedPreviousCredential);
             return renewed is null
                 ? Results.Json(new PairingDecision(false, "RenewalRejected", "The credential could not be renewed."), statusCode: 409)
                 : Results.Json(renewed);
-        }).RequireRateLimiting("device");
+        });
         companion.MapPost("/credential/revoke", (HttpContext context, DeviceSelfRequest request) =>
         {
             if (!Authenticate(context, out var device, out var decision))
@@ -249,7 +257,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (request.DeviceId != device!.Id)
                 return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
             return Results.Json(pairing.Revoke(device.Id));
-        }).RequireRateLimiting("device");
+        });
         companion.MapPost("/endpoint/recover", async (HttpContext context, EndpointRecoveryProofRequest request) =>
         {
             if (!Authenticate(context, out var device, out var decision))
@@ -263,7 +271,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             return Results.Json(new EndpointRecoveryProof(certificates.HostId,
                 snapshot.Settings.CompanionEndpoint, certificates,
                 ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute)));
-        }).RequireRateLimiting("device");
+        });
 
         async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, string action)
         {
@@ -272,6 +280,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             {
                 if (isUpdating?.Invoke() == true)
                     return new(false, "UpdatePending", "The Host is restarting for an update.");
+                if (isShuttingDown?.Invoke() == true)
+                    return new(false, "HostShuttingDown", "The Host is closing and did not run this request.");
                 if (!pairing.TryGetActiveDevice(deviceId, out var device) || device is null)
                     return new(false, "PermissionDenied", "This Friend PC is no longer authorized.");
                 var snapshot = await manager.SnapshotAsync();
@@ -305,7 +315,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     result = await manager.ExtendAutoShutdownForFriendAsync(profileId);
                 else
                     result = await manager.StartAsync(profileId);
-                data.Audit($"remote-{action} {deviceId} {profileId} {result.Code} {DateTimeOffset.UtcNow:O}");
+                data.TryAudit($"remote-{action} {deviceId} {profileId} {result.Code} {DateTimeOffset.UtcNow:O}");
                 return new(result.Ok, result.Code, result.Message, result.PortConflicts);
             }
             finally { modeGate.Release(); }
@@ -315,6 +325,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (isUpdating?.Invoke() == true)
                 return Results.Json(new FriendActionResult(false, "UpdatePending", "The Host is restarting for an update.", null),
+                    statusCode: 503);
+            if (isShuttingDown?.Invoke() == true)
+                return Results.Json(new FriendActionResult(false, "HostShuttingDown", "The Host is closing and cannot accept another request.", null),
                     statusCode: 503);
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
@@ -337,23 +350,17 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         existing.Message, null, existing.PortConflicts,
                         existing.Id, existing.State), statusCode: StatusCodes.Status202Accepted);
             }
-            var snapshot = await manager.SnapshotAsync();
-            if (!snapshot.Settings.RemoteControlsEnabled)
+            if (!manager.RemoteControlsEnabled)
                 return Results.Json(new FriendActionResult(false, "RemoteControlsDisabled", "The Host has paused remote controls.",
-                    await PublicStatus(device.Id)), statusCode: 403);
-            var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == request.ProfileId);
-            if (profile?.Maintenance?.Enabled == true)
-                return Results.Json(new FriendActionResult(false, "MaintenanceMode",
-                    string.IsNullOrWhiteSpace(profile.Maintenance.Message)
-                        ? "The Host has placed this server in maintenance mode. Remote actions are paused."
-                        : "Maintenance: " + profile.Maintenance.Message,
-                    await PublicStatus(device.Id)), statusCode: 403);
+                    null), statusCode: 403);
+            if (manager.RemoteMaintenanceBlocker(request.ProfileId) is { } maintenanceBlocker)
+                return Results.Json(new FriendActionResult(false, "MaintenanceMode", maintenanceBlocker, null), statusCode: 403);
             if (action is "start" or "replace" && !pairing.CanStart(device, request.ProfileId) ||
                 action == "stop" && !pairing.CanStop(device, request.ProfileId) ||
                 action == "restart" && (!pairing.CanStart(device, request.ProfileId) || !pairing.CanStop(device, request.ProfileId)) ||
                 action == "extend" && !pairing.CanExtendTimer(device, request.ProfileId))
                 return Results.Json(new FriendActionResult(false, "PermissionDenied",
-                    "The Host has not granted this action for this server to this PC.", await PublicStatus(device.Id)), statusCode: 403);
+                    "The Host has not granted this action for this server to this PC.", null), statusCode: 403);
             var submission = operations.Submit(device.Id, key, request.ProfileId, action,
                 () => ExecuteRemoteAction(device.Id, request.ProfileId, action));
             if (!submission.Accepted)
@@ -371,16 +378,45 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             var operation = operations.Find(device!.Id, id);
             return operation is null ? Results.NotFound(new { code = "UnknownOperation" }) : Results.Json(operation);
-        }).RequireRateLimiting("device");
-        companion.MapPost("/start", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "start"))
-            .RequireRateLimiting("device");
-        companion.MapPost("/stop", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "stop"))
-            .RequireRateLimiting("device");
-        companion.MapPost("/restart", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "restart"))
-            .RequireRateLimiting("device");
-        companion.MapPost("/replace", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "replace"))
-            .RequireRateLimiting("device");
-        companion.MapPost("/extend", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "extend"))
-            .RequireRateLimiting("device");
+        });
+        companion.MapPost("/start", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "start"));
+        companion.MapPost("/stop", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "stop"));
+        companion.MapPost("/restart", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "restart"));
+        companion.MapPost("/replace", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "replace"));
+        companion.MapPost("/extend", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "extend"));
+    }
+}
+
+internal sealed class AuthenticatedDeviceRateLimiter(int permitLimit, TimeSpan window, TimeProvider? clock = null)
+{
+    private readonly object sync = new();
+    private readonly Dictionary<Guid, Window> windows = [];
+    private readonly TimeProvider clock = clock ?? TimeProvider.System;
+    private int calls;
+
+    private sealed class Window(DateTimeOffset startedUtc)
+    {
+        public DateTimeOffset StartedUtc { get; set; } = startedUtc;
+        public int Count { get; set; }
+    }
+
+    public bool TryAcquire(Guid deviceId)
+    {
+        var now = clock.GetUtcNow();
+        lock (sync)
+        {
+            if (++calls % 256 == 0)
+                foreach (var stale in windows.Where(item => now - item.Value.StartedUtc >= window + window)
+                             .Select(item => item.Key).ToList())
+                    windows.Remove(stale);
+            if (!windows.TryGetValue(deviceId, out var current) || now - current.StartedUtc >= window)
+            {
+                current = new(now);
+                windows[deviceId] = current;
+            }
+            if (current.Count >= permitLimit) return false;
+            current.Count++;
+            return true;
+        }
     }
 }

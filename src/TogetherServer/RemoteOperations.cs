@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
+
 namespace TogetherServer;
 
 public static class RemoteOperationStates
@@ -48,6 +51,10 @@ public sealed class RemoteOperationCoordinator
     private readonly object sync = new();
     private readonly LocalData data;
     private readonly List<RemoteOperation> operations;
+    private readonly ConcurrentQueue<QueuedOperation> queue = new();
+    private readonly SemaphoreSlim queueSignal = new(0);
+
+    private sealed record QueuedOperation(Guid OperationId, Func<Task<RemoteOperationOutcome>> Execute);
 
     public RemoteOperationCoordinator(LocalData data)
     {
@@ -66,6 +73,7 @@ public sealed class RemoteOperationCoordinator
         }
         var pruned = PruneLocked();
         if (interrupted || pruned) data.SaveRemoteOperations(operations);
+        _ = Task.Run(ProcessQueueAsync);
     }
 
     public RemoteOperationSubmission Submit(Guid deviceId, Guid requestId, Guid profileId, string action,
@@ -101,14 +109,21 @@ public sealed class RemoteOperationCoordinator
                 return new(false, false, "OperationQueueFull",
                     "The Host already has 500 unfinished remote operations. Wait for an operation to finish before trying again.", null);
             }
-            data.SaveRemoteOperations(operations);
+            try { data.SaveRemoteOperations(operations); }
+            catch (Exception ex) when (JournalFailure(ex))
+            {
+                operations.Remove(operation);
+                return new(false, false, "OperationJournalUnavailable",
+                    "The Host could not safely record this request, so it was not run.", null);
+            }
         }
 
-        data.Audit($"remote-operation-accepted {operation.Id} {deviceId} {profileId} {action} {operation.RequestedUtc:O}");
+        queue.Enqueue(new(operation.Id, execute));
+        queueSignal.Release();
+        data.TryAudit($"remote-operation-accepted {operation.Id} {deviceId} {profileId} {action} {operation.RequestedUtc:O}");
         RecordActivity("RemoteActionAccepted", $"A Friend requested {ActionLabel(action)}.",
             ActivitySeverity.Important, profileId);
         var acceptedView = View(operation);
-        _ = Task.Run(() => ExecuteAsync(operation.Id, execute));
         return new(true, false, acceptedView.Code, acceptedView.Message, acceptedView);
     }
 
@@ -146,6 +161,22 @@ public sealed class RemoteOperationCoordinator
             .Take(Math.Clamp(maximum, 1, MaximumEntries)).Select(View).ToList();
     }
 
+    private async Task ProcessQueueAsync()
+    {
+        while (true)
+        {
+            await queueSignal.WaitAsync();
+            while (queue.TryDequeue(out var queued))
+            {
+                try { await ExecuteAsync(queued.OperationId, queued.Execute); }
+                catch (Exception ex)
+                {
+                    data.TryAudit($"remote-operation-worker-failed {queued.OperationId} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}");
+                }
+            }
+        }
+    }
+
     private async Task ExecuteAsync(Guid operationId, Func<Task<RemoteOperationOutcome>> execute)
     {
         RemoteOperation operation;
@@ -156,7 +187,19 @@ public sealed class RemoteOperationCoordinator
             operation.Code = "OperationRunning";
             operation.Message = "The Host is carrying out the requested action.";
             operation.StartedUtc = DateTimeOffset.UtcNow;
-            data.SaveRemoteOperations(operations);
+            try { data.SaveRemoteOperations(operations); }
+            catch (Exception ex) when (JournalFailure(ex))
+            {
+                operation.State = RemoteOperationStates.Failed;
+                operation.Ok = false;
+                operation.Code = "OperationJournalUnavailable";
+                operation.Message = "The Host could not safely update the operation journal, so the action was not run.";
+                operation.CompletedUtc = DateTimeOffset.UtcNow;
+                try { data.SaveRemoteOperations(operations); }
+                catch (Exception retry) when (JournalFailure(retry)) { /* The action remains unexecuted and fails closed. */ }
+                data.TryAudit($"remote-operation-journal-failed {operation.Id} before-execution {DateTimeOffset.UtcNow:O}");
+                return;
+            }
         }
 
         RemoteOperationOutcome outcome;
@@ -167,22 +210,27 @@ public sealed class RemoteOperationCoordinator
                 "The Host could not complete the remote operation: " + ex.GetType().Name + ".");
         }
 
+        var publicOutcome = PublicOutcome(operation.Action, outcome);
         lock (sync)
         {
             operation = operations.Single(item => item.Id == operationId);
-            operation.State = outcome.Ok ? RemoteOperationStates.Succeeded : RemoteOperationStates.Failed;
-            operation.Ok = outcome.Ok;
-            operation.Code = outcome.Code;
-            operation.Message = outcome.Message;
-            operation.PortConflicts = outcome.PortConflicts?.ToList();
+            operation.State = publicOutcome.Ok ? RemoteOperationStates.Succeeded : RemoteOperationStates.Failed;
+            operation.Ok = publicOutcome.Ok;
+            operation.Code = publicOutcome.Code;
+            operation.Message = publicOutcome.Message;
+            operation.PortConflicts = publicOutcome.PortConflicts?.ToList();
             operation.CompletedUtc = DateTimeOffset.UtcNow;
             PruneLocked();
-            data.SaveRemoteOperations(operations);
+            try { data.SaveRemoteOperations(operations); }
+            catch (Exception ex) when (JournalFailure(ex))
+            {
+                data.TryAudit($"remote-operation-journal-failed {operation.Id} after-execution {DateTimeOffset.UtcNow:O}");
+            }
         }
-        data.Audit($"remote-operation-complete {operation.Id} {operation.DeviceId} {operation.ProfileId} {operation.Action} {operation.Code} {operation.CompletedUtc:O}");
-        RecordActivity(outcome.Ok ? "RemoteActionSucceeded" : "RemoteActionFailed",
-            $"Friend {ActionLabel(operation.Action)} {(outcome.Ok ? "completed" : "failed")}.",
-            outcome.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, operation.ProfileId);
+        data.TryAudit($"remote-operation-complete {operation.Id} {operation.DeviceId} {operation.ProfileId} {operation.Action} {operation.Code} {operation.CompletedUtc:O}");
+        RecordActivity(publicOutcome.Ok ? "RemoteActionSucceeded" : "RemoteActionFailed",
+            $"Friend {ActionLabel(operation.Action)} {(publicOutcome.Ok ? "completed" : "failed")}.",
+            publicOutcome.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, operation.ProfileId);
     }
 
     private bool PruneLocked()
@@ -214,11 +262,29 @@ public sealed class RemoteOperationCoordinator
         _ => "server action"
     };
 
+    private static RemoteOperationOutcome PublicOutcome(string action, RemoteOperationOutcome outcome)
+    {
+        var code = outcome.Code is { Length: > 0 and <= 64 } &&
+                   outcome.Code.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+            ? outcome.Code : "OperationFailed";
+        var label = ActionLabel(action);
+        var message = outcome.Ok
+            ? $"The Host completed the requested {label}."
+            : code == "PortConflict"
+                ? "Another managed server is using a required game port. Review the safe replacement option."
+                : $"The Host could not complete the requested {label} ({code}). Review the current server status before trying again.";
+        return new(outcome.Ok, code, message, outcome.PortConflicts);
+    }
+
+    private static bool JournalFailure(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or
+            ArgumentException or JsonException;
+
     private void RecordActivity(string action, string message, string severity, Guid profileId)
     {
         try { data.RecordActivity("Remote", action, message, severity, profileId,
             visibility: ActivityVisibility.AssignedFriends); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
-        { data.Audit($"activity-write-failed Remote {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
+        { data.TryAudit($"activity-write-failed Remote {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
     }
 }

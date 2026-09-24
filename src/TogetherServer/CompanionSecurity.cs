@@ -791,9 +791,14 @@ public sealed class PairingService
     }
 
     public PairingDecision Authenticate(Guid id, string? bearer, out PairedDevice? device)
+        => Authenticate(id, bearer, out device, out _);
+
+    public PairingDecision Authenticate(Guid id, string? bearer, out PairedDevice? device,
+        out bool usedPreviousCredential)
     {
         lock (sync)
         {
+            usedPreviousCredential = false;
             device = devices.SingleOrDefault(d => d.Id == id);
             var current = device?.CredentialHash is not null && bearer is not null && bearer.Length <= 128 &&
                 Matches(bearer, device.CredentialHash);
@@ -809,11 +814,13 @@ public sealed class PairingService
                 return new PairingDecision(false, "ApprovalPending", "The Host must approve this PC locally before it can connect.");
             if (device.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
                 return new PairingDecision(false, "Expired", "This device credential has expired.");
+            usedPreviousCredential = !current && previous;
             return new PairingDecision(true, "Authenticated", "Device authenticated.");
         }
     }
 
-    public CredentialRenewal? Renew(PairedDevice authenticatedDevice, CredentialRenewalRequest request)
+    public CredentialRenewal? Renew(PairedDevice authenticatedDevice, CredentialRenewalRequest request,
+        bool authenticatedWithPreviousCredential)
     {
         if (request.DeviceId != authenticatedDevice.Id || request.RequestId == Guid.Empty) return null;
         lock (sync)
@@ -822,10 +829,17 @@ public sealed class PairingService
             if (device is null || IsRevoked(device) || device.CredentialHash is null ||
                 device.CredentialExpiresUtc <= DateTimeOffset.UtcNow) return null;
             var existing = data.LoadCredentialRenewalReceipt(device.Id);
-            if (existing is not null && existing.RequestId == request.RequestId &&
-                existing.PreviousAcceptedUntilUtc > DateTimeOffset.UtcNow)
-                return new(existing.DeviceId, existing.RequestId, existing.Credential,
-                    existing.ExpiresUtc, existing.PreviousAcceptedUntilUtc);
+            if (existing is not null && existing.PreviousAcceptedUntilUtc > DateTimeOffset.UtcNow)
+            {
+                if (existing.RequestId == request.RequestId)
+                    return new(existing.DeviceId, existing.RequestId, existing.Credential,
+                        existing.ExpiresUtc, existing.PreviousAcceptedUntilUtc);
+                // While the retry receipt and old credential overlap, no token
+                // may start another rotation. This keeps a lost-response retry
+                // idempotent and prevents the overlap token from advancing the chain.
+                return null;
+            }
+            if (authenticatedWithPreviousCredential) return null;
 
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             var overlap = DateTimeOffset.UtcNow.AddMinutes(10);
@@ -1049,7 +1063,7 @@ public sealed class PairingService
     {
         try { data.RecordActivity(category, action, message, severity, profileId, deviceId, visibility); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
-        { data.Audit($"activity-write-failed {category} {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
+        { data.TryAudit($"activity-write-failed {category} {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
     }
     private static bool Matches(string candidate, string expectedHash)
     {

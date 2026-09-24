@@ -19,6 +19,7 @@ public sealed class CrashRecoveryState
     public int Attempts { get; set; }
     public DateTimeOffset CrashDetectedUtc { get; set; }
     public DateTimeOffset? NextAttemptUtc { get; set; }
+    public DateTimeOffset? ReadinessDeadlineUtc { get; set; }
     public DateTimeOffset? RecoveredUtc { get; set; }
     public string? LastFailure { get; set; }
 }

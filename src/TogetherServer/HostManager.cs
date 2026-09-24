@@ -26,6 +26,7 @@ public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string 
 
 public sealed class HostManager
 {
+    private static readonly TimeSpan CrashRecoveryReadinessTimeout = TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly LocalData data;
     private readonly GameServerRegistry games;
@@ -51,10 +52,28 @@ public sealed class HostManager
         settings = data.LoadSettings();
         runs = data.LoadRuns();
         crashRecovery = data.LoadCrashRecoveryStates();
+        var recoveryNormalized = false;
+        foreach (var recovery in crashRecovery.Where(item =>
+                     item.State == CrashRecoveryStates.Starting && item.ReadinessDeadlineUtc is null))
+        {
+            recovery.ReadinessDeadlineUtc = this.clock.GetUtcNow().Add(CrashRecoveryReadinessTimeout);
+            recoveryNormalized = true;
+        }
+        if (recoveryNormalized) data.SaveCrashRecoveryStates(crashRecovery);
         backups = new WorldBackupService(data, this.clock);
     }
 
     public bool CompanionListeningEnabled => Volatile.Read(ref settings).CompanionListeningEnabled;
+    public bool RemoteControlsEnabled => Volatile.Read(ref settings).RemoteControlsEnabled;
+
+    public string? RemoteMaintenanceBlocker(Guid profileId)
+    {
+        var profile = Volatile.Read(ref settings).Profiles.SingleOrDefault(item => item.Id == profileId);
+        if (profile?.Maintenance?.Enabled != true) return null;
+        return string.IsNullOrWhiteSpace(profile.Maintenance.Message)
+            ? "The Host has placed this server in maintenance mode. Remote actions are paused."
+            : "Maintenance: " + profile.Maintenance.Message;
+    }
 
     public async Task<HostSnapshot> SnapshotAsync()
     {
@@ -132,6 +151,7 @@ public sealed class HostManager
                     {
                         recovery.State = CrashRecoveryStates.Recovered;
                         recovery.NextAttemptUtc = null;
+                        recovery.ReadinessDeadlineUtc = null;
                         recovery.RecoveredUtc = clock.GetUtcNow();
                         recovery.LastFailure = null;
                         recoveryChanged = true;
@@ -889,6 +909,40 @@ public sealed class HostManager
         {
             var now = clock.GetUtcNow();
             var results = new List<ActionResult>();
+            foreach (var recovery in crashRecovery.Where(item => item.State == CrashRecoveryStates.Starting &&
+                         item.ReadinessDeadlineUtc <= now).ToList())
+            {
+                var run = runs.SingleOrDefault(item => item.ProfileId == recovery.ProfileId);
+                if (run is null)
+                {
+                    FailCrashRecoveryAttempt(recovery, "The recovery process was no longer recorded before reaching Ready.");
+                    results.Add(Result(false, "RecoveryProcessMissing",
+                        "Crash recovery did not reach Ready and the recovery process is no longer recorded."));
+                    continue;
+                }
+                var identity = Identity(run);
+                if (identity == "Missing")
+                {
+                    ArchiveDefinitivelyExitedRun(run, "RecoveryProcessExitedBeforeReady");
+                    results.Add(Result(false, "RecoveryProcessExited",
+                        "The crash-recovery process exited before reaching Ready."));
+                    continue;
+                }
+
+                recovery.State = CrashRecoveryStates.Suspended;
+                recovery.NextAttemptUtc = null;
+                recovery.ReadinessDeadlineUtc = null;
+                recovery.LastFailure = identity == "Matched"
+                    ? "The recovery process stayed running without reaching Ready before the readiness deadline."
+                    : "The recovery process did not reach Ready and its exact identity can no longer be proven.";
+                data.SaveCrashRecoveryStates(crashRecovery);
+                data.TryAudit($"crash-recovery-readiness-timeout {recovery.ProfileId} cycle={recovery.CycleId} identity={identity} {now:O}");
+                Activity("Recovery", "CrashRecoverySuspended",
+                    "Crash recovery was suspended because the launched server did not reach Ready in time. Review it locally.",
+                    ActivitySeverity.Warning, recovery.ProfileId, visibility: ActivityVisibility.AssignedFriends);
+                results.Add(Result(false, "RecoveryStartupTimedOut",
+                    "Crash recovery was suspended because the launched process did not reach Ready in time."));
+            }
             foreach (var recovery in crashRecovery
                          .Where(item => item.State == CrashRecoveryStates.Pending && item.NextAttemptUtc <= now)
                          .OrderBy(item => item.NextAttemptUtc).ToList())
@@ -906,6 +960,7 @@ public sealed class HostManager
                 recovery.Attempts++;
                 recovery.State = CrashRecoveryStates.Starting;
                 recovery.NextAttemptUtc = null;
+                recovery.ReadinessDeadlineUtc = null;
                 data.SaveCrashRecoveryStates(crashRecovery);
                 data.Audit($"crash-recovery-attempt {profile.Id} cycle={recovery.CycleId} attempt={recovery.Attempts} {now:O}");
                 Activity("Recovery", "CrashRestartAttempt", $"Crash recovery attempt {recovery.Attempts} of 3 started.",
@@ -914,6 +969,11 @@ public sealed class HostManager
                 results.Add(result);
                 if (!result.Ok)
                     FailCrashRecoveryAttempt(recovery, result.Code + ": " + result.Message);
+                else
+                {
+                    recovery.ReadinessDeadlineUtc = clock.GetUtcNow().Add(CrashRecoveryReadinessTimeout);
+                    data.SaveCrashRecoveryStates(crashRecovery);
+                }
             }
             return results;
         }
@@ -1253,7 +1313,7 @@ public sealed class HostManager
     {
         try { data.RecordActivity(category, action, message, severity, profileId, deviceId, visibility); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
-        { data.Audit($"activity-write-failed {category} {action} {ex.GetType().Name} {clock.GetUtcNow():O}"); }
+        { data.TryAudit($"activity-write-failed {category} {action} {ex.GetType().Name} {clock.GetUtcNow():O}"); }
     }
 
     private ActionResult Result(bool ok, string code, string message,
@@ -1596,6 +1656,7 @@ public sealed class HostManager
     {
         recovery.LastFailure = failure.Length > 500 ? failure[..500] : failure;
         recovery.RecoveredUtc = null;
+        recovery.ReadinessDeadlineUtc = null;
         if (recovery.Attempts >= 3)
         {
             recovery.State = CrashRecoveryStates.Suspended;
