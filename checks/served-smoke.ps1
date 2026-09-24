@@ -125,6 +125,31 @@ try {
         $css.Content -notmatch '\.notification-item>span\{[^}]*background:var\(--color-accent\);[^}]*color:var\(--color-accent-ink\)') {
         throw 'The aligned Connect row or orange notification icon styles were not bundled.'
     }
+    $positivePalette = @(
+        '--color-success:var(--color-accent-hover)',
+        '--color-success-bright:var(--color-accent-light)',
+        '--color-success-text:var(--color-accent-text)',
+        '--color-success-bg:var(--color-accent-soft)',
+        '--color-success-bg-strong:var(--color-accent-soft-strong)',
+        '--color-success-border:var(--color-accent-border)',
+        '--color-success-ring:var(--color-focus-ring)'
+    )
+    foreach ($token in $positivePalette) {
+        if (!$css.Content.Contains($token)) {
+            throw "Positive status colors are not using the orange product palette: $token"
+        }
+    }
+    $greenDominantColors = @([regex]::Matches($css.Content, '#(?<rgb>[0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?\b') |
+        ForEach-Object {
+            $rgb = $_.Groups['rgb'].Value
+            $red = [Convert]::ToInt32($rgb.Substring(0, 2), 16)
+            $green = [Convert]::ToInt32($rgb.Substring(2, 2), 16)
+            $blue = [Convert]::ToInt32($rgb.Substring(4, 2), 16)
+            if (($green - $red) -ge 12 -and ($green - $blue) -ge 12) { "#$rgb" }
+        } | Sort-Object -Unique)
+    if ($greenDominantColors.Count -gt 0 -or $css.Content -match '(?i)\b(?:green|lime|emerald|teal|olive|chartreuse|seafoam|mint)\b') {
+        throw "The bundled product palette contains green: $($greenDominantColors -join ', ')"
+    }
     if (!$css.Content.Contains('.custom-script-manager{') -or !$css.Content.Contains('.custom-port-row{')) {
         throw 'The custom game script-manager or port-editor styles were not bundled.'
     }

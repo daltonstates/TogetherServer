@@ -1,4 +1,4 @@
-/* Black-first product palette. Orange is the interaction accent; status colors stay semantic. */
+/* Black-first product palette. Orange carries interaction and positive status. */
 :root {
   color-scheme: dark;
 
@@ -32,13 +32,13 @@
   --color-accent-border: #915529;
   --color-focus-ring: #ff8a1f3d;
 
-  --color-success: #b6e59b;
-  --color-success-bright: #c8eba9;
-  --color-success-text: #d8f1cf;
-  --color-success-bg: #243a28;
-  --color-success-bg-strong: #29472f;
-  --color-success-border: #507c55;
-  --color-success-ring: #b6e59b33;
+  --color-success: var(--color-accent-hover);
+  --color-success-bright: var(--color-accent-light);
+  --color-success-text: var(--color-accent-text);
+  --color-success-bg: var(--color-accent-soft);
+  --color-success-bg-strong: var(--color-accent-soft-strong);
+  --color-success-border: var(--color-accent-border);
+  --color-success-ring: var(--color-focus-ring);
 
   --color-warning: #f0c493;
   --color-warning-strong: #f1d89a;
