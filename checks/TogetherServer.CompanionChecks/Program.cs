@@ -752,7 +752,7 @@ try
         unknownConflict.PortConflicts?.SingleOrDefault() is
             { ProfileId: var unknownConflictId, CanReplace: false } &&
         unknownConflictId == stopProfile.Id &&
-        unknownConflict.PortConflicts.Single().BlockReason?.Contains("reliable current player count", StringComparison.OrdinalIgnoreCase) == true,
+        unknownConflict.PortConflicts.Single().BlockReason?.Contains("authoritative player count", StringComparison.OrdinalIgnoreCase) == true,
         "a conflicting server with an Unknown player count was incorrectly offered for replacement");
     File.WriteAllText(playerCountPath, "1");
     var observedOne = false;

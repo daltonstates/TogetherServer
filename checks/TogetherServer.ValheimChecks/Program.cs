@@ -297,6 +297,7 @@ try
                     !File.Exists(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")),
                     "an invalid player count after approval did not cancel remote Stop before signaling");
             }
+            await host.RefreshObservationsAsync();
             using (var unknown = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games))
                 Require(!unknown.Allowed && unknown.Code == "PlayerCountUnknown",
                     "remote Stop accepted an invalid Valheim player count");
@@ -310,10 +311,12 @@ try
                     !File.Exists(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")),
                     "a positive player-count change after approval did not cancel remote Stop before signaling");
             }
+            await host.RefreshObservationsAsync();
             using (var playing = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games))
                 Require(!playing.Allowed && playing.Code == "PlayersOnline",
                     "remote Stop accepted a server reporting an online player");
             File.WriteAllText(playerCountPath, "0");
+            await host.RefreshObservationsAsync();
             using var permit = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games);
             Require(permit.Allowed, "zero online players did not allow remote Stop");
             var stopped = await host.StopAsync(stopProfile.Id, permit.StillSafe);
@@ -332,6 +335,7 @@ try
             "a TogetherServer-created world could not start again after it gained save files");
         await WaitForReady(host, stopProfile.Id);
         File.WriteAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt"), "1");
+        await host.RefreshObservationsAsync();
         var occupied = await host.SnapshotAsync();
         Require(occupied.Runs.Single(run => run.ProfileId == stopProfile.Id).OnlinePlayers == 1,
             "restarted server did not report the synthetic online player");
@@ -366,10 +370,12 @@ try
                 "the Host could not extend the active countdown by an exact number of minutes");
 
             File.WriteAllText(timerCountPath, "1");
+            await host.RefreshObservationsAsync();
             var canceledExtension = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
             Require(canceledExtension.OnlinePlayers == 1 && canceledExtension.AutoShutdownAtUtc is null,
                 "an online player did not cancel the extended countdown");
             File.WriteAllText(timerCountPath, "0");
+            await host.RefreshObservationsAsync();
             Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id)
                     .AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
                 "an extension leaked into the next empty-server countdown");
@@ -387,29 +393,35 @@ try
 
             clock.Advance(TimeSpan.FromSeconds(30));
             File.WriteAllText(timerCountPath, "1");
+            await host.RefreshObservationsAsync();
             var occupiedTimer = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
             Require(occupiedTimer.OnlinePlayers == 1 && occupiedTimer.AutoShutdownAtUtc is null,
                 "an online player did not cancel the empty-server countdown");
 
             File.WriteAllText(timerCountPath, "0");
+            await host.RefreshObservationsAsync();
             var secondTimer = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
             Require(secondTimer.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
                 "the countdown did not restart from a new zero-player observation");
             clock.Advance(TimeSpan.FromSeconds(30));
             File.WriteAllText(timerCountPath, "unknown");
+            await host.RefreshObservationsAsync();
             var unknownTimer = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
             Require(unknownTimer.OnlinePlayers is null && unknownTimer.AutoShutdownAtUtc is null,
                 "an unavailable count was treated as zero or left the countdown running");
 
             File.WriteAllText(timerCountPath, "0");
+            await host.RefreshObservationsAsync();
             var third = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
             Require(third.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
                 "the countdown did not restart after an unavailable count recovered");
             clock.Advance(TimeSpan.FromSeconds(59));
+            await host.RefreshObservationsAsync();
             Require((await host.MaintainIdleShutdownAsync()).Count == 0 &&
                 (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State == "Ready",
                 "automatic shutdown ran before the full idle window");
             clock.Advance(TimeSpan.FromSeconds(1));
+            await host.RefreshObservationsAsync();
             var automatic = await host.MaintainIdleShutdownAsync();
             Require(automatic.Count == 1 && automatic[0].Ok && automatic[0].Code == "ValheimStopped" &&
                 (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State == "Offline" &&
@@ -461,36 +473,44 @@ try
                 "private zero-player log count did not start the timer");
 
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:01:00: New connection\n");
+            await host.RefreshObservationsAsync();
             var partialJoin = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
             Require(partialJoin.OnlinePlayers is null && partialJoin.AutoShutdownAtUtc is null &&
                 partialJoin.AutoShutdownReason == "Waiting for a reliable player count.",
                 "an incomplete log connection was treated as zero or left the timer unexplained");
 
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:01:01: Got connection SteamID 111111\n");
+            await host.RefreshObservationsAsync();
             var joined = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
             Require(joined.OnlinePlayers == 1 && joined.AutoShutdownAtUtc is null &&
                 joined.AutoShutdownReason == "Waiting for the server to be empty.",
                 "a completed log connection did not report one player and explain the stopped timer");
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:01:30: Game server connected\n");
+            await host.RefreshObservationsAsync();
             Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers == 1,
                 "a repeated readiness marker reset an existing player count to zero");
 
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:02:00: RPC_Disconnect\n");
+            await host.RefreshObservationsAsync();
             var partialLeave = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
             Require(partialLeave.OnlinePlayers is null && partialLeave.AutoShutdownAtUtc is null,
                 "an incomplete log disconnection was treated as a reliable count");
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:02:01: Closing socket 111111\n");
+            await host.RefreshObservationsAsync();
             var left = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
             Require(left.OnlinePlayers == 0 && left.AutoShutdownAtUtc is not null,
                 "the completed log disconnection did not restore zero and a fresh timer");
 
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:10:00: Connections 2 ZDOS:123 sent:0 recv:0\n");
+            await host.RefreshObservationsAsync();
             Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers == 2,
                 "the periodic Valheim connection checkpoint did not replace the derived count");
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:15:00: Connections invalid ZDOS:123 sent:0 recv:0\n");
+            await host.RefreshObservationsAsync();
             Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers is null,
                 "a malformed Valheim connection checkpoint left a trusted count");
             File.AppendAllText(recorded.LogPath, "09/22/2026 12:20:00: Connections 0 ZDOS:123 sent:0 recv:0\n");
+            await host.RefreshObservationsAsync();
             var checkpointZero = await host.SnapshotAsync();
             Require(checkpointZero.Runs.Single(run => run.ProfileId == logProfile.Id).OnlinePlayers == 0,
                 "the periodic Valheim zero checkpoint did not recover the count");
@@ -507,6 +527,7 @@ try
                 "09/22/2026 12:21:01: Got connection SteamID 222222\n" +
                 "09/22/2026 12:22:00: RPC_Disconnect\n" +
                 "09/22/2026 12:22:01: Closing socket 222222\n");
+            await host.RefreshObservationsAsync();
             using var finalPermit = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), logProfile.Id, logData, games);
             Require(finalPermit.Allowed, "private log count did not recover after a complete join and leave");
             var stopped = await host.StopAsync(logProfile.Id, finalPermit.StillSafe);
@@ -578,6 +599,7 @@ finally
 static async Task<HostSnapshot> ZeroCountSnapshot(HostManager host, Guid profileId, string countPath)
 {
     File.WriteAllText(countPath, "0");
+    await host.RefreshObservationsAsync();
     var snapshot = await host.SnapshotAsync();
     if (snapshot.Runs.Single(run => run.ProfileId == profileId).OnlinePlayers != 0)
         throw new Exception("synthetic server did not restore a zero-player count");
@@ -599,6 +621,7 @@ static async Task WaitForReady(HostManager host, Guid id)
 {
     for (var i = 0; i < 60; i++)
     {
+        await host.RefreshObservationsAsync();
         var state = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == id).State;
         if (state == "Ready") return;
         if (state is "Failed" or "Unknown") throw new Exception("Synthetic process failed before readiness: " + state);

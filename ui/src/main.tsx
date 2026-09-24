@@ -24,7 +24,8 @@ type Settings = {
   profiles: Profile[]
 }
 type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string }
+type CustomCertificationState = { profileId: string; stage: string; message: string; inProgress: boolean; certified: boolean; certifiedUtc: string | null; onlinePlayers: number | null; blockReason: string | null }
+type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState> }
 type RemoteOperation = { id: string; action: string; state: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Interrupted'; ok: boolean | null; code: string; message: string; requestedUtc: string; completedUtc: string | null }
 type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean; canRestartNow: boolean; restartReason: string | null; operation?: RemoteOperation | null }
 type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean }
@@ -54,6 +55,7 @@ type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean }>
 type CustomScriptBundle = { start: string; status: string; stop: string }
 type CustomScriptResult = BasicResult & { scripts: CustomScriptBundle }
+type CustomCertificationResult = BasicResult & { snapshot: HostSnapshot; certification: CustomCertificationState }
 
 function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
   const ref = useRef<HTMLInputElement | null>(null)
@@ -911,6 +913,18 @@ function App() {
       setNotice({ good: false, text: String(error) })
     } finally { setPending('') }
   }
+  const customCertificationAction = async (profileId: string, action: 'begin' | 'status' | 'confirm' | 'cancel' | 'revoke') => {
+    const key = `certification-${action}-${profileId}`
+    setPending(key)
+    setNotice(null)
+    try {
+      const result = await change<CustomCertificationResult>(`/api/local/profiles/${profileId}/custom-certification/${action}`, 'POST')
+      setSnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) void checkPorts()
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
   const openDeviceServerAccess = (device: Device) => {
     const savedIds = new Set(snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : [])
     setNotice(null)
@@ -1393,6 +1407,7 @@ function App() {
           <div className="profile-list server-grid">
             {snapshot.settings.profiles.map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
+              const certification = snapshot.customCertifications?.[profile.id]
               const connectionKey = `host-${profile.id}`
               const addressKey = `${connectionKey}-address`
               const passwordKey = `${connectionKey}-password`
@@ -1439,6 +1454,19 @@ function App() {
                       : <p className="helper-text">Preparing this server's invite…</p>}
                 </div>}
                 {status?.state === 'Ready' && !detectedGameIp && <div className="next-action"><span>Your public game address is not available yet.</span><Button className="text-button" onClick={() => openHostSettings('network')}>Check connection</Button></div>}
+                {profile.kind === 'Custom' && <div className="custom-certification">
+                  <div><strong>Owner-certified Custom control</strong><span className={`pill ${certification?.certified ? 'certified' : ''}`}>{certification?.certified ? 'Remote-ready' : certification?.inProgress ? 'Certification in progress' : 'Not certified'}</span></div>
+                  <p>{certification?.message ?? 'Live certification is required for remote Stop, Restart, replacement, and automatic shutdown.'}</p>
+                  {certification?.onlinePlayers != null && <small>Latest certification observation: {certification.onlinePlayers} player{certification.onlinePlayers === 1 ? '' : 's'} online.</small>}
+                  <div className="actions">
+                    {!certification?.certified && !certification?.inProgress && certification?.stage !== 'Failed' && <Button className="secondary" disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void customCertificationAction(profile.id, 'begin')}>Begin live certification</Button>}
+                    {certification?.inProgress && <Button className="secondary" disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'status')}>{pending === `certification-status-${profile.id}` ? 'Checkingâ€¦' : 'Check certification step'}</Button>}
+                    {certification?.inProgress && ['ConfirmFirstChange', 'ConfirmSecondChange'].includes(certification.stage) && <Button disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'confirm')}>{certification.stage === 'ConfirmFirstChange' ? 'Confirm change was made' : 'Confirm change survived'}</Button>}
+                    {(certification?.inProgress || certification?.stage === 'Failed') && <Button className="text-button" disabled={!!pending} onClick={() => void customCertificationAction(profile.id, 'cancel')}>Cancel certification</Button>}
+                    {certification?.certified && <Button className="danger-outline" disabled={!!pending} onClick={() => { if (window.confirm('Revoke remote lifecycle authority for this Custom server? Local owner controls will remain available.')) void customCertificationAction(profile.id, 'revoke') }}>Revoke certification</Button>}
+                  </div>
+                  {!certification?.certified && status?.state !== 'Offline' && !certification?.inProgress && certification?.stage !== 'Failed' && <small>Stop the server locally before beginning certification.</small>}
+                </div>}
                 <details className="advanced-block card-manage"><summary>Manage server</summary>
                   <p className="helper-text">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>
                   <div className="actions"><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}>Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</Button>
@@ -1525,7 +1553,7 @@ function App() {
               : profile.kind === 'Custom' ? <div className="custom-script-manager">
                 <div className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></div>
                 <label>Start script<TextArea value={customScripts[profile.id]?.start ?? ''} onChange={event => editCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
-                <label>Status and players script<TextArea value={customScripts[profile.id]?.status ?? ''} onChange={event => editCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and output exactly one JSON object.\n@{ state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Player names/counts are shown, but remain display-only for safety.</small></label>
+                <label>Status and players script<TextArea value={customScripts[profile.id]?.status ?? ''} onChange={event => editCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and echo every contract value.\n@{ contractVersion = [int]$env:TOGETHERSERVER_CONTRACT_VERSION; probeId = $env:TOGETHERSERVER_PROBE_ID; operationId = $env:TOGETHERSERVER_OPERATION_ID; state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Existing scripts still show status, but contract v2 echoes plus the guided live certification are required before player counts can authorize remote lifecycle actions.</small></label>
                 <label>Stop script<TextArea value={customScripts[profile.id]?.stop ?? ''} onChange={event => editCustomScripts(profile.id, { stop: event.target.value })} placeholder={'# Ask the real server to save and exit gracefully.\n# The Start script process must then exit within 90 seconds.'} /><small>Finish within 15 seconds after sending the game’s own save/stop command. TogetherServer never force-kills the game.</small></label>
                 <details className="advanced-block"><summary>Script environment and output contract</summary><p className="helper-text">Every action receives TOGETHERSERVER_ACTION, TOGETHERSERVER_PROFILE_ID, TOGETHERSERVER_WORLD_ID, TOGETHERSERVER_WORKING_DIRECTORY, TOGETHERSERVER_GAME_PORT, and TOGETHERSERVER_MANAGED_PID. Status output must be a single JSON object with optional detail, onlinePlayers, maxPlayers, and players fields.</p></details>
               </div>

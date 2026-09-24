@@ -142,6 +142,20 @@ public sealed class LocalData : IDisposable
         var path = Path.Combine(root, $"custom-scripts-{profileId:N}.protected");
         if (File.Exists(path)) File.Delete(path);
     }
+    public void SaveCustomCertification(CustomRemoteCertification certification) =>
+        SaveProtected($"custom-certification-{certification.ProfileId:N}.protected",
+            JsonSerializer.SerializeToUtf8Bytes(certification, Json));
+    public CustomRemoteCertification? LoadCustomCertification(Guid profileId)
+    {
+        var bytes = LoadProtected($"custom-certification-{profileId:N}.protected");
+        return bytes is null ? null : JsonSerializer.Deserialize<CustomRemoteCertification>(bytes, Json)
+            ?? throw new InvalidDataException("Invalid protected custom certification");
+    }
+    public void DeleteCustomCertification(Guid profileId)
+    {
+        var path = Path.Combine(root, $"custom-certification-{profileId:N}.protected");
+        if (File.Exists(path)) File.Delete(path);
+    }
     public List<PairedDevice> LoadDevices() => Load("devices.json", new List<PairedDevice>());
     public void SaveDevices(List<PairedDevice> devices) => Save("devices.json", devices);
     public List<ServerInviteState> LoadServerInvites()

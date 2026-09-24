@@ -54,33 +54,46 @@ internal sealed class CustomGameServerDriver(LocalData data) : IGameServerDriver
             ?? throw new InvalidOperationException("Custom scripts are unavailable.");
         var processId = CustomPowerShell.StartLongRunning(scripts.Start, run);
         return new("CustomStarting",
-            "Custom Start script launched. Waiting for the Status/players script; its count is display-only.", processId);
+            "Custom Start script launched. Waiting for the Status/players script.", processId);
     }
 
-    public GameHealthResult Health(ManagedRun run)
+    public GameHealthResult Health(ManagedRun run) => ProbeContract(run).Health;
+
+    internal CustomContractProbe ProbeContract(ManagedRun run)
     {
         CustomScriptBundle? scripts;
         try { scripts = data.LoadCustomScripts(run.ProfileId); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
                                    System.Security.Cryptography.CryptographicException or JsonException)
         {
-            return Unknown("CustomScriptsUnavailable", "Protected custom scripts could not be read: " + ex.Message);
+            return Untrusted("CustomScriptsUnavailable", "Protected custom scripts could not be read: " + ex.Message);
         }
-        if (scripts is null) return Unknown("CustomScriptsUnavailable", "Protected custom scripts are unavailable.");
+        if (scripts is null) return Untrusted("CustomScriptsUnavailable", "Protected custom scripts are unavailable.");
 
-        var result = CustomPowerShell.Run(scripts.Status, run, "status", TimeSpan.FromSeconds(4));
+        var probeId = Guid.NewGuid().ToString("N");
+        var operationId = run.OperationId.ToString("D");
+        var result = CustomPowerShell.Run(scripts.Status, run, "status", TimeSpan.FromSeconds(4), probeId);
         if (result.TimedOut)
-            return Unknown("CustomStatusTimedOut", "The custom Status/players script did not finish within 4 seconds.");
+            return Untrusted("CustomStatusTimedOut", "The custom Status/players script did not finish within 4 seconds.");
         if (result.ExitCode != 0)
-            return Unknown("CustomStatusFailed", "The custom Status/players script failed" + ErrorSuffix(result.Error) + ".");
+            return Untrusted("CustomStatusFailed", "The custom Status/players script failed" + ErrorSuffix(result.Error) + ".");
         if (result.Output.Length > CustomGameScripts.MaxOutputCharacters)
-            return Unknown("CustomStatusTooLarge", "The custom Status/players script returned too much output.");
+            return Untrusted("CustomStatusTooLarge", "The custom Status/players script returned too much output.");
 
         CustomHealthPayload? payload;
         try { payload = JsonSerializer.Deserialize<CustomHealthPayload>(result.Output, CustomGameScripts.Json); }
-        catch (JsonException) { return Unknown("CustomStatusInvalid", CustomGameScripts.StatusContract); }
+        catch (JsonException ex)
+        {
+            return Untrusted("CustomStatusInvalid",
+                "Status/players did not return one valid JSON object: " + ex.Message);
+        }
         var error = CustomGameScripts.Validate(payload);
-        if (error is not null) return Unknown("CustomStatusInvalid", error);
+        if (error is not null) return Untrusted("CustomStatusInvalid", error);
+
+        var contractError = CustomGameScripts.ValidateContractV2(payload!, probeId, operationId);
+        var contractValid = contractError is null;
+        var certificationError = contractValid ? CertificationError(run, scripts) : contractError;
+        var trusted = contractValid && certificationError is null;
 
         var state = payload!.State;
         var ready = state.Equals("Ready", StringComparison.OrdinalIgnoreCase);
@@ -88,10 +101,16 @@ internal sealed class CustomGameServerDriver(LocalData data) : IGameServerDriver
         var detail = string.IsNullOrWhiteSpace(payload.Detail)
             ? $"Custom script reports {normalizedState}."
             : payload.Detail.Trim();
-        if (ready) detail += " Script-reported player data is display-only; Friend Stop and automatic shutdown are blocked.";
-        return new(ready, ready ? "CustomScriptReady" : "CustomScript" + normalizedState,
+        if (ready && trusted)
+            detail += " Owner-certified Custom control is active; exact player counts may authorize guarded lifecycle actions.";
+        else if (ready && contractValid)
+            detail += " Contract v2 is valid, but owner certification is required before the count can authorize lifecycle actions.";
+        else if (ready)
+            detail += " Player data is display-only because the authoritative Custom contract is invalid: " + contractError;
+        var health = new GameHealthResult(ready, ready ? (trusted ? "CustomCertifiedReady" : "CustomScriptReady") : "CustomScript" + normalizedState,
             normalizedState, detail, payload.OnlinePlayers, payload.MaxPlayers,
-            payload.Players?.Select(name => name.Trim()).ToList(), PlayerCountTrusted: false);
+            payload.Players?.Select(name => name.Trim()).ToList(), PlayerCountTrusted: trusted);
+        return new(health, contractValid, contractError, certificationError);
     }
 
     public async Task<GameStopResult> StopAsync(Process process, ManagedRun run)
@@ -117,21 +136,45 @@ internal sealed class CustomGameServerDriver(LocalData data) : IGameServerDriver
             "The custom Start script process exited after the Stop script. Game save behavior remains owner-verified.", 0);
     }
 
-    private static GameHealthResult Unknown(string code, string detail) =>
-        new(false, code, "Unknown", detail, PlayerCountTrusted: false);
+    private string? CertificationError(ManagedRun run, CustomScriptBundle scripts)
+    {
+        try
+        {
+            var profile = data.LoadSettings().Profiles.SingleOrDefault(candidate =>
+                candidate.Id == run.ProfileId && candidate.Kind == GameKinds.Custom);
+            if (profile is null) return "The saved Custom profile is unavailable.";
+            var certification = data.LoadCustomCertification(run.ProfileId);
+            if (certification is null) return "Owner certification has not been completed.";
+            return CustomCertification.Matches(certification, profile, scripts, Ports(profile))
+                ? null
+                : "The Custom lifecycle configuration changed after certification.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   System.Security.Cryptography.CryptographicException or JsonException or FormatException)
+        {
+            return "The protected Custom certification could not be verified: " + ex.GetType().Name + ".";
+        }
+    }
+
+    private static CustomContractProbe Untrusted(string code, string detail) =>
+        new(new(false, code, "Unknown", detail, PlayerCountTrusted: false), false, detail, detail);
 
     private static string ErrorSuffix(string error) => string.IsNullOrWhiteSpace(error)
         ? "" : ": " + error.Trim().Replace('\r', ' ').Replace('\n', ' ')[..Math.Min(240, error.Trim().Length)];
 }
 
+internal sealed record CustomContractProbe(GameHealthResult Health, bool ContractValid,
+    string? ContractError, string? CertificationError);
+
 internal sealed record CustomHealthPayload(string State, string? Detail, int? OnlinePlayers,
-    int? MaxPlayers, IReadOnlyList<string>? Players);
+    int? MaxPlayers, IReadOnlyList<string>? Players, int? ContractVersion = null,
+    string? ProbeId = null, string? OperationId = null);
 
 internal static class CustomGameScripts
 {
     public const int MaxScriptCharacters = 64 * 1024;
     public const int MaxOutputCharacters = 64 * 1024;
-    public const string StatusContract = "Status/players must output one JSON object with state Ready, Starting, or Failed; optional detail, onlinePlayers, maxPlayers, and players fields.";
+    public const string StatusContract = "Status/players must output one JSON object with state Ready, Starting, or Failed; optional detail, onlinePlayers, maxPlayers, and players fields. Contract v2 certification also requires contractVersion, probeId, operationId, and an exact onlinePlayers count.";
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { PropertyNameCaseInsensitive = true };
 
@@ -146,10 +189,11 @@ internal static class CustomGameScripts
 
     public static string? Validate(CustomHealthPayload? payload)
     {
-        if (payload is null || !(payload.State?.Equals("Ready", StringComparison.OrdinalIgnoreCase) == true ||
+        if (payload is null) return "Status/players returned JSON null instead of a status object.";
+        if (!(payload.State?.Equals("Ready", StringComparison.OrdinalIgnoreCase) == true ||
             payload.State?.Equals("Starting", StringComparison.OrdinalIgnoreCase) == true ||
             payload.State?.Equals("Failed", StringComparison.OrdinalIgnoreCase) == true))
-            return StatusContract;
+            return "Status state must be Ready, Starting, or Failed.";
         if (payload.Detail is { Length: > 300 } || payload.Detail?.Any(char.IsControl) == true)
             return "Status detail must be at most 300 characters without control characters.";
         if (payload.OnlinePlayers is < 0 || payload.MaxPlayers is <= 0 ||
@@ -158,6 +202,23 @@ internal static class CustomGameScripts
         if (payload.Players is { Count: > 64 } || payload.Players?.Any(name =>
             string.IsNullOrWhiteSpace(name) || name.Length > 64 || name.Any(char.IsControl)) == true)
             return "Status players may contain at most 64 names of 1 to 64 characters without control characters.";
+        return null;
+    }
+
+    public static string? ValidateContractV2(CustomHealthPayload payload, string probeId, string operationId)
+    {
+        if (payload.ContractVersion != CustomCertification.ContractVersion)
+            return $"contractVersion must equal {CustomCertification.ContractVersion}.";
+        if (!string.Equals(payload.ProbeId, probeId, StringComparison.Ordinal))
+            return "probeId did not echo the unique current probe.";
+        if (!string.Equals(payload.OperationId, operationId, StringComparison.OrdinalIgnoreCase))
+            return "operationId did not echo the current managed run.";
+        if (payload.OnlinePlayers is null)
+            return "onlinePlayers is required for authoritative Custom control.";
+        if (payload.Players is { } players && players.Count != payload.OnlinePlayers)
+            return "players and onlinePlayers contradict each other.";
+        if (payload.State.Equals("Failed", StringComparison.OrdinalIgnoreCase) && payload.OnlinePlayers != 0)
+            return "a Failed state cannot report online players.";
         return null;
     }
 }
@@ -173,19 +234,19 @@ internal static class CustomPowerShell
     {
         using var process = new Process { StartInfo = StartInfo(run, "start", redirectOutput: false) };
         if (!process.Start()) throw new InvalidOperationException("Windows PowerShell did not start.");
-        process.StandardInput.WriteLine("$env:TOGETHERSERVER_MANAGED_PID = [string]$PID");
-        process.StandardInput.Write(script);
+        process.StandardInput.WriteLine("$env:TOGETHERSERVER_MANAGED_PID = [string]$PID; " + Invocation(script));
         process.StandardInput.Close();
         return process.Id;
     }
 
-    public static CustomScriptRun Run(string script, ManagedRun run, string action, TimeSpan timeout)
+    public static CustomScriptRun Run(string script, ManagedRun run, string action, TimeSpan timeout,
+        string? probeId = null)
     {
-        using var process = new Process { StartInfo = StartInfo(run, action, redirectOutput: true) };
+        using var process = new Process { StartInfo = StartInfo(run, action, redirectOutput: true, probeId) };
         if (!process.Start()) return new(1, "", "Windows PowerShell did not start", false);
         var output = ReadLimitedAsync(process.StandardOutput, CustomGameScripts.MaxOutputCharacters + 1);
         var error = ReadLimitedAsync(process.StandardError, 4096);
-        process.StandardInput.Write(script);
+        process.StandardInput.WriteLine(Invocation(script));
         process.StandardInput.Close();
         if (!process.WaitForExit((int)timeout.TotalMilliseconds))
         {
@@ -195,7 +256,8 @@ internal static class CustomPowerShell
         return new(process.ExitCode, output.GetAwaiter().GetResult().Trim(), error.GetAwaiter().GetResult().Trim(), false);
     }
 
-    private static ProcessStartInfo StartInfo(ManagedRun run, string action, bool redirectOutput)
+    private static ProcessStartInfo StartInfo(ManagedRun run, string action, bool redirectOutput,
+        string? probeId = null)
     {
         var info = new ProcessStartInfo(Path)
         {
@@ -219,7 +281,20 @@ internal static class CustomPowerShell
         info.Environment["TOGETHERSERVER_WORKING_DIRECTORY"] = run.WorldDirectory;
         info.Environment["TOGETHERSERVER_GAME_PORT"] = run.GamePort.ToString();
         info.Environment["TOGETHERSERVER_MANAGED_PID"] = run.ProcessId?.ToString() ?? "";
+        info.Environment["TOGETHERSERVER_CONTRACT_VERSION"] = CustomCertification.ContractVersion.ToString();
+        info.Environment["TOGETHERSERVER_PROBE_ID"] = probeId ?? "";
+        info.Environment["TOGETHERSERVER_OPERATION_ID"] = run.OperationId.ToString("D");
         return info;
+    }
+
+    // Keep the owner-provided script out of process command-line inspection,
+    // while ensuring PowerShell receives a single complete statement even for
+    // multi-line scripts over redirected standard input.
+    private static string Invocation(string script)
+    {
+        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(script));
+        return "& ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" +
+            encoded + "'))))";
     }
 
     private static async Task<string> ReadLimitedAsync(TextReader reader, int limit)

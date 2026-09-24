@@ -798,3 +798,21 @@ One single-flight supervisor probes each exact managed run about three seconds a
 | Real game, real Friend PC, saved-world Restart, and public/private route | Not run. Fixture/process evidence is not represented as those external acceptance gates. |
 
 No release tag or GitHub release was created. No real game binary, valued world, credential, public listener, router, firewall, or DNS setting was used or changed.
+
+## 2026-09-23 - Owner-certified Custom remote lifecycle
+
+Starting Git HEAD: `7b1c76c`. Custom Status contract v2 now gives every probe a unique probe ID, the exact managed-run operation ID, and a contract version; authoritative responses must echo all three and provide a valid exact player count. Stale, wrong, missing, malformed, oversized, contradictory, or timed-out responses remain untrusted. Multi-line owner scripts are sent as a base64-wrapped script block over standard input so they execute as one complete statement without exposing script text on the process command line.
+
+The Host-only guided certification begins Offline, observes Ready zero, positive occupancy, and a return to zero, performs another exact-zero probe inside the lifecycle gate, gracefully stops the exact wrapper, restarts the same profile/world, observes a second real join, requires the owner to confirm a recognizable persistent change survived, and observes a final return to zero. The protected result is fingerprint-bound to Start/Status/Stop scripts, world ID, normalized working/save directory, declared ports, and contract version. Script or lifecycle-setting changes revoke it and cancel any Custom idle countdown. Cancellation or any failed stage grants no authority.
+
+A matching certification makes the Custom driver's exact count authoritative for the existing guarded Friend Stop, fixed Restart, explicit empty-conflict replacement, and optional automatic idle shutdown paths. Every Stop path still requires Ready, fresh exact zero, exact wrapper identity, and another direct exact-zero probe under the serialized lifecycle gate. Local owner Stop remains independent. UI and documentation call this **owner-certified Custom control**, not official built-in support.
+
+| Check | Result |
+| --- | --- |
+| Custom lifecycle checks | Pass: 5 groups, 0 failures. Covers protected scripts/certification, contract v2, zero-positive-zero twice, wrapper Stop/restart, recognizable saved-change and certification persistence, authoritative Stop eligibility, automatic shutdown, Restart, replacement, final-check player race, invalidation, wrong IDs, contradiction, malformed/oversized output, and timeout. Data: `local-data/custom-checks/53e8bb66801b41d28f8113942c6284d3`. |
+| UI production build | Pass: TypeScript and Vite bundled 23 modules. The Host card exposes begin/check/confirm/cancel/revoke steps and the contract-v2 script template. |
+| Host and built-in game regressions | Pass: core 12 groups, Valheim 10 groups, and Minecraft 3 groups, all with 0 failures. Tests now explicitly advance the shared observation supervisor before asserting a changed synthetic count. Data: `local-data/checks/b1a603f256ff46d98c877397a2592d4b`, `local-data/valheim-checks/2d2e976d128e451ea1d92058c9dfb239`, and `local-data/minecraft-checks/094413a58e4d4d038ff003a2e94da077`. |
+| Packaged Host/Friend and desktop regressions | Pass: companion 22 groups, served smoke 21 groups, and background desktop smoke 8 groups, all with 0 failures. Data: `local-data/companion-checks/2ae39e361b1e49feafc805663bb5f1d3`, `local-data/served-smoke/d75c2efde8a44accbffd32dac40ee107`, and `local-data/desktop-smoke/4480b9d8fe8849cbaca77abd1ea09685`. |
+| Real Custom game and real Friend PC | Not run. Synthetic PowerShell/process checks do not prove a particular game's occupancy source or save implementation. The wizard must be completed with a disposable real world before relying on it. |
+
+No release tag or GitHub release was created. No real game binary, valued world, credential, public listener, router, firewall, or DNS setting was used or changed.

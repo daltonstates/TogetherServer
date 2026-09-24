@@ -70,7 +70,8 @@ async Task Ready(HostManager manager, Guid id)
 {
     for (var attempt = 0; attempt < 15; attempt++)
     {
-        if ((await manager.HealthAsync(id)).Code == "MinecraftLocalStatus") return;
+        await manager.RefreshObservationsAsync();
+        if ((await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == id).State == "Ready") return;
         await Task.Delay(200);
     }
     throw new Exception("Synthetic Minecraft status did not become ready");
@@ -152,6 +153,7 @@ await Check("two games can share a world name and numeric port on different prot
             "Minecraft remote Stop was not enabled for verified zero-player status replies");
         File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "unknown");
         File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "synthetic-online-players.txt"), "unknown");
+        await manager.RefreshObservationsAsync();
         var unknownSnapshot = await manager.SnapshotAsync();
         Require(unknownSnapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
             .All(run => run.State == "Ready" && run.OnlinePlayers is null && run.AutoShutdownAtUtc is null),
@@ -163,6 +165,7 @@ await Check("two games can share a world name and numeric port on different prot
             "Minecraft remote Stop did not fail closed for invalid player counts");
         File.WriteAllText(Path.Combine(java.WorldDirectory, "synthetic-online-players.txt"), "2");
         File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "synthetic-online-players.txt"), "0");
+        await manager.RefreshObservationsAsync();
         var mixedSnapshot = await manager.SnapshotAsync();
         Require(mixedSnapshot.Runs.Single(run => run.ProfileId == java.Id).AutoShutdownAtUtc is null &&
             mixedSnapshot.Runs.Single(run => run.ProfileId == bedrock.Id).AutoShutdownAtUtc is not null,

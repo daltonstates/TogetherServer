@@ -9,7 +9,7 @@ Updated 2026-09-23. This is the exhaustive **evaluated backlog for TogetherServe
 | Built-in | A reviewed .NET driver is in the app. Fixture evidence and real-game acceptance are stated separately. |
 | Next | Strong candidate for a built-in driver: a Windows dedicated/headless process plus a credible readiness, player-count, and graceful-stop path. |
 | Candidate | Likely implementable, but its current Windows binary, query/admin protocol, save behavior, or terms still needs research. |
-| Custom now | An owner may use the local Custom game script manager today. This is not official game support, and its player data cannot authorize Friend Stop, automatic shutdown, or empty-server replacement. |
+| Custom now | An owner may use the local Custom game script manager today. Counts are display-only until the exact configuration passes contract-v2 live certification. A match can authorize guarded Friend Stop, Restart, replacement, and idle shutdown, but remains owner-certified rather than official game support. |
 | Blocked | No owner-run dedicated/headless server is currently known, distribution is restricted, or the game depends on publisher-hosted sessions. |
 
 A built-in driver is accepted only after fixed arguments, declared ports, real readiness, authoritative zero/positive/unknown player counts, graceful Stop, process identity, a client join, and a recognizable save across restart have been checked. A Steam tool listing or community setup guide is candidate evidence only.

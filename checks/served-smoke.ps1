@@ -96,7 +96,7 @@ try {
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
         'Extra minutes for this countdown only.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
         'Custom game', 'local PowerShell actions', 'Status and players script',
-        'Player names/counts are shown, but remain display-only for safety.', 'TogetherServer never force-kills the game.',
+        'contract v2 echoes plus the guided live certification are required', 'TogetherServer never force-kills the game.',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {
@@ -192,7 +192,7 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     }
     if ($customReady.state -ne 'Ready' -or $customReady.onlinePlayers -ne 0 -or
         @($customReady.playerNames).Count -ne 1 -or $customReady.playerCountTrusted -ne $false -or
-        !$customReady.autoShutdownReason.Contains('display-only')) { throw 'Packaged custom status did not remain display-only and fail closed.' }
+        !$customReady.autoShutdownReason.Contains('certification')) { throw 'Packaged uncertified custom status did not remain display-only and fail closed.' }
     $customStopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/stop" -Method Post -Headers $headers
     if (!$customStopped.ok -or $customStopped.code -ne 'CustomStopped') { throw "Custom Stop failed: $($customStopped.message)" }
     $customRemoved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body (@{ profiles = @() } | ConvertTo-Json)
@@ -331,8 +331,13 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
         Start-Sleep -Milliseconds 100
     }
     if (!$ready) { throw 'Published EXE did not see the synthetic server-connected log.' }
-    $valheimSnapshot = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
-    $valheimView = @($valheimSnapshot.runs) | Where-Object profileId -EQ $valheimId
+    $valheimView = $null
+    for ($i = 0; $i -lt 50; $i++) {
+        $valheimSnapshot = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
+        $valheimView = @($valheimSnapshot.runs) | Where-Object profileId -EQ $valheimId
+        if ($valheimView.onlinePlayers -eq 0 -and $valheimView.maxPlayers -eq 10 -and $null -ne $valheimView.autoShutdownAtUtc) { break }
+        Start-Sleep -Milliseconds 100
+    }
     if ($valheimView.onlinePlayers -ne 0 -or $valheimView.maxPlayers -ne 10 -or $null -eq $valheimView.autoShutdownAtUtc) {
         throw 'Published EXE did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
     }

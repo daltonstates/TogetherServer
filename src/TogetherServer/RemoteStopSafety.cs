@@ -1,6 +1,7 @@
 namespace TogetherServer;
 
-// Friend Stop is allowed only when the selected built-in game driver returns a
+// Friend Stop is allowed only when the selected built-in driver or an exactly
+// matching owner-certified Custom profile returns a
 // fresh, authoritative zero-player count. The count is checked once for the UI
 // decision and again inside HostManager's lifecycle gate immediately before the
 // graceful stop signal. Unknown fails closed; local Host Stop is independent.
@@ -16,7 +17,7 @@ public static class RemoteStopSafety
             return StopPermit.Denied("ServerNotReady", "Remote Stop needs a running, ready server.");
         if (!view.PlayerCountTrusted)
             return StopPermit.Denied("PlayerCountUntrusted",
-                "This custom game's script-reported player count is display-only. Remote Stop is blocked; the Host can stop it locally.");
+                "This server does not have a fresh authoritative player count. Custom profiles need a matching owner certification and contract-v2 proof. Remote Stop is blocked; the Host can stop it locally.");
         if (view.OnlinePlayers is null)
             return StopPermit.Denied("PlayerCountUnknown",
                 "The server did not report a current online-player count. Remote Stop is blocked; the Host can stop it locally.");

@@ -366,7 +366,12 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (!$ready) { throw 'Desktop synthetic server readiness was not observed.' }
-    $desktopRun = @((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").runs) | Where-Object profileId -EQ $profileId
+    $desktopRun = $null
+    for ($i = 0; $i -lt 50; $i++) {
+        $desktopRun = @((Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").runs) | Where-Object profileId -EQ $profileId
+        if ($desktopRun.onlinePlayers -eq 0 -and $desktopRun.maxPlayers -eq 10 -and $null -ne $desktopRun.autoShutdownAtUtc) { break }
+        Start-Sleep -Milliseconds 100
+    }
     if ($desktopRun.onlinePlayers -ne 0 -or $desktopRun.maxPlayers -ne 10 -or $null -eq $desktopRun.autoShutdownAtUtc) {
         throw 'Desktop GUI snapshot did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
     }

@@ -185,6 +185,17 @@ async Task<IResult> HostOnly(Func<Task<ActionResult>> action)
     }
     finally { modeGate.Release(); }
 }
+async Task<IResult> HostOnlyCertification(Func<Task<CustomCertificationResult>> action)
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+        return Results.Json(await action());
+    }
+    finally { modeGate.Release(); }
+}
 app.MapPut("/api/local/settings", async (HostSettings settings) =>
 {
     await modeGate.WaitAsync();
@@ -248,6 +259,16 @@ app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordR
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
 app.MapPut("/api/local/profiles/{id:guid}/custom-scripts", (Guid id, CustomScriptBundle scripts) =>
     HostOnly(() => manager.SetCustomScriptsAsync(id, scripts)));
+app.MapPost("/api/local/profiles/{id:guid}/custom-certification/begin", (Guid id) =>
+    HostOnlyCertification(() => manager.BeginCustomCertificationAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/custom-certification/status", (Guid id) =>
+    HostOnlyCertification(() => manager.CheckCustomCertificationAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/custom-certification/confirm", (Guid id) =>
+    HostOnlyCertification(() => manager.ConfirmCustomCertificationAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/custom-certification/cancel", (Guid id) =>
+    HostOnlyCertification(() => manager.CancelCustomCertificationAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/custom-certification/revoke", (Guid id) =>
+    HostOnlyCertification(() => manager.RevokeCustomCertificationAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-scripts/reveal", async (Guid id) =>
 {
     await modeGate.WaitAsync();

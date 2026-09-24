@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text.Json;
 
 namespace TogetherServer;
 
@@ -9,7 +10,8 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
     bool PlayerCountTrusted = true);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
-    string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot);
+    string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot,
+    IReadOnlyDictionary<Guid, CustomCertificationState>? CustomCertifications = null);
 public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
     bool CanReplace, string? BlockReason = null);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
@@ -31,6 +33,7 @@ public sealed class HostManager
     private readonly HashSet<Guid> hostAddedTime = [];
     private readonly Dictionary<Guid, ServerObservation> observations = [];
     private readonly SemaphoreSlim observationRefresh = new(1, 1);
+    private readonly Dictionary<Guid, CustomCertificationSession> customCertificationSessions = [];
 
     public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
@@ -149,6 +152,16 @@ public sealed class HostManager
                     !next.Profiles.Any(candidate => candidate.Id == profile.Id && candidate.Kind == GameKinds.Custom))
                 .Select(profile => profile.Id)
                 .ToList();
+            var invalidatedCustomProfileIds = settings.Profiles
+                .Where(profile => profile.Kind == GameKinds.Custom)
+                .Where(profile =>
+                {
+                    var candidate = next.Profiles.SingleOrDefault(item => item.Id == profile.Id &&
+                        item.Kind == GameKinds.Custom);
+                    return candidate is null || !SameCustomCertificationInputs(profile, candidate);
+                })
+                .Select(profile => profile.Id)
+                .ToHashSet();
             data.SaveSettings(next);
             var customScriptCleanupFailed = false;
             foreach (var profileId in retiredCustomProfileIds)
@@ -156,12 +169,29 @@ public sealed class HostManager
                 try
                 {
                     data.DeleteCustomScripts(profileId);
+                    data.DeleteCustomCertification(profileId);
                     data.Audit($"custom-scripts-deleted {profileId} {clock.GetUtcNow():O}");
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     customScriptCleanupFailed = true;
                     data.Audit($"custom-scripts-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
+                }
+            }
+            foreach (var profileId in invalidatedCustomProfileIds)
+            {
+                customCertificationSessions.Remove(profileId);
+                shutdownDeadlines.Remove(profileId);
+                hostAddedTime.Remove(profileId);
+                try
+                {
+                    data.DeleteCustomCertification(profileId);
+                    data.Audit($"custom-certification-invalidated {profileId} profile-changed {clock.GetUtcNow():O}");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    customScriptCleanupFailed = true;
+                    data.Audit($"custom-certification-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
                 }
             }
             if (settings.RemoteControlsEnabled != next.RemoteControlsEnabled)
@@ -230,13 +260,313 @@ public sealed class HostManager
             var error = CustomGameScripts.Validate(scripts);
             if (error is not null) return Result(false, "CustomScriptsInvalid", error);
             data.SaveCustomScripts(profileId, scripts);
+            data.DeleteCustomCertification(profileId);
+            customCertificationSessions.Remove(profileId);
+            shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
             data.Audit($"custom-scripts-saved {profileId} {clock.GetUtcNow():O}");
-            return Result(true, "CustomScriptsSaved", "Custom game scripts saved in Windows protected storage.");
+            data.Audit($"custom-certification-invalidated {profileId} scripts-changed {clock.GetUtcNow():O}");
+            return Result(true, "CustomScriptsSaved",
+                "Custom game scripts saved in Windows protected storage. Any prior remote-control certification was revoked.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
                                    System.Security.Cryptography.CryptographicException)
         {
             return Result(false, "CustomScriptsSaveFailed", "Custom scripts could not be saved: " + ex.Message);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<CustomCertificationResult> BeginCustomCertificationAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(candidate =>
+                candidate.Id == profileId && candidate.Kind == GameKinds.Custom);
+            if (profile is null)
+                return CertificationResult(false, "InvalidProfile", "Choose a saved Custom profile first.",
+                    new(profileId, CustomCertification.NotCertified, "This is not a saved Custom profile.", false, false,
+                        BlockReason: "Invalid profile."));
+            if (runs.Any(run => run.ProfileId == profileId))
+                return CertificationResult(false, "CertificationRequiresOffline",
+                    "Stop or resolve this Custom server before beginning live certification.",
+                    CertificationState(profile));
+            var scripts = data.LoadCustomScripts(profileId);
+            var scriptError = scripts is null ? "Save all three Custom scripts before certification." :
+                CustomGameScripts.Validate(scripts);
+            if (scriptError is not null)
+                return CertificationResult(false, "CustomScriptsInvalid",
+                    scriptError, CertificationState(profile));
+            if (!games.TryGet(GameKinds.Custom, out var registered) || registered is not CustomGameServerDriver driver)
+                return CertificationResult(false, "CustomDriverUnavailable", "The Custom game driver is unavailable.",
+                    CertificationState(profile));
+
+            data.DeleteCustomCertification(profileId);
+            customCertificationSessions.Remove(profileId);
+            shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
+            var fingerprint = CustomCertification.Fingerprint(profile, scripts!, driver.Ports(profile));
+            var started = StartUnderGate(profileId);
+            if (!started.Ok)
+                return CertificationResult(false, started.Code,
+                    "Certification could not start the first live run. " + started.Message,
+                    new(profileId, CustomCertification.NotCertified,
+                        "Certification did not begin because the first live run could not start.", false, false,
+                        BlockReason: started.Message));
+            var session = new CustomCertificationSession
+            {
+                ProfileId = profileId,
+                Fingerprint = fingerprint,
+                StartedUtc = clock.GetUtcNow(),
+                Stage = CustomCertification.StartingFirstRun
+            };
+            customCertificationSessions[profileId] = session;
+            data.Audit($"custom-certification-began {profileId} {clock.GetUtcNow():O}");
+            return CertificationResult(true, "CustomCertificationBegan",
+                "The first live run started. Use Check step until it is Ready with zero players.",
+                CustomCertification.State(session));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   System.Security.Cryptography.CryptographicException or JsonException or FormatException)
+        {
+            return CertificationResult(false, "CustomCertificationUnavailable",
+                "Protected Custom certification data could not be read or written: " + ex.Message,
+                new(profileId, CustomCertification.NotCertified, "Certification is unavailable.", false, false,
+                    BlockReason: ex.Message));
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<CustomCertificationResult> CheckCustomCertificationAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(candidate =>
+                candidate.Id == profileId && candidate.Kind == GameKinds.Custom);
+            if (profile is null)
+                return CertificationResult(false, "InvalidProfile", "Choose a saved Custom profile first.",
+                    new(profileId, CustomCertification.NotCertified, "This is not a saved Custom profile.", false, false));
+            if (!customCertificationSessions.TryGetValue(profileId, out var session))
+                return CertificationResult(false, "CertificationNotRunning",
+                    "Begin live certification before checking a step.", CertificationState(profile));
+            if (session.Stage == CustomCertification.Failed)
+                return CertificationResult(false, "CustomCertificationFailed", session.Failure ?? "Certification failed.",
+                    CustomCertification.State(session));
+            if (clock.GetUtcNow() - session.StartedUtc > TimeSpan.FromHours(4))
+                return FailCertification(profile, session, "CertificationExpired",
+                    "The live certification window expired after four hours. The running server was left under local owner control.");
+            if (!CurrentCustomFingerprint(profile, out var fingerprint, out var fingerprintError) ||
+                !string.Equals(fingerprint, session.Fingerprint, StringComparison.Ordinal))
+                return FailCertification(profile, session, "CertificationConfigurationChanged",
+                    fingerprintError ?? "The scripts, world/save directory, declared ports, or contract version changed during certification.");
+            var run = runs.SingleOrDefault(candidate => candidate.ProfileId == profileId);
+            if (run is null || Identity(run) != "Matched")
+                return FailCertification(profile, session, "CertificationProcessUnavailable",
+                    "The exact tracked Custom wrapper is no longer verifiable. Certification did not complete.");
+            if (!games.TryGet(run.Kind, out var registered) || registered is not CustomGameServerDriver driver)
+                return FailCertification(profile, session, "CustomDriverUnavailable", "The Custom game driver is unavailable.");
+
+            var probe = driver.ProbeContract(run);
+            if (!probe.ContractValid)
+                return FailCertification(profile, session, "CustomContractInvalid",
+                    "Contract v2 proof failed: " + (probe.ContractError ?? probe.Health.Detail));
+            session.OnlinePlayers = probe.Health.OnlinePlayers;
+            if (probe.Health.State == "Failed")
+                return FailCertification(profile, session, "CustomServerFailed",
+                    "The Status script reported Failed. Certification did not complete.");
+            if (probe.Health.State != "Ready")
+                return CertificationResult(true, "CustomCertificationWaiting",
+                    "The tracked server is not Ready yet. Check again after startup completes.",
+                    CustomCertification.State(session));
+
+            var players = probe.Health.OnlinePlayers!.Value;
+            switch (session.Stage)
+            {
+                case CustomCertification.StartingFirstRun:
+                    if (players != 0)
+                        return FailCertification(profile, session, "CertificationExpectedEmpty",
+                            "The first Ready observation must report exactly zero players. Ask everyone to leave and begin again.");
+                    session.Stage = CustomCertification.AwaitingFirstJoin;
+                    break;
+                case CustomCertification.AwaitingFirstJoin:
+                    if (players > 0) session.Stage = CustomCertification.AwaitingFirstLeave;
+                    break;
+                case CustomCertification.AwaitingFirstLeave:
+                    if (players == 0) session.Stage = CustomCertification.ConfirmFirstChange;
+                    break;
+                case CustomCertification.AwaitingRestartReady:
+                    if (players != 0)
+                        return FailCertification(profile, session, "CertificationExpectedEmptyAfterRestart",
+                            "The first Ready observation after restart must report exactly zero players. Begin again with the server empty.");
+                    session.Stage = CustomCertification.AwaitingSecondJoin;
+                    break;
+                case CustomCertification.AwaitingSecondJoin:
+                    if (players > 0) session.Stage = CustomCertification.ConfirmSecondChange;
+                    break;
+                case CustomCertification.AwaitingSecondLeave:
+                    if (players == 0)
+                    {
+                        var scripts = data.LoadCustomScripts(profileId)!;
+                        var certification = CustomCertification.Create(profile, scripts, driver.Ports(profile), clock.GetUtcNow());
+                        if (!string.Equals(certification.Fingerprint, session.Fingerprint, StringComparison.Ordinal))
+                            return FailCertification(profile, session, "CertificationConfigurationChanged",
+                                "The Custom lifecycle configuration changed before certification could be saved.");
+                        data.SaveCustomCertification(certification);
+                        customCertificationSessions.Remove(profileId);
+                        observations.Remove(profileId);
+                        data.Audit($"custom-certification-completed {profileId} {clock.GetUtcNow():O}");
+                        var completed = CertificationState(profile);
+                        return CertificationResult(true, "CustomCertificationCompleted",
+                            "Owner-certified Custom control is active for this exact profile, script set, world/save directory, port set, and contract version.",
+                            completed);
+                    }
+                    break;
+            }
+            return CertificationResult(true, "CustomCertificationAdvanced",
+                CustomCertification.State(session).Message, CustomCertification.State(session));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   System.Security.Cryptography.CryptographicException or JsonException or FormatException)
+        {
+            if (customCertificationSessions.TryGetValue(profileId, out var session))
+            {
+                session.Stage = CustomCertification.Failed;
+                session.Failure = "Certification data failed: " + ex.Message;
+                session.OnlinePlayers = null;
+            }
+            return CertificationResult(false, "CustomCertificationUnavailable",
+                "Protected Custom certification data could not be read or written: " + ex.Message,
+                customCertificationSessions.TryGetValue(profileId, out var current)
+                    ? CustomCertification.State(current)
+                    : new(profileId, CustomCertification.NotCertified, "Certification is unavailable.", false, false,
+                        BlockReason: ex.Message));
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<CustomCertificationResult> ConfirmCustomCertificationAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(candidate =>
+                candidate.Id == profileId && candidate.Kind == GameKinds.Custom);
+            if (profile is null || !customCertificationSessions.TryGetValue(profileId, out var session))
+                return CertificationResult(false, "CertificationNotRunning",
+                    "Begin live certification before confirming save behavior.",
+                    profile is null
+                        ? new(profileId, CustomCertification.NotCertified, "This is not a saved Custom profile.", false, false)
+                        : CertificationState(profile));
+            if (session.Stage is not (CustomCertification.ConfirmFirstChange or CustomCertification.ConfirmSecondChange))
+                return CertificationResult(false, "CertificationConfirmationNotExpected",
+                    "Complete the current certification observation before confirming save behavior.",
+                    CustomCertification.State(session));
+            if (!CurrentCustomFingerprint(profile, out var fingerprint, out var fingerprintError) ||
+                !string.Equals(fingerprint, session.Fingerprint, StringComparison.Ordinal))
+                return FailCertification(profile, session, "CertificationConfigurationChanged",
+                    fingerprintError ?? "The Custom lifecycle configuration changed during certification.");
+            var run = runs.SingleOrDefault(candidate => candidate.ProfileId == profileId);
+            if (run is null || Identity(run) != "Matched" ||
+                !games.TryGet(run.Kind, out var registered) || registered is not CustomGameServerDriver driver)
+                return FailCertification(profile, session, "CertificationProcessUnavailable",
+                    "The exact tracked Custom wrapper is no longer verifiable. Certification did not complete.");
+            var probe = driver.ProbeContract(run);
+            if (!probe.ContractValid || probe.Health.State != "Ready" || probe.Health.OnlinePlayers is null)
+                return FailCertification(profile, session, "CustomContractInvalid",
+                    "A fresh Ready contract-v2 observation was not available for confirmation. " +
+                    (probe.ContractError ?? probe.Health.Detail));
+
+            if (session.Stage == CustomCertification.ConfirmSecondChange)
+            {
+                if (probe.Health.OnlinePlayers <= 0)
+                    return CertificationResult(false, "CertificationPlayerRequired",
+                        "Rejoin and verify the recognizable saved change while the player count is positive, then confirm again.",
+                        CustomCertification.State(session));
+                session.Stage = CustomCertification.AwaitingSecondLeave;
+                session.OnlinePlayers = probe.Health.OnlinePlayers;
+                data.Audit($"custom-certification-save-confirmed {profileId} {clock.GetUtcNow():O}");
+                return CertificationResult(true, "CustomSaveConfirmed",
+                    CustomCertification.State(session).Message, CustomCertification.State(session));
+            }
+
+            if (probe.Health.OnlinePlayers != 0)
+                return CertificationResult(false, "CertificationExpectedEmpty",
+                    "A player appeared after the initial zero observation. Leave the server, check the step again, then confirm.",
+                    CustomCertification.State(session));
+            var stopped = await StopUnderGateAsync(profileId, candidate =>
+            {
+                var final = driver.ProbeContract(candidate);
+                return final.ContractValid && final.Health.State == "Ready" && final.Health.OnlinePlayers == 0;
+            });
+            if (!stopped.Ok)
+                return FailCertification(profile, session, stopped.Code,
+                    "The exact wrapper was not confirmed gracefully stopped, so certification failed. " + stopped.Message);
+            var started = StartUnderGate(profileId);
+            if (!started.Ok)
+                return FailCertification(profile, session, "CertificationRestartFailed",
+                    "The server stopped safely but the same profile did not start again. Certification failed. " + started.Message);
+            session.Stage = CustomCertification.AwaitingRestartReady;
+            session.OnlinePlayers = null;
+            observations.Remove(profileId);
+            data.Audit($"custom-certification-restarted {profileId} {clock.GetUtcNow():O}");
+            return CertificationResult(true, "CustomCertificationRestarted",
+                CustomCertification.State(session).Message, CustomCertification.State(session));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   System.Security.Cryptography.CryptographicException or JsonException or FormatException)
+        {
+            var state = customCertificationSessions.TryGetValue(profileId, out var session)
+                ? CustomCertification.State(session)
+                : new CustomCertificationState(profileId, CustomCertification.NotCertified,
+                    "Certification is unavailable.", false, false, BlockReason: ex.Message);
+            return CertificationResult(false, "CustomCertificationUnavailable", ex.Message, state);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<CustomCertificationResult> CancelCustomCertificationAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            customCertificationSessions.Remove(profileId);
+            data.DeleteCustomCertification(profileId);
+            shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
+            observations.Remove(profileId);
+            data.Audit($"custom-certification-canceled {profileId} {clock.GetUtcNow():O}");
+            var profile = settings.Profiles.SingleOrDefault(candidate =>
+                candidate.Id == profileId && candidate.Kind == GameKinds.Custom);
+            var state = profile is null
+                ? new CustomCertificationState(profileId, CustomCertification.NotCertified,
+                    "This is not a saved Custom profile.", false, false)
+                : CertificationState(profile);
+            return CertificationResult(true, "CustomCertificationCanceled",
+                "Certification was canceled and grants no remote lifecycle authority. Any running server remains under local owner control.", state);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<CustomCertificationResult> RevokeCustomCertificationAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(candidate =>
+                candidate.Id == profileId && candidate.Kind == GameKinds.Custom);
+            if (profile is null)
+                return CertificationResult(false, "InvalidProfile", "Choose a saved Custom profile first.",
+                    new(profileId, CustomCertification.NotCertified, "This is not a saved Custom profile.", false, false));
+            customCertificationSessions.Remove(profileId);
+            data.DeleteCustomCertification(profileId);
+            shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
+            observations.Remove(profileId);
+            data.Audit($"custom-certification-revoked {profileId} {clock.GetUtcNow():O}");
+            return CertificationResult(true, "CustomCertificationRevoked",
+                "Owner-certified Custom control was revoked. Local Start and Stop remain available.", CertificationState(profile));
         }
         finally { gate.Release(); }
     }
@@ -593,7 +923,9 @@ public sealed class HostManager
             {
                 shutdownDeadlines.Remove(view.ProfileId);
                 hostAddedTime.Remove(view.ProfileId);
-                views[index] = view with { AutoShutdownReason = "Script-reported player counts are display-only; automatic shutdown is unavailable for custom games." };
+                views[index] = view with { AutoShutdownReason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
+                    ? "Owner certification and a fresh valid Custom contract-v2 player count are required for automatic shutdown."
+                    : "A fresh authoritative player count is required for automatic shutdown." };
                 continue;
             }
             if (view.OnlinePlayers is null)
@@ -624,7 +956,9 @@ public sealed class HostManager
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
                 .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
-            data.ManagedWorldsRoot);
+            data.ManagedWorldsRoot,
+            settings.Profiles.Where(profile => profile.Kind == GameKinds.Custom)
+                .ToDictionary(profile => profile.Id, CertificationState));
     }
 
     private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
@@ -658,7 +992,7 @@ public sealed class HostManager
         var health = ObservedHealth(run, driver);
         if (!health.Ok || health.State != "Ready" || !health.PlayerCountTrusted || health.OnlinePlayers is null)
         {
-            reason = "The conflicting server does not have a reliable current player count from a built-in driver.";
+            reason = "The conflicting server does not have a fresh authoritative player count.";
             return false;
         }
         if (health.OnlinePlayers != 0)
@@ -706,6 +1040,87 @@ public sealed class HostManager
         new(profileId, operationId, health.State, health.Detail, health.Code, observedUtc,
             health.Ok, health.OnlinePlayers, health.MaxPlayers, health.PlayerNames,
             health.PlayerCountTrusted);
+
+    private CustomCertificationResult CertificationResult(bool ok, string code, string message,
+        CustomCertificationState certification) =>
+        new(ok, code, message, Snapshot(), certification);
+
+    private CustomCertificationResult FailCertification(ServerProfile profile,
+        CustomCertificationSession session, string code, string message)
+    {
+        session.Stage = CustomCertification.Failed;
+        session.Failure = message;
+        session.OnlinePlayers = null;
+        shutdownDeadlines.Remove(profile.Id);
+        hostAddedTime.Remove(profile.Id);
+        observations.Remove(profile.Id);
+        try { data.DeleteCustomCertification(profile.Id); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            data.Audit($"custom-certification-delete-failed {profile.Id} {ex.GetType().Name} {clock.GetUtcNow():O}");
+        }
+        data.Audit($"custom-certification-failed {profile.Id} code={code} {clock.GetUtcNow():O}");
+        return CertificationResult(false, code, message, CustomCertification.State(session));
+    }
+
+    private CustomCertificationState CertificationState(ServerProfile profile)
+    {
+        if (customCertificationSessions.TryGetValue(profile.Id, out var session))
+            return CustomCertification.State(session);
+        try
+        {
+            var certification = data.LoadCustomCertification(profile.Id);
+            if (certification is null)
+                return new(profile.Id, CustomCertification.NotCertified,
+                    "Remote Stop, Restart, replacement, and automatic shutdown require owner-completed live certification.",
+                    false, false, BlockReason: "Live certification has not been completed.");
+            var scripts = data.LoadCustomScripts(profile.Id);
+            if (scripts is null || !games.TryGet(GameKinds.Custom, out var registered) ||
+                registered is not CustomGameServerDriver driver ||
+                !CustomCertification.Matches(certification, profile, scripts, driver.Ports(profile)))
+                return new(profile.Id, CustomCertification.NotCertified,
+                    "The saved Custom lifecycle configuration no longer matches its certification.", false, false,
+                    BlockReason: "Scripts, world/save directory, ports, or contract version changed.");
+            return new(profile.Id, CustomCertification.Certified,
+                "Owner-certified Custom control is active for this exact lifecycle configuration.",
+                false, true, certification.CertifiedUtc);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   System.Security.Cryptography.CryptographicException or JsonException or FormatException)
+        {
+            return new(profile.Id, CustomCertification.NotCertified,
+                "The protected Custom certification could not be verified.", false, false,
+                BlockReason: ex.GetType().Name);
+        }
+    }
+
+    private bool CurrentCustomFingerprint(ServerProfile profile, out string? fingerprint, out string? error)
+    {
+        fingerprint = null;
+        error = null;
+        try
+        {
+            var scripts = data.LoadCustomScripts(profile.Id);
+            if (scripts is null)
+            {
+                error = "Protected Custom scripts are unavailable.";
+                return false;
+            }
+            if (!games.TryGet(GameKinds.Custom, out var registered) || registered is not CustomGameServerDriver driver)
+            {
+                error = "The Custom game driver is unavailable.";
+                return false;
+            }
+            fingerprint = CustomCertification.Fingerprint(profile, scripts, driver.Ports(profile));
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   System.Security.Cryptography.CryptographicException or JsonException)
+        {
+            error = "The Custom lifecycle configuration could not be verified: " + ex.Message;
+            return false;
+        }
+    }
 
     private static string PortLabel(GamePort port) => $"{port.Protocol.ToUpperInvariant()} {port.Port}" +
         (port.Family == "Any" ? "" : $" {port.Family}");
@@ -794,6 +1209,12 @@ public sealed class HostManager
             a.ShareJoinAddress == b.ShareJoinAddress &&
             (a.AdditionalPorts ?? []).SequenceEqual(b.AdditionalPorts ?? []);
     }
+
+    private static bool SameCustomCertificationInputs(ServerProfile a, ServerProfile b) =>
+        a.WorldId == b.WorldId && a.GamePort == b.GamePort &&
+        Path.GetFullPath(a.WorldDirectory).Equals(Path.GetFullPath(b.WorldDirectory), StringComparison.OrdinalIgnoreCase) &&
+        a.Custom?.PrimaryProtocol == b.Custom?.PrimaryProtocol &&
+        (a.Custom?.AdditionalPorts ?? []).SequenceEqual(b.Custom?.AdditionalPorts ?? []);
 
     private static bool WorldConflict(ManagedRun run, ServerProfile profile) =>
         Path.GetFullPath(run.WorldDirectory).Equals(Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase);
