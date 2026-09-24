@@ -834,3 +834,23 @@ The owner can choose Direct Internet, a read-only detected Tailscale/ZeroTier ad
 | Real two-PC routes and game join | Not run. Loopback fixtures prove protocol behavior, not a public or private-mesh route, a real player join, or provider availability. |
 
 One initial build found and stopped an orphaned repository Valheim fixture from an older disposable check after verifying its exact path and test-data command line. One core-suite run then hit its existing immediate fixture-cleanup race; its clean rerun passed 12/12, and no fixture remained. No release tag or GitHub release was created. No real game binary, valued world, real credential, public listener, router, firewall, DNS setting, mesh policy, or installed release was used or changed.
+
+## 2026-09-23 - Process recovery, rolling backups, and protected restore
+
+Starting Git HEAD: `7920202`. A managed run is now archived automatically only after its exact recorded PID is definitively absent. PID reuse, executable mismatch, and process-access failure remain Unknown and keep Start, Stop, archive, restore, and world reuse blocked. The Host persists graceful Stop intent before signaling the game, so an app restart during Stop, Restart, or replacement cannot misclassify that exit as a crash.
+
+Optional built-in crash recovery remains off by default. Only a previously Ready exact run can enter a new recovery cycle. Attempts wait 1, 5, and 15 minutes, and an exit before Ready advances the attempt; the third failure suspends recovery. Custom profiles are excluded. The Host card shows Pending, Starting, Recovered, or Suspended with attempt timing.
+
+Optional built-in rolling backup also remains off by default. It runs only after confirmed graceful process exit and copies the driver's reviewed save directory: Valheim's isolated save root, the Java level directory, or the Bedrock world directory. Staging rejects links and reparse points, hashes each copied file, writes a completion manifest, and becomes visible through an atomic directory rename. The owner configures retention and a free-space reserve. Backup failure is visible but does not claim that the already-confirmed graceful Stop failed.
+
+Restore is exposed only through the loopback owner API and Host UI. It requires Offline, verifies the selected completion manifest, takes a mandatory pre-restore snapshot, stages on the save volume, and swaps the directory. Friends receive no backup list, restore, delete, or file-browsing API. Custom backups remain unavailable because a Custom working directory is not a reviewed save-only boundary.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1` | Pass: npm reported 0 vulnerabilities; TypeScript/Vite bundled 23 modules; all fixtures built; Windows x64 single-file app published. Existing WebView2/WindowsBase `MSB3277` warning remains. |
+| Core lifecycle and protection checks | Pass: 15 groups, 0 failures. Covers identity-uncertain archive denial, definitive exit archive, persisted Stop intent boundary, 1/5/15-minute crash retries, third-failure suspension, graceful-stop backup, running-server restore denial, offline restore, pre-restore snapshot, retention, interrupted staging cleanup, manifest tamper rejection, and deterministic insufficient-space failure. Data: `local-data/checks/8470ef8d81b048008dc308be2abbc477`. |
+| Host and game regressions | Pass: Valheim 10, Minecraft 3, Minecraft setup 4, Custom 5, and updater 7 groups, all with 0 failures. Data: `local-data/valheim-checks/53743c0ab51246cc8efda96717f843b8`, `local-data/minecraft-checks/2e4a84faa10141c588ca8fd311a81d71`, `local-data/minecraft-setup-checks/899dc6eb55214bffb76e3ffc2a1f03ce`, `local-data/custom-checks/eb5a6ab67ed943d29e1ed83321e952ce`, and `local-data/update-checks/fde28352ac124a878c0bbad45460c9a0`. |
+| Packaged Host/Friend and UI regressions | Pass: companion 25, served smoke 21, and background native desktop 8 groups, all with 0 failures. Data: `local-data/companion-checks/f3705c585e094269b2f48990a6a3def8`, `local-data/served-smoke/f0a51783a1754663ac6d6e40a3bf6849`, and `local-data/desktop-smoke/cddc7b544567411aa652c51beb0fd607`. |
+| Real crash, valued-world backup/restore, and game-save acceptance | Not run. Disposable fixture files prove state and copy safeguards, not a particular game's crash behavior or recognizable saved-world recovery. Keep both options off for valued worlds until the applicable real-game acceptance is complete. |
+
+No release tag or GitHub release was created. No real game binary, valued world, real credential, public listener, router, firewall, DNS setting, mesh policy, or installed release was used or changed.

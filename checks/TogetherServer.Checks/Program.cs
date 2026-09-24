@@ -189,6 +189,7 @@ await Check("identity mismatch blocks start and never stops an unrelated process
         var manager = new HostManager(data);
         Require((await manager.HealthAsync(a.Id)).Code == "IdentityUnknown", "identity mismatch not detected");
         Require((await manager.StopAsync(a.Id)).Code == "IdentityUnknown", "unrelated process received a stop");
+        Require((await manager.ForgetAsync(a.Id)).Code == "IdentityUnknown", "identity-uncertain run was cleared");
         Require((await manager.StartAsync(a.Id)).Code == "AlreadyManaged", "unknown world accepted a second writer");
         Require((await other.HealthAsync(b.Id)).Code == "FixtureProcessRunning", "unrelated process was stopped");
     }
@@ -368,6 +369,115 @@ await Check("remote operations persist idempotency and interrupt unfinished work
     Require(reloaded is { State: RemoteOperationStates.Succeeded }, "terminal operation did not survive reload");
 });
 
+await Check("definitive exits archive and crash recovery is bounded", async () =>
+{
+    using var data = Data("crash-recovery");
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var profile = Profile("crash-recovery", "crash-recovery", FreePort());
+    profile.CrashRecovery.Enabled = true;
+    var starter = new HostManager(data, new GameServerRegistry(data), clock);
+    Require((await starter.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await starter.StartAsync(profile.Id)).Ok, "initial start failed");
+    var original = data.LoadRuns().Single();
+    original.WasReady = true; // Represents a prior authoritative Ready observation.
+    data.SaveRuns([original]);
+    await KillFixture(original);
+
+    var manager = new HostManager(data, new GameServerRegistry(data), clock);
+    await manager.RefreshObservationsAsync();
+    Require(data.LoadRuns().Count == 0, "definitively absent process was not archived");
+    Require(data.LoadRunArchive().Single().CrashRecoveryScheduled, "eligible Ready crash did not schedule recovery");
+    var state = data.LoadCrashRecoveryStates().Single();
+    Require(state.State == CrashRecoveryStates.Pending && state.Attempts == 0 &&
+        state.NextAttemptUtc == clock.GetUtcNow().AddMinutes(1), "first recovery delay was not one minute");
+
+    foreach (var delay in new[] { 1, 5, 15 })
+    {
+        clock.Advance(TimeSpan.FromMinutes(delay));
+        var attempts = await manager.MaintainCrashRecoveryAsync();
+        Require(attempts.Count == 1 && attempts[0].Ok, $"recovery launch after {delay} minutes failed");
+        var recoveredRun = data.LoadRuns().Single();
+        await KillFixture(recoveredRun);
+        await manager.RefreshObservationsAsync();
+    }
+    state = data.LoadCrashRecoveryStates().Single();
+    Require(state.State == CrashRecoveryStates.Suspended && state.Attempts == 3 && state.NextAttemptUtc is null,
+        "recovery did not suspend after exactly three failed launches");
+    Require(data.LoadRunArchive().Count == 4, "each definitively absent exact fixture run was not archived");
+});
+
+await Check("graceful stop backup and offline restore protect the world", async () =>
+{
+    using var data = Data("backup-integration");
+    var profile = Profile("backup-integration-world", "backup-integration", FreePort());
+    profile.Backups = new BackupOptions { Enabled = true, RetentionCount = 3, MinimumFreeSpaceMb = 0 };
+    var marker = Path.Combine(profile.WorldDirectory, "world.txt");
+    File.WriteAllText(marker, "before stop");
+    var manager = new HostManager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
+    var stopped = await manager.StopAsync(profile.Id);
+    Require(stopped.Ok && stopped.Message.Contains("rolling backup", StringComparison.OrdinalIgnoreCase),
+        "confirmed graceful stop did not complete its rolling backup");
+    var backup = (await manager.BackupsAsync(profile.Id)).Backups.Single();
+    File.WriteAllText(marker, "after backup");
+    Require((await manager.StartAsync(profile.Id)).Ok, "second start failed");
+    Require((await manager.RestoreBackupAsync(profile.Id, backup.Id)).Code == "ServerRunning",
+        "restore was allowed while the exact managed process was running");
+    profile.Backups.Enabled = false;
+    var settings = Settings(profile);
+    Require((await manager.UpdateSettingsAsync(settings)).Ok, "could not disable the next rolling backup");
+    Require((await manager.StopAsync(profile.Id)).Ok, "second stop failed");
+    var restored = await manager.RestoreBackupAsync(profile.Id, backup.Id);
+    Require(restored.Ok && File.ReadAllText(marker) == "before stop", "offline restore did not recover the selected contents");
+    var list = await manager.BackupsAsync(profile.Id);
+    Require(list.Backups.Any(item => item.BackupKind == BackupKinds.PreRestore),
+        "restore did not retain a pre-restore snapshot");
+});
+
+await Check("backup staging, integrity, retention, and free-space checks fail closed", async () =>
+{
+    using var data = Data("backup-service");
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var profile = Profile("backup-service-world", "backup-service", FreePort());
+    profile.Backups = new BackupOptions { Enabled = true, RetentionCount = 2, MinimumFreeSpaceMb = 0 };
+    var marker = Path.Combine(profile.WorldDirectory, "save.dat");
+    var service = new WorldBackupService(data, clock);
+    File.WriteAllText(marker, "one");
+    var first = service.Create(profile, BackupKinds.Rolling);
+    clock.Advance(TimeSpan.FromSeconds(1));
+    File.WriteAllText(marker, "two");
+    var second = service.Create(profile, BackupKinds.Rolling);
+    clock.Advance(TimeSpan.FromSeconds(1));
+    File.WriteAllText(marker, "three");
+    var third = service.Create(profile, BackupKinds.Rolling);
+    Require(first.Ok && second.Ok && third.Ok && service.List(profile.Id).Count == 2,
+        "rolling retention did not keep exactly the configured newest backups");
+    Require(!Directory.Exists(Path.Combine(data.BackupsRoot, profile.Id.ToString("N"),
+        first.Backup!.Id.ToString("N") + ".backup")), "retention left the oldest completed backup on disk");
+
+    var restored = service.Restore(profile, second.Backup!.Id);
+    Require(restored.Ok && File.ReadAllText(marker) == "two", "verified backup restore failed");
+    var selectedPath = Path.Combine(data.BackupsRoot, profile.Id.ToString("N"),
+        second.Backup.Id.ToString("N") + ".backup", "payload", "save.dat");
+    File.WriteAllText(selectedPath, "tampered");
+    File.WriteAllText(marker, "live remains");
+    Require(!service.Restore(profile, second.Backup.Id).Ok && File.ReadAllText(marker) == "live remains",
+        "tampered backup changed the live save directory");
+
+    var stageRoot = Path.Combine(data.BackupsRoot, profile.Id.ToString("N"));
+    var abandoned = Path.Combine(stageRoot, Guid.NewGuid().ToString("N") + ".staging");
+    Directory.CreateDirectory(abandoned);
+    File.WriteAllText(Path.Combine(abandoned, "partial"), "partial copy");
+    _ = new WorldBackupService(data, clock);
+    Require(!Directory.Exists(abandoned), "interrupted staging directory was not cleaned safely");
+
+    var noSpace = new WorldBackupService(data, clock, _ => 0);
+    File.WriteAllText(marker, "needs space");
+    Require(!noSpace.Create(profile, BackupKinds.Rolling).Ok,
+        "backup ignored the configured destination free-space boundary");
+});
+
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");
 return failed == 0 ? 0 : 1;
 
@@ -381,4 +491,23 @@ static async Task DirectFixtureStop(ManagedRun run)
     using var process = Process.GetProcessById(run.ProcessId!.Value);
     using var exitTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
     await process.WaitForExitAsync(exitTimeout.Token);
+}
+
+static async Task KillFixture(ManagedRun run)
+{
+    using var process = Process.GetProcessById(run.ProcessId!.Value);
+    var actual = process.MainModule?.FileName;
+    if (actual is null || !Path.GetFullPath(actual).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase) ||
+        process.StartTime.ToUniversalTime().Ticks != run.StartTimeUtcTicks)
+        throw new Exception("refused to terminate a fixture whose exact recorded identity did not match");
+    process.Kill(entireProcessTree: true);
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+    await process.WaitForExitAsync(timeout.Token);
+}
+
+sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
+{
+    private DateTimeOffset utcNow = utcNow;
+    public override DateTimeOffset GetUtcNow() => utcNow;
+    public void Advance(TimeSpan value) => utcNow = utcNow.Add(value);
 }

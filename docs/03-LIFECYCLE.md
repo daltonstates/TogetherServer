@@ -29,6 +29,14 @@ A Custom profile may show the count and player names returned by its bounded Sta
 
 Persist enough identity to check whether a previously managed server process still exists. Reattach only when PID, process creation time, executable path, and world/profile identity agree. If uncertain, show Unknown, keep the world blocked from another start, and require owner reconciliation. Never search for a name and kill the first matching process.
 
+An exact run record is archived automatically only when its recorded PID is definitively absent. PID reuse, creation-time or executable mismatch, and process-access failure remain Unknown and cannot be cleared through owner recovery. Stop intent is persisted before a graceful signal, so a Host restart during Stop, Restart, or replacement cannot turn the resulting exit into an automatic crash relaunch.
+
+Optional built-in crash recovery is off by default. Only a previously Ready run with a definitively exited exact process is eligible. The three launch attempts wait 1, 5, and 15 minutes. A recovered process must reach Ready; an exit before Ready advances the bounded retry state, and the third failure suspends recovery. Custom profiles are not eligible.
+
+Optional rolling backup runs only after confirmed graceful process exit. The built-in driver supplies its reviewed save directory; Custom working directories are never copied. Backup copies go to staging, reject links/reparse points, hash every file into a completion manifest, and become visible only after an atomic directory rename. Retention and a free-space reserve are owner-configured. A backup failure does not pretend the still-successful graceful Stop failed, but remains visible on the Host.
+
+Restore is local-owner-only and requires Offline with no uncertain run identity. The chosen completed manifest is verified first, a pre-restore snapshot must succeed, and a same-volume staged directory replaces the live save. No Friend endpoint exposes backup listing, restore, delete, or arbitrary file access.
+
 ## Companion heartbeat
 
 - Friend mode sends an authenticated outbound heartbeat and status request about every five seconds with device ID, version, and monotonic sequence. The Host uses **its receipt time** for freshness, not the Friend PC's clock. It does not send a local game-process indicator, and Friend presence does not participate in automatic shutdown.

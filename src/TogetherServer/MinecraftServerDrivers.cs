@@ -17,6 +17,11 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
     public string Kind => java ? GameKinds.MinecraftJava : GameKinds.MinecraftBedrock;
     public string DisplayName => java ? "Minecraft Java Edition" : "Minecraft Bedrock Edition";
     public bool ShowPortDiagnostics => true;
+    public bool SupportsCrashRecovery => true;
+    public bool SupportsBackups => true;
+    public string? ManagedSaveDirectory(ServerProfile profile) => java
+        ? Path.Combine(profile.WorldDirectory, profile.WorldId)
+        : Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId);
     public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
     public IReadOnlyList<GamePort> Ports(ServerProfile profile)
     {

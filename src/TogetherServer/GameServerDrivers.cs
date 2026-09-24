@@ -33,6 +33,9 @@ public interface IGameServerDriver
     string Kind { get; }
     string DisplayName { get; }
     bool ShowPortDiagnostics { get; }
+    bool SupportsCrashRecovery { get; }
+    bool SupportsBackups { get; }
+    string? ManagedSaveDirectory(ServerProfile profile);
     string ManagedExecutablePath(ServerProfile profile);
     IReadOnlyList<GamePort> Ports(ServerProfile profile);
     string? JoinAddress(ServerProfile profile, string? publicIp);
@@ -92,6 +95,9 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
     public string Kind => GameKinds.Valheim;
     public string DisplayName => "Valheim";
     public bool ShowPortDiagnostics => true;
+    public bool SupportsCrashRecovery => true;
+    public bool SupportsBackups => true;
+    public string? ManagedSaveDirectory(ServerProfile profile) => profile.WorldDirectory;
     public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
     public IReadOnlyList<GamePort> Ports(ServerProfile profile) =>
     [
@@ -431,6 +437,9 @@ internal sealed class FixtureServerDriver : IGameServerDriver
     public string Kind => GameKinds.Fixture;
     public string DisplayName => "Synthetic test fixture";
     public bool ShowPortDiagnostics => false;
+    public bool SupportsCrashRecovery => true;
+    public bool SupportsBackups => true;
+    public string? ManagedSaveDirectory(ServerProfile profile) => profile.WorldDirectory;
     public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
     public IReadOnlyList<GamePort> Ports(ServerProfile profile) =>
     [

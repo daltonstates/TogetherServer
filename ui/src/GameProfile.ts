@@ -28,6 +28,8 @@ export type Profile = {
   executablePath: string
   minecraft?: { serverJarPath: string } | null
   custom?: CustomGameOptions | null
+  crashRecovery?: { enabled: boolean } | null
+  backups?: { enabled: boolean; retentionCount: number; minimumFreeSpaceMb: number } | null
 }
 
 export function gameLabel(kind: string): string {

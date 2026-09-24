@@ -26,7 +26,11 @@ type Settings = {
 }
 type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean }
 type CustomCertificationState = { profileId: string; stage: string; message: string; inProgress: boolean; certified: boolean; certifiedUtc: string | null; onlinePlayers: number | null; blockReason: string | null }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState> }
+type CrashRecoveryState = { profileId: string; cycleId: string; state: 'Pending' | 'Starting' | 'Recovered' | 'Suspended'; attempts: number; crashDetectedUtc: string; nextAttemptUtc: string | null; recoveredUtc: string | null; lastFailure: string | null }
+type WorldBackupStatus = { profileId: string; lastSuccessfulUtc: string | null; lastFailureUtc: string | null; lastFailure: string | null; completedCount: number }
+type WorldBackupRecord = { id: string; profileId: string; kind: string; worldId: string; backupKind: 'Rolling' | 'PreRestore'; createdUtc: string; sizeBytes: number; fileCount: number }
+type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
+type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState>; crashRecovery?: Record<string, CrashRecoveryState>; backups?: Record<string, WorldBackupStatus> }
 type RemoteOperation = { id: string; action: string; state: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Interrupted'; ok: boolean | null; code: string; message: string; requestedUtc: string; completedUtc: string | null }
 type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean; canRestartNow: boolean; restartReason: string | null; operation?: RemoteOperation | null }
 type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean }
@@ -359,6 +363,7 @@ function App() {
   const [friendHostAddress, setFriendHostAddress] = useState('')
   const [recoveryEndpoint, setRecoveryEndpoint] = useState('')
   const [gameEndpointResults, setGameEndpointResults] = useState<Record<string, GameEndpointResult>>({})
+  const [backupLists, setBackupLists] = useState<Record<string, WorldBackupList>>({})
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
   const [showPairing, setShowPairing] = useState(false)
   const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
@@ -947,6 +952,28 @@ function App() {
       setNotice({ good: false, text: String(error) })
     } finally { setPending('') }
   }
+  const loadBackups = async (profileId: string) => {
+    setPending(`backups-${profileId}`)
+    try {
+      const response = await fetch(`/api/local/profiles/${profileId}/backups`, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`Backup list returned ${response.status}`)
+      const result: WorldBackupList = await response.json()
+      setBackupLists(current => ({ ...current, [profileId]: result }))
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
+  const restoreBackup = async (profileId: string, backupId: string, createdUtc: string) => {
+    if (!window.confirm(`Restore the backup from ${new Date(createdUtc).toLocaleString()}? The server must remain offline. TogetherServer will first retain a pre-restore snapshot.`)) return
+    setPending(`restore-${profileId}`)
+    setNotice(null)
+    try {
+      const result = await change<ActionResult>(`/api/local/profiles/${profileId}/backups/${backupId}/restore`, 'POST')
+      setSnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      await loadBackups(profileId)
+    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    finally { setPending('') }
+  }
   const customCertificationAction = async (profileId: string, action: 'begin' | 'status' | 'confirm' | 'cancel' | 'revoke') => {
     const key = `certification-${action}-${profileId}`
     setPending(key)
@@ -1118,7 +1145,8 @@ function App() {
       worldDirectory: kind === 'Valheim' ? `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` : '',
       gamePort: kind === 'Valheim' ? 2456 : kind === 'MinecraftJava' ? 25565 : kind === 'MinecraftBedrock' ? 19132 : 2456,
       executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null,
-      custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null })
+      custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null,
+      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 } })
   }
 
   const addProfile = () => {
@@ -1127,7 +1155,8 @@ function App() {
     const id = crypto.randomUUID()
     edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
       publicListing: false, worldId: '', worldSource: 'New',
-      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '', custom: null }] })
+      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '', custom: null,
+      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 } }] })
     setActiveProfileId(id)
     setSetupStep('game')
     setMinecraftSetupMode(current => ({ ...current, [id]: 'existing' }))
@@ -1473,6 +1502,9 @@ function App() {
             {snapshot.settings.profiles.map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
               const certification = snapshot.customCertifications?.[profile.id]
+              const recovery = snapshot.crashRecovery?.[profile.id]
+              const backupStatus = snapshot.backups?.[profile.id]
+              const backupList = backupLists[profile.id]
               const connectionKey = `host-${profile.id}`
               const addressKey = `${connectionKey}-address`
               const passwordKey = `${connectionKey}-password`
@@ -1532,13 +1564,21 @@ function App() {
                   </div>
                   {!certification?.certified && status?.state !== 'Offline' && !certification?.inProgress && certification?.stage !== 'Failed' && <small>Stop the server locally before beginning certification.</small>}
                 </div>}
+                {recovery && <div className={`safety-status ${recovery.state === 'Suspended' ? 'warning-text' : ''}`}><strong>Crash recovery: {recovery.state}</strong><p>{recovery.state === 'Pending' && recovery.nextAttemptUtc ? `Attempt ${recovery.attempts + 1} of 3 after ${new Date(recovery.nextAttemptUtc).toLocaleString()}.` : recovery.state === 'Starting' ? `Recovery attempt ${recovery.attempts} of 3 is starting.` : recovery.state === 'Recovered' ? `Ready again after ${recovery.attempts} attempt${recovery.attempts === 1 ? '' : 's'}.` : `Suspended after ${recovery.attempts} failed attempts.`}</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}</div>}
                 <details className="advanced-block card-manage"><summary>Manage server</summary>
                   <p className="helper-text">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>
                   <div className="actions"><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}>Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</Button>
-                    {(status?.state === 'Unknown' || status?.state === 'Failed') && <Button className="text-button" disabled={!!pending || dirty} onClick={() => {
-                      if (window.confirm('Clear this unresolved run record only after verifying the original process is stopped?'))
+                    {status?.state === 'Failed' && <Button className="text-button" disabled={!!pending || dirty} onClick={() => {
+                      if (window.confirm('Archive this run only if TogetherServer can prove the exact recorded process is absent?'))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
-                    }}>Clear unresolved record</Button>}</div>
+                    }}>Archive exited record</Button>}</div>
+                  {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
+                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <div className="world-protection-summary"><strong>World protection</strong><p>Crash recovery is {profile.crashRecovery?.enabled ? 'on' : 'off'} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p>
+                    {backupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(backupStatus.lastSuccessfulUtc).toLocaleString()} · {backupStatus.completedCount} retained.</small>}
+                    {backupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(backupStatus.lastFailureUtc).toLocaleString()}: {backupStatus.lastFailure}</p>}
+                    <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
+                    {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. A backup is created only after a confirmed graceful Stop while rolling backups are enabled.</p> : backupList.backups.map(backup => <div className="device" key={backup.id}><div><strong>{backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : 'Rolling backup'}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {(backup.sizeBytes / 1048576).toFixed(1)} MB</small></div><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div>)}</div>}
+                  </div>}
                 </details>
               </article>
             })}
@@ -1633,6 +1673,13 @@ function App() {
                 <label className="check-row"><Input type="checkbox" checked={profile.custom?.shareJoinAddress ?? true} onChange={event => updateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: event.target.checked, additionalPorts: profile.custom?.additionalPorts ?? [] } })} /> Share public IP and primary port with assigned Friends</label>
                 {(profile.custom?.additionalPorts ?? []).map((port, index) => <div className="custom-port-row" key={`${index}-${port.protocol}-${port.port}`}><Select aria-label={`Additional port ${index + 1} protocol`} value={port.protocol} onChange={event => updateCustomPort(profile, index, { protocol: event.target.value as 'TCP' | 'UDP' })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select><Input aria-label={`Additional port ${index + 1}`} type="number" min="1024" max="65535" value={port.port} onChange={event => updateCustomPort(profile, index, { port: Number(event.target.value) })} /><Input aria-label={`Additional port ${index + 1} label`} value={port.label} onChange={event => updateCustomPort(profile, index, { label: event.target.value })} placeholder="Query or RCON" /><Select aria-label={`Additional port ${index + 1} address family`} value={port.family} onChange={event => updateCustomPort(profile, index, { family: event.target.value as 'Any' | 'IPv4' | 'IPv6' })}><option value="Any">Any IP</option><option value="IPv4">IPv4</option><option value="IPv6">IPv6</option></Select><Button className="text-button" onClick={() => removeCustomPort(profile, index)}>Remove</Button></div>)}
                 <Button className="secondary" disabled={(profile.custom?.additionalPorts.length ?? 0) >= 15} onClick={() => addCustomPort(profile)}>Add another port</Button><p className="helper-text">Declared ports participate in conflict and local-listener checks. TogetherServer does not create firewall or router rules.</p></div>}
+              {['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <div className="device-options world-protection-options">
+                <label className="check-row"><Input type="checkbox" checked={profile.crashRecovery?.enabled ?? false} onChange={event => updateProfile(profile.id, { crashRecovery: { enabled: event.target.checked } })} /> Restart after an unexpected server exit</label>
+                <small>Off by default. Only a previously Ready server with a definitively exited exact process is eligible. Retries wait 1, 5, and 15 minutes, then suspend.</small>
+                <label className="check-row"><Input type="checkbox" checked={profile.backups?.enabled ?? false} onChange={event => updateProfile(profile.id, { backups: { enabled: event.target.checked, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /> Back up after each confirmed graceful Stop</label>
+                {(profile.backups?.enabled ?? false) && <div className="settings-grid"><label>Completed backups to keep<Input type="number" min="1" max="50" value={profile.backups?.retentionCount ?? 5} onChange={event => updateProfile(profile.id, { backups: { enabled: true, retentionCount: Number(event.target.value), minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /></label><label>Free-space reserve (MB)<Input type="number" min="0" max="1048576" value={profile.backups?.minimumFreeSpaceMb ?? 1024} onChange={event => updateProfile(profile.id, { backups: { enabled: true, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: Number(event.target.value) } })} /></label></div>}
+                <p className="helper-text">Backups use staged, verified copies. Restore stays on this Host, requires Offline, and takes a pre-restore snapshot. Complete real-game save/restart acceptance before relying on automation for a valued world.</p>
+              </div>}
               {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
             </details></div>}
           </div>)}

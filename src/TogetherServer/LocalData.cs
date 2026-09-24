@@ -36,6 +36,20 @@ public sealed class ServerProfile
     public string ExecutablePath { get; set; } = "";
     public MinecraftOptions? Minecraft { get; set; }
     public CustomGameOptions? Custom { get; set; }
+    public CrashRecoveryOptions CrashRecovery { get; set; } = new();
+    public BackupOptions Backups { get; set; } = new();
+}
+
+public sealed class CrashRecoveryOptions
+{
+    public bool Enabled { get; set; }
+}
+
+public sealed class BackupOptions
+{
+    public bool Enabled { get; set; }
+    public int RetentionCount { get; set; } = 5;
+    public long MinimumFreeSpaceMb { get; set; } = 1024;
 }
 
 public sealed class MinecraftOptions
@@ -68,6 +82,8 @@ public sealed class ManagedRun
     public string LogPath { get; set; } = "";
     public int? ProcessId { get; set; }
     public long? StartTimeUtcTicks { get; set; }
+    public bool WasReady { get; set; }
+    public DateTimeOffset? StopRequestedUtc { get; set; }
 }
 
 public sealed record NewWorldOwnership(Guid ProfileId, string WorldId, string WorldDirectory);
@@ -83,6 +99,7 @@ public sealed class LocalData : IDisposable
     public string ManagedWorldsRoot => Path.Combine(root, "worlds");
     public string MinecraftInstallRoot => Path.Combine(root, "minecraft-servers");
     public string MinecraftRuntimeRoot => Path.Combine(root, "minecraft-runtimes");
+    public string BackupsRoot => Path.Combine(root, "backups");
     public string NewWorldDirectory(Guid profileId) => Path.Combine(ManagedWorldsRoot, profileId.ToString("N"));
     public bool OwnsNewWorld(ServerProfile profile) =>
         Load("new-world-ownership.json", new List<NewWorldOwnership>()).Any(item =>
@@ -113,9 +130,15 @@ public sealed class LocalData : IDisposable
     public void SavePreferredMode(string mode) => Save("mode.json", mode);
     public List<ManagedRun> LoadRuns() => Load("runs.json", new List<ManagedRun>());
     public List<RemoteOperation> LoadRemoteOperations() => Load("remote-operations.json", new List<RemoteOperation>());
+    public List<ManagedRunArchive> LoadRunArchive() => Load("run-archive.json", new List<ManagedRunArchive>());
+    public List<CrashRecoveryState> LoadCrashRecoveryStates() => Load("crash-recovery.json", new List<CrashRecoveryState>());
+    public BackupCatalog LoadBackupCatalog() => Load("backups.json", new BackupCatalog());
     public void SaveSettings(HostSettings settings) => Save("host.json", settings);
     public void SaveRuns(List<ManagedRun> runs) => Save("runs.json", runs);
     public void SaveRemoteOperations(List<RemoteOperation> operations) => Save("remote-operations.json", operations);
+    public void SaveRunArchive(List<ManagedRunArchive> archive) => Save("run-archive.json", archive);
+    public void SaveCrashRecoveryStates(List<CrashRecoveryState> states) => Save("crash-recovery.json", states);
+    public void SaveBackupCatalog(BackupCatalog catalog) => Save("backups.json", catalog);
     public string NewRunLogPath(Guid operationId)
     {
         var directory = Path.Combine(root, "logs");

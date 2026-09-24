@@ -256,6 +256,11 @@ app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, Countdow
     HostOnly(() => manager.ExtendAutoShutdownAsync(id, request.Minutes)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
+app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
+    ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })
+    : Results.Json(await manager.BackupsAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore", (Guid id, Guid backupId) =>
+    HostOnly(() => manager.RestoreBackupAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
 app.MapPut("/api/local/profiles/{id:guid}/custom-scripts", (Guid id, CustomScriptBundle scripts) =>
@@ -671,6 +676,8 @@ var idleShutdownTask = Task.Run(async () =>
         catch (Exception ex) { Console.Error.WriteLine("Server observation failed: " + ex.GetType().Name); }
         try { await manager.MaintainIdleShutdownAsync(); }
         catch (Exception ex) { Console.Error.WriteLine("Empty-server timer failed: " + ex.GetType().Name); }
+        try { await manager.MaintainCrashRecoveryAsync(); }
+        catch (Exception ex) { Console.Error.WriteLine("Crash recovery failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(3), pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }

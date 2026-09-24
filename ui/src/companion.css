@@ -134,6 +134,13 @@
 .safety-status strong { font-size: 13px; }
 .safety-status p, .safety-status small { display: block; color: var(--color-text-muted); font-size: 12px; line-height: 1.5; margin: 7px 0; }
 .safety-status button { margin: 7px 0; }
+.world-protection-options { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border); }
+.world-protection-options > small { display: block; margin: 4px 0 10px; color: var(--color-text-muted); line-height: 1.45; }
+.world-protection-summary { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--color-border); }
+.world-protection-summary > p, .world-protection-summary > small { display: block; margin: 7px 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
+.backup-list { display: grid; gap: 8px; margin-top: 12px; }
+.backup-list .device { align-items: center; }
+.backup-list .device small { display: block; margin-top: 3px; }
 .settings-content .device label { display: block; margin-top: 10px; font-size: 12px; color: var(--color-text-secondary); }
 .settings-content .device { margin-top: 9px; }
 @media (max-width: 700px) { .choice-pills button { flex: 1; } .compact-status { align-items: flex-start; } }

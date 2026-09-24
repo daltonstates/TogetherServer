@@ -10,6 +10,9 @@ internal sealed class CustomGameServerDriver(LocalData data) : IGameServerDriver
     public string Kind => GameKinds.Custom;
     public string DisplayName => "Custom scripted game";
     public bool ShowPortDiagnostics => true;
+    public bool SupportsCrashRecovery => false;
+    public bool SupportsBackups => false;
+    public string? ManagedSaveDirectory(ServerProfile profile) => null;
     public string ManagedExecutablePath(ServerProfile profile) => CustomPowerShell.Path;
 
     public IReadOnlyList<GamePort> Ports(ServerProfile profile)
