@@ -15,6 +15,9 @@ public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadO
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
     IReadOnlyList<PortConflictView>? PortConflicts = null);
 public sealed record CountdownExtensionRequest(long Minutes);
+public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string State, string Detail,
+    string Source, DateTimeOffset ObservedUtc, bool Ok, int? OnlinePlayers = null,
+    int? MaxPlayers = null, IReadOnlyList<string>? PlayerNames = null, bool PlayerCountTrusted = false);
 
 public sealed class HostManager
 {
@@ -26,6 +29,8 @@ public sealed class HostManager
     private readonly List<ManagedRun> runs;
     private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
     private readonly HashSet<Guid> hostAddedTime = [];
+    private readonly Dictionary<Guid, ServerObservation> observations = [];
+    private readonly SemaphoreSlim observationRefresh = new(1, 1);
 
     public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
@@ -45,6 +50,52 @@ public sealed class HostManager
         await gate.WaitAsync();
         try { return Snapshot(); }
         finally { gate.Release(); }
+    }
+
+    public async Task RefreshObservationsAsync()
+    {
+        if (!await observationRefresh.WaitAsync(0)) return;
+        try
+        {
+            List<(ManagedRun Run, IGameServerDriver Driver)> targets;
+            await gate.WaitAsync();
+            try
+            {
+                targets = [];
+                foreach (var run in runs)
+                    if (Identity(run) == "Matched" && games.TryGet(run.Kind, out var driver))
+                        targets.Add((run, driver));
+            }
+            finally { gate.Release(); }
+
+            var checkedRuns = await Task.WhenAll(targets.Select(async target =>
+            {
+                GameHealthResult health;
+                try { health = await Task.Run(() => target.Driver.Health(target.Run)); }
+                catch (Exception ex)
+                {
+                    health = new(false, "HealthProbeFailed", "Unknown",
+                        "The server status probe failed: " + ex.GetType().Name + ".", PlayerCountTrusted: false);
+                }
+                return (target.Run.ProfileId, target.Run.OperationId, Health: health);
+            }));
+
+            await gate.WaitAsync();
+            try
+            {
+                var currentIds = runs.Select(run => run.ProfileId).ToHashSet();
+                foreach (var removed in observations.Keys.Where(id => !currentIds.Contains(id)).ToList())
+                    observations.Remove(removed);
+                foreach (var result in checkedRuns)
+                {
+                    if (!runs.Any(run => run.ProfileId == result.ProfileId && run.OperationId == result.OperationId)) continue;
+                    observations[result.ProfileId] = ToObservation(result.ProfileId, result.OperationId,
+                        result.Health, clock.GetUtcNow());
+                }
+            }
+            finally { gate.Release(); }
+        }
+        finally { observationRefresh.Release(); }
     }
 
     public async Task<ActionResult> UpdateSettingsAsync(HostSettings next)
@@ -225,7 +276,13 @@ public sealed class HostManager
                 var operation = await StopUnderGateAsync(conflict.ProfileId, run =>
                     !HostAddedTimeIsActive(conflict.ProfileId) &&
                     games.TryGet(run.Kind, out var driver) &&
-                    driver.Health(run) is { Ok: true, State: "Ready", OnlinePlayers: 0 });
+                    driver.Health(run) is
+                    {
+                        Ok: true,
+                        State: "Ready",
+                        OnlinePlayers: 0,
+                        PlayerCountTrusted: true
+                    });
                 if (!operation.Ok)
                     return Result(false, operation.Code,
                         $"{conflict.ProfileName} was not stopped, so the requested server was not started. {operation.Message}",
@@ -301,6 +358,7 @@ public sealed class HostManager
         };
         shutdownDeadlines.Remove(profileId);
         hostAddedTime.Remove(profileId);
+        observations.Remove(profileId);
         driver.PrepareStart(profile, run);
         runs.Add(run);
         data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
@@ -328,6 +386,28 @@ public sealed class HostManager
     {
         await gate.WaitAsync();
         try { return await StopUnderGateAsync(profileId, remoteStillSafe); }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> RestartAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+            var stopped = await StopUnderGateAsync(profileId, remoteStillSafe);
+            if (!stopped.Ok)
+                return Result(false, stopped.Code, "Restart did not stop the server. " + stopped.Message,
+                    stopped.PortConflicts);
+            var started = StartUnderGate(profileId);
+            if (!started.Ok)
+                return Result(false, "RestartStartFailed",
+                    $"{profile.Name} stopped successfully, but it could not start again. {started.Message}",
+                    started.PortConflicts);
+            return Result(true, "ServerRestarted",
+                $"{profile.Name} stopped gracefully and started again. {started.Message}");
+        }
         finally { gate.Release(); }
     }
 
@@ -411,6 +491,7 @@ public sealed class HostManager
             runs.Remove(run);
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
+            observations.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, stopped.Code, stopped.Message);
         }
@@ -462,6 +543,7 @@ public sealed class HostManager
             runs.Remove(run);
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
+            observations.Remove(profileId);
             data.SaveRuns(runs);
             return Result(true, "RecordCleared", "The unresolved record was cleared by the local owner.");
         }
@@ -480,7 +562,7 @@ public sealed class HostManager
                 return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId, run.DeclaredPorts);
             return identity switch
             {
-                "Matched" => DriverView(profile.Id, run, driver.Health(run)),
+                "Matched" => DriverView(profile.Id, run, ObservedHealth(run, driver)),
                 "Missing" => new RunView(profile.Id, "Failed", "Recorded process exited; owner can clear the record", run.ProcessId, run.DeclaredPorts),
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId, run.DeclaredPorts)
             };
@@ -573,7 +655,7 @@ public sealed class HostManager
             reason = "The conflicting server's process or game driver cannot be verified.";
             return false;
         }
-        var health = driver.Health(run);
+        var health = ObservedHealth(run, driver);
         if (!health.Ok || health.State != "Ready" || !health.PlayerCountTrusted || health.OnlinePlayers is null)
         {
             reason = "The conflicting server does not have a reliable current player count from a built-in driver.";
@@ -590,6 +672,40 @@ public sealed class HostManager
 
     private bool HostAddedTimeIsActive(Guid profileId) => hostAddedTime.Contains(profileId) &&
         shutdownDeadlines.TryGetValue(profileId, out var deadline) && deadline > clock.GetUtcNow();
+
+    private GameHealthResult ObservedHealth(ManagedRun run, IGameServerDriver driver)
+    {
+        var now = clock.GetUtcNow();
+        if (observations.TryGetValue(run.ProfileId, out var observation) &&
+            observation.OperationId == run.OperationId)
+        {
+            if (now - observation.ObservedUtc <= TimeSpan.FromSeconds(10))
+                return new(observation.Ok, observation.Source, observation.State, observation.Detail,
+                    observation.OnlinePlayers, observation.MaxPlayers, observation.PlayerNames,
+                    observation.PlayerCountTrusted);
+            return new(false, "ObservationStale", "Unknown",
+                "The last server observation is stale. Waiting for a fresh probe.", PlayerCountTrusted: false);
+        }
+
+        // The first view of a newly attached run performs one bounded probe so
+        // startup and direct manager users have useful state before the shared
+        // supervisor's first pass. Subsequent readers consume the cache.
+        GameHealthResult health;
+        try { health = driver.Health(run); }
+        catch (Exception ex)
+        {
+            health = new(false, "HealthProbeFailed", "Unknown",
+                "The server status probe failed: " + ex.GetType().Name + ".", PlayerCountTrusted: false);
+        }
+        observations[run.ProfileId] = ToObservation(run.ProfileId, run.OperationId, health, now);
+        return health;
+    }
+
+    private static ServerObservation ToObservation(Guid profileId, Guid operationId,
+        GameHealthResult health, DateTimeOffset observedUtc) =>
+        new(profileId, operationId, health.State, health.Detail, health.Code, observedUtc,
+            health.Ok, health.OnlinePlayers, health.MaxPlayers, health.PlayerNames,
+            health.PlayerCountTrusted);
 
     private static string PortLabel(GamePort port) => $"{port.Protocol.ToUpperInvariant()} {port.Port}" +
         (port.Family == "Any" ? "" : $" {port.Family}");

@@ -22,15 +22,19 @@ public sealed class FriendConfiguration
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
     bool CanStopNow = false, string? StopReason = null, string Kind = "",
     int? OnlinePlayers = null, int? MaxPlayers = null, DateTimeOffset? AutoShutdownAtUtc = null,
-    string? AutoShutdownReason = null, bool CanStart = false, bool CanStop = false);
+    string? AutoShutdownReason = null, bool CanStart = false, bool CanStop = false,
+    bool CanRestartNow = false, string? RestartReason = null,
+    RemoteOperationView? Operation = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
-    bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc);
+    bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
     Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
-    string? ConnectionCode = null);
+    string? ConnectionCode = null, string? HostVersion = null,
+    string FriendVersion = "", int? HostProtocolVersion = null, bool ProtocolCompatible = true);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status,
-    IReadOnlyList<PortConflictView>? PortConflicts = null);
+    IReadOnlyList<PortConflictView>? PortConflicts = null, Guid? OperationId = null,
+    string? OperationState = null);
 
 internal sealed class FriendLink
 {
@@ -42,6 +46,7 @@ internal sealed class FriendLink
     private FriendView view;
     private Guid instanceId = Guid.NewGuid();
     private long sequence;
+    private HttpClient? client;
 
     public FriendLink(LocalData data, string configFile)
     {
@@ -83,8 +88,8 @@ internal sealed class FriendLink
                 return new(false, "HostAddressMismatch", "Host IP or port differs from this pairing invitation. Check the address with the Host.", null);
             try
             {
-                using var client = MakeClient(invite.Endpoint, invite.Fingerprint);
-                var response = await client.PostAsync("api/companion/pair", new StringContent(
+                using var pairingClient = MakeClient(invite.Endpoint, invite.Fingerprint);
+                using var response = await pairingClient.PostAsync("api/companion/pair", new StringContent(
                     JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope), Json), Encoding.UTF8, "application/json"));
                 if (!response.IsSuccessStatusCode)
                     return response.StatusCode == HttpStatusCode.TooManyRequests
@@ -102,6 +107,8 @@ internal sealed class FriendLink
                     Credential = credential.Credential, CredentialExpiresUtc = credential.ExpiresUtc
                 };
                 data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
+                client?.Dispose();
+                client = null;
                 instanceId = Guid.NewGuid();
                 sequence = 0;
                 view = new FriendView("Friend", "Disconnected/Unknown", "Paired; waiting for an authenticated heartbeat.",
@@ -130,15 +137,14 @@ internal sealed class FriendLink
             }
             try
             {
-                using var client = MakeClient(config.Endpoint, config.Fingerprint);
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
-                var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence, "0.2");
-                var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/heartbeat")
+                var hostClient = HostClient();
+                var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence,
+                    CompanionProtocol.AppVersion, CompanionProtocol.Current, CompanionProtocol.Capabilities);
+                using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/heartbeat")
                 {
                     Content = new StringContent(JsonSerializer.Serialize(heartbeat, Json), Encoding.UTF8, "application/json")
                 };
-                request.Headers.Add("X-Device-Id", config.DeviceId.ToString());
-                using var response = await client.SendAsync(request);
+                using var response = await hostClient.SendAsync(request);
                 if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
                     PairingDecision? denial = null;
@@ -165,10 +171,15 @@ internal sealed class FriendLink
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
-                view = new FriendView("Friend", status.RemoteControlsEnabled ? "Connected" : "Disabled",
-                    status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
-                    config.Endpoint, DateTimeOffset.UtcNow, status.RemoteControlsEnabled,
-                    status.CanStart, status.CanStop, status.Profiles);
+                var compatible = CompanionProtocol.Supports(status.Protocol);
+                view = new FriendView("Friend", !compatible ? "Update required" :
+                        status.RemoteControlsEnabled ? "Connected" : "Disabled",
+                    !compatible ? status.Protocol?.CompatibilityMessage ?? "Update required before remote controls can be used." :
+                        status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
+                    config.Endpoint, DateTimeOffset.UtcNow, compatible && status.RemoteControlsEnabled,
+                    compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
+                    HostVersion: status.Protocol?.AppVersion, FriendVersion: CompanionProtocol.AppVersion,
+                    HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible);
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
@@ -188,20 +199,18 @@ internal sealed class FriendLink
         try
         {
             if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
-            if (action is not ("start" or "stop" or "replace"))
-                return new(false, "InvalidAction", "Only Start, Stop, and empty-server conflict replacement are available.", null);
+            if (action is not ("start" or "stop" or "restart" or "replace"))
+                return new(false, "InvalidAction", "Only Start, Stop, Restart, and empty-server conflict replacement are available.", null);
             try
             {
-                using var client = MakeClient(config.Endpoint, config.Fingerprint);
-                if (action is "stop" or "replace") client.Timeout = TimeSpan.FromSeconds(105);
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
+                var hostClient = HostClient();
+                var requestId = Guid.NewGuid();
                 using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + action)
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new { deviceId = config.DeviceId, profileId }, Json), Encoding.UTF8, "application/json")
                 };
-                request.Headers.Add("X-Device-Id", config.DeviceId.ToString());
-                request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
-                using var response = await client.SendAsync(request);
+                request.Headers.Add("Idempotency-Key", requestId.ToString());
+                using var response = await hostClient.SendAsync(request);
                 if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
                     FriendActionResult? denied = null;
@@ -219,8 +228,9 @@ internal sealed class FriendLink
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                     view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.", ConnectionCode = "CredentialRejected",
                         RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
-                return await response.Content.ReadFromJsonAsync<FriendActionResult>(Json)
+                var submitted = await response.Content.ReadFromJsonAsync<FriendActionResult>(Json)
                     ?? new(false, "InvalidResponse", "Host returned an empty action result.", null);
+                return submitted;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
@@ -231,6 +241,16 @@ internal sealed class FriendLink
             }
         }
         finally { gate.Release(); }
+    }
+
+    private HttpClient HostClient()
+    {
+        if (config is null) throw new InvalidOperationException("Pair with a Host first.");
+        if (client is not null) return client;
+        client = MakeClient(config.Endpoint, config.Fingerprint);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
+        client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
+        return client;
     }
 
     private static FriendConfiguration? LoadConfig(LocalData data, string configFile)

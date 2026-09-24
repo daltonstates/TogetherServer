@@ -210,8 +210,7 @@ try
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
     Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
         "a server code exposed a different server profile");
-    var differentServerDenied = await OwnerPost<object, FriendActionResult>(bLocal,
-        $"/api/local/friend/{joinProfile.Id}/start", new { });
+    var differentServerDenied = await FriendAction(bLocal, joinProfile.Id, "start");
     Require(differentServerDenied.Code == "PermissionDenied",
         "a Friend controlled a server that was not assigned to its code or device");
     var unknownServerAssignment = await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
@@ -258,16 +257,14 @@ try
     Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
         $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id], serverPermissions))).Ok,
         "per-server exceptions could not be restored after a global permission change");
-    var assignedButPaused = await OwnerPost<object, FriendActionResult>(bLocal,
-        $"/api/local/friend/{joinProfile.Id}/start", new { });
+    var assignedButPaused = await FriendAction(bLocal, joinProfile.Id, "start");
     Require(assignedButPaused.Code == "RemoteControlsDisabled",
         "an assigned server did not pass server access before the separate global control gate");
     Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
         $"/api/local/devices/{deviceBId}/servers", new([]))).Ok,
         "the Host could not remove every server assignment");
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    var removedServerDenied = await OwnerPost<object, FriendActionResult>(bLocal,
-        $"/api/local/friend/{profile.Id}/start", new { });
+    var removedServerDenied = await FriendAction(bLocal, profile.Id, "start");
     Require(bView.Profiles.Count == 0 && removedServerDenied.Code == "PermissionDenied",
         "removing assignments did not immediately hide and deny server access");
     Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
@@ -316,8 +313,11 @@ try
     var joinCredential = await joinActivation.Content.ReadFromJsonAsync<PairingCredential>(webJson) ?? throw new Exception("empty second-server activation");
     var joinStatus = await PublicStatus(publicClient, joinCredential);
     Require(joinStatus.Profiles.Count == 1 && joinStatus.Profiles.Single().Id == joinProfile.Id &&
-        joinStatus.Profiles.Single().JoinAddress == $"1.2.3.4:{joinProfile.GamePort}",
-        "a credential did not remain scoped to its server and current join address");
+        joinStatus.Profiles.Single().JoinAddress == $"1.2.3.4:{joinProfile.GamePort}" &&
+        joinStatus.Protocol is { ProtocolVersion: CompanionProtocol.Current, Compatible: true } &&
+        joinStatus.Protocol.Capabilities.Contains("durable-operations"),
+        "a credential did not remain scoped to its server and current join address: " +
+        JsonSerializer.Serialize(joinStatus, webJson));
     var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check");
     async Task<HttpStatusCode> SendHeartbeat()
     {
@@ -340,7 +340,7 @@ try
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Connected" && bView.State == "Connected", "connected status missing");
-    var deniedStart = await OwnerPost<object, FriendActionResult>(bLocal, $"/api/local/friend/{profile.Id}/start", new { });
+    var deniedStart = await FriendAction(bLocal, profile.Id, "start");
     Require(deniedStart.Code == "PermissionDenied", "Friend Start permission was ignored");
     using (var injected = new HttpRequestMessage(HttpMethod.Post, "/api/companion/start"))
     {
@@ -367,11 +367,12 @@ try
         Require(rejected.StatusCode == HttpStatusCode.Conflict, "reused action key was accepted for a different action");
     }
     var retryPid = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs.Single(run => run.ProfileId == profile.Id).ProcessId;
-    Require(first.Code == "FixtureStarted" && retry.Code == first.Code && firstPid == retryPid, "idempotent retry launched a second process");
-    var duplicate = await OwnerPost<object, FriendActionResult>(aLocal, $"/api/local/friend/{profile.Id}/start", new { });
+    Require(first.Code == "FixtureStarted" && retry.Code == first.Code && firstPid == retryPid,
+        $"idempotent retry changed the result or launched twice: first={first.Code}/{first.OperationState}/{firstPid}, retry={retry.Code}/{retry.OperationState}/{retryPid}");
+    var duplicate = await FriendAction(aLocal, profile.Id, "start");
     Require(duplicate.Code == "AlreadyManaged", "another device launched a duplicate");
-    var deniedStop = await OwnerPost<object, FriendActionResult>(aLocal, $"/api/local/friend/{profile.Id}/stop", new { });
-    var unknownStop = await OwnerPost<object, FriendActionResult>(bLocal, $"/api/local/friend/{profile.Id}/stop", new { });
+    var deniedStop = await FriendAction(aLocal, profile.Id, "stop");
+    var unknownStop = await FriendAction(bLocal, profile.Id, "stop");
     Require(deniedStop.Code == "PermissionDenied" && unknownStop.Code == "ServerNotReady",
         $"remote Stop safety or permissions failed: denied={deniedStop.Code}, unsupported={unknownStop.Code}");
     Console.WriteLine("PASS permissions, idempotent Start, duplicate guard, and guarded Stop denial"); passes++;
@@ -399,7 +400,7 @@ try
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "remote disable failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Disabled", "online Friend did not see disable notice");
-    var disabledAction = await OwnerPost<object, FriendActionResult>(aLocal, $"/api/local/friend/{profile.Id}/start", new { });
+    var disabledAction = await FriendAction(aLocal, profile.Id, "start");
     Require(disabledAction.Code == "RemoteControlsDisabled", "Host accepted remote command after disable");
     StopApp(friendB);
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
@@ -578,7 +579,7 @@ try
     Console.WriteLine("PASS stale heartbeat becomes Unknown and fresh reconnect recovers"); passes++;
 
     var limited = false;
-    for (var i = 0; i < 75; i++)
+    for (var i = 0; i < 220; i++)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
         request.Headers.Add("X-Device-Id", deviceBId.ToString());
@@ -587,7 +588,10 @@ try
         if (response.StatusCode == HttpStatusCode.TooManyRequests) limited = true;
     }
     Require(limited, "companion authentication was not rate limited");
-    Console.WriteLine("PASS repeated invalid authentication is rate limited"); passes++;
+    var independentDeviceStatus = await PublicStatus(publicClient, joinCredential);
+    Require(independentDeviceStatus.Protocol?.Compatible == true,
+        "one device's authentication burst throttled another device behind the same source IP");
+    Console.WriteLine("PASS per-device authentication limiting preserves another device behind one source IP"); passes++;
 
     var stopHostData = Path.Combine(root, "stop-host");
     var stopFriendData = Path.Combine(root, "stop-friend");
@@ -638,8 +642,7 @@ try
     Require(stopPreparing.CanStop && !stopPreparing.Profiles.Single().CanStopNow &&
         !string.IsNullOrWhiteSpace(stopPreparing.Profiles.Single().StopReason),
         "early Stop permission bypassed or hid the incomplete safety setup");
-    var prematureStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    var prematureStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(!prematureStop.Ok && prematureStop.Code == "ServerNotReady",
         "Host accepted Stop before the server was ready");
     Console.WriteLine("PASS early Stop permission remains blocked until Host safety setup is complete"); passes++;
@@ -673,18 +676,30 @@ try
         "Friend UI did not receive the player count, shared countdown, and available remote Stop state");
     var playerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
     File.WriteAllText(playerCountPath, "1");
-    var occupiedView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
-    Require(occupiedView.Profiles.Single().OnlinePlayers == 1 &&
-        occupiedView.Profiles.Single().AutoShutdownAtUtc is null && !occupiedView.Profiles.Single().CanStopNow &&
-        occupiedView.Profiles.Single().StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
+    FriendView? occupiedView = null;
+    for (var i = 0; i < 80; i++)
+    {
+        occupiedView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+        if (occupiedView.Profiles.Single().OnlinePlayers == 1 &&
+            occupiedView.Profiles.Single().AutoShutdownAtUtc is null) break;
+        await Task.Delay(100);
+    }
+    var observedOccupied = occupiedView ?? throw new Exception("Friend status was unavailable after player-count change");
+    Require(observedOccupied.Profiles.Single().OnlinePlayers == 1 &&
+        observedOccupied.Profiles.Single().AutoShutdownAtUtc is null && !observedOccupied.Profiles.Single().CanStopNow &&
+        observedOccupied.Profiles.Single().StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
         "Friend UI did not cancel the countdown and receive the online-player Stop blocker");
-    var occupiedStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    var occupiedStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(!occupiedStop.Ok && occupiedStop.Code == "PlayersOnline",
         "Host accepted remote Stop while the server reported an online player");
     File.WriteAllText(playerCountPath, "0");
-    var remoteStop = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{stopProfile.Id}/stop", new { });
+    for (var i = 0; i < 80; i++)
+    {
+        var emptyView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+        if (emptyView.Profiles.Single().OnlinePlayers == 0 && emptyView.Profiles.Single().CanStopNow) break;
+        await Task.Delay(100);
+    }
+    var remoteStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(remoteStop.Ok && remoteStop.Code == "ValheimStopped", $"remote Stop failed: {remoteStop.Code} {remoteStop.Message}");
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
@@ -715,8 +730,7 @@ try
     Require((await OwnerPost<CountdownExtensionRequest, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/countdown/extend", new(37))).Ok,
         "Host keep-alive extension was not applied before the replacement check");
-    var protectedConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    var protectedConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     var protectedServer = protectedConflict.PortConflicts?.SingleOrDefault();
     Require(!protectedConflict.Ok && protectedConflict.Code == "PortConflict" &&
         protectedServer is { ProfileId: var protectedId, CanReplace: false } && protectedId == stopProfile.Id &&
@@ -724,9 +738,16 @@ try
         "a Host keep-alive extension did not block empty-server conflict replacement");
 
     File.WriteAllText(playerCountPath, "not-a-count");
-    _ = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
-    var unknownConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    var observedUnknown = false;
+    for (var i = 0; i < 80; i++)
+    {
+        var observed = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == stopProfile.Id);
+        if (observed.OnlinePlayers is null || !observed.PlayerCountTrusted) { observedUnknown = true; break; }
+        await Task.Delay(100);
+    }
+    Require(observedUnknown, "observation supervisor did not publish the Unknown player count");
+    var unknownConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     Require(!unknownConflict.Ok && unknownConflict.Code == "PortConflict" &&
         unknownConflict.PortConflicts?.SingleOrDefault() is
             { ProfileId: var unknownConflictId, CanReplace: false } &&
@@ -734,9 +755,16 @@ try
         unknownConflict.PortConflicts.Single().BlockReason?.Contains("reliable current player count", StringComparison.OrdinalIgnoreCase) == true,
         "a conflicting server with an Unknown player count was incorrectly offered for replacement");
     File.WriteAllText(playerCountPath, "1");
-    _ = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
-    var occupiedConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    var observedOne = false;
+    for (var i = 0; i < 80; i++)
+    {
+        var observed = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == stopProfile.Id);
+        if (observed.OnlinePlayers == 1) { observedOne = true; break; }
+        await Task.Delay(100);
+    }
+    Require(observedOne, "observation supervisor did not publish the occupied player count");
+    var occupiedConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     Require(!occupiedConflict.Ok && occupiedConflict.Code == "PortConflict" &&
         occupiedConflict.PortConflicts?.SingleOrDefault() is
             { ProfileId: var occupiedConflictId, CanReplace: false } &&
@@ -744,15 +772,21 @@ try
         occupiedConflict.PortConflicts.Single().BlockReason?.Contains("player", StringComparison.OrdinalIgnoreCase) == true,
         "an occupied conflicting server was incorrectly offered for replacement");
     File.WriteAllText(playerCountPath, "0");
-    _ = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
-    var replaceableConflict = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{replacementProfile.Id}/start", new { });
+    var observedZero = false;
+    for (var i = 0; i < 80; i++)
+    {
+        var observed = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
+            .Single(run => run.ProfileId == stopProfile.Id);
+        if (observed.OnlinePlayers == 0 && observed.PlayerCountTrusted) { observedZero = true; break; }
+        await Task.Delay(100);
+    }
+    Require(observedZero, "observation supervisor did not publish the empty player count");
+    var replaceableConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     Require(!replaceableConflict.Ok && replaceableConflict.Code == "PortConflict" &&
         replaceableConflict.PortConflicts?.SingleOrDefault() is { ProfileId: var conflictId, CanReplace: true } &&
         conflictId == stopProfile.Id,
         "an empty unextended conflicting server was not offered as an explicit replacement");
-    var replaced = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
-        $"/api/local/friend/{replacementProfile.Id}/replace", new { });
+    var replaced = await FriendAction(stopFriendLocal, replacementProfile.Id, "replace");
     Require(replaced.Ok && replaced.Code == "PortConflictReplaced" && File.Exists(stopMarker) &&
         (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Runs
             .Single(run => run.ProfileId == replacementProfile.Id).State is "Starting" or "Ready",
@@ -914,6 +948,26 @@ static HttpClient PinnedClient(string endpoint, string fingerprint)
     return new HttpClient(handler) { BaseAddress = new Uri(endpoint), Timeout = TimeSpan.FromSeconds(8) };
 }
 
+async Task<FriendActionResult> FriendAction(HttpClient client, Guid profileId, string action)
+{
+    var submitted = await OwnerPost<object, FriendActionResult>(client,
+        $"/api/local/friend/{profileId}/{action}", new { });
+    if (submitted.Code != "OperationAccepted" || submitted.OperationId is not { } operationId)
+        return submitted;
+    var deadline = DateTimeOffset.UtcNow.AddSeconds(45);
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+        var status = await OwnerPost<object, FriendView>(client, "/api/local/friend/poll", new { });
+        var operation = status.Profiles.Select(profile => profile.Operation)
+            .FirstOrDefault(candidate => candidate?.Id == operationId);
+        if (operation is not null && RemoteOperationStates.Terminal(operation.State))
+            return new(operation.Ok == true, operation.Code, operation.Message, null,
+                operation.PortConflicts, operation.Id, operation.State);
+        await Task.Delay(100);
+    }
+    throw new Exception($"Friend {action} operation {operationId} did not reach a terminal state.");
+}
+
 async Task<FriendActionResult> PublicAction(HttpClient client, PairingCredential credential, Guid profileId, Guid key, string action)
 {
     using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/" + action)
@@ -922,7 +976,26 @@ async Task<FriendActionResult> PublicAction(HttpClient client, PairingCredential
     request.Headers.Add("Idempotency-Key", key.ToString());
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
     using var response = await client.SendAsync(request);
-    return await response.Content.ReadFromJsonAsync<FriendActionResult>(webJson) ?? throw new Exception("Empty public action response.");
+    var submitted = await response.Content.ReadFromJsonAsync<FriendActionResult>(webJson) ??
+        throw new Exception("Empty public action response.");
+    if (submitted.OperationId is not { } operationId ||
+        RemoteOperationStates.Terminal(submitted.OperationState ?? "")) return submitted;
+    var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+        await Task.Delay(100);
+        using var poll = new HttpRequestMessage(HttpMethod.Get, "/api/companion/operations/" + operationId);
+        poll.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
+        poll.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
+        using var pollResponse = await client.SendAsync(poll);
+        Require(pollResponse.IsSuccessStatusCode, "accepted operation could not be queried");
+        var operation = await pollResponse.Content.ReadFromJsonAsync<RemoteOperationView>(webJson) ??
+            throw new Exception("Empty operation response.");
+        if (!RemoteOperationStates.Terminal(operation.State)) continue;
+        return new(operation.Ok == true, operation.Code, operation.Message, null,
+            operation.PortConflicts, operation.Id, operation.State);
+    }
+    throw new Exception("Remote operation did not reach a terminal state.");
 }
 
 static void Require(bool condition, string message)

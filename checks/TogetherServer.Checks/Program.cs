@@ -310,6 +310,64 @@ await Check("Windows startup and tray preference stay scoped to this user", asyn
     await Task.CompletedTask;
 });
 
+await Check("remote operations persist idempotency and interrupt unfinished work", async () =>
+{
+    using var data = Data("remote-operations");
+    var interruptedId = Guid.NewGuid();
+    var interruptedDevice = Guid.NewGuid();
+    data.SaveRemoteOperations([
+        new RemoteOperation
+        {
+            Id = interruptedId,
+            DeviceId = interruptedDevice,
+            RequestId = Guid.NewGuid(),
+            ProfileId = Guid.NewGuid(),
+            Action = "stop",
+            State = RemoteOperationStates.Running,
+            StartedUtc = DateTimeOffset.UtcNow.AddMinutes(-1)
+        }
+    ]);
+    var coordinator = new RemoteOperationCoordinator(data);
+    var interrupted = coordinator.Find(interruptedDevice, interruptedId);
+    Require(interrupted is { State: RemoteOperationStates.Interrupted, Code: "HostRestarted", Ok: false },
+        "unfinished operation was not interrupted after Host restart");
+
+    var deviceId = Guid.NewGuid();
+    var requestId = Guid.NewGuid();
+    var profileId = Guid.NewGuid();
+    var executions = 0;
+    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var submitted = coordinator.Submit(deviceId, requestId, profileId, "restart", async () =>
+    {
+        Interlocked.Increment(ref executions);
+        await release.Task;
+        return new RemoteOperationOutcome(true, "ServerRestarted", "Restart completed once.");
+    });
+    Require(submitted.Accepted && submitted.Operation is not null, "operation was not accepted");
+    var submittedOperation = submitted.Operation ?? throw new Exception("accepted operation had no view");
+    var retry = coordinator.Submit(deviceId, requestId, profileId, "restart", () =>
+        Task.FromResult(new RemoteOperationOutcome(false, "Duplicate", "must not execute")));
+    for (var attempt = 0; attempt < 100 && executions == 0; attempt++) await Task.Delay(10);
+    Require(retry.Accepted && retry.Existing && retry.Operation?.Id == submittedOperation.Id && executions == 1,
+        "idempotent retry did not return the original operation");
+    var conflict = coordinator.Submit(deviceId, requestId, profileId, "stop", () =>
+        Task.FromResult(new RemoteOperationOutcome(true, "Wrong", "must not execute")));
+    Require(!conflict.Accepted && conflict.Code == "IdempotencyConflict",
+        "request ID reuse for another action was accepted");
+    release.SetResult();
+    RemoteOperationView? completed = null;
+    for (var attempt = 0; attempt < 100; attempt++)
+    {
+        completed = coordinator.Find(deviceId, submittedOperation.Id);
+        if (completed is not null && RemoteOperationStates.Terminal(completed.State)) break;
+        await Task.Delay(20);
+    }
+    Require(completed is { State: RemoteOperationStates.Succeeded, Code: "ServerRestarted", Ok: true } &&
+        executions == 1, "operation did not persist one terminal execution");
+    var reloaded = new RemoteOperationCoordinator(data).Find(deviceId, submittedOperation.Id);
+    Require(reloaded is { State: RemoteOperationStates.Succeeded }, "terminal operation did not survive reload");
+});
+
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");
 return failed == 0 ? 0 : 1;
 

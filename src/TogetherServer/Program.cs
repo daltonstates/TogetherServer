@@ -239,6 +239,7 @@ app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => 
 })));
 app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => manager.StartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) => HostOnly(() => manager.RestartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, CountdownExtensionRequest request) =>
     HostOnly(() => manager.ExtendAutoShutdownAsync(id, request.Minutes)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
@@ -436,6 +437,7 @@ app.MapGet("/api/local/companion", async () =>
         endpoint = snapshot.Settings.CompanionEndpoint, fingerprint, devices = pairing.Views(),
         stopSafety = companionServer.StopSafety(snapshot) });
 });
+app.MapGet("/api/local/operations", () => Results.Json(companionServer.RecentOperations()));
 app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid profileId) =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
@@ -579,6 +581,8 @@ var idleShutdownTask = Task.Run(async () =>
 {
     while (!pollStop.IsCancellationRequested)
     {
+        try { await manager.RefreshObservationsAsync(); }
+        catch (Exception ex) { Console.Error.WriteLine("Server observation failed: " + ex.GetType().Name); }
         try { await manager.MaintainIdleShutdownAsync(); }
         catch (Exception ex) { Console.Error.WriteLine("Empty-server timer failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(3), pollStop.Token); }

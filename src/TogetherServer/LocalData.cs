@@ -110,8 +110,10 @@ public sealed class LocalData : IDisposable
     public string LoadPreferredMode() => Load("mode.json", "Host");
     public void SavePreferredMode(string mode) => Save("mode.json", mode);
     public List<ManagedRun> LoadRuns() => Load("runs.json", new List<ManagedRun>());
+    public List<RemoteOperation> LoadRemoteOperations() => Load("remote-operations.json", new List<RemoteOperation>());
     public void SaveSettings(HostSettings settings) => Save("host.json", settings);
     public void SaveRuns(List<ManagedRun> runs) => Save("runs.json", runs);
+    public void SaveRemoteOperations(List<RemoteOperation> operations) => Save("remote-operations.json", operations);
     public string NewRunLogPath(Guid operationId)
     {
         var directory = Path.Combine(root, "logs");

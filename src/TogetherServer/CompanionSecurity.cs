@@ -57,7 +57,8 @@ public sealed class ServerInviteState
 public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> AssignedProfileIds,
     string Name, bool CanStart, bool CanStop, bool Revoked,
     bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc,
-    IReadOnlyList<ServerPermissionView>? ServerPermissions = null);
+    IReadOnlyList<ServerPermissionView>? ServerPermissions = null,
+    string? AppVersion = null, int? ProtocolVersion = null);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop);
 
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
@@ -65,8 +66,10 @@ public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid Dev
 public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart);
 public sealed record PairingActivation(Guid DeviceId, string Code, bool ServerScope = false);
 public sealed record PairingCredential(Guid DeviceId, string Credential, DateTimeOffset ExpiresUtc);
-public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version);
-public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc);
+public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version,
+    int ProtocolVersion = 1, IReadOnlyList<string>? Capabilities = null);
+public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc,
+    string AppVersion = "", int ProtocolVersion = 1);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop, string? Scope = null);
@@ -392,7 +395,8 @@ public sealed class PairingService
                 device.CredentialHash is not null, device.CredentialExpiresUtc,
                 fresh ? heartbeat!.ReceivedUtc : null,
                 device.AssignedProfileIds.Select(profileId => new ServerPermissionView(profileId,
-                    device.CanStartProfile(profileId), device.CanStopProfile(profileId))).ToList());
+                    device.CanStartProfile(profileId), device.CanStopProfile(profileId))).ToList(),
+                fresh ? heartbeat!.AppVersion : null, fresh ? heartbeat!.ProtocolVersion : null);
         }).ToList();
     }
 
@@ -503,7 +507,8 @@ public sealed class PairingService
             if (heartbeats.TryGetValue(device.Id, out var prior) && prior.InstanceId == request.InstanceId &&
                 request.Sequence <= prior.Sequence)
                 return new PairingDecision(false, "Replay", "Heartbeat sequence did not advance.");
-            heartbeats[device.Id] = new HeartbeatReceipt(request.InstanceId, request.Sequence, DateTimeOffset.UtcNow);
+            heartbeats[device.Id] = new HeartbeatReceipt(request.InstanceId, request.Sequence,
+                DateTimeOffset.UtcNow, request.Version, request.ProtocolVersion);
             return new PairingDecision(true, "Received", "Heartbeat recorded.");
         }
     }
@@ -598,6 +603,16 @@ public sealed class PairingService
     public bool CanAccess(PairedDevice device, Guid profileId)
     {
         lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId);
+    }
+
+    public bool TryGetActiveDevice(Guid id, out PairedDevice? device)
+    {
+        lock (sync)
+        {
+            device = devices.SingleOrDefault(item => item.Id == id && item.CredentialHash is not null &&
+                !IsRevoked(item) && item.CredentialExpiresUtc > DateTimeOffset.UtcNow);
+            return device is not null;
+        }
     }
 
     public bool CanStart(PairedDevice device, Guid profileId)

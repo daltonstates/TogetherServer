@@ -781,3 +781,20 @@ Starting Git HEAD: `fd22ba9`, with the post-v0.1.5 server-safety, custom-game, c
 | GitHub publication | Pass: annotated tag `v0.1.6` resolves to tested release commit `cd928f1`; the public non-draft, non-prerelease release is marked latest at `https://github.com/daltonstates/TogetherServer/releases/tag/v0.1.6`. GitHub lists the EXE and checksum assets and reports the matching `sha256:e422a0f5f41d6c9b97314bac62d107936e3b85b6aa72308a7e312ef6be4b7ac4` digest. A fresh public EXE download matched 64,222,397 bytes, product version `0.1.6`, SHA-256 `E422A0F5F41D6C9B97314BAC62D107936E3B85B6AA72308A7E312EF6BE4B7AC4`, and Authenticode `NotSigned`. |
 
 No real game binary, valued world, credential, public listener, router, firewall, DNS setting, or installed release was used or changed. The exact release EXE is unsigned, so Windows may identify it as an unknown publisher even though the published checksum can verify its bytes.
+
+## 2026-09-23 - Durable Friend operations and observation supervision
+
+Starting Git HEAD: `48ef5b3`, clean `main` worktree. Friend Start, Stop, Restart, and explicit empty-server replacement now enter a bounded durable Host journal before execution and return HTTP 202 with an operation ID. `(device, request ID)` idempotency survives process restart. The newest 500 entries or 30 days are retained without credentials or game-private data. Pending or Running work is marked Interrupted after Host restart and is not replayed. The Friend UI sees each server's latest Pending, Running, Failed, Succeeded, or Interrupted result through status refreshes; the action request itself no longer waits for a long graceful Stop.
+
+Restart is one lifecycle-gated operation. It requires both existing Start and Stop permissions, performs the same fresh exact-zero safety acquisition and in-gate recheck as Stop, confirms graceful exit, and starts only after Stop succeeds. Local Host Restart remains an owner action. Port-conflict replacement's final probe now explicitly requires a trusted zero count.
+
+One single-flight supervisor probes each exact managed run about three seconds after the prior pass and caches state, detail, count, source, and observation time. Host snapshots and companion status read that cache; observations older than ten seconds become Unknown. Final remote and automatic Stop checks still bypass the cache under the lifecycle gate. Saved Friend links reuse one certificate-pinned `HttpClient`. Companion protocol v2 exchanges app/protocol versions and capabilities while retaining protocol-v1 compatibility. Rate limits are separated into source-IP pairing limits, per-device authenticated limits, and a global Host backstop.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1` | Pass: npm reported 0 vulnerabilities; TypeScript/Vite bundled 23 modules; all fixtures built; Windows x64 single-file app published. Existing WebView2/WindowsBase `MSB3277` warning remains. |
+| Core lifecycle checks | Pass: 12 groups, 0 failures, including persisted idempotency, one execution, terminal reload, and restart interruption. Data: `local-data/checks/c4fdd26b00d14322b7d795f66f24ae6b`. |
+| Packaged companion checks | Pass: 22 groups, 0 failures. Covers HTTP 202 operation tracking, retries, per-device limiting behind one IP, cached player transitions, final fresh Stop checks, graceful long Stop, and replacement. Data: `local-data/companion-checks/3cf02be7a6c545dcbd2faa7c6b06f1cb`. |
+| Real game, real Friend PC, saved-world Restart, and public/private route | Not run. Fixture/process evidence is not represented as those external acceptance gates. |
+
+No release tag or GitHub release was created. No real game binary, valued world, credential, public listener, router, firewall, or DNS setting was used or changed.
