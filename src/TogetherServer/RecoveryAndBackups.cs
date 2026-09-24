@@ -66,6 +66,27 @@ public sealed record WorldBackupList(IReadOnlyList<WorldBackupRecord> Backups, W
 public sealed record WorldBackupResult(bool Ok, string Code, string Message, WorldBackupRecord? Backup = null);
 public sealed record RestoreBackupRequest(Guid BackupId);
 
+internal static class WorldRestorePhases
+{
+    public const string Prepared = "Prepared";
+    public const string LiveMoved = "LiveMoved";
+    public const string ReplacementInstalled = "ReplacementInstalled";
+}
+
+internal sealed class WorldRestoreTransaction
+{
+    public Guid Id { get; set; }
+    public Guid ProfileId { get; set; }
+    public Guid BackupId { get; set; }
+    public string Kind { get; set; } = "";
+    public string WorldId { get; set; } = "";
+    public string ProfileWorldDirectory { get; set; } = "";
+    public string WorldDirectory { get; set; } = "";
+    public string Phase { get; set; } = WorldRestorePhases.Prepared;
+}
+
+internal sealed record WorldRestorePaths(string World, string Parent, string Stage, string Rollback);
+
 internal sealed class BackupManifest
 {
     public Guid BackupId { get; set; }
@@ -81,6 +102,7 @@ internal sealed record BackupManifestFile(string Path, long Length, string Sha25
 
 internal sealed class WorldBackupService
 {
+    private const string RestoreTransactionsFile = "restore-transactions.json";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly LocalData data;
     private readonly TimeProvider clock;
@@ -93,6 +115,7 @@ internal sealed class WorldBackupService
         this.clock = clock;
         this.availableSpace = availableSpace ?? (path => new DriveInfo(path).AvailableFreeSpace);
         Directory.CreateDirectory(data.BackupsRoot);
+        ReconcileInterruptedRestores();
         CleanInterruptedStages();
     }
 
@@ -177,11 +200,8 @@ internal sealed class WorldBackupService
                     retentionWarning = " The new backup is complete, but old-backup retention could not finish: " + ex.Message;
                     RecordFailure(profile.Id, "BackupRetentionFailed", ex.Message);
                 }
-                try { data.Audit($"backup-complete {profile.Id} {id} kind={backupKind} files={record.FileCount} bytes={record.SizeBytes} {created:O}"); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
+                if (!data.TryAudit($"backup-complete {profile.Id} {id} kind={backupKind} files={record.FileCount} bytes={record.SizeBytes} {created:O}"))
                     retentionWarning = (retentionWarning ?? "") + " The backup is complete, but its local audit entry could not be written.";
-                }
                 return new(true, retentionWarning is null ? "BackupCompleted" : "BackupCompletedRetentionFailed",
                     $"Backup completed with {record.FileCount} files." + retentionWarning, record);
             }
@@ -204,6 +224,9 @@ internal sealed class WorldBackupService
     {
         lock (sync)
         {
+            if (data.LoadState(RestoreTransactionsFile, new List<WorldRestoreTransaction>()).Count > 0)
+                return new(false, "RestoreRecoveryPending",
+                    "An earlier restore still requires startup reconciliation before another restore can begin.");
             var catalog = data.LoadBackupCatalog();
             var record = catalog.Records.SingleOrDefault(item => item.Id == backupId && item.ProfileId == profile.Id);
             if (record is null) return new(false, "BackupNotFound", "Choose a completed backup for this server.");
@@ -223,40 +246,71 @@ internal sealed class WorldBackupService
                 var preRestore = Create(profile, BackupKinds.PreRestore, saveDirectory, backupId);
                 if (!preRestore.Ok) return new(false, "PreRestoreBackupFailed",
                     "Restore did not begin because the required pre-restore snapshot failed. " + preRestore.Message);
+                var warnings = new List<string>();
                 try
                 {
                     EnsureFreeSpace(parent, record.SizeBytes, profile.Backups.MinimumFreeSpaceMb);
                     Directory.CreateDirectory(stage);
                     CopyTree(Path.Combine(sourceDirectory, "payload"), stage);
                     VerifyTree(stage, manifest.Files);
-                    Directory.Move(world, rollback);
-                    try { Directory.Move(stage, world); }
+                    var transaction = new WorldRestoreTransaction
+                    {
+                        Id = Guid.ParseExact(restoreId, "N"),
+                        ProfileId = profile.Id,
+                        BackupId = backupId,
+                        Kind = profile.Kind,
+                        WorldId = profile.WorldId,
+                        ProfileWorldDirectory = NormalizeRestoreWorld(profile.WorldDirectory),
+                        WorldDirectory = world
+                    };
+                    SaveRestoreTransaction(transaction);
+                    try
+                    {
+                        Directory.Move(world, rollback);
+                        transaction.Phase = WorldRestorePhases.LiveMoved;
+                        SaveRestoreTransaction(transaction);
+                        Directory.Move(stage, world);
+                        transaction.Phase = WorldRestorePhases.ReplacementInstalled;
+                        try { SaveRestoreTransaction(transaction); }
+                        catch (Exception ex) when (StateWriteFailure(ex))
+                        {
+                            // The verified replacement is already authoritative.
+                            // The older journal phase still lets startup roll forward.
+                            warnings.Add("the completed restore journal could not be advanced and will be reconciled on restart");
+                        }
+                    }
                     catch
                     {
-                        if (!Directory.Exists(world) && Directory.Exists(rollback)) Directory.Move(rollback, world);
+                        var authorized = AuthorizeRestoreTransaction(transaction,
+                            data.LoadSettings(), data.LoadBackupCatalog());
+                        ReconcileRestoreTransaction(authorized);
+                        TryCompleteRestoreTransaction(transaction.Id);
                         throw;
                     }
-                    var warnings = new List<string>();
                     try { SafeDeleteDirectory(rollback, parent); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
                     { warnings.Add("the replaced directory could not be removed and was left beside the save folder"); }
                     try
                     {
                         var updatedCatalog = data.LoadBackupCatalog();
-                        EnforceRetention(profile, updatedCatalog, preRestore.Backup!.Id, null);
+                        EnforceRetention(profile, updatedCatalog, preRestore.Backup!.Id, backupId);
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
                     { warnings.Add("backup retention could not finish"); }
-                    try { data.Audit($"backup-restore {profile.Id} {backupId} pre={preRestore.Backup!.Id} {clock.GetUtcNow():O}"); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    { warnings.Add("the local audit entry could not be written"); }
-                    return new(true, "BackupRestored",
+                    if (!TryCompleteRestoreTransaction(transaction.Id))
+                        warnings.Add("the completed restore journal could not be cleared and will be reconciled on restart");
+                    if (!data.TryAudit($"backup-restore {profile.Id} {backupId} pre={preRestore.Backup!.Id} {clock.GetUtcNow():O}"))
+                        warnings.Add("the local audit entry could not be written");
+                    return new(true, warnings.Count == 0 ? "BackupRestored" : "BackupRestoredWithWarnings",
                         "Backup restored while the server was offline. A pre-restore snapshot was retained." +
                         (warnings.Count == 0 ? "" : " Warning: " + string.Join("; ", warnings) + "."), record);
                 }
-                finally
+                catch
                 {
-                    SafeDeleteDirectory(stage, parent);
+                    try { SafeDeleteDirectory(stage, parent); }
+                    catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException or InvalidOperationException)
+                    { /* The journal retains authority if the swap had started. */ }
+                    throw;
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
@@ -438,6 +492,153 @@ internal sealed class WorldBackupService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
+    private void ReconcileInterruptedRestores()
+    {
+        var transactions = data.LoadState(RestoreTransactionsFile, new List<WorldRestoreTransaction>());
+        if (transactions.Count == 0) return;
+        var settings = data.LoadSettings();
+        var catalog = data.LoadBackupCatalog();
+        List<(WorldRestoreTransaction Transaction, WorldRestorePaths Paths)> authorized;
+        try
+        {
+            if (transactions.Count > 100 || transactions.Any(item => item is null) ||
+                settings.Profiles is null || settings.Profiles.Any(item => item is null) ||
+                catalog.Records is null || catalog.Records.Any(item => item is null) ||
+                transactions.Select(item => item.Id).Distinct().Count() != transactions.Count ||
+                transactions.Select(item => item.ProfileId).Distinct().Count() != transactions.Count)
+                throw new InvalidDataException("Interrupted restore journal entries overlap.");
+            authorized = transactions.Select(transaction =>
+                (transaction, AuthorizeRestoreTransaction(transaction, settings, catalog))).ToList();
+            if (authorized.Select(entry => entry.Item2.World).Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+                authorized.Count)
+                throw new InvalidDataException("Interrupted restore journal entries target the same save directory.");
+        }
+        catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or ArgumentException or
+                                   NotSupportedException or OverflowException)
+        {
+            data.QuarantineState(RestoreTransactionsFile,
+                "TogetherServer could not safely bind an interrupted restore to its saved server and backup.", true);
+            data.TryAudit($"backup-restore-journal-quarantined {ex.GetType().Name} {clock.GetUtcNow():O}");
+            return;
+        }
+
+        foreach (var entry in authorized)
+        {
+            try { ReconcileRestoreTransaction(entry.Paths); }
+            catch (InvalidDataException ex)
+            {
+                data.QuarantineState(RestoreTransactionsFile,
+                    "TogetherServer found an ambiguous interrupted restore that requires owner review.", true);
+                data.TryAudit($"backup-restore-journal-quarantined layout {ex.GetType().Name} {clock.GetUtcNow():O}");
+                return;
+            }
+            transactions.Remove(entry.Transaction);
+            data.SaveState(RestoreTransactionsFile, transactions);
+            data.TryAudit($"backup-restore-reconciled {entry.Transaction.ProfileId} {entry.Transaction.BackupId} phase={entry.Transaction.Phase} {clock.GetUtcNow():O}");
+        }
+    }
+
+    private void SaveRestoreTransaction(WorldRestoreTransaction transaction)
+    {
+        var transactions = data.LoadState(RestoreTransactionsFile, new List<WorldRestoreTransaction>());
+        transactions.RemoveAll(item => item.Id == transaction.Id);
+        transactions.Add(transaction);
+        data.SaveState(RestoreTransactionsFile, transactions);
+    }
+
+    private bool TryCompleteRestoreTransaction(Guid transactionId)
+    {
+        try
+        {
+            var transactions = data.LoadState(RestoreTransactionsFile, new List<WorldRestoreTransaction>());
+            if (transactions.RemoveAll(item => item.Id == transactionId) > 0)
+                data.SaveState(RestoreTransactionsFile, transactions);
+            return true;
+        }
+        catch (Exception ex) when (StateWriteFailure(ex)) { return false; }
+    }
+
+    private static WorldRestorePaths AuthorizeRestoreTransaction(WorldRestoreTransaction transaction,
+        HostSettings settings, BackupCatalog catalog)
+    {
+        if (transaction.Id == Guid.Empty || transaction.ProfileId == Guid.Empty || transaction.BackupId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(transaction.Kind) || string.IsNullOrWhiteSpace(transaction.WorldId) ||
+            string.IsNullOrWhiteSpace(transaction.ProfileWorldDirectory) ||
+            !Path.IsPathFullyQualified(transaction.ProfileWorldDirectory) ||
+            string.IsNullOrWhiteSpace(transaction.WorldDirectory) || !Path.IsPathFullyQualified(transaction.WorldDirectory) ||
+            transaction.Phase is not (WorldRestorePhases.Prepared or WorldRestorePhases.LiveMoved or
+                WorldRestorePhases.ReplacementInstalled))
+            throw new InvalidDataException("An interrupted restore journal entry is invalid.");
+        var profile = settings.Profiles.SingleOrDefault(item => item is not null && item.Id == transaction.ProfileId)
+            ?? throw new InvalidDataException("An interrupted restore no longer has a saved server profile.");
+        if (!string.Equals(profile.Kind, transaction.Kind, StringComparison.Ordinal) ||
+            !string.Equals(profile.WorldId, transaction.WorldId, StringComparison.Ordinal) ||
+            !SamePath(profile.WorldDirectory, transaction.ProfileWorldDirectory) ||
+            !SamePath(ExpectedSaveDirectory(profile), transaction.WorldDirectory))
+            throw new InvalidDataException("An interrupted restore does not match its saved server profile.");
+        var backup = catalog.Records.SingleOrDefault(item => item is not null && item.Id == transaction.BackupId &&
+            item.ProfileId == transaction.ProfileId);
+        if (backup is null || !string.Equals(backup.Kind, transaction.Kind, StringComparison.Ordinal) ||
+            !string.Equals(backup.WorldId, transaction.WorldId, StringComparison.Ordinal))
+            throw new InvalidDataException("An interrupted restore does not match a completed backup record.");
+        var world = NormalizeRestoreWorld(transaction.WorldDirectory);
+        var parent = Directory.GetParent(world)?.FullName
+            ?? throw new InvalidDataException("An interrupted restore targeted a drive root.");
+        var token = transaction.Id.ToString("N");
+        var stage = Path.Combine(parent, $".togetherserver-restore-{token}.staging");
+        var rollback = Path.Combine(parent, $".togetherserver-restore-{token}.rollback");
+        foreach (var path in new[] { world, stage, rollback })
+            if (Directory.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("An interrupted restore path is a link or reparse point.");
+        var hasWorld = Directory.Exists(world);
+        var hasStage = Directory.Exists(stage);
+        var hasRollback = Directory.Exists(rollback);
+        if (hasWorld && hasRollback && hasStage || !hasWorld && !hasRollback && !hasStage)
+            throw new InvalidDataException("Interrupted restore directories are ambiguous and require owner review.");
+        return new(world, parent, stage, rollback);
+    }
+
+    private static void ReconcileRestoreTransaction(WorldRestorePaths paths)
+    {
+        var hasWorld = Directory.Exists(paths.World);
+        var hasStage = Directory.Exists(paths.Stage);
+        var hasRollback = Directory.Exists(paths.Rollback);
+        if (hasWorld)
+        {
+            // A missing stage means the verified replacement reached its final
+            // path. Keep it and finish cleanup; otherwise the swap never began.
+            if (hasStage) SafeDeleteDirectory(paths.Stage, paths.Parent);
+            if (hasRollback) SafeDeleteDirectory(paths.Rollback, paths.Parent);
+            return;
+        }
+        if (hasRollback)
+        {
+            Directory.Move(paths.Rollback, paths.World);
+            if (hasStage) SafeDeleteDirectory(paths.Stage, paths.Parent);
+            return;
+        }
+        if (hasStage)
+        {
+            // The stage was manifest-verified before the journal was created.
+            Directory.Move(paths.Stage, paths.World);
+            return;
+        }
+        throw new InvalidDataException("Interrupted restore journal has no live, staged, or rollback directory.");
+    }
+
+    private static string ExpectedSaveDirectory(ServerProfile profile) => profile.Kind switch
+    {
+        GameKinds.MinecraftJava => Path.Combine(profile.WorldDirectory, profile.WorldId),
+        GameKinds.MinecraftBedrock => Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId),
+        _ => profile.WorldDirectory
+    };
+
+    private static bool SamePath(string left, string right) =>
+        NormalizeRestoreWorld(left).Equals(NormalizeRestoreWorld(right), StringComparison.OrdinalIgnoreCase);
+
+    private static bool StateWriteFailure(Exception ex) => ex is IOException or UnauthorizedAccessException or
+        System.Security.SecurityException or ArgumentException or JsonException;
+
     private void RecordFailure(Guid profileId, string code, string message)
     {
         var catalog = data.LoadBackupCatalog();
@@ -450,7 +651,7 @@ internal sealed class WorldBackupService
             Message = message.Length > 500 ? message[..500] : message
         });
         data.SaveBackupCatalog(catalog);
-        data.Audit($"backup-failed {profileId} code={code} {clock.GetUtcNow():O}");
+        data.TryAudit($"backup-failed {profileId} code={code} {clock.GetUtcNow():O}");
     }
 
     private string ProfileRoot(Guid profileId) => Path.Combine(data.BackupsRoot, profileId.ToString("N"));
@@ -459,8 +660,14 @@ internal sealed class WorldBackupService
 
     private static string SafeWorldRoot(string value)
     {
-        var path = Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var path = NormalizeRestoreWorld(value);
         if (!Directory.Exists(path)) throw new DirectoryNotFoundException("The configured server save directory is missing.");
+        return path;
+    }
+
+    private static string NormalizeRestoreWorld(string value)
+    {
+        var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(value));
         if (string.Equals(path, Path.GetPathRoot(path)?.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) ||
             Directory.GetParent(path) is null)
             throw new InvalidOperationException("A drive root cannot be used as a server save directory for backup or restore.");

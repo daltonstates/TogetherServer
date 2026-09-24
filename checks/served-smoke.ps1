@@ -41,8 +41,10 @@ $profileId = [guid]::NewGuid().ToString()
 $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $oldDataDirectory = $env:TOGETHERSERVER_DATA_DIR
 $oldFixtureRoot = $env:TOGETHERSERVER_FIXTURE_ROOT
+$oldFixtureDriver = $env:TOGETHERSERVER_ENABLE_FIXTURE_DRIVER
 $env:TOGETHERSERVER_DATA_DIR = $caseRoot
 $env:TOGETHERSERVER_FIXTURE_ROOT = $caseRoot
+$env:TOGETHERSERVER_ENABLE_FIXTURE_DRIVER = '1'
 $appProcess = $null
 $fixtureStarted = $false
 $valheimStarted = $false
@@ -432,4 +434,5 @@ finally {
     if ($appProcess -and !$appProcess.HasExited) { Stop-Process -Id $appProcess.Id }
     $env:TOGETHERSERVER_DATA_DIR = $oldDataDirectory
     $env:TOGETHERSERVER_FIXTURE_ROOT = $oldFixtureRoot
+    $env:TOGETHERSERVER_ENABLE_FIXTURE_DRIVER = $oldFixtureDriver
 }

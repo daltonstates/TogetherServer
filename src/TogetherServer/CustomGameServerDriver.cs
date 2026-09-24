@@ -179,7 +179,7 @@ internal static class CustomGameScripts
     public const int MaxOutputCharacters = 64 * 1024;
     public const string StatusContract = "Status/players must output one JSON object with state Ready, Starting, or Failed; optional detail, onlinePlayers, maxPlayers, and players fields. Contract v2 certification also requires contractVersion, probeId, operationId, and an exact onlinePlayers count.";
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-        { PropertyNameCaseInsensitive = true };
+    { PropertyNameCaseInsensitive = true };
 
     public static string? Validate(CustomScriptBundle scripts)
     {
@@ -247,16 +247,23 @@ internal static class CustomPowerShell
     {
         using var process = new Process { StartInfo = StartInfo(run, action, redirectOutput: true, probeId) };
         if (!process.Start()) return new(1, "", "Windows PowerShell did not start", false);
-        var output = ReadLimitedAsync(process.StandardOutput, CustomGameScripts.MaxOutputCharacters + 1);
-        var error = ReadLimitedAsync(process.StandardError, 4096);
+        using var readStop = new CancellationTokenSource();
+        var output = ReadLimitedAsync(process.StandardOutput, CustomGameScripts.MaxOutputCharacters + 1, readStop.Token);
+        var error = ReadLimitedAsync(process.StandardError, 4096, readStop.Token);
         process.StandardInput.WriteLine(Invocation(script));
         process.StandardInput.Close();
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+        var timedOut = !process.WaitForExit((int)timeout.TotalMilliseconds);
+        if (timedOut)
         {
-            try { process.Kill(); process.WaitForExit(2000); } catch { /* This is the exact auxiliary process we launched. */ }
-            return new(1, output.GetAwaiter().GetResult(), error.GetAwaiter().GetResult(), true);
+            // A script can launch a child that inherits these redirected handles.
+            // Killing only powershell.exe would leave the reads below waiting for
+            // that child indefinitely, so terminate the exact auxiliary tree.
+            try { process.Kill(entireProcessTree: true); process.WaitForExit(2000); }
+            catch { /* This is the exact auxiliary process tree we launched. */ }
         }
-        return new(process.ExitCode, output.GetAwaiter().GetResult().Trim(), error.GetAwaiter().GetResult().Trim(), false);
+        var captured = FinishReads(output, error, readStop);
+        var exitCode = timedOut || !process.HasExited ? 1 : process.ExitCode;
+        return new(exitCode, captured.Output.Trim(), captured.Error.Trim(), timedOut);
     }
 
     private static ProcessStartInfo StartInfo(ManagedRun run, string action, bool redirectOutput,
@@ -300,16 +307,46 @@ internal static class CustomPowerShell
             encoded + "'))))";
     }
 
-    private static async Task<string> ReadLimitedAsync(TextReader reader, int limit)
+    private static (string Output, string Error) FinishReads(Task<string> output, Task<string> error,
+        CancellationTokenSource readStop)
+    {
+        var reads = Task.WhenAll(output, error);
+        var completed = false;
+        try { completed = reads.Wait(TimeSpan.FromSeconds(2)); }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(inner =>
+                   inner is OperationCanceledException or ObjectDisposedException or IOException))
+        { completed = true; }
+        if (!completed)
+        {
+            readStop.Cancel();
+            try { reads.Wait(TimeSpan.FromMilliseconds(500)); }
+            catch (AggregateException ex) when (ex.InnerExceptions.All(inner =>
+                       inner is OperationCanceledException or ObjectDisposedException or IOException))
+            { }
+        }
+        // Observe any eventual fault without ever blocking this bounded operation.
+        if (!reads.IsCompleted)
+            _ = reads.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        return (output.IsCompletedSuccessfully ? output.Result : "",
+            error.IsCompletedSuccessfully ? error.Result : "");
+    }
+
+    private static async Task<string> ReadLimitedAsync(TextReader reader, int limit, CancellationToken cancellationToken)
     {
         var result = new StringBuilder(Math.Min(limit, 4096));
         var buffer = new char[4096];
-        int read;
-        while ((read = await reader.ReadAsync(buffer)) > 0)
+        try
         {
-            var remaining = limit - result.Length;
-            if (remaining > 0) result.Append(buffer, 0, Math.Min(remaining, read));
+            int read;
+            while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
+            {
+                var remaining = limit - result.Length;
+                if (remaining > 0) result.Append(buffer, 0, Math.Min(remaining, read));
+            }
         }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or IOException) { }
         return result.ToString();
     }
 }

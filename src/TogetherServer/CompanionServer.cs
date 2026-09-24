@@ -118,7 +118,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     public async Task StopAsync()
     {
         await listenerGate.WaitAsync();
-        try { await StopCoreAsync(); }
+        try
+        {
+            await StopCoreAsync();
+            await operations.DisposeAsync();
+        }
         finally { listenerGate.Release(); }
     }
 
@@ -273,8 +277,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute)));
         });
 
-        async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, string action)
+        async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, string action,
+            int clientProtocol)
         {
+            if (!CompanionProtocol.IsCompatible(clientProtocol))
+                return new(false, "ProtocolIncompatible", CompanionProtocol.CompatibilityMessage(clientProtocol));
             await modeGate.WaitAsync();
             try
             {
@@ -285,6 +292,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 if (!pairing.TryGetActiveDevice(deviceId, out var device) || device is null)
                     return new(false, "PermissionDenied", "This Friend PC is no longer authorized.");
                 var snapshot = await manager.SnapshotAsync();
+                if (snapshot.Recovery?.LifecycleBlocked == true)
+                    return new(false, "DataRecoveryRequired",
+                        "Remote lifecycle actions are paused until the Host owner reviews recovered local data.");
                 if (!snapshot.Settings.RemoteControlsEnabled)
                     return new(false, "RemoteControlsDisabled", "The Host has paused remote controls.");
                 var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
@@ -334,6 +344,13 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id || request.ProfileId == Guid.Empty)
                 return Results.BadRequest(new FriendActionResult(false, "InvalidRequest", "Device or profile ID is invalid.", null));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName].ToString(), out var clientProtocol) ||
+                !CompanionProtocol.IsCompatible(clientProtocol))
+                return Results.Json(new FriendActionResult(false, "ProtocolIncompatible",
+                    int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName].ToString(), out var reportedProtocol)
+                        ? CompanionProtocol.CompatibilityMessage(reportedProtocol)
+                        : "Update required: this Friend app did not identify a supported companion protocol.", null),
+                    statusCode: StatusCodes.Status409Conflict);
             if (!pairing.CanAccess(device, request.ProfileId))
                 return Results.Json(new FriendActionResult(false, "PermissionDenied", "The Host has not assigned this server to this PC.", null),
                     statusCode: 403);
@@ -353,6 +370,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!manager.RemoteControlsEnabled)
                 return Results.Json(new FriendActionResult(false, "RemoteControlsDisabled", "The Host has paused remote controls.",
                     null), statusCode: 403);
+            if (manager.LifecycleBlocked)
+                return Results.Json(new FriendActionResult(false, "DataRecoveryRequired",
+                    "Remote lifecycle actions are paused until the Host owner reviews recovered local data.", null),
+                    statusCode: StatusCodes.Status409Conflict);
             if (manager.RemoteMaintenanceBlocker(request.ProfileId) is { } maintenanceBlocker)
                 return Results.Json(new FriendActionResult(false, "MaintenanceMode", maintenanceBlocker, null), statusCode: 403);
             if (action is "start" or "replace" && !pairing.CanStart(device, request.ProfileId) ||
@@ -362,7 +383,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(new FriendActionResult(false, "PermissionDenied",
                     "The Host has not granted this action for this server to this PC.", null), statusCode: 403);
             var submission = operations.Submit(device.Id, key, request.ProfileId, action,
-                () => ExecuteRemoteAction(device.Id, request.ProfileId, action));
+                () => ExecuteRemoteAction(device.Id, request.ProfileId, action, clientProtocol));
             if (!submission.Accepted)
                 return Results.Conflict(new FriendActionResult(false, submission.Code, submission.Message, null));
             var accepted = submission.Operation!;

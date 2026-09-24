@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 
 namespace TogetherServer;
 
@@ -14,12 +17,15 @@ public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> 
     IReadOnlyDictionary<Guid, CustomCertificationState>? CustomCertifications = null,
     IReadOnlyDictionary<Guid, CrashRecoveryState>? CrashRecovery = null,
     IReadOnlyDictionary<Guid, WorldBackupStatus>? Backups = null,
-    IReadOnlyList<ActivityEvent>? Activity = null);
+    IReadOnlyList<ActivityEvent>? Activity = null,
+    DataRecoveryView? Recovery = null);
 public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
     bool CanReplace, string? BlockReason = null);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
     IReadOnlyList<PortConflictView>? PortConflicts = null);
 public sealed record CountdownExtensionRequest(long Minutes);
+public sealed record HostControlPolicyChange(bool? CompanionListeningEnabled = null,
+    bool? RemoteControlsEnabled = null, bool? AutoShutdownEnabled = null);
 public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string State, string Detail,
     string Source, DateTimeOffset ObservedUtc, bool Ok, int? OnlinePlayers = null,
     int? MaxPlayers = null, IReadOnlyList<string>? PlayerNames = null, bool PlayerCountTrusted = false);
@@ -53,7 +59,7 @@ public sealed class HostManager
         runs = data.LoadRuns();
         crashRecovery = data.LoadCrashRecoveryStates();
         var recoveryNormalized = false;
-        foreach (var recovery in crashRecovery.Where(item =>
+        foreach (var recovery in crashRecovery.Where(item => !data.Recovery.LifecycleBlocked &&
                      item.State == CrashRecoveryStates.Starting && item.ReadinessDeadlineUtc is null))
         {
             recovery.ReadinessDeadlineUtc = this.clock.GetUtcNow().Add(CrashRecoveryReadinessTimeout);
@@ -65,6 +71,7 @@ public sealed class HostManager
 
     public bool CompanionListeningEnabled => Volatile.Read(ref settings).CompanionListeningEnabled;
     public bool RemoteControlsEnabled => Volatile.Read(ref settings).RemoteControlsEnabled;
+    public bool LifecycleBlocked => data.Recovery.LifecycleBlocked;
 
     public string? RemoteMaintenanceBlocker(Guid profileId)
     {
@@ -91,6 +98,7 @@ public sealed class HostManager
             await gate.WaitAsync();
             try
             {
+                if (data.Recovery.LifecycleBlocked) return;
                 targets = [];
                 foreach (var run in runs.ToList())
                 {
@@ -155,7 +163,7 @@ public sealed class HostManager
                         recovery.RecoveredUtc = clock.GetUtcNow();
                         recovery.LastFailure = null;
                         recoveryChanged = true;
-                        data.Audit($"crash-recovery-ready {run.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} {clock.GetUtcNow():O}");
+                        data.TryAudit($"crash-recovery-ready {run.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} {clock.GetUtcNow():O}");
                         Activity("Recovery", "CrashRecovered", "Crash recovery reached Ready.",
                             ActivitySeverity.Important, run.ProfileId,
                             visibility: ActivityVisibility.AssignedFriends);
@@ -172,155 +180,212 @@ public sealed class HostManager
     public async Task<ActionResult> UpdateSettingsAsync(HostSettings next)
     {
         await gate.WaitAsync();
+        try { return UpdateSettingsLocked(next); }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> UpdateControlPolicyAsync(HostControlPolicyChange change)
+    {
+        await gate.WaitAsync();
         try
         {
-            next.ConnectionRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
-            if (next.Profiles is null)
-                return Result(false, "InvalidSettings", "At least one valid profile collection is required.");
-            foreach (var profile in next.Profiles)
+            if (change.CompanionListeningEnabled is null && change.RemoteControlsEnabled is null &&
+                change.AutoShutdownEnabled is null)
+                return Result(false, "InvalidPolicyChange", "Choose a Host control to change.");
+
+            var next = CopySettings(settings);
+            if (change.CompanionListeningEnabled is { } listening)
             {
-                profile.CrashRecovery ??= new CrashRecoveryOptions();
-                profile.Backups ??= new BackupOptions();
-                profile.Maintenance ??= new MaintenanceOptions();
+                next.CompanionListeningEnabled = listening;
+                if (!listening) next.RemoteControlsEnabled = false;
             }
-            if (settings.PublicGameIpCheckedUtc is { } recorded &&
-                (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
-            {
-                next.PublicGameIp = settings.PublicGameIp;
-                next.PublicGameIpCheckedUtc = recorded;
-            }
-            var error = Validate(next);
-            if (error is not null) return Result(false, "InvalidSettings", error);
-            var profileIds = next.Profiles.Select(profile => profile.Id).ToHashSet();
-            var serverInvites = data.LoadServerInvites()
-                .Where(invite => profileIds.Contains(invite.ProfileId)).ToList();
-            var devices = data.LoadDevices().Where(device =>
-            {
-                var assigned = device.AssignedProfileIds ??
-                    (device.ProfileId == Guid.Empty ? [] : [device.ProfileId]);
-                return !device.Revoked && assigned.Any(profileIds.Contains);
-            }).ToList();
-            if (next.CompanionListeningEnabled &&
-                (!data.HasProtected("host-certificate.protected") ||
-                 !(serverInvites.Count > 0 || devices.Any(device =>
-                    (device.InviteHash is not null || device.CredentialHash is not null)))))
-                return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
-            if (next.RemoteControlsEnabled &&
-                !(serverInvites.Any(invite => invite.CanStart || invite.CanStop) ||
-                    devices.Any(device => (device.InviteHash is not null ||
-                    device.CredentialHash is not null) &&
-                    (device.AssignedProfileIds ??
-                        (device.ProfileId == Guid.Empty ? [] : [device.ProfileId])).Any(profileId =>
-                        device.CanStartProfile(profileId) || device.CanStopProfile(profileId)))))
-                return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
-            foreach (var run in runs)
-            {
-                var oldProfile = settings.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
-                var newProfile = next.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
-                if (oldProfile is null || newProfile is null || !SameProfile(oldProfile, newProfile))
-                    return Result(false, "ProfileInUse", "Stop or resolve a managed run before changing its profile.");
-            }
-            var retiredCustomProfileIds = settings.Profiles
-                .Where(profile => profile.Kind == GameKinds.Custom &&
-                    !next.Profiles.Any(candidate => candidate.Id == profile.Id && candidate.Kind == GameKinds.Custom))
-                .Select(profile => profile.Id)
-                .ToList();
-            var invalidatedCustomProfileIds = settings.Profiles
-                .Where(profile => profile.Kind == GameKinds.Custom)
-                .Where(profile =>
-                {
-                    var candidate = next.Profiles.SingleOrDefault(item => item.Id == profile.Id &&
-                        item.Kind == GameKinds.Custom);
-                    return candidate is null || !SameCustomCertificationInputs(profile, candidate);
-                })
-                .Select(profile => profile.Id)
-                .ToHashSet();
-            data.SaveSettings(next);
-            var customScriptCleanupFailed = false;
-            foreach (var profileId in retiredCustomProfileIds)
-            {
-                try
-                {
-                    data.DeleteCustomScripts(profileId);
-                    data.DeleteCustomCertification(profileId);
-                    data.Audit($"custom-scripts-deleted {profileId} {clock.GetUtcNow():O}");
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    customScriptCleanupFailed = true;
-                    data.Audit($"custom-scripts-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
-                }
-            }
-            foreach (var profileId in invalidatedCustomProfileIds)
-            {
-                customCertificationSessions.Remove(profileId);
-                shutdownDeadlines.Remove(profileId);
-                hostAddedTime.Remove(profileId);
-                friendAddedMinutes.Remove(profileId);
-                try
-                {
-                    data.DeleteCustomCertification(profileId);
-                    data.Audit($"custom-certification-invalidated {profileId} profile-changed {clock.GetUtcNow():O}");
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    customScriptCleanupFailed = true;
-                    data.Audit($"custom-certification-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
-                }
-            }
-            if (settings.RemoteControlsEnabled != next.RemoteControlsEnabled)
-            {
-                data.Audit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
-                Activity("Access", next.RemoteControlsEnabled ? "RemoteControlsEnabled" : "RemoteControlsDisabled",
-                    next.RemoteControlsEnabled ? "Remote controls were enabled." : "Remote controls were paused.",
-                    ActivitySeverity.Important);
-            }
-            if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
-            {
-                data.Audit($"auto-shutdown {(next.AutoShutdownEnabled ? "enabled" : "disabled")} idle-minutes={next.IdleMinutes} {clock.GetUtcNow():O}");
-                Activity("Countdown", "PolicyChanged",
-                    next.AutoShutdownEnabled
-                        ? $"Automatic shutdown was enabled with a {next.IdleMinutes}-minute empty-server countdown."
-                        : "Automatic shutdown was disabled.", ActivitySeverity.Important);
-            }
-            var previousRoute = ConnectionRoutes.Normalize(settings.ConnectionRoute);
-            var nextRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
-            if (previousRoute.Mode != nextRoute.Mode ||
-                !string.Equals(previousRoute.Address, nextRoute.Address, StringComparison.OrdinalIgnoreCase))
-                Activity("Network", "RouteChanged", $"Friend route changed to {ConnectionRoutes.DisplayName(nextRoute.Mode)}.",
-                    ActivitySeverity.Important);
-            foreach (var profile in next.Profiles)
-            {
-                var previous = settings.Profiles.SingleOrDefault(item => item.Id == profile.Id);
-                if (!profile.Maintenance.Enabled && previous?.Maintenance?.Enabled != true) continue;
-                if (previous?.Maintenance?.Enabled == profile.Maintenance.Enabled &&
-                    string.Equals(previous?.Maintenance?.Message ?? "", profile.Maintenance.Message, StringComparison.Ordinal)) continue;
-                Activity("Maintenance", profile.Maintenance.Enabled ? "Enabled" : "Disabled",
-                    profile.Maintenance.Enabled
-                        ? string.IsNullOrWhiteSpace(profile.Maintenance.Message) ? "The Host enabled maintenance mode."
-                            : "Maintenance: " + profile.Maintenance.Message
-                        : "The Host ended maintenance mode.",
-                    ActivitySeverity.Important, profile.Id, visibility: ActivityVisibility.AssignedFriends);
-            }
-            if (settings.AutoShutdownEnabled != next.AutoShutdownEnabled || settings.IdleMinutes != next.IdleMinutes)
-            {
-                shutdownDeadlines.Clear();
-                hostAddedTime.Clear();
-                friendAddedMinutes.Clear();
-            }
-            settings = next;
-            var allowedRecoveryProfiles = settings.Profiles
-                .Where(profile => profile.CrashRecovery.Enabled && games.TryGet(profile.Kind, out var driver) &&
-                    driver.SupportsCrashRecovery)
-                .Select(profile => profile.Id).ToHashSet();
-            if (crashRecovery.RemoveAll(item => !allowedRecoveryProfiles.Contains(item.ProfileId)) > 0)
-                data.SaveCrashRecoveryStates(crashRecovery);
-            return Result(true, "SettingsSaved", customScriptCleanupFailed
-                ? "Host settings saved, but one or more retired custom script records could not be removed."
-                : "Host settings saved.");
+            if (change.RemoteControlsEnabled is { } remoteControls)
+                next.RemoteControlsEnabled = remoteControls;
+            if (change.AutoShutdownEnabled is { } automaticShutdown)
+                next.AutoShutdownEnabled = automaticShutdown;
+            return UpdateSettingsLocked(next);
         }
         finally { gate.Release(); }
     }
+
+    private ActionResult UpdateSettingsLocked(HostSettings next)
+    {
+        var previous = settings;
+        next.ConnectionRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
+        if (next.Profiles is null)
+            return Result(false, "InvalidSettings", "At least one valid profile collection is required.");
+        foreach (var profile in next.Profiles)
+        {
+            profile.CrashRecovery ??= new CrashRecoveryOptions();
+            profile.Backups ??= new BackupOptions();
+            profile.Maintenance ??= new MaintenanceOptions();
+        }
+        if (settings.PublicGameIpCheckedUtc is { } recorded &&
+            (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
+        {
+            next.PublicGameIp = settings.PublicGameIp;
+            next.PublicGameIpCheckedUtc = recorded;
+        }
+        var error = Validate(next);
+        if (error is not null) return Result(false, "InvalidSettings", error);
+        var profileIds = next.Profiles.Select(profile => profile.Id).ToHashSet();
+        var pairingState = data.LoadPairingState();
+        var serverInvites = pairingState.ServerInvites
+            .Where(invite => profileIds.Contains(invite.ProfileId)).ToList();
+        var devices = pairingState.Devices.Where(device =>
+        {
+            var assigned = device.AssignedProfileIds ??
+                (device.ProfileId == Guid.Empty ? [] : [device.ProfileId]);
+            return !device.Revoked && assigned.Any(profileIds.Contains);
+        }).ToList();
+        if (next.CompanionListeningEnabled &&
+            (!data.HasProtected("host-certificate.protected") ||
+             !(serverInvites.Count > 0 || devices.Any(device =>
+                (device.InviteHash is not null || device.CredentialHash is not null)))))
+            return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
+        if (next.RemoteControlsEnabled &&
+            !(serverInvites.Any(invite => invite.CanStart || invite.CanStop) ||
+                devices.Any(device => (device.InviteHash is not null ||
+                device.CredentialHash is not null) &&
+                (device.AssignedProfileIds ??
+                    (device.ProfileId == Guid.Empty ? [] : [device.ProfileId])).Any(profileId =>
+                    device.CanStartProfile(profileId) || device.CanStopProfile(profileId)))))
+            return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
+        foreach (var run in runs)
+        {
+            var oldProfile = previous.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
+            var newProfile = next.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
+            if (oldProfile is null || newProfile is null || !SameProfile(oldProfile, newProfile))
+                return Result(false, "ProfileInUse", "Stop or resolve a managed run before changing its profile.");
+        }
+        var retiredCustomProfileIds = previous.Profiles
+            .Where(profile => profile.Kind == GameKinds.Custom &&
+                !next.Profiles.Any(candidate => candidate.Id == profile.Id && candidate.Kind == GameKinds.Custom))
+            .Select(profile => profile.Id)
+            .ToList();
+        var invalidatedCustomProfileIds = previous.Profiles
+            .Where(profile => profile.Kind == GameKinds.Custom)
+            .Where(profile =>
+            {
+                var candidate = next.Profiles.SingleOrDefault(item => item.Id == profile.Id &&
+                    item.Kind == GameKinds.Custom);
+                return candidate is null || !SameCustomCertificationInputs(profile, candidate);
+            })
+            .Select(profile => profile.Id)
+            .ToHashSet();
+        data.SaveSettings(next);
+        // Persisted safety policy becomes authoritative before any cleanup or
+        // telemetry. An unavailable audit/activity file must never leave the
+        // running Host with an older, more permissive policy.
+        Volatile.Write(ref settings, next);
+        var postCommitCleanupFailed = false;
+        foreach (var profileId in retiredCustomProfileIds)
+        {
+            try
+            {
+                data.DeleteCustomScripts(profileId);
+                data.DeleteCustomCertification(profileId);
+                data.TryAudit($"custom-scripts-deleted {profileId} {clock.GetUtcNow():O}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                postCommitCleanupFailed = true;
+                data.TryAudit($"custom-scripts-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
+            }
+        }
+        foreach (var profileId in invalidatedCustomProfileIds)
+        {
+            customCertificationSessions.Remove(profileId);
+            shutdownDeadlines.Remove(profileId);
+            hostAddedTime.Remove(profileId);
+            friendAddedMinutes.Remove(profileId);
+            try
+            {
+                data.DeleteCustomCertification(profileId);
+                data.TryAudit($"custom-certification-invalidated {profileId} profile-changed {clock.GetUtcNow():O}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                postCommitCleanupFailed = true;
+                data.TryAudit($"custom-certification-delete-failed {profileId} {ex.GetType().Name} {clock.GetUtcNow():O}");
+            }
+        }
+        if (previous.RemoteControlsEnabled != next.RemoteControlsEnabled)
+        {
+            data.TryAudit($"remote-controls {(next.RemoteControlsEnabled ? "enabled" : "disabled")} {DateTimeOffset.UtcNow:O}");
+            Activity("Access", next.RemoteControlsEnabled ? "RemoteControlsEnabled" : "RemoteControlsDisabled",
+                next.RemoteControlsEnabled ? "Remote controls were enabled." : "Remote controls were paused.",
+                ActivitySeverity.Important);
+        }
+        if (previous.AutoShutdownEnabled != next.AutoShutdownEnabled || previous.IdleMinutes != next.IdleMinutes)
+        {
+            data.TryAudit($"auto-shutdown {(next.AutoShutdownEnabled ? "enabled" : "disabled")} idle-minutes={next.IdleMinutes} {clock.GetUtcNow():O}");
+            Activity("Countdown", "PolicyChanged",
+                next.AutoShutdownEnabled
+                    ? $"Automatic shutdown was enabled with a {next.IdleMinutes}-minute empty-server countdown."
+                    : "Automatic shutdown was disabled.", ActivitySeverity.Important);
+        }
+        var previousRoute = ConnectionRoutes.Normalize(previous.ConnectionRoute);
+        var nextRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
+        if (previousRoute.Mode != nextRoute.Mode ||
+            !string.Equals(previousRoute.Address, nextRoute.Address, StringComparison.OrdinalIgnoreCase))
+            Activity("Network", "RouteChanged", $"Friend route changed to {ConnectionRoutes.DisplayName(nextRoute.Mode)}.",
+                ActivitySeverity.Important);
+        foreach (var profile in next.Profiles)
+        {
+            var previousProfile = previous.Profiles.SingleOrDefault(item => item.Id == profile.Id);
+            if (!profile.Maintenance.Enabled && previousProfile?.Maintenance?.Enabled != true) continue;
+            if (previousProfile?.Maintenance?.Enabled == profile.Maintenance.Enabled &&
+                string.Equals(previousProfile?.Maintenance?.Message ?? "", profile.Maintenance.Message, StringComparison.Ordinal)) continue;
+            Activity("Maintenance", profile.Maintenance.Enabled ? "Enabled" : "Disabled",
+                profile.Maintenance.Enabled
+                    ? string.IsNullOrWhiteSpace(profile.Maintenance.Message) ? "The Host enabled maintenance mode."
+                        : "Maintenance: " + profile.Maintenance.Message
+                    : "The Host ended maintenance mode.",
+                ActivitySeverity.Important, profile.Id, visibility: ActivityVisibility.AssignedFriends);
+        }
+        if (previous.AutoShutdownEnabled != next.AutoShutdownEnabled || previous.IdleMinutes != next.IdleMinutes)
+        {
+            shutdownDeadlines.Clear();
+            hostAddedTime.Clear();
+            friendAddedMinutes.Clear();
+        }
+        var allowedRecoveryProfiles = settings.Profiles
+            .Where(profile => profile.CrashRecovery.Enabled && games.TryGet(profile.Kind, out var driver) &&
+                driver.SupportsCrashRecovery)
+            .Select(profile => profile.Id).ToHashSet();
+        if (crashRecovery.RemoveAll(item => !allowedRecoveryProfiles.Contains(item.ProfileId)) > 0)
+        {
+            try { data.SaveCrashRecoveryStates(crashRecovery); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                System.Security.SecurityException or ArgumentException or JsonException)
+            {
+                postCommitCleanupFailed = true;
+                data.TryAudit($"crash-recovery-cleanup-save-failed {ex.GetType().Name} {clock.GetUtcNow():O}");
+            }
+        }
+        return Result(true, "SettingsSaved", postCommitCleanupFailed
+            ? "Host settings saved, but one or more retired local control records could not be removed."
+            : "Host settings saved.");
+    }
+
+    private static HostSettings CopySettings(HostSettings source) => new()
+    {
+        MaxConcurrentServers = source.MaxConcurrentServers,
+        IdleMinutes = source.IdleMinutes,
+        FriendTimerExtensionMinutes = source.FriendTimerExtensionMinutes,
+        FriendTimerExtensionMaximumMinutes = source.FriendTimerExtensionMaximumMinutes,
+        AutoShutdownEnabled = source.AutoShutdownEnabled,
+        RemoteControlsEnabled = source.RemoteControlsEnabled,
+        CompanionListeningEnabled = source.CompanionListeningEnabled,
+        CompanionBindAddress = source.CompanionBindAddress,
+        CompanionEndpoint = source.CompanionEndpoint,
+        CompanionPort = source.CompanionPort,
+        ConnectionRoute = ConnectionRoutes.Normalize(source.ConnectionRoute),
+        PublicGameIp = source.PublicGameIp,
+        PublicGameIpCheckedUtc = source.PublicGameIpCheckedUtc,
+        Profiles = source.Profiles
+    };
 
     public async Task<HostSnapshot> RecordDetectedPublicIpAsync(string address)
     {
@@ -376,8 +441,8 @@ public sealed class HostManager
             shutdownDeadlines.Remove(profileId);
             hostAddedTime.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
-            data.Audit($"custom-scripts-saved {profileId} {clock.GetUtcNow():O}");
-            data.Audit($"custom-certification-invalidated {profileId} scripts-changed {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-scripts-saved {profileId} {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-certification-invalidated {profileId} scripts-changed {clock.GetUtcNow():O}");
             return Result(true, "CustomScriptsSaved",
                 "Custom game scripts saved in Windows protected storage. Any prior remote-control certification was revoked.");
         }
@@ -400,6 +465,10 @@ public sealed class HostManager
                 return CertificationResult(false, "InvalidProfile", "Choose a saved Custom profile first.",
                     new(profileId, CustomCertification.NotCertified, "This is not a saved Custom profile.", false, false,
                         BlockReason: "Invalid profile."));
+            if (data.Recovery.LifecycleBlocked)
+                return CertificationResult(false, "DataRecoveryRequired",
+                    "Review and acknowledge the recovered local data before beginning live certification.",
+                    CertificationState(profile));
             if (runs.Any(run => run.ProfileId == profileId))
                 return CertificationResult(false, "CertificationRequiresOffline",
                     "Stop or resolve this Custom server before beginning live certification.",
@@ -435,7 +504,7 @@ public sealed class HostManager
                 Stage = CustomCertification.StartingFirstRun
             };
             customCertificationSessions[profileId] = session;
-            data.Audit($"custom-certification-began {profileId} {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-certification-began {profileId} {clock.GetUtcNow():O}");
             return CertificationResult(true, "CustomCertificationBegan",
                 "The first live run started. Use Check step until it is Ready with zero players.",
                 CustomCertification.State(session));
@@ -529,7 +598,7 @@ public sealed class HostManager
                         data.SaveCustomCertification(certification);
                         customCertificationSessions.Remove(profileId);
                         observations.Remove(profileId);
-                        data.Audit($"custom-certification-completed {profileId} {clock.GetUtcNow():O}");
+                        data.TryAudit($"custom-certification-completed {profileId} {clock.GetUtcNow():O}");
                         var completed = CertificationState(profile);
                         return CertificationResult(true, "CustomCertificationCompleted",
                             "Owner-certified Custom control is active for this exact profile, script set, world/save directory, port set, and contract version.",
@@ -572,6 +641,10 @@ public sealed class HostManager
                     profile is null
                         ? new(profileId, CustomCertification.NotCertified, "This is not a saved Custom profile.", false, false)
                         : CertificationState(profile));
+            if (data.Recovery.LifecycleBlocked)
+                return CertificationResult(false, "DataRecoveryRequired",
+                    "Review and acknowledge the recovered local data before certification can stop or restart a server.",
+                    CustomCertification.State(session));
             if (session.Stage is not (CustomCertification.ConfirmFirstChange or CustomCertification.ConfirmSecondChange))
                 return CertificationResult(false, "CertificationConfirmationNotExpected",
                     "Complete the current certification observation before confirming save behavior.",
@@ -599,7 +672,7 @@ public sealed class HostManager
                         CustomCertification.State(session));
                 session.Stage = CustomCertification.AwaitingSecondLeave;
                 session.OnlinePlayers = probe.Health.OnlinePlayers;
-                data.Audit($"custom-certification-save-confirmed {profileId} {clock.GetUtcNow():O}");
+                data.TryAudit($"custom-certification-save-confirmed {profileId} {clock.GetUtcNow():O}");
                 return CertificationResult(true, "CustomSaveConfirmed",
                     CustomCertification.State(session).Message, CustomCertification.State(session));
             }
@@ -623,7 +696,7 @@ public sealed class HostManager
             session.Stage = CustomCertification.AwaitingRestartReady;
             session.OnlinePlayers = null;
             observations.Remove(profileId);
-            data.Audit($"custom-certification-restarted {profileId} {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-certification-restarted {profileId} {clock.GetUtcNow():O}");
             return CertificationResult(true, "CustomCertificationRestarted",
                 CustomCertification.State(session).Message, CustomCertification.State(session));
         }
@@ -650,7 +723,7 @@ public sealed class HostManager
             hostAddedTime.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             observations.Remove(profileId);
-            data.Audit($"custom-certification-canceled {profileId} {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-certification-canceled {profileId} {clock.GetUtcNow():O}");
             var profile = settings.Profiles.SingleOrDefault(candidate =>
                 candidate.Id == profileId && candidate.Kind == GameKinds.Custom);
             var state = profile is null
@@ -679,7 +752,7 @@ public sealed class HostManager
             hostAddedTime.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             observations.Remove(profileId);
-            data.Audit($"custom-certification-revoked {profileId} {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-certification-revoked {profileId} {clock.GetUtcNow():O}");
             return CertificationResult(true, "CustomCertificationRevoked",
                 "Owner-certified Custom control was revoked. Local Start and Stop remain available.", CertificationState(profile));
         }
@@ -752,6 +825,9 @@ public sealed class HostManager
 
     private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt)
     {
+        if (data.Recovery.LifecycleBlocked)
+            return Result(false, "DataRecoveryRequired",
+                "Review and acknowledge the recovered local data before starting a server.");
         if (!crashRecoveryAttempt && crashRecovery.RemoveAll(item => item.ProfileId == profileId) > 0)
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
@@ -838,7 +914,13 @@ public sealed class HostManager
     public async Task<ActionResult> StopAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
     {
         await gate.WaitAsync();
-        try { return await StopUnderGateAsync(profileId, remoteStillSafe); }
+        try
+        {
+            if (remoteStillSafe is not null && data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Remote lifecycle actions are paused until the owner reviews and acknowledges the recovered local data.");
+            return await StopUnderGateAsync(profileId, remoteStillSafe);
+        }
         finally { gate.Release(); }
     }
 
@@ -847,6 +929,9 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Review and acknowledge the recovered local data before restarting a server.");
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
             var stopped = await StopUnderGateAsync(profileId, remoteStillSafe);
@@ -869,6 +954,14 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            if (data.Recovery.LifecycleBlocked)
+            {
+                shutdownDeadlines.Clear();
+                hostAddedTime.Clear();
+                friendAddedMinutes.Clear();
+                return [Result(false, "DataRecoveryRequired",
+                    "Automatic shutdown is paused until the owner reviews and acknowledges the recovered local data.")];
+            }
             if (!settings.AutoShutdownEnabled)
             {
                 shutdownDeadlines.Clear();
@@ -889,7 +982,7 @@ public sealed class HostManager
                 friendAddedMinutes.Remove(profileId);
                 var result = await StopUnderGateAsync(profileId,
                     run => AutoShutdownStillSafe(run, deadline));
-                data.Audit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
+                data.TryAudit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
                 Activity("Countdown", result.Ok ? "AutomaticStopCompleted" : "AutomaticStopFailed",
                     result.Ok ? "The empty-server countdown completed and the server stopped."
                         : "The empty-server countdown reached zero, but the safe Stop did not complete.",
@@ -907,6 +1000,9 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            if (data.Recovery.LifecycleBlocked)
+                return [Result(false, "DataRecoveryRequired",
+                    "Crash recovery is paused until the owner reviews and acknowledges the recovered local data.")];
             var now = clock.GetUtcNow();
             var results = new List<ActionResult>();
             foreach (var recovery in crashRecovery.Where(item => item.State == CrashRecoveryStates.Starting &&
@@ -962,7 +1058,7 @@ public sealed class HostManager
                 recovery.NextAttemptUtc = null;
                 recovery.ReadinessDeadlineUtc = null;
                 data.SaveCrashRecoveryStates(crashRecovery);
-                data.Audit($"crash-recovery-attempt {profile.Id} cycle={recovery.CycleId} attempt={recovery.Attempts} {now:O}");
+                data.TryAudit($"crash-recovery-attempt {profile.Id} cycle={recovery.CycleId} attempt={recovery.Attempts} {now:O}");
                 Activity("Recovery", "CrashRestartAttempt", $"Crash recovery attempt {recovery.Attempts} of 3 started.",
                     ActivitySeverity.Warning, profile.Id, visibility: ActivityVisibility.AssignedFriends);
                 var result = StartUnderGate(profile.Id, true);
@@ -992,6 +1088,9 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Review and acknowledge the recovered local data before restoring a backup.");
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
             if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
@@ -1025,6 +1124,9 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Countdown changes are paused until the owner reviews and acknowledges the recovered local data.");
             if (minutes < 1)
                 return Result(false, "InvalidExtension", "Enter a positive whole number of minutes to add.");
             if (!settings.AutoShutdownEnabled)
@@ -1040,7 +1142,7 @@ public sealed class HostManager
                 return Result(false, "InvalidExtension", "That extension would put the countdown outside the supported date range.");
             }
             hostAddedTime.Add(profileId);
-            data.Audit($"auto-shutdown-extended {profileId} minutes={minutes} {clock.GetUtcNow():O}");
+            data.TryAudit($"auto-shutdown-extended {profileId} minutes={minutes} {clock.GetUtcNow():O}");
             Activity("Countdown", "OwnerExtended", $"The Host added {minutes} minute{(minutes == 1 ? "" : "s")} to the countdown.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             var profileName = settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Name ?? "Server";
@@ -1054,6 +1156,9 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Remote lifecycle actions are paused until the owner reviews and acknowledges the recovered local data.");
             var increment = settings.FriendTimerExtensionMinutes;
             var maximum = settings.FriendTimerExtensionMaximumMinutes;
             if (!settings.AutoShutdownEnabled)
@@ -1078,7 +1183,7 @@ public sealed class HostManager
             }
             friendAddedMinutes[profileId] = alreadyAdded + increment;
             hostAddedTime.Add(profileId);
-            data.Audit($"auto-shutdown-friend-extended {profileId} minutes={increment} total={alreadyAdded + increment} {clock.GetUtcNow():O}");
+            data.TryAudit($"auto-shutdown-friend-extended {profileId} minutes={increment} total={alreadyAdded + increment} {clock.GetUtcNow():O}");
             Activity("Countdown", "FriendExtended", $"A Friend added the fixed {increment}-minute extension.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             return Result(true, "CountdownExtended",
@@ -1213,6 +1318,7 @@ public sealed class HostManager
     private HostSnapshot Snapshot()
     {
         var now = clock.GetUtcNow();
+        var recovery = data.Recovery;
         var views = settings.Profiles.Select(profile =>
         {
             var run = runs.SingleOrDefault(r => r.ProfileId == profile.Id);
@@ -1227,12 +1333,45 @@ public sealed class HostManager
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId, run.DeclaredPorts)
             };
         }).ToList();
+        var configuredProfileIds = settings.Profiles.Select(profile => profile.Id).ToHashSet();
+        foreach (var run in runs.Where(run => !configuredProfileIds.Contains(run.ProfileId)))
+        {
+            var identity = Identity(run);
+            views.Add(new RunView(run.ProfileId,
+                identity switch { "Matched" => "Process running", "Missing" => "Failed", _ => "Unknown" },
+                identity == "Matched"
+                    ? "A recorded managed process still exists, but its saved server profile is unavailable. Local Stop or resolution is required."
+                    : identity == "Missing"
+                        ? "A recorded run has exited, but its saved server profile is unavailable. Resolve the record locally."
+                        : "A recorded run remains authoritative, but its saved server profile and exact process identity are unavailable.",
+                run.ProcessId, run.DeclaredPorts, PlayerCountTrusted: false));
+        }
         var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
-        foreach (var profileId in shutdownDeadlines.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
-            CancelCountdown(profileId, "The saved server is no longer available.");
+        if (recovery.LifecycleBlocked)
+        {
+            shutdownDeadlines.Clear();
+            hostAddedTime.Clear();
+            friendAddedMinutes.Clear();
+        }
+        else
+        {
+            foreach (var profileId in shutdownDeadlines.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
+                CancelCountdown(profileId, "The saved server is no longer available.");
+        }
         for (var index = 0; index < views.Count; index++)
         {
             var view = views[index];
+            if (recovery.LifecycleBlocked)
+            {
+                views[index] = view with
+                {
+                    AutoShutdownAtUtc = null,
+                    AutoShutdownReason = "Automatic lifecycle actions are paused until the owner reviews recovered local data.",
+                    HostAddedTime = false,
+                    FriendAddedMinutes = 0
+                };
+                continue;
+            }
             if (view.State != "Ready")
             {
                 CancelCountdown(view.ProfileId, "The server is no longer Ready.");
@@ -1247,9 +1386,12 @@ public sealed class HostManager
             if (!view.PlayerCountTrusted)
             {
                 CancelCountdown(view.ProfileId, "The authoritative player count became unavailable.");
-                views[index] = view with { AutoShutdownReason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
+                views[index] = view with
+                {
+                    AutoShutdownReason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
                     ? "Owner certification and a fresh valid Custom contract-v2 player count are required for automatic shutdown."
-                    : "A fresh authoritative player count is required for automatic shutdown." };
+                    : "A fresh authoritative player count is required for automatic shutdown."
+                };
                 continue;
             }
             if (view.OnlinePlayers is null)
@@ -1288,7 +1430,8 @@ public sealed class HostManager
                 .ToDictionary(profile => profile.Id, CertificationState),
             crashRecovery.ToDictionary(item => item.ProfileId, item => item),
             settings.Profiles.ToDictionary(profile => profile.Id, profile => backups.Status(profile.Id)),
-            data.LoadActivity(100));
+            data.LoadActivity(100),
+            recovery);
     }
 
     private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
@@ -1312,7 +1455,8 @@ public sealed class HostManager
         Guid? deviceId = null, string visibility = ActivityVisibility.Local)
     {
         try { data.RecordActivity(category, action, message, severity, profileId, deviceId, visibility); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+            System.Security.SecurityException or ArgumentException or JsonException or NotSupportedException)
         { data.TryAudit($"activity-write-failed {category} {action} {ex.GetType().Name} {clock.GetUtcNow():O}"); }
     }
 
@@ -1407,9 +1551,9 @@ public sealed class HostManager
         try { data.DeleteCustomCertification(profile.Id); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            data.Audit($"custom-certification-delete-failed {profile.Id} {ex.GetType().Name} {clock.GetUtcNow():O}");
+            data.TryAudit($"custom-certification-delete-failed {profile.Id} {ex.GetType().Name} {clock.GetUtcNow():O}");
         }
-        data.Audit($"custom-certification-failed {profile.Id} code={code} {clock.GetUtcNow():O}");
+        data.TryAudit($"custom-certification-failed {profile.Id} code={code} {clock.GetUtcNow():O}");
         return CertificationResult(false, code, message, CustomCertification.State(session));
     }
 
@@ -1595,7 +1739,49 @@ public sealed class HostManager
         (a.Custom?.AdditionalPorts ?? []).SequenceEqual(b.Custom?.AdditionalPorts ?? []);
 
     private static bool WorldConflict(ManagedRun run, ServerProfile profile) =>
-        Path.GetFullPath(run.WorldDirectory).Equals(Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase);
+        CanonicalWorldPath(run.WorldDirectory).Equals(CanonicalWorldPath(profile.WorldDirectory),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string CanonicalWorldPath(string value)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(value));
+        if (!OperatingSystem.IsWindows() || !Directory.Exists(normalized)) return normalized;
+        try
+        {
+            using var handle = CreateFileW(normalized, 0,
+                FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open,
+                0x02000000, IntPtr.Zero); // FILE_FLAG_BACKUP_SEMANTICS permits a directory handle.
+            if (handle.IsInvalid) return normalized;
+            var buffer = new StringBuilder(512);
+            var length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0) return normalized;
+            if (length >= (uint)buffer.Capacity)
+            {
+                buffer.EnsureCapacity(checked((int)length + 1));
+                length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+                if (length == 0 || length >= (uint)buffer.Capacity) return normalized;
+            }
+            var resolved = buffer.ToString();
+            if (resolved.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                resolved = @"\\" + resolved[8..];
+            else if (resolved.StartsWith(@"\\?\", StringComparison.Ordinal))
+                resolved = resolved[4..];
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(resolved));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                                   NotSupportedException or OverflowException)
+        {
+            return normalized;
+        }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
+    private static extern SafeFileHandle CreateFileW(string fileName, uint desiredAccess, FileShare shareMode,
+        IntPtr securityAttributes, FileMode creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "GetFinalPathNameByHandleW")]
+    private static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path,
+        uint pathLength, uint flags);
 
     private IReadOnlyList<GamePort>? PortsForRun(ManagedRun run)
     {
@@ -1638,7 +1824,7 @@ public sealed class HostManager
                 };
                 crashRecovery.Add(state);
                 data.SaveCrashRecoveryStates(crashRecovery);
-                data.Audit($"crash-recovery-scheduled {run.ProfileId} cycle={state.CycleId} delay=1m {clock.GetUtcNow():O}");
+                data.TryAudit($"crash-recovery-scheduled {run.ProfileId} cycle={state.CycleId} delay=1m {clock.GetUtcNow():O}");
                 Activity("Recovery", "CrashDetected", "The exact managed process exited unexpectedly; crash recovery is scheduled in 1 minute.",
                     ActivitySeverity.Warning, run.ProfileId, visibility: ActivityVisibility.AssignedFriends);
                 preserveRecoveryState = true;
@@ -1661,7 +1847,7 @@ public sealed class HostManager
         {
             recovery.State = CrashRecoveryStates.Suspended;
             recovery.NextAttemptUtc = null;
-            data.Audit($"crash-recovery-suspended {recovery.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} {clock.GetUtcNow():O}");
+            data.TryAudit($"crash-recovery-suspended {recovery.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} {clock.GetUtcNow():O}");
             Activity("Recovery", "CrashRecoverySuspended", "Crash recovery was suspended after three failed attempts.",
                 ActivitySeverity.Warning, recovery.ProfileId, visibility: ActivityVisibility.AssignedFriends);
         }
@@ -1670,7 +1856,7 @@ public sealed class HostManager
             var delay = recovery.Attempts == 1 ? TimeSpan.FromMinutes(5) : TimeSpan.FromMinutes(15);
             recovery.State = CrashRecoveryStates.Pending;
             recovery.NextAttemptUtc = clock.GetUtcNow().Add(delay);
-            data.Audit($"crash-recovery-rescheduled {recovery.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} delay={(int)delay.TotalMinutes}m {clock.GetUtcNow():O}");
+            data.TryAudit($"crash-recovery-rescheduled {recovery.ProfileId} cycle={recovery.CycleId} attempts={recovery.Attempts} delay={(int)delay.TotalMinutes}m {clock.GetUtcNow():O}");
             Activity("Recovery", "CrashRecoveryRescheduled", $"Crash recovery failed and will retry in {(int)delay.TotalMinutes} minutes.",
                 ActivitySeverity.Warning, recovery.ProfileId, visibility: ActivityVisibility.AssignedFriends);
         }
@@ -1698,7 +1884,7 @@ public sealed class HostManager
             crashRecovery.RemoveAll(item => item.ProfileId == run.ProfileId);
         data.SaveRuns(runs);
         data.SaveCrashRecoveryStates(crashRecovery);
-        data.Audit($"run-archived {run.ProfileId} operation={run.OperationId} reason={reason} recovery={recoveryScheduled} {now:O}");
+        data.TryAudit($"run-archived {run.ProfileId} operation={run.OperationId} reason={reason} recovery={recoveryScheduled} {now:O}");
     }
 
     private static bool PortOverlap(GamePort left, GamePort right) =>

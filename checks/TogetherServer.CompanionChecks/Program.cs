@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -29,12 +30,26 @@ var peerHostPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort
 var peerCompanionPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort, peerHostPort);
 var gamePort = Random.Shared.Next(36000, 43000);
 var endpoint = $"https://127.0.0.1:{companionPort}";
-var profile = new ServerProfile { Name = "Fixture world", WorldId = "companion-fixture", WorldDirectory = world,
-    GamePort = gamePort, ExecutablePath = fixturePath };
+var profile = new ServerProfile
+{
+    Name = "Fixture world",
+    WorldId = "companion-fixture",
+    WorldDirectory = world,
+    GamePort = gamePort,
+    ExecutablePath = fixturePath
+};
 var joinWorld = Path.Combine(root, "join-world");
 Directory.CreateDirectory(joinWorld);
-var joinProfile = new ServerProfile { Kind = "Valheim", Name = "Friend join example", ServerName = "Friend join example",
-    WorldId = "join-example", WorldDirectory = joinWorld, GamePort = gamePort + 4, ExecutablePath = fixturePath };
+var joinProfile = new ServerProfile
+{
+    Kind = "Valheim",
+    Name = "Friend join example",
+    ServerName = "Friend join example",
+    WorldId = "join-example",
+    WorldDirectory = joinWorld,
+    GamePort = gamePort + 4,
+    ExecutablePath = fixturePath
+};
 Process? host = null, friendA = null, friendB = null, peerHost = null, stopHost = null, stopFriend = null;
 var stopHostPort = 0;
 var stopProfileId = Guid.Empty;
@@ -84,18 +99,100 @@ try
     var existingLegacyDevice = Guid.NewGuid();
     using (var migrationData = new LocalData(migrationRoot))
     {
-        migrationData.SaveDevices([
+        File.WriteAllText(Path.Combine(migrationRoot, "devices.json"), JsonSerializer.Serialize(new[]
+        {
             new PairedDevice { Id = existingScopedDevice, ProfileId = existingScopedProfile },
             new PairedDevice { Id = existingLegacyDevice, ProfileId = Guid.Empty }
-        ]);
-        _ = new PairingService(migrationData);
+        }, webJson));
+        var legacyInvite = new ServerInviteState
+        {
+            ProfileId = existingScopedProfile,
+            Generation = Guid.NewGuid(),
+            Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64),
+            PairingOpenedUtc = DateTimeOffset.UtcNow,
+            PairingExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            DurationMinutes = 30,
+            DeviceLimit = 1
+        };
+        migrationData.SaveProtected("server-invites.protected",
+            JsonSerializer.SerializeToUtf8Bytes(new[] { legacyInvite }, webJson));
+        var migratedService = new PairingService(migrationData);
         var migrated = migrationData.LoadDevices();
         Require(migrated.Single(device => device.Id == existingScopedDevice).AssignedProfileIds!
                 .SequenceEqual([existingScopedProfile]) &&
-            migrated.Single(device => device.Id == existingLegacyDevice).AssignedProfileIds!.Count == 0,
-            "existing scoped and legacy credentials did not migrate to fail-closed explicit server access");
+            migrated.Single(device => device.Id == existingLegacyDevice).AssignedProfileIds!.Count == 0 &&
+            migratedService.CurrentServerInvite(existingScopedProfile) is not null &&
+            migrationData.HasProtected("pairing-state.protected"),
+            "legacy devices/invites did not migrate atomically with fail-closed explicit server access");
     }
-    Console.WriteLine("PASS existing scoped access is preserved while legacy unscoped access fails closed"); passes++;
+    Console.WriteLine("PASS legacy pairing state migrates to one protected fail-closed snapshot"); passes++;
+
+    using (var invalidIndexData = new LocalData(Path.Combine(root, "invalid-friend-index")))
+    {
+        invalidIndexData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
+        {
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64),
+            DeviceId = Guid.NewGuid(),
+            Credential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30)
+        }, webJson));
+        invalidIndexData.SaveProtected("friend-connections.protected", Encoding.UTF8.GetBytes("{not-json"));
+        using var service = new FriendService(invalidIndexData);
+        var invalidView = service.View();
+        Require(invalidView.State == "Not paired" && invalidView.Connections?.Count == 0 &&
+            invalidIndexData.Recovery.Notices.Any(notice => notice.StateFile == "friend-connections.protected"),
+            "a malformed protected Friend index crashed startup, was not quarantined, or resurrected a legacy credential");
+    }
+    using (var invalidConfigData = new LocalData(Path.Combine(root, "invalid-friend-config")))
+    {
+        var invalidConnectionId = Guid.NewGuid();
+        invalidConfigData.SaveProtected("friend-connections.protected",
+            JsonSerializer.SerializeToUtf8Bytes(new[] { invalidConnectionId }, webJson));
+        invalidConfigData.SaveProtected($"friend-{invalidConnectionId:N}.protected",
+            JsonSerializer.SerializeToUtf8Bytes(new { }, webJson));
+        using var service = new FriendService(invalidConfigData);
+        var invalidView = service.View();
+        Require(invalidView.State == "Not paired" && invalidView.Connections?.Count == 0 &&
+            invalidConfigData.Recovery.Notices.Any(notice =>
+                notice.StateFile == $"friend-{invalidConnectionId:N}.protected"),
+            "a semantically invalid protected Friend config was loaded or silently deleted");
+    }
+    Console.WriteLine("PASS malformed protected Friend state is quarantined and fails closed"); passes++;
+
+    using (var lifetimeData = new LocalData(Path.Combine(root, "friend-disposal-race")))
+    {
+        var lifetimeConnectionId = Guid.NewGuid();
+        var lifetimeListener = new TcpListener(IPAddress.Loopback, 0);
+        lifetimeListener.Start();
+        try
+        {
+            var lifetimePort = ((IPEndPoint)lifetimeListener.LocalEndpoint).Port;
+            lifetimeData.SaveProtected("friend-connections.protected",
+                JsonSerializer.SerializeToUtf8Bytes(new[] { lifetimeConnectionId }, webJson));
+            lifetimeData.SaveProtected($"friend-{lifetimeConnectionId:N}.protected",
+                JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
+                {
+                    Endpoint = $"https://127.0.0.1:{lifetimePort}",
+                    Fingerprint = new string('A', 64),
+                    DeviceId = Guid.NewGuid(),
+                    Credential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                    CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30)
+                }, webJson));
+            using var lifetimeService = new FriendService(lifetimeData);
+            var lifetimePoll = lifetimeService.PollAsync();
+            using var acceptedLifetimeClient = await lifetimeListener.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            lifetimeService.Dispose();
+            acceptedLifetimeClient.Dispose();
+            await lifetimePoll.WaitAsync(TimeSpan.FromSeconds(2));
+            Require((await lifetimeService.RequestAsync(Guid.NewGuid(), "start")).Code == "ConnectionClosed",
+                "a disposed Friend connection owner accepted more work");
+        }
+        finally { lifetimeListener.Stop(); }
+    }
+    Console.WriteLine("PASS Friend disposal is safe while a poll owns the link"); passes++;
 
     var pairingPolicyRoot = Path.Combine(root, "pairing-policy");
     using (var pairingData = new LocalData(pairingPolicyRoot))
@@ -132,9 +229,16 @@ try
     host = StartApp(appPath, "--host", hostPort, hostData);
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
-    var settings = new HostSettings { MaxConcurrentServers = 1, Profiles = [profile, joinProfile], CompanionEndpoint = endpoint,
-        PublicGameIp = "1.2.3.4", PublicGameIpCheckedUtc = DateTimeOffset.UtcNow.AddHours(-2),
-        CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1" };
+    var settings = new HostSettings
+    {
+        MaxConcurrentServers = 1,
+        Profiles = [profile, joinProfile],
+        CompanionEndpoint = endpoint,
+        PublicGameIp = "1.2.3.4",
+        PublicGameIpCheckedUtc = DateTimeOffset.UtcNow.AddHours(-2),
+        CompanionPort = companionPort,
+        CompanionBindAddress = "127.0.0.1"
+    };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
     var inviteA = await ServerInvite(owner, profile.Id, true, enableConnections: true);
     var inviteB = await ServerInvite(owner, joinProfile.Id, false);
@@ -352,7 +456,7 @@ try
         Guid? requestId = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/credential/renew")
-            { Content = JsonContent.Create(new CredentialRenewalRequest(credential.DeviceId, requestId ?? renewalId), options: webJson) };
+        { Content = JsonContent.Create(new CredentialRenewalRequest(credential.DeviceId, requestId ?? renewalId), options: webJson) };
         request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
         using var response = await publicClient.SendAsync(request);
@@ -390,11 +494,12 @@ try
         joinStatus.Protocol.Capabilities.Contains("durable-operations"),
         "a credential did not remain scoped to its server and current join address: " +
         JsonSerializer.Serialize(joinStatus, webJson));
-    var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check");
+    var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check",
+        CompanionProtocol.Current, CompanionProtocol.Capabilities);
     async Task<HttpStatusCode> SendHeartbeat()
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/heartbeat")
-            { Content = JsonContent.Create(heartbeatC, options: webJson) };
+        { Content = JsonContent.Create(heartbeatC, options: webJson) };
         request.Headers.Add("X-Device-Id", credentialC.DeviceId.ToString());
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentialC.Credential);
         using var response = await publicClient.SendAsync(request);
@@ -417,14 +522,36 @@ try
     Require(deniedStart.Code == "PermissionDenied", "Friend Start permission was ignored");
     using (var injected = new HttpRequestMessage(HttpMethod.Post, "/api/companion/start"))
     {
-        injected.Content = new StringContent(JsonSerializer.Serialize(new { deviceId = credentialC.DeviceId,
-            profileId = profile.Id, script = "never execute this" }, webJson), Encoding.UTF8, "application/json");
+        injected.Content = new StringContent(JsonSerializer.Serialize(new
+        {
+            deviceId = credentialC.DeviceId,
+            profileId = profile.Id,
+            script = "never execute this"
+        }, webJson), Encoding.UTF8, "application/json");
         injected.Headers.Add("X-Device-Id", credentialC.DeviceId.ToString());
         injected.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        injected.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
         injected.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentialC.Credential);
         using var rejected = await publicClient.SendAsync(injected);
         Require(rejected.StatusCode == HttpStatusCode.BadRequest, "extra command text was accepted");
     }
+    var operationCountBeforeProtocolDenial =
+        (await owner.GetFromJsonAsync<List<RemoteOperationView>>("/api/local/operations"))!.Count;
+    using (var incompatible = new HttpRequestMessage(HttpMethod.Post, "/api/companion/start"))
+    {
+        incompatible.Content = JsonContent.Create(new RemoteActionRequest(credentialC.DeviceId, profile.Id), options: webJson);
+        incompatible.Headers.Add("X-Device-Id", credentialC.DeviceId.ToString());
+        incompatible.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        incompatible.Headers.Add(CompanionProtocol.HeaderName, (CompanionProtocol.Current + 1).ToString());
+        incompatible.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentialC.Credential);
+        using var rejected = await publicClient.SendAsync(incompatible);
+        var denial = await rejected.Content.ReadFromJsonAsync<FriendActionResult>(webJson);
+        Require(rejected.StatusCode == HttpStatusCode.Conflict && denial?.Code == "ProtocolIncompatible" &&
+            (await owner.GetFromJsonAsync<List<RemoteOperationView>>("/api/local/operations"))!.Count ==
+                operationCountBeforeProtocolDenial,
+            "an incompatible client action was journaled or accepted");
+    }
+    Console.WriteLine("PASS incompatible action protocol is rejected before journaling"); passes++;
     var requestId = Guid.NewGuid();
     var first = await PublicAction(publicClient, credentialC, profile.Id, requestId, "start");
     var runningHost = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
@@ -435,6 +562,7 @@ try
         conflicting.Content = JsonContent.Create(new RemoteActionRequest(credentialC.DeviceId, profile.Id), options: webJson);
         conflicting.Headers.Add("X-Device-Id", credentialC.DeviceId.ToString());
         conflicting.Headers.Add("Idempotency-Key", requestId.ToString());
+        conflicting.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
         conflicting.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentialC.Credential);
         using var rejected = await publicClient.SendAsync(conflicting);
         Require(rejected.StatusCode == HttpStatusCode.Conflict, "reused action key was accepted for a different action");
@@ -464,6 +592,13 @@ try
             .SetEquals([profile.Id, joinProfile.Id]),
         "renamed Friend PC name or multiple server assignments did not survive Host restart");
     Console.WriteLine("PASS Friend PC names and multiple server assignments persist after Host restart"); passes++;
+    var restartedRenewal = await RenewCredential(priorCredentialC);
+    Require(restartedRenewal.Status == HttpStatusCode.OK &&
+        restartedRenewal.Renewal?.Credential == credentialC.Credential &&
+        (await PublicStatus(publicClient, priorCredentialC)).Protocol?.Compatible == true &&
+        (await PublicStatus(publicClient, credentialC)).Protocol?.Compatible == true,
+        "credential renewal receipt or overlap credentials did not survive Host restart");
+    Console.WriteLine("PASS credential renewal and overlap persist atomically across Host restart"); passes++;
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     Require(aView.State == "Connected" && bView.Profiles.Select(item => item.Id).ToHashSet()
@@ -499,13 +634,24 @@ try
     var peerEndpoint = $"https://127.0.0.1:{peerCompanionPort}";
     var peerWorld = Path.Combine(root, "peer-world");
     Directory.CreateDirectory(peerWorld);
-    var peerProfile = new ServerProfile { Name = "Peer fixture", WorldId = "peer-fixture",
-        WorldDirectory = peerWorld, GamePort = gamePort + 10, ExecutablePath = fixturePath };
+    var peerProfile = new ServerProfile
+    {
+        Name = "Peer fixture",
+        WorldId = "peer-fixture",
+        WorldDirectory = peerWorld,
+        GamePort = gamePort + 10,
+        ExecutablePath = fixturePath
+    };
     peerHost = StartApp(appPath, "--host", peerHostPort, peerData);
     await WaitLocal(peerHostPort);
     using var peerOwner = LocalClient(peerHostPort);
-    var peerSettings = new HostSettings { CompanionEndpoint = peerEndpoint, CompanionPort = peerCompanionPort,
-        CompanionBindAddress = "127.0.0.1", Profiles = [peerProfile] };
+    var peerSettings = new HostSettings
+    {
+        CompanionEndpoint = peerEndpoint,
+        CompanionPort = peerCompanionPort,
+        CompanionBindAddress = "127.0.0.1",
+        Profiles = [peerProfile]
+    };
     Require((await OwnerPut<HostSettings, ActionResult>(peerOwner, "/api/local/settings", peerSettings)).Ok,
         "second Host settings failed");
     var peerInvite = await ServerInvite(peerOwner, peerProfile.Id, false);
@@ -749,12 +895,26 @@ try
     var stopPublicPort = FreeTcpPort(stopHostPort, hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
     var stopFriendPort = FreeTcpPort(stopHostPort, stopPublicPort, hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
     var stopEndpoint = $"https://127.0.0.1:{stopPublicPort}";
-    var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
-        ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
-        ExecutablePath = valheimFixturePath, GamePort = gamePort + 20 };
-    var replacementProfile = new ServerProfile { Kind = "Valheim", Name = "Replacement synthetic world",
-        ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
-        ExecutablePath = valheimFixturePath, GamePort = stopProfile.GamePort };
+    var stopProfile = new ServerProfile
+    {
+        Kind = "Valheim",
+        Name = "Restricted synthetic world",
+        ServerName = "Fixture \"Valheim\"",
+        WorldSource = "New",
+        WorldId = "fixture-world",
+        ExecutablePath = valheimFixturePath,
+        GamePort = gamePort + 20
+    };
+    var replacementProfile = new ServerProfile
+    {
+        Kind = "Valheim",
+        Name = "Replacement synthetic world",
+        ServerName = "Fixture \"Valheim\"",
+        WorldSource = "New",
+        WorldId = "fixture-world",
+        ExecutablePath = valheimFixturePath,
+        GamePort = stopProfile.GamePort
+    };
     stopProfileId = stopProfile.Id;
     replacementProfileId = replacementProfile.Id;
     stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
@@ -764,10 +924,17 @@ try
     await WaitLocal(stopHostPort); await WaitLocal(stopFriendPort);
     using var stopOwner = LocalClient(stopHostPort);
     using var stopFriendLocal = LocalClient(stopFriendPort);
-    var stopSettings = new HostSettings { Profiles = [stopProfile, replacementProfile], CompanionEndpoint = stopEndpoint,
-        CompanionBindAddress = "127.0.0.1", CompanionPort = stopPublicPort,
-        AutoShutdownEnabled = true, IdleMinutes = 15,
-        FriendTimerExtensionMinutes = 5, FriendTimerExtensionMaximumMinutes = 5 };
+    var stopSettings = new HostSettings
+    {
+        Profiles = [stopProfile, replacementProfile],
+        CompanionEndpoint = stopEndpoint,
+        CompanionBindAddress = "127.0.0.1",
+        CompanionPort = stopPublicPort,
+        AutoShutdownEnabled = true,
+        IdleMinutes = 15,
+        FriendTimerExtensionMinutes = 5,
+        FriendTimerExtensionMaximumMinutes = 5
+    };
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
         "restricted Host settings failed");
     Require((await OwnerPost<ValheimPasswordRequest, ActionResult>(stopOwner,
@@ -897,8 +1064,11 @@ try
     Require(stopSubmitted.Code == "OperationAccepted" && stopSubmitted.OperationId is not null &&
         startSubmitted.Code == "OperationAccepted" && startSubmitted.OperationId is not null,
         "long Stop and queued Start were not accepted as durable operations");
-    using var quittingOwner = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{stopHostPort}"),
-        Timeout = TimeSpan.FromSeconds(30) };
+    using var quittingOwner = new HttpClient
+    {
+        BaseAddress = new Uri($"http://127.0.0.1:{stopHostPort}"),
+        Timeout = TimeSpan.FromSeconds(30)
+    };
     var quitTask = OwnerPost<object, JsonElement>(quittingOwner, "/api/local/quit", new { });
     StopApp(stopFriend);
     stopFriend = StartApp(appPath, "--friend", stopFriendPort, stopFriendData);
@@ -991,7 +1161,7 @@ try
     var unknownConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     Require(!unknownConflict.Ok && unknownConflict.Code == "PortConflict" &&
         unknownConflict.PortConflicts?.SingleOrDefault() is
-            { ProfileId: var unknownConflictId, CanReplace: false } &&
+        { ProfileId: var unknownConflictId, CanReplace: false } &&
         unknownConflictId == stopProfile.Id &&
         unknownConflict.PortConflicts.Single().BlockReason?.Contains("authoritative player count", StringComparison.OrdinalIgnoreCase) == true,
         "a conflicting server with an Unknown player count was incorrectly offered for replacement");
@@ -1008,7 +1178,7 @@ try
     var occupiedConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     Require(!occupiedConflict.Ok && occupiedConflict.Code == "PortConflict" &&
         occupiedConflict.PortConflicts?.SingleOrDefault() is
-            { ProfileId: var occupiedConflictId, CanReplace: false } &&
+        { ProfileId: var occupiedConflictId, CanReplace: false } &&
         occupiedConflictId == stopProfile.Id &&
         occupiedConflict.PortConflicts.Single().BlockReason?.Contains("player", StringComparison.OrdinalIgnoreCase) == true,
         "an occupied conflicting server was incorrectly offered for replacement");
@@ -1118,11 +1288,17 @@ static int FreeTcpPort(params int[] exclude)
 static Process StartApp(string path, string mode, int port, string data, int stopDelayMs = 0)
 {
     Directory.CreateDirectory(data);
-    var info = new ProcessStartInfo(path) { UseShellExecute = false, CreateNoWindow = true,
-        RedirectStandardOutput = true, RedirectStandardError = true };
+    var info = new ProcessStartInfo(path)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    };
     info.ArgumentList.Add(mode); info.ArgumentList.Add("--port"); info.ArgumentList.Add(port.ToString());
     info.Environment["TOGETHERSERVER_DATA_DIR"] = data;
     info.Environment["TOGETHERSERVER_FIXTURE_ROOT"] = data;
+    info.Environment[GameServerRegistry.FixtureOptInEnvironmentVariable] = "1";
     if (stopDelayMs > 0) info.Environment["TOGETHERSERVER_FIXTURE_STOP_DELAY_MS"] = stopDelayMs.ToString();
     info.Environment["Logging__LogLevel__Default"] = "Warning";
     var process = Process.Start(info) ?? throw new Exception("App did not start.");
@@ -1196,8 +1372,11 @@ async Task<CompanionStatus> PublicStatus(HttpClient client, PairingCredential cr
 
 static HttpClient PinnedClient(string endpoint, string fingerprint)
 {
-    var handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
-        cert is not null && CryptographicOperations.FixedTimeEquals(SHA256.HashData(cert.RawData), Convert.FromHexString(fingerprint)) };
+    var handler = new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
+        cert is not null && CryptographicOperations.FixedTimeEquals(SHA256.HashData(cert.RawData), Convert.FromHexString(fingerprint))
+    };
     return new HttpClient(handler) { BaseAddress = new Uri(endpoint), Timeout = TimeSpan.FromSeconds(8) };
 }
 
@@ -1224,9 +1403,10 @@ async Task<FriendActionResult> FriendAction(HttpClient client, Guid profileId, s
 async Task<FriendActionResult> PublicAction(HttpClient client, PairingCredential credential, Guid profileId, Guid key, string action)
 {
     using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/" + action)
-        { Content = JsonContent.Create(new RemoteActionRequest(credential.DeviceId, profileId), options: webJson) };
+    { Content = JsonContent.Create(new RemoteActionRequest(credential.DeviceId, profileId), options: webJson) };
     request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
     request.Headers.Add("Idempotency-Key", key.ToString());
+    request.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
     using var response = await client.SendAsync(request);
     var submitted = await response.Content.ReadFromJsonAsync<FriendActionResult>(webJson) ??

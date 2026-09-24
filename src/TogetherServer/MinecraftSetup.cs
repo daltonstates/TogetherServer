@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace TogetherServer;
 
@@ -8,7 +10,15 @@ public sealed record MinecraftDiscoveryResult(IReadOnlyList<MinecraftInstallatio
 
 public static class MinecraftSetup
 {
+    private sealed record ManagedJavaArtifact(string Version, string Sha1);
+
     private static readonly StringComparer Paths = StringComparer.OrdinalIgnoreCase;
+    private const string ManagedJavaMetadataFile = ".togetherserver-java.json";
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly string[] UnsupportedJavaNames =
+        ["paper", "purpur", "spigot", "bukkit", "fabric", "forge", "neoforge", "quilt", "installer", "client"];
+    private static readonly HashSet<string> VanillaMainClasses = new(StringComparer.Ordinal)
+        { "net.minecraft.server.Main", "net.minecraft.bundler.Main" };
 
     public static MinecraftDiscoveryResult Scan(LocalData data, IEnumerable<ServerProfile> profiles, string? extraFolder = null)
     {
@@ -61,7 +71,7 @@ public static class MinecraftSetup
                 if (File.Exists(bedrock)) Add(GameKinds.MinecraftBedrock, bedrock, bedrock);
                 foreach (var jar in Directory.EnumerateFiles(folder, "*.jar").Take(100))
                 {
-                    if (!LooksLikeServerJar(jar, folder)) continue;
+                    if (!IsSupportedVanillaServerJar(jar, folder)) continue;
                     Add(GameKinds.MinecraftJava, jar, javaPath);
                 }
             }
@@ -110,14 +120,18 @@ public static class MinecraftSetup
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 
-    private static bool LooksLikeServerJar(string jar, string folder)
+    internal static void WriteManagedJavaProvenance(string folder, string version, string sha1)
+    {
+        if (sha1.Length != 40 || sha1.Any(character => !char.IsAsciiHexDigit(character)))
+            throw new InvalidDataException("Official server JAR checksum is invalid.");
+        File.WriteAllText(Path.Combine(folder, ManagedJavaMetadataFile),
+            JsonSerializer.Serialize(new ManagedJavaArtifact(version, sha1.ToUpperInvariant()), Json));
+    }
+
+    internal static bool IsSupportedVanillaServerJar(string jar, string folder)
     {
         var name = Path.GetFileNameWithoutExtension(jar);
-        if (name.Contains("installer", StringComparison.OrdinalIgnoreCase) ||
-            name.Contains("client", StringComparison.OrdinalIgnoreCase)) return false;
-        var recognized = new[] { "server", "minecraft", "paper", "purpur", "spigot", "bukkit", "fabric", "forge", "neoforge", "quilt" }
-            .Any(part => name.Contains(part, StringComparison.OrdinalIgnoreCase));
-        if (!recognized && !File.Exists(Path.Combine(folder, "server.properties"))) return false;
+        if (UnsupportedJavaNames.Any(part => name.Contains(part, StringComparison.OrdinalIgnoreCase))) return false;
         try
         {
             if (new FileInfo(jar).Length is < 100 or > 300_000_000) return false;
@@ -125,9 +139,31 @@ public static class MinecraftSetup
             var manifest = zip.GetEntry("META-INF/MANIFEST.MF");
             if (manifest is null || manifest.Length > 64_000) return false;
             using var reader = new StreamReader(manifest.Open());
-            return reader.ReadToEnd().Contains("Main-Class:", StringComparison.OrdinalIgnoreCase);
+            var mainClass = reader.ReadToEnd().Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Split(':', 2))
+                .Where(parts => parts.Length == 2 && parts[0].Trim().Equals("Main-Class", StringComparison.OrdinalIgnoreCase))
+                .Select(parts => parts[1].Trim()).SingleOrDefault();
+            if (mainClass is null || !VanillaMainClasses.Contains(mainClass)) return false;
+            if (zip.Entries.Any(entry => entry.FullName.Equals("fabric.mod.json", StringComparison.OrdinalIgnoreCase) ||
+                    entry.FullName.Equals("META-INF/mods.toml", StringComparison.OrdinalIgnoreCase) ||
+                    entry.FullName.StartsWith("io/papermc/", StringComparison.OrdinalIgnoreCase) ||
+                    entry.FullName.StartsWith("org/bukkit/", StringComparison.OrdinalIgnoreCase) ||
+                    entry.FullName.StartsWith("net/fabricmc/", StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            var metadataPath = Path.Combine(folder, ManagedJavaMetadataFile);
+            if (!File.Exists(metadataPath)) return false;
+            if (new FileInfo(metadataPath).Length > 4096) return false;
+            var provenance = JsonSerializer.Deserialize<ManagedJavaArtifact>(File.ReadAllText(metadataPath), Json);
+            if (provenance is null || string.IsNullOrWhiteSpace(provenance.Version) ||
+                string.IsNullOrWhiteSpace(provenance.Sha1) || provenance.Sha1.Length != 40 ||
+                provenance.Sha1.Any(character => !char.IsAsciiHexDigit(character)) ||
+                !Path.GetFileName(jar).Equals("server.jar", StringComparison.OrdinalIgnoreCase)) return false;
+            using var input = File.OpenRead(jar);
+            return Convert.ToHexString(SHA1.HashData(input)).Equals(provenance.Sha1, StringComparison.OrdinalIgnoreCase);
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException) { return false; }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        { return false; }
     }
 
     private static bool IsLink(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;

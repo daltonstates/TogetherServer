@@ -12,13 +12,15 @@ finally { Pop-Location }
 
 Push-Location $repository
 try {
+    dotnet restore src/TogetherServer/TogetherServer.csproj --locked-mode
+    if ($LASTEXITCODE -ne 0) { throw 'Locked Host restore failed' }
     dotnet build src/TogetherServer.Fixture/TogetherServer.Fixture.csproj -c Release
     if ($LASTEXITCODE -ne 0) { throw 'Fixture build failed' }
     dotnet build src/TogetherServer.ValheimFixture/TogetherServer.ValheimFixture.csproj -c Release
     if ($LASTEXITCODE -ne 0) { throw 'Valheim console fixture build failed' }
     dotnet build src/TogetherServer.MinecraftFixture/TogetherServer.MinecraftFixture.csproj -c Release
     if ($LASTEXITCODE -ne 0) { throw 'Minecraft console fixture build failed' }
-    dotnet publish src/TogetherServer/TogetherServer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o local-data/publish
+    dotnet publish src/TogetherServer/TogetherServer.csproj -c Release --no-restore -o local-data/publish
     if ($LASTEXITCODE -ne 0) { throw 'Host publish failed' }
     $releaseDirectory = Join-Path $repository "local-data/$ReleaseName"
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null

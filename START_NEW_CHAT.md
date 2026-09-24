@@ -1,17 +1,39 @@
-# Paste the text below into a new Codex chat
+# TogetherServer handoff
 
-You are building **TogetherServer** in `G:\repo\TogetherServer`. Start by verifying Git HEAD and worktree state, then read `AGENTS.md`, `README.md`, and every file in `docs/`. Treat this new folder as authoritative. Do not edit, run tests in, switch branches in, or resume workers from `G:\repo\LetsServive`.
+Continue work in `G:\repo\TogetherServer`. Treat the live checkout and current chat as authoritative. Before changing code, run `git status --short` and read `AGENTS.md`, `README.md`, `docs/00-PRODUCT.md`, `docs/01-ARCHITECTURE.md`, `docs/02-NETWORK-AND-SECURITY.md`, `docs/03-LIFECYCLE.md`, and `docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md`. Preserve unrelated work and never treat the chronological entries in `docs/06-IMPLEMENTATION-STATUS.md` as newer authority than those documents.
 
-My goal is a **small Windows-first Valheim hosting app**, not the old GameHost architecture. Build one installable .NET app with a bundled React/TypeScript GUI and two modes: **Host** on my PC and **Friend** on every player's PC. One TogetherServer app process runs on each PC; the Valheim dedicated server remains a separate game process. There is no Docker, PostgreSQL, cloud service, billing, Minecraft/Paper, plugin system, or extra runtime web-server process in v1. Keep settings local and the code simple.
+## Current product
 
-The Host GUI configures an already installed Valheim Dedicated Server, maximum simultaneous managed servers, idle minutes, paired friends, permissions, and a switch that disables all remote Start/Stop without stopping a running game. Host mode has fixed approved Start, Stop, and Health actions. Friends must never send raw scripts, paths, arguments, or shell text. Host mode tracks the exact processes/worlds it starts, rejects duplicate starts and port/world conflicts, shows honest readiness/errors, and stops Valheim gracefully so worlds save. Do not delete or overwrite an existing world.
+TogetherServer is one Windows-first .NET 10 application with a bundled React/TypeScript interface. The same EXE provides Host and Join modes. Built-in Host drivers currently cover Valheim, Minecraft Java, and Minecraft Bedrock; an explicitly advanced Host-only Custom script driver is also present. Node and the .NET SDK are build dependencies, not runtime dependencies.
 
-The **same app in Friend mode is mandatory on every friend's player PC**; Host mode performs the equivalent local check when I play on my PC. Each Friend app sends an authenticated outbound heartbeat saying whether its Valheim game client executable is running. Host uses receipt time; missed/stale heartbeats mean Unknown and must pause automatic shutdown. Auto shutdown is off by default until I configure it, all allowed players are paired, and unpaired game access is excluded through Valheim's permitted-player list or an equivalent verified server-side player signal. A fresh `true` or Unknown cancels/pauses the idle timer. Recheck immediately before stopping. A Friend may request remote Start/Stop only with explicit per-friend permission; remote Stop while anyone is playing or Unknown requires my local override.
+The loopback owner UI is separate from the optional companion HTTPS listener. Remote access remains off until the owner opens bounded pairing and the Host has valid TLS/pairing state. Each Friend PC has a separate revocable credential, explicit server assignments, and per-server action permissions. Friends submit only fixed actions against saved profile IDs; they never submit scripts, executable paths, world paths, or raw arguments.
 
-Friends will reach my Host via a **public IP**, not a VPN. Keep my GUI bound to loopback and expose only a small authenticated HTTPS companion API when I deliberately enable it. Pair each Friend device separately with a revocable credential and Host TLS identity pinning. Friend mode should save the Host endpoint and show Connected, Disabled, Revoked, or Disconnected/Unknown accurately. When I turn remote controls off, Host rejects commands immediately but continues authenticated status/heartbeat replies so online Friend apps show the notice on the next poll; offline apps show it on reconnect. No automatic router, firewall, or DNS changes.
+Pairing uses bounded owner-opened windows, optional local approval, scoped assignments, per-device revoke, and emergency lineage revoke. Existing TS1/TS2 formats are migration-only; unscoped legacy devices receive no server access. Endpoint changes require the already pinned Host identity plus an existing device credential. Remote controls are denied during maintenance and rechecked during execution.
 
-**Start implementing the first working slice now.** Make the local Host app, bundled React GUI, owner settings, and fixed process Start/Stop/Health actions work against a small synthetic process fixture. Add focused tests for duplicate starts, one writer per world, max count, port conflicts, process identity, and no unrelated-process kill; verify the served GUI. Continue in bounded slices toward Friend pairing/heartbeat/remote controls, then real Valheim launch/join/save/restart. Do not spend the first turn only writing plans or an orchestration framework. Review and commit each tested slice; record exact passes, failures, skips, and the next action. If you use a Codex CLI worker, use a non-Astra model and only one bounded worker at a time. Do not claim fixture results are real game evidence.
+Managed process identity is PID, creation time, and executable path. Local owner Stop is allowed after that identity is confirmed. Remote Stop, Restart, empty-port replacement, and automatic idle Stop fail closed: the game driver's fresh authoritative `OnlinePlayers` must be exactly zero, and the Host repeats the query inside its serialized lifecycle gate immediately before graceful Stop. Positive or Unknown cancels/denies the action. Friend app presence and game-client heartbeats never establish occupancy and never gate automatic shutdown.
 
-I authorize local code changes in TogetherServer, synthetic process fixtures, local browser and network tests, and reviewed commits. Preserve existing game data. **Stop for my explicit approval** before accepting game legal terms, downloading a terms-gated binary, spending money, changing public firewall/router/DNS settings, using real credentials, or performing destructive operations on real worlds. Continue independent implementation while an owner approval or real Friend client test is pending. Never make the app accept EULAs or open ports automatically.
+Crash recovery and rolling backups are opt-in and built-in-driver-only. Restore is owner-loopback-only, requires Offline, verifies the completed manifest, and creates a pre-restore snapshot. Fixture results do not prove real-game save integrity.
 
-Keep me updated briefly. At each milestone, tell me what runs, how to launch it locally, what was actually tested, what remains blocked on my action, and the exact next command. Complete v1 only with real Valheim client join, permission, graceful save/restart, idle/Unknown, remote disable notice, and recovery evidence as specified in `docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md`.
+## Build, verification, and release state
+
+Development version is `0.1.7`. The .NET SDK and Node versions are pinned by `global.json` and `.node-version`. Run the complete serial development matrix with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1 -Build
+```
+
+That command builds one candidate, validates the committed NuGet lock, runs the source/process suites, and exercises the packaged companion, served, and hidden desktop surfaces against the exact candidate. It does not show the interactive desktop. Unsigned development candidates cannot exercise the real updater handoff and explicitly report that skip.
+
+Automatic in-app updates are disabled when the installed EXE is unsigned or has an invalid Authenticode signature. A downloaded candidate must pass size, SHA-256, version, Windows Authenticode trust, and same-publisher-public-key checks at download and replacement time. Preparing a release requires a clean tree, an unused version/tag/output directory, `signtool.exe`, and a trusted code-signing certificate supplied by the owner:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1 -SigningCertificateThumbprint CERT_THUMBPRINT
+```
+
+The script signs and verifies one exact candidate and prepares local GitHub assets. It does not create a tag or publish a release. Never invent signing credentials, accept game terms, download a terms-gated game binary, spend money, change firewall/router/DNS settings, or touch a valued world without explicit owner authorization.
+
+## Acceptance boundary
+
+Local fixtures and loopback smoke prove only the behavior they exercise. They do not prove a real Friend PC can traverse a public/private route, a real player joined, a game saved correctly, or recovery restored a recognizable world. Keep those claims open until the corresponding two-PC, owner-installed-game, zero/one/disconnect, graceful save/restart, route, and valued-world evidence in `docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md` is recorded.
+
+When handing work back, report the exact source state, commands run, pass/fail/skip results, candidate path/hash/signature status, external prerequisites, and any real-world acceptance still outstanding. Do not tag or publish without explicit permission.

@@ -157,33 +157,78 @@ function Wait-ForGui($process) {
 }
 
 function Wait-ForWindow($process) {
-    for ($i = 0; $i -lt 100; $i++) {
+    $lastWindow = $null
+    for ($i = 0; $i -lt 200; $i++) {
         if ($process.HasExited) { throw 'The TogetherServer window process exited.' }
         try {
             $window = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
-            $process.Refresh()
-            if ($window.visible -and $window.rendered -and $process.MainWindowHandle -ne [IntPtr]::Zero) {
-                if (!$window.customChrome) { throw 'The desktop app did not use its custom borderless window frame.' }
-                return
-            }
+            $lastWindow = $window
         }
-        catch { }
+        catch { Start-Sleep -Milliseconds 100; continue }
+        Assert-WindowDiagnostics $window
+        $process.Refresh()
+        if ($window.visible -and $window.rendered -and $window.loadState -eq 'Rendered' -and
+            !$window.loadErrorCode -and !$window.loadFailureKind -and !$window.loadFailureHResult -and
+            $process.MainWindowHandle -ne [IntPtr]::Zero) {
+            if (!$window.customChrome) { throw 'The desktop app did not use its custom borderless window frame.' }
+            return
+        }
         Start-Sleep -Milliseconds 100
     }
-    throw 'The native TogetherServer window did not visibly render React.'
+    $diagnostic = Format-WindowDiagnostic $lastWindow
+    throw "The native TogetherServer window did not visibly render React ($diagnostic)."
 }
 
 function Wait-ForBackgroundWindow($process) {
-    for ($i = 0; $i -lt 100; $i++) {
+    $lastWindow = $null
+    for ($i = 0; $i -lt 200; $i++) {
         if ($process.HasExited) { throw 'The background TogetherServer process exited.' }
         try {
             $window = Invoke-RestMethod -Uri "$baseUrl/api/local/window" -TimeoutSec 2
-            if (!$window.visible -and $window.rendered -and $window.customChrome) { return }
+            $lastWindow = $window
         }
-        catch { }
+        catch { Start-Sleep -Milliseconds 100; continue }
+        Assert-WindowDiagnostics $window
+        if (!$window.visible -and $window.rendered -and $window.loadState -eq 'Rendered' -and
+            !$window.loadErrorCode -and !$window.loadFailureKind -and !$window.loadFailureHResult -and
+            $window.customChrome) { return }
         Start-Sleep -Milliseconds 100
     }
-    throw 'The background TogetherServer window did not render while hidden.'
+    $diagnostic = Format-WindowDiagnostic $lastWindow
+    throw "The background TogetherServer window did not render while hidden ($diagnostic)."
+}
+
+function Assert-WindowDiagnostics($window) {
+    $knownStates = @('NotStarted', 'WindowStarting', 'WindowShown', 'CreatingEnvironment',
+        'InitializingWebView', 'Navigating', 'ProbingRender', 'Rendered', 'Failed')
+    $knownErrors = @('WindowInitializationFailed', 'WebViewRuntimeMissing', 'EnvironmentCreationFailed',
+        'WebViewInitializationFailed', 'NavigationSetupFailed', 'NavigationFailed', 'RenderProbeTimedOut',
+        'StartupTimedOut', 'InitializationFailed')
+    $knownFailureKinds = @('Com', 'Unauthorized', 'InvalidOperation', 'Argument', 'IO', 'Unexpected')
+    if ($knownStates -notcontains [string]$window.loadState) {
+        throw "The desktop app returned an unknown load-state code: $($window.loadState)"
+    }
+    if ($window.loadErrorCode -and $knownErrors -notcontains [string]$window.loadErrorCode) {
+        throw "The desktop app returned an unknown load-error code: $($window.loadErrorCode)"
+    }
+    if ($window.loadFailureKind -and $knownFailureKinds -notcontains [string]$window.loadFailureKind) {
+        throw "The desktop app returned an unknown load-failure kind: $($window.loadFailureKind)"
+    }
+    if ($window.loadFailureHResult -and [string]$window.loadFailureHResult -notmatch '^[0-9A-F]{8}$') {
+        throw "The desktop app returned an invalid load-failure HRESULT."
+    }
+    if ($window.loadState -eq 'Failed' -and
+        [bool]$window.loadFailureKind -ne [bool]$window.loadFailureHResult) {
+        throw "The desktop app returned incomplete load-failure diagnostics."
+    }
+}
+
+function Format-WindowDiagnostic($window) {
+    if ($null -eq $window) { return 'window status unavailable' }
+    $errorCode = if ($window.loadErrorCode) { [string]$window.loadErrorCode } else { 'none' }
+    $failureKind = if ($window.loadFailureKind) { [string]$window.loadFailureKind } else { 'none' }
+    $failureHResult = if ($window.loadFailureHResult) { [string]$window.loadFailureHResult } else { 'none' }
+    return "loadState=$($window.loadState), loadErrorCode=$errorCode, loadFailureKind=$failureKind, loadFailureHResult=$failureHResult"
 }
 
 try {

@@ -6,20 +6,43 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>TogetherServer</AssemblyName>
-    <Version>0.1.6</Version>
-    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Version>0.1.7</Version>
+    <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSelfContained>true</PublishSelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="TogetherServer.Checks" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" PrivateAssets="all" GeneratePathProperty="true" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\..\ui\dist\**\*" LogicalName="Ui/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
   <Target Name="EnsureUiAssets" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('..\..\ui\dist\index.html')" Text="Build ui/ with npm ci and npm run build before building TogetherServer." />
+  </Target>
+  <Target Name="RemoveUnusedWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+  <Target Name="IncludeWebView2LoaderAtBundleRoot" BeforeTargets="_ComputeFilesToBundle" Condition="'$(PublishSingleFile)' == 'true'">
+    <PropertyGroup>
+      <_WebView2LoaderPath>$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll</_WebView2LoaderPath>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_WebView2LoaderPath)')" Text="The WebView2Loader.dll package asset was not found at '$(_WebView2LoaderPath)'." />
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(_WebView2LoaderPath)">
+        <RelativePath>WebView2Loader.dll</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>false</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
   </Target>
 </Project>

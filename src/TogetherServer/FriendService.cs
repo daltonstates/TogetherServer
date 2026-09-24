@@ -66,6 +66,7 @@ internal sealed class FriendLink : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly object lifetimeSync = new();
     private readonly LocalData data;
     private readonly string configFile;
     private FriendConfiguration? config;
@@ -73,6 +74,9 @@ internal sealed class FriendLink : IDisposable
     private Guid instanceId = Guid.NewGuid();
     private long sequence;
     private HttpClient? client;
+    private int retainedOperations;
+    private bool disposed;
+    private bool resourcesDisposed;
 
     public FriendLink(LocalData data, string configFile)
     {
@@ -100,6 +104,7 @@ internal sealed class FriendLink : IDisposable
     }
 
     public FriendView View() => view;
+    internal bool Configured => config is not null;
 
     public GameEndpointProbeResult ProbeGameEndpoint(Guid profileId)
     {
@@ -111,6 +116,7 @@ internal sealed class FriendLink : IDisposable
 
     public async Task<FriendActionResult> PairAsync(string invitation, string? hostAddress = null)
     {
+        if (!TryRetain()) return ClosedAction();
         await gate.WaitAsync();
         try
         {
@@ -152,10 +158,15 @@ internal sealed class FriendLink : IDisposable
                 config = new FriendConfiguration
                 {
                     DisplayName = HostLabel(invite.Endpoint),
-                    Endpoint = invite.Endpoint, Fingerprint = invite.Fingerprint, DeviceId = credential.DeviceId,
-                    AcceptedFingerprints = [invite.Fingerprint], Credential = credential.Credential,
+                    Endpoint = invite.Endpoint,
+                    Fingerprint = invite.Fingerprint,
+                    DeviceId = credential.DeviceId,
+                    AcceptedFingerprints = [invite.Fingerprint],
+                    Credential = credential.Credential,
                     CredentialExpiresUtc = credential.ExpiresUtc,
-                    Route = new ConnectionRoute(), PendingOperations = [], CachedProfiles = []
+                    Route = new ConnectionRoute(),
+                    PendingOperations = [],
+                    CachedProfiles = []
                 };
                 data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
                 client?.Dispose();
@@ -176,19 +187,28 @@ internal sealed class FriendLink : IDisposable
                 return PairConnectionFailure(ex);
             }
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<FriendView> PollAsync()
     {
+        if (!TryRetain()) return view;
         await gate.WaitAsync();
         try
         {
             if (config is null) return view;
             if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
             {
-                view = view with { State = "Disconnected/Unknown", Detail = "Device credential expired; ask the Host for the current server code.", ConnectionCode = "CredentialExpired",
-                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                view = view with
+                {
+                    State = "Disconnected/Unknown",
+                    Detail = "Device credential expired; ask the Host for the current server code.",
+                    ConnectionCode = "CredentialExpired",
+                    RemoteControlsEnabled = false,
+                    CanStart = false,
+                    CanStop = false,
+                    Profiles = []
+                };
                 return view;
             }
             try
@@ -210,12 +230,18 @@ internal sealed class FriendLink : IDisposable
                     catch (JsonException) { /* A generic 403 is not evidence of revocation. */ }
                     var revoked = denial?.Code == "Revoked";
                     var approvalPending = denial?.Code == "ApprovalPending";
-                    view = view with { State = revoked ? "Revoked" : approvalPending ? "Awaiting approval" : "Disconnected/Unknown",
+                    view = view with
+                    {
+                        State = revoked ? "Revoked" : approvalPending ? "Awaiting approval" : "Disconnected/Unknown",
                         Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code."
                             : approvalPending ? "The Host owner must approve this PC locally before it can connect."
                             : "Host access is unavailable or denied.",
                         ConnectionCode = revoked ? "Revoked" : approvalPending ? "ApprovalPending" : "HostAccessDenied",
-                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                        RemoteControlsEnabled = false,
+                        CanStart = false,
+                        CanStop = false,
+                        Profiles = []
+                    };
                     return view;
                 }
                 if (!response.IsSuccessStatusCode)
@@ -226,8 +252,16 @@ internal sealed class FriendLink : IDisposable
                         HttpStatusCode.TooManyRequests => new ConnectionIssue("HostBusy", "The Host is limiting requests. Wait a moment and check again."),
                         _ => new ConnectionIssue("HostUnavailable", $"The Host app returned {(int)response.StatusCode}. Ask the Host to check its app.")
                     };
-                    view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                        RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+                    view = view with
+                    {
+                        State = "Disconnected/Unknown",
+                        Detail = issue.Message,
+                        ConnectionCode = issue.Code,
+                        RemoteControlsEnabled = false,
+                        CanStart = false,
+                        CanStop = false,
+                        Profiles = []
+                    };
                     return view;
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
@@ -254,16 +288,25 @@ internal sealed class FriendLink : IDisposable
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 var issue = ConnectionFailure(ex);
-                view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+                view = view with
+                {
+                    State = "Disconnected/Unknown",
+                    Detail = issue.Message,
+                    ConnectionCode = issue.Code,
+                    RemoteControlsEnabled = false,
+                    CanStart = false,
+                    CanStop = false,
+                    Profiles = ProfilesWithPendingOperations()
+                };
                 return view;
             }
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<FriendActionResult> RecoverEndpointAsync(string endpoint)
     {
+        if (!TryRetain()) return ClosedAction();
         await gate.WaitAsync();
         try
         {
@@ -276,6 +319,7 @@ internal sealed class FriendLink : IDisposable
                 using var recoveryClient = MakeClient(normalized, AcceptedPins());
                 recoveryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
                 recoveryClient.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
+                recoveryClient.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
                 using var response = await recoveryClient.PostAsJsonAsync("api/companion/endpoint/recover",
                     new EndpointRecoveryProofRequest(config.DeviceId), Json);
                 if (!response.IsSuccessStatusCode)
@@ -294,20 +338,27 @@ internal sealed class FriendLink : IDisposable
                 SaveConfig();
                 client?.Dispose();
                 client = null;
-                view = view with { Endpoint = config.Endpoint, State = "Disconnected/Unknown",
-                    Detail = "Host endpoint recovered; checking the authenticated connection.", ConnectionCode = null,
+                view = view with
+                {
+                    Endpoint = config.Endpoint,
+                    State = "Disconnected/Unknown",
+                    Detail = "Host endpoint recovered; checking the authenticated connection.",
+                    ConnectionCode = null,
                     RouteMode = config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
-                    RouteAddress = config.Route?.Address, HostId = config.HostId };
+                    RouteAddress = config.Route?.Address,
+                    HostId = config.HostId
+                };
                 return new(true, "EndpointRecovered", "The saved Host endpoint changed only after its existing TLS pin and device credential were verified.", null);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             { return PairConnectionFailure(ex); }
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<FriendActionResult> RenameAsync(string? name)
     {
+        if (!TryRetain()) return ClosedAction();
         await gate.WaitAsync();
         try
         {
@@ -320,11 +371,12 @@ internal sealed class FriendLink : IDisposable
             view = view with { ConnectionName = value };
             return new(true, "ConnectionRenamed", "Saved Host connection renamed on this PC.", null);
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<FriendActionResult> ForgetAsync()
     {
+        if (!TryRetain()) return ClosedAction();
         await gate.WaitAsync();
         try
         {
@@ -354,11 +406,12 @@ internal sealed class FriendLink : IDisposable
                     : "The saved connection was removed locally, but the Host could not be reached. Ask the Host owner to revoke this stale PC credential.",
                 null);
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<FriendActionResult> RequestAsync(Guid profileId, string action)
     {
+        if (!TryRetain()) return ClosedAction();
         await gate.WaitAsync();
         try
         {
@@ -375,7 +428,9 @@ internal sealed class FriendLink : IDisposable
             {
                 pending = new PendingFriendOperation
                 {
-                    RequestId = Guid.NewGuid(), ProfileId = profileId, Action = action,
+                    RequestId = Guid.NewGuid(),
+                    ProfileId = profileId,
+                    Action = action,
                     RequestedUtc = DateTimeOffset.UtcNow
                 };
                 config.PendingOperations.Add(pending);
@@ -403,12 +458,20 @@ internal sealed class FriendLink : IDisposable
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 var issue = ConnectionFailure(ex);
-                view = view with { State = "Disconnected/Unknown", Detail = issue.Message, ConnectionCode = issue.Code,
-                    RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+                view = view with
+                {
+                    State = "Disconnected/Unknown",
+                    Detail = issue.Message,
+                    ConnectionCode = issue.Code,
+                    RemoteControlsEnabled = false,
+                    CanStart = false,
+                    CanStop = false,
+                    Profiles = ProfilesWithPendingOperations()
+                };
                 return new(false, issue.Code, issue.Message + " The action result is unknown; check Host status before retrying.", null);
             }
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
 
     private async Task<FriendActionResult> SubmitPendingOperationAsync(PendingFriendOperation pending)
@@ -418,7 +481,7 @@ internal sealed class FriendLink : IDisposable
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + pending.Action)
         {
             Content = new StringContent(JsonSerializer.Serialize(new
-                { deviceId = config.DeviceId, profileId = pending.ProfileId }, Json), Encoding.UTF8, "application/json")
+            { deviceId = config.DeviceId, profileId = pending.ProfileId }, Json), Encoding.UTF8, "application/json")
         };
         request.Headers.Add("Idempotency-Key", pending.RequestId.ToString());
         using var response = await hostClient.SendAsync(request);
@@ -534,17 +597,49 @@ internal sealed class FriendLink : IDisposable
     private void ApplyActionConnectionState(HttpStatusCode statusCode, FriendActionResult result)
     {
         if (statusCode == HttpStatusCode.Forbidden && result.Code == "Revoked")
-            view = view with { State = "Revoked", Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.", ConnectionCode = "Revoked",
-                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
+            view = view with
+            {
+                State = "Revoked",
+                Detail = "Host refreshed this server code or revoked this PC. Ask for the current code.",
+                ConnectionCode = "Revoked",
+                RemoteControlsEnabled = false,
+                CanStart = false,
+                CanStop = false,
+                Profiles = []
+            };
         else if (statusCode == HttpStatusCode.Forbidden && result.Code is "Unauthorized" or "Disconnected")
-            view = view with { State = "Disconnected/Unknown", Detail = "Host access is unavailable or denied.", ConnectionCode = "HostAccessDenied",
-                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+            view = view with
+            {
+                State = "Disconnected/Unknown",
+                Detail = "Host access is unavailable or denied.",
+                ConnectionCode = "HostAccessDenied",
+                RemoteControlsEnabled = false,
+                CanStart = false,
+                CanStop = false,
+                Profiles = ProfilesWithPendingOperations()
+            };
         else if (statusCode == HttpStatusCode.ServiceUnavailable)
-            view = view with { State = "Disconnected/Unknown", Detail = "Host companion access is paused.", ConnectionCode = "HostUnavailable",
-                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+            view = view with
+            {
+                State = "Disconnected/Unknown",
+                Detail = "Host companion access is paused.",
+                ConnectionCode = "HostUnavailable",
+                RemoteControlsEnabled = false,
+                CanStart = false,
+                CanStop = false,
+                Profiles = ProfilesWithPendingOperations()
+            };
         else if (statusCode == HttpStatusCode.Unauthorized)
-            view = view with { State = "Disconnected/Unknown", Detail = "Host rejected this device credential.", ConnectionCode = "CredentialRejected",
-                RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = ProfilesWithPendingOperations() };
+            view = view with
+            {
+                State = "Disconnected/Unknown",
+                Detail = "Host rejected this device credential.",
+                ConnectionCode = "CredentialRejected",
+                RemoteControlsEnabled = false,
+                CanStart = false,
+                CanStop = false,
+                Profiles = ProfilesWithPendingOperations()
+            };
     }
 
     private HttpClient HostClient()
@@ -554,13 +649,32 @@ internal sealed class FriendLink : IDisposable
         client = MakeClient(config.Endpoint, AcceptedPins());
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
         client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
+        client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
         return client;
     }
 
     private static FriendConfiguration? LoadConfig(LocalData data, string configFile)
     {
-        var bytes = data.LoadProtected(configFile);
-        return bytes is null ? null : JsonSerializer.Deserialize<FriendConfiguration>(bytes, Json);
+        var config = data.LoadProtectedJson<FriendConfiguration>(configFile);
+        if (config is null) return null;
+        // HostId was added after the original protected Friend format and is
+        // learned from authenticated Host metadata on the first successful
+        // poll. Do not quarantine an otherwise valid legacy credential merely
+        // because that metadata has not been observed yet.
+        if (config.DeviceId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(config.Credential) || config.Credential.Length is < 32 or > 4096 ||
+            config.Credential.Any(char.IsControl) || config.CredentialExpiresUtc == default ||
+            !HostIdentity.TryEndpoint(config.Endpoint, out _) || !ValidFingerprint(config.Fingerprint) ||
+            config.AcceptedFingerprints is { Count: > 10 } ||
+            config.PendingOperations is { Count: > 100 } || config.PendingOperations?.Any(item => item is null) == true ||
+            config.CachedProfiles is { Count: > 100 } || config.CachedProfiles?.Any(item => item is null) == true)
+        {
+            data.QuarantineState(configFile,
+                "TogetherServer disabled an invalid saved Friend connection for owner review.", false);
+            data.TryAudit($"friend-connection-disabled invalid-config {DateTimeOffset.UtcNow:O}");
+            return null;
+        }
+        return config;
     }
 
     private void SaveConfig()
@@ -699,10 +813,56 @@ internal sealed class FriendLink : IDisposable
     private static string HostLabel(string endpoint) =>
         Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ? $"Host {uri.Host}" : "Saved Host";
 
-    public void Dispose()
+    private bool TryRetain()
+    {
+        lock (lifetimeSync)
+        {
+            if (disposed) return false;
+            retainedOperations++;
+            return true;
+        }
+    }
+
+    private void ReleaseRetained()
+    {
+        var cleanup = false;
+        lock (lifetimeSync)
+        {
+            retainedOperations--;
+            if (retainedOperations < 0) throw new InvalidOperationException("Friend connection lifetime underflow.");
+            if (disposed && retainedOperations == 0 && !resourcesDisposed)
+            {
+                resourcesDisposed = true;
+                cleanup = true;
+            }
+        }
+        if (cleanup) CleanupResources();
+    }
+
+    private static FriendActionResult ClosedAction() =>
+        new(false, "ConnectionClosed", "This saved Host connection is closing.", null);
+
+    private void CleanupResources()
     {
         client?.Dispose();
+        client = null;
         gate.Dispose();
+    }
+
+    public void Dispose()
+    {
+        var cleanup = false;
+        lock (lifetimeSync)
+        {
+            if (disposed) return;
+            disposed = true;
+            if (retainedOperations == 0 && !resourcesDisposed)
+            {
+                resourcesDisposed = true;
+                cleanup = true;
+            }
+        }
+        if (cleanup) CleanupResources();
     }
 }
 

@@ -70,9 +70,14 @@ await Check("bounded scan finds several Java JARs and Bedrock without guessing a
     var folder = Path.Combine(scan, "my-server");
     Directory.CreateDirectory(folder);
     File.WriteAllText(Path.Combine(folder, "server.properties"), "level-name=My World\nserver-port=25570\n");
-    var jar = Archive(("META-INF/MANIFEST.MF", Encoding.ASCII.GetBytes("Manifest-Version: 1.0\nMain-Class: fixture.Server\n\n")),
+    var jar = Archive(("META-INF/MANIFEST.MF", Encoding.ASCII.GetBytes("Manifest-Version: 1.0\nMain-Class: net.minecraft.server.Main\n\n")),
         ("fixture/Server.class", new byte[100]));
     File.WriteAllBytes(Path.Combine(folder, "server.jar"), jar);
+    File.WriteAllText(Path.Combine(folder, ".togetherserver-java.json"), JsonSerializer.Serialize(new
+    {
+        version = "fixture",
+        sha1 = Convert.ToHexString(SHA1.HashData(jar))
+    }));
     File.WriteAllBytes(Path.Combine(folder, "paper-1.21.jar"), jar);
     File.WriteAllBytes(Path.Combine(folder, "client.jar"), jar);
     File.WriteAllText(Path.Combine(folder, "server-broken.jar"), "not a JAR");
@@ -80,9 +85,10 @@ await Check("bounded scan finds several Java JARs and Bedrock without guessing a
     var java = Path.Combine(root, "java.exe");
     File.WriteAllText(java, "fixture");
     var found = MinecraftSetup.ScanRoots([scan], java);
-    Require(found.Installations.Count == 3, "scanner did not keep each valid Java JAR separate");
-    Require(found.Installations.Count(item => item.Kind == GameKinds.MinecraftJava) == 2,
-        "scanner chose the wrong Java files");
+    Require(found.Installations.Count == 2, "scanner did not keep vanilla Java and Bedrock separate");
+    Require(found.Installations.Count(item => item.Kind == GameKinds.MinecraftJava) == 1 &&
+        found.Installations.Single(item => item.Kind == GameKinds.MinecraftJava).ArtifactPath.EndsWith("server.jar"),
+        "scanner admitted a modded/client/broken Java file or missed vanilla");
     Require(found.Installations.All(item => item.WorldName == "My World" && item.GamePort == 25570),
         "server.properties values were not detected");
     return Task.CompletedTask;
@@ -100,7 +106,7 @@ await Check("install needs explicit terms and valid settings before a network re
     Require(requests == 0, "invalid request accessed the network");
 });
 
-var fixtureJar = Archive(("META-INF/MANIFEST.MF", Encoding.ASCII.GetBytes("Manifest-Version: 1.0\nMain-Class: fixture.Server\n\n")),
+var fixtureJar = Archive(("META-INF/MANIFEST.MF", Encoding.ASCII.GetBytes("Manifest-Version: 1.0\nMain-Class: net.minecraft.server.Main\n\n")),
     ("fixture/Server.class", new byte[100]));
 var fixtureRuntime = Archive(("jre-25/bin/java.exe", Encoding.ASCII.GetBytes("synthetic runtime")));
 var fixtureBedrock = Archive(("bedrock_server.exe", Encoding.ASCII.GetBytes("synthetic server")),
@@ -128,6 +134,10 @@ await Check("fresh Java and Bedrock installs configure separate folders and pres
         properties.Contains("level-name=Bedrock World") && !properties.Contains("level-name = Old"), "Bedrock world or port not configured exactly");
     Require(MinecraftSetup.ScanRoots([data.MinecraftInstallRoot], javaInstall.ExecutablePath).Installations.Count == 2,
         "managed installs were not rediscovered");
+    File.AppendAllText(javaInstall.ArtifactPath, "tampered");
+    Require(MinecraftSetup.ScanRoots([data.MinecraftInstallRoot], javaInstall.ExecutablePath).Installations
+            .All(item => item.Kind != GameKinds.MinecraftJava),
+        "a managed Java JAR that no longer matched its official checksum was rediscovered");
     Require(File.ReadAllText(Path.Combine(existing, "world.db")) == "keep this", "existing world changed");
 });
 

@@ -22,7 +22,7 @@ int FreePort()
         try
         {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-                { ExclusiveAddressUse = true };
+            { ExclusiveAddressUse = true };
             socket.Bind(new IPEndPoint(IPAddress.Any, port));
             return port;
         }
@@ -202,6 +202,41 @@ await Check("invalid status fails closed and local stop remains available", asyn
     {
         var stopped = await manager.StopAsync(profile.Id);
         Require(stopped.Ok, $"timeout cleanup failed: {stopped.Code} {stopped.Message}");
+    }
+
+    var childPidPath = Path.Combine(profile.WorldDirectory, "status-child.pid");
+    Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts("""
+        $childInfo = [Diagnostics.ProcessStartInfo]::new()
+        $childInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $childInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"'
+        $childInfo.UseShellExecute = $false
+        $childInfo.CreateNoWindow = $true
+        $child = [Diagnostics.Process]::Start($childInfo)
+        Set-Content -LiteralPath (Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY 'status-child.pid') -Value $child.Id
+        Start-Sleep -Seconds 30
+        """))).Ok, "descendant timeout scripts failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "descendant timeout start failed");
+    timeoutWatch.Restart();
+    try
+    {
+        var timedOut = await WaitForState(manager, profile.Id, "Unknown");
+        Require(timedOut.Detail.Contains("4 seconds", StringComparison.OrdinalIgnoreCase) &&
+            timeoutWatch.Elapsed < TimeSpan.FromSeconds(7),
+            "a descendant retaining redirected handles defeated the status timeout");
+        Require(File.Exists(childPidPath), "status descendant PID was not recorded");
+        var childPid = int.Parse(File.ReadAllText(childPidPath).Trim());
+        await Task.Delay(200);
+        try
+        {
+            using var child = System.Diagnostics.Process.GetProcessById(childPid);
+            Require(child.HasExited, "timed-out status descendant was left running");
+        }
+        catch (ArgumentException) { /* Process is gone. */ }
+    }
+    finally
+    {
+        var stopped = await manager.StopAsync(profile.Id);
+        Require(stopped.Ok, $"descendant timeout cleanup failed: {stopped.Code} {stopped.Message}");
     }
 });
 

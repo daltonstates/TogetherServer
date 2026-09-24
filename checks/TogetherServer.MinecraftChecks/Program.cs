@@ -1,4 +1,8 @@
 using System.Diagnostics;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using TogetherServer;
 
 var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/net10.0/TogetherServer.MinecraftFixture.exe");
@@ -45,6 +49,15 @@ string CopyFixture(string destination, string name)
     return target;
 }
 
+void WriteVanillaJar(string path)
+{
+    using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
+    using (var manifest = new StreamWriter(zip.CreateEntry("META-INF/MANIFEST.MF").Open(), Encoding.ASCII))
+        manifest.Write("Manifest-Version: 1.0\nMain-Class: net.minecraft.server.Main\n\n");
+    using var payload = zip.CreateEntry("net/minecraft/server/Main.class").Open();
+    payload.Write(new byte[256]);
+}
+
 ServerProfile Profile(string kind, string name, string world, int port, bool eula = true)
 {
     var serverRoot = Path.Combine(root, name);
@@ -55,15 +68,36 @@ ServerProfile Profile(string kind, string name, string world, int port, bool eul
     {
         // Synthetic text only: this fixture does not use or accept a real game EULA.
         File.WriteAllText(Path.Combine(serverRoot, "eula.txt"), "eula=" + eula.ToString().ToLowerInvariant());
-        var jar = Path.Combine(serverRoot, "fixture-server.jar");
-        File.WriteAllText(jar, "disposable fixture marker, not a game binary");
+        var jar = Path.Combine(serverRoot, "server.jar");
+        WriteVanillaJar(jar);
+        File.WriteAllText(Path.Combine(serverRoot, ".togetherserver-java.json"), JsonSerializer.Serialize(new
+        {
+            version = "fixture",
+            sha1 = Convert.ToHexString(SHA1.HashData(File.ReadAllBytes(jar)))
+        }));
         var java = CopyFixture(Path.Combine(root, "java-bin"), "java.exe");
-        return new ServerProfile { Kind = kind, Name = name, WorldId = world, WorldDirectory = serverRoot,
-            GamePort = port, ExecutablePath = java, Minecraft = new MinecraftOptions { ServerJarPath = jar } };
+        return new ServerProfile
+        {
+            Kind = kind,
+            Name = name,
+            WorldId = world,
+            WorldDirectory = serverRoot,
+            GamePort = port,
+            ExecutablePath = java,
+            Minecraft = new MinecraftOptions { ServerJarPath = jar }
+        };
     }
     var bedrock = CopyFixture(serverRoot, "bedrock_server.exe");
-    return new ServerProfile { Kind = kind, Name = name, WorldId = world, WorldDirectory = serverRoot,
-        GamePort = port, ExecutablePath = bedrock, Minecraft = new MinecraftOptions() };
+    return new ServerProfile
+    {
+        Kind = kind,
+        Name = name,
+        WorldId = world,
+        WorldDirectory = serverRoot,
+        GamePort = port,
+        ExecutablePath = bedrock,
+        Minecraft = new MinecraftOptions()
+    };
 }
 
 async Task Ready(HostManager manager, Guid id)
@@ -94,6 +128,15 @@ await Check("Java and Bedrock settings fail closed without prepared files", asyn
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [java, bedrock] })).Ok, "profile settings rejected");
     Require((await manager.StartAsync(java.Id)).Code == "MinecraftEulaRequired", "unprepared Java EULA was accepted");
     File.WriteAllText(Path.Combine(java.WorldDirectory, "eula.txt"), "eula=true");
+    var paper = Path.Combine(java.WorldDirectory, "paper-1.21.jar");
+    File.Copy(java.Minecraft!.ServerJarPath, paper);
+    java.Minecraft.ServerJarPath = paper;
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [java, bedrock] })).Ok,
+        "modded JAR validation settings failed");
+    Require((await manager.StartAsync(java.Id)).Code == "MinecraftVanillaJarRequired", "a modded Java JAR was accepted");
+    java.Minecraft.ServerJarPath = Path.Combine(java.WorldDirectory, "server.jar");
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [java, bedrock] })).Ok,
+        "vanilla JAR validation settings failed");
     File.WriteAllText(Path.Combine(java.WorldDirectory, "server.properties"), "level-name=other\nserver-port=" + port);
     Require((await manager.StartAsync(java.Id)).Code == "MinecraftWorldMismatch", "mismatched Java world was accepted");
     File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "server.properties"), "level-name=world\nserver-port=1");
@@ -117,9 +160,13 @@ await Check("two games can share a world name and numeric port on different prot
     var bedrock = Profile(GameKinds.MinecraftBedrock, "bedrock-concurrent", "shared", port);
     using var data = new LocalData(Path.Combine(root, "concurrent-data"));
     var manager = new HostManager(data);
-    Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2,
-        AutoShutdownEnabled = true, IdleMinutes = 15,
-        Profiles = [java, bedrock] })).Ok,
+    Require((await manager.UpdateSettingsAsync(new HostSettings
+    {
+        MaxConcurrentServers = 2,
+        AutoShutdownEnabled = true,
+        IdleMinutes = 15,
+        Profiles = [java, bedrock]
+    })).Ok,
         "two game profiles were rejected");
     try
     {
@@ -141,9 +188,13 @@ await Check("two games can share a world name and numeric port on different prot
         var extra = Profile(GameKinds.MinecraftBedrock, "bedrock-conflict", "other", FreePort());
         File.WriteAllText(Path.Combine(extra.WorldDirectory, "server.properties"),
             $"level-name=other\nserver-port={extra.GamePort}\nserver-portv6={port + 1}\nenable-lan-visibility=false\n");
-        Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 3,
-            AutoShutdownEnabled = true, IdleMinutes = 15,
-            Profiles = [java, bedrock, extra] })).Ok,
+        Require((await manager.UpdateSettingsAsync(new HostSettings
+        {
+            MaxConcurrentServers = 3,
+            AutoShutdownEnabled = true,
+            IdleMinutes = 15,
+            Profiles = [java, bedrock, extra]
+        })).Ok,
             "third Bedrock profile rejected");
         Require((await manager.StartAsync(extra.Id)).Code == "PortConflict",
             "second Bedrock run could reuse the first run's IPv6 game port");

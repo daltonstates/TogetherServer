@@ -15,10 +15,26 @@ File.WriteAllText(Path.Combine(sourceWorld, "worlds_local", "fixture-world.fwl")
 var world = sourceWorld;
 Environment.SetEnvironmentVariable("TOGETHERSERVER_FIXTURE_ROOT", root);
 var port = FreePort();
-var profile = new ServerProfile { Kind = "Valheim", Name = "Synthetic Valheim", ServerName = "Fixture \"Valheim\"",
-    WorldId = "fixture-world", WorldDirectory = world, GamePort = port, ExecutablePath = fixture };
-var second = new ServerProfile { Kind = "Valheim", Name = "Duplicate world", ServerName = "Duplicate",
-    WorldId = profile.WorldId, WorldDirectory = world, GamePort = port + 10, ExecutablePath = fixture };
+var profile = new ServerProfile
+{
+    Kind = "Valheim",
+    Name = "Synthetic Valheim",
+    ServerName = "Fixture \"Valheim\"",
+    WorldId = "fixture-world",
+    WorldDirectory = world,
+    GamePort = port,
+    ExecutablePath = fixture
+};
+var second = new ServerProfile
+{
+    Kind = "Valheim",
+    Name = "Duplicate world",
+    ServerName = "Duplicate",
+    WorldId = profile.WorldId,
+    WorldDirectory = world,
+    GamePort = port + 10,
+    ExecutablePath = fixture
+};
 var passes = 0;
 int? fixturePid = null;
 long? fixtureStart = null;
@@ -164,24 +180,71 @@ try
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
         var host = new HostManager(data);
-        var newSeed = new ServerProfile { Kind = "Valheim", Name = "Unsafe new seed", ServerName = "Unsafe new seed",
-            WorldSource = "New", WorldId = profile.WorldId, WorldDirectory = world,
-            GamePort = port + 30, ExecutablePath = fixture };
-        var unimported = new ServerProfile { Kind = "Valheim", Name = "Unimported source", ServerName = "Unimported source",
-            WorldId = profile.WorldId, WorldDirectory = sourceWorld, GamePort = port + 40, ExecutablePath = fixture };
-        var chunked = new ServerProfile { Id = chunkedProfileId, Kind = "Valheim", Name = "Chunked copy", ServerName = "Chunked copy",
-            WorldId = "chunked-world", WorldDirectory = chunkedImportDirectory, GamePort = port + 50, ExecutablePath = fixture };
-        var chunkedNewSeed = new ServerProfile { Kind = "Valheim", Name = "Unsafe chunked seed", ServerName = "Unsafe chunked seed",
-            WorldSource = "New", WorldId = "chunked-world", WorldDirectory = chunkedImportDirectory,
-            GamePort = port + 60, ExecutablePath = fixture };
-        var chunkedUnimported = new ServerProfile { Kind = "Valheim", Name = "Unimported chunked source", ServerName = "Unimported chunked source",
-            WorldId = "chunked-world", WorldDirectory = sourceWorld, GamePort = port + 70, ExecutablePath = fixture };
-        var settings = new HostSettings { MaxConcurrentServers = 2,
-            Profiles = [profile, second, newSeed, unimported, chunked, chunkedNewSeed, chunkedUnimported] };
+        var newSeed = new ServerProfile
+        {
+            Kind = "Valheim",
+            Name = "Unsafe new seed",
+            ServerName = "Unsafe new seed",
+            WorldSource = "New",
+            WorldId = profile.WorldId,
+            WorldDirectory = world,
+            GamePort = port + 30,
+            ExecutablePath = fixture
+        };
+        var unimported = new ServerProfile
+        {
+            Kind = "Valheim",
+            Name = "Unimported source",
+            ServerName = "Unimported source",
+            WorldId = profile.WorldId,
+            WorldDirectory = sourceWorld,
+            GamePort = port + 40,
+            ExecutablePath = fixture
+        };
+        var chunked = new ServerProfile
+        {
+            Id = chunkedProfileId,
+            Kind = "Valheim",
+            Name = "Chunked copy",
+            ServerName = "Chunked copy",
+            WorldId = "chunked-world",
+            WorldDirectory = chunkedImportDirectory,
+            GamePort = port + 50,
+            ExecutablePath = fixture
+        };
+        var chunkedNewSeed = new ServerProfile
+        {
+            Kind = "Valheim",
+            Name = "Unsafe chunked seed",
+            ServerName = "Unsafe chunked seed",
+            WorldSource = "New",
+            WorldId = "chunked-world",
+            WorldDirectory = chunkedImportDirectory,
+            GamePort = port + 60,
+            ExecutablePath = fixture
+        };
+        var chunkedUnimported = new ServerProfile
+        {
+            Kind = "Valheim",
+            Name = "Unimported chunked source",
+            ServerName = "Unimported chunked source",
+            WorldId = "chunked-world",
+            WorldDirectory = sourceWorld,
+            GamePort = port + 70,
+            ExecutablePath = fixture
+        };
+        var settings = new HostSettings
+        {
+            MaxConcurrentServers = 2,
+            Profiles = [profile, second, newSeed, unimported, chunked, chunkedNewSeed, chunkedUnimported]
+        };
         Require((await host.UpdateSettingsAsync(settings)).Ok, "Valheim settings rejected");
         await host.RecordDetectedPublicIpAsync("1.2.3.4");
-        Require((await host.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2,
-            Profiles = settings.Profiles })).Ok, "an older settings form could not be saved");
+        Require((await host.UpdateSettingsAsync(new HostSettings
+        {
+            MaxConcurrentServers = 2,
+            Profiles = settings.Profiles
+        })).Ok, "an older settings form could not be saved");
         var addressSnapshot = await host.SnapshotAsync();
         Require(addressSnapshot.Settings.PublicGameIp == "1.2.3.4" &&
             addressSnapshot.Settings.PublicGameIpCheckedUtc is not null,
@@ -228,9 +291,16 @@ try
         var unrelatedWorld = Path.Combine(root, "unrelated-world");
         Directory.CreateDirectory(unrelatedWorld);
         using var unrelatedData = new LocalData(Path.Combine(root, "unrelated-host"));
-        var unrelatedHost = new HostManager(unrelatedData);
-        var unrelatedProfile = new ServerProfile { Name = "Unrelated fixture", WorldId = "unrelated",
-            WorldDirectory = unrelatedWorld, GamePort = port + 20, ExecutablePath = unrelatedFixture };
+        var unrelatedHost = new HostManager(unrelatedData,
+            new GameServerRegistry(unrelatedData, includeFixture: true));
+        var unrelatedProfile = new ServerProfile
+        {
+            Name = "Unrelated fixture",
+            WorldId = "unrelated",
+            WorldDirectory = unrelatedWorld,
+            GamePort = port + 20,
+            ExecutablePath = unrelatedFixture
+        };
         Require((await unrelatedHost.UpdateSettingsAsync(new HostSettings { Profiles = [unrelatedProfile] })).Ok,
             "unrelated fixture settings failed");
         Require((await unrelatedHost.StartAsync(unrelatedProfile.Id)).Ok, "unrelated fixture start failed");
@@ -268,9 +338,16 @@ try
         var games = new GameServerRegistry(stopData);
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero));
         var host = new HostManager(stopData, games, clock);
-        var stopProfile = new ServerProfile { Kind = "Valheim", Name = "Restricted synthetic world",
-            ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
-            GamePort = FreePort(), ExecutablePath = fixture };
+        var stopProfile = new ServerProfile
+        {
+            Kind = "Valheim",
+            Name = "Restricted synthetic world",
+            ServerName = "Fixture \"Valheim\"",
+            WorldSource = "New",
+            WorldId = "fixture-world",
+            GamePort = FreePort(),
+            ExecutablePath = fixture
+        };
         stopProfile.WorldDirectory = stopData.NewWorldDirectory(stopProfile.Id);
         Require((await host.UpdateSettingsAsync(new HostSettings { Profiles = [stopProfile] })).Ok,
             "restricted synthetic profile was rejected");
@@ -440,9 +517,18 @@ try
     {
         var games = new GameServerRegistry(logData);
         var host = new HostManager(logData, games);
-        var logProfile = new ServerProfile { Kind = "Valheim", Name = "Private synthetic world",
-            ServerName = "Fixture \"Valheim\"", WorldSource = "New", WorldId = "fixture-world",
-            GamePort = FreePort(), ExecutablePath = fixture, PublicListing = false, Crossplay = false };
+        var logProfile = new ServerProfile
+        {
+            Kind = "Valheim",
+            Name = "Private synthetic world",
+            ServerName = "Fixture \"Valheim\"",
+            WorldSource = "New",
+            WorldId = "fixture-world",
+            GamePort = FreePort(),
+            ExecutablePath = fixture,
+            PublicListing = false,
+            Crossplay = false
+        };
         logProfile.WorldDirectory = logData.NewWorldDirectory(logProfile.Id);
         Directory.CreateDirectory(logProfile.WorldDirectory);
         File.WriteAllText(Path.Combine(logProfile.WorldDirectory, "synthetic-query-silent"),

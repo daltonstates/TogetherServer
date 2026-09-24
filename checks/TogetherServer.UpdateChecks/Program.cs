@@ -10,6 +10,8 @@ var fixture = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/T
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the fixture in Release first.", fixture);
 var passed = 0;
 var failed = 0;
+var publisherKey = new string('A', 64);
+var trustedSignature = new FakeAuthenticodeVerifier(_ => new(true, publisherKey, "test publisher"));
 
 async Task Check(string name, Func<Task> test)
 {
@@ -28,13 +30,13 @@ string Metadata(string tag, byte[] bytes, string? digest = null, string? url = n
             digest = "sha256:" + (digest ?? Hash(bytes)), browser_download_url = url ??
                 $"https://github.com/daltonstates/TogetherServer/releases/download/{tag}/{AppUpdater.AssetName}" } }
     });
-AppUpdater Updater(string name, HttpMessageHandler handler)
+AppUpdater Updater(string name, HttpMessageHandler handler, IAuthenticodeVerifier? verifier = null)
 {
     var directory = Path.Combine(root, name);
     Directory.CreateDirectory(directory);
     var installed = Path.Combine(directory, "TogetherServer.exe");
     File.WriteAllText(installed, "old executable");
-    return new AppUpdater(new HttpClient(handler), directory, installed, new Version(0, 1, 0));
+    return new AppUpdater(new HttpClient(handler), directory, installed, new Version(0, 1, 0), verifier ?? trustedSignature);
 }
 
 await Check("automatic checks use the startup loop's 30-minute cadence", () =>
@@ -49,6 +51,18 @@ await Check("no GitHub release is a normal state", async () =>
     var updater = Updater("no-release", new FakeHandler(_ => new(HttpStatusCode.NotFound)));
     Require((await updater.CheckAsync()).State == "NoRelease", "missing release was not distinguished from an update");
     Require(!(await updater.PrepareAsync()).Ok, "missing release was installable");
+});
+
+await Check("unsigned installed apps cannot use automatic updates", async () =>
+{
+    var handler = new FakeHandler(_ => throw new Exception("unsigned app contacted the release service"));
+    var updater = Updater("unsigned-installed", handler,
+        new FakeAuthenticodeVerifier(_ => new(false, null, "unsigned")));
+    var result = await updater.CheckAsync();
+    Require(result.State == "Unsupported", "unsigned installed app was not disabled");
+    Require(result.Message.Contains("valid Authenticode signature", StringComparison.Ordinal),
+        "unsigned installed app did not explain the signing requirement");
+    Require(handler.Requests.Count == 0, "unsigned installed app made a release request");
 });
 
 await Check("newer release downloads only exact asset and digest", async () =>
@@ -74,6 +88,19 @@ await Check("release tag must match the packaged EXE version", async () =>
         ? new(HttpStatusCode.OK) { Content = new StringContent(metadata) }
         : new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) }));
     Require((await updater.PrepareAsync()).Code == "InvalidDownload", "wrong EXE version was accepted");
+});
+
+await Check("candidate must use the installed publisher key", async () =>
+{
+    var bytes = File.ReadAllBytes(fixture);
+    var metadata = Metadata("v1.0.0", bytes);
+    var verifier = new FakeAuthenticodeVerifier(path => Path.GetFileName(path) == AppUpdater.AssetName
+        ? new(true, new string('B', 64), "different publisher")
+        : new(true, publisherKey, "installed publisher"));
+    var updater = Updater("wrong-publisher", new FakeHandler(request => request.RequestUri!.Host == "api.github.com"
+        ? new(HttpStatusCode.OK) { Content = new StringContent(metadata) }
+        : new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) }), verifier);
+    Require((await updater.PrepareAsync()).Code == "InvalidSignature", "different publisher key was accepted");
 });
 
 await Check("wrong digest rejects download and removes staging", async () =>
@@ -110,17 +137,66 @@ await Check("replacement preserves previous EXE and rejects changed payload", ()
     File.WriteAllText(installed, "previous version");
     File.WriteAllText(payload, "new version");
     var digest = Hash(File.ReadAllBytes(payload));
-    UpdateInstaller.ReplaceVerified(installed, payload, digest);
+    UpdateInstaller.ReplaceVerified(installed, payload, digest, publisherKey, trustedSignature);
     Require(File.ReadAllText(installed) == "new version", "new EXE was not installed");
     Require(File.ReadAllText(installed + ".previous") == "previous version", "previous EXE was not backed up");
     File.WriteAllText(payload, "changed after verification");
-    try { UpdateInstaller.ReplaceVerified(installed, payload, digest); throw new Exception("changed payload installed"); }
+    try { UpdateInstaller.ReplaceVerified(installed, payload, digest, publisherKey, trustedSignature); throw new Exception("changed payload installed"); }
     catch (CryptographicException) { }
     Require(File.ReadAllText(installed) == "new version", "failed update changed the installed EXE");
     File.WriteAllText(payload, "third version");
-    UpdateInstaller.ReplaceVerified(installed, payload, Hash(File.ReadAllBytes(payload)));
+    UpdateInstaller.ReplaceVerified(installed, payload, Hash(File.ReadAllBytes(payload)), publisherKey, trustedSignature);
     Require(File.ReadAllText(installed) == "third version", "second update did not replace the EXE");
     Require(File.ReadAllText(installed + ".previous") == "new version", "second update did not keep the immediate previous EXE");
+    return Task.CompletedTask;
+});
+
+await Check("replacement rejects a hash-valid different publisher", () =>
+{
+    var directory = Path.Combine(root, "replace-publisher");
+    Directory.CreateDirectory(directory);
+    var installed = Path.Combine(directory, "TogetherServer.exe");
+    var payload = Path.Combine(directory, AppUpdater.AssetName);
+    File.WriteAllText(installed, "trusted old version");
+    File.WriteAllText(payload, "different publisher version");
+    var verifier = new FakeAuthenticodeVerifier(path => File.ReadAllText(path).Contains("different", StringComparison.Ordinal)
+        ? new(true, new string('B', 64), "different publisher")
+        : new(true, publisherKey, "installed publisher"));
+    try
+    {
+        UpdateInstaller.ReplaceVerified(installed, payload, Hash(File.ReadAllBytes(payload)), publisherKey, verifier);
+        throw new Exception("different publisher installed");
+    }
+    catch (CryptographicException) { }
+    Require(File.ReadAllText(installed) == "trusted old version", "publisher rejection changed installed EXE");
+    return Task.CompletedTask;
+});
+
+await Check("post-replace verification restores the verified previous EXE", () =>
+{
+    var directory = Path.Combine(root, "replace-rollback");
+    Directory.CreateDirectory(directory);
+    var installed = Path.Combine(directory, "TogetherServer.exe");
+    var payload = Path.Combine(directory, AppUpdater.AssetName);
+    File.WriteAllText(installed, "verified previous version");
+    File.WriteAllText(payload, "candidate version");
+    var installedVerifications = 0;
+    var verifier = new FakeAuthenticodeVerifier(path =>
+    {
+        if (Path.GetFullPath(path).Equals(Path.GetFullPath(installed), StringComparison.OrdinalIgnoreCase) &&
+            ++installedVerifications == 2)
+            return new(false, null, "post-replace verification failed");
+        return new(true, publisherKey, "test publisher");
+    });
+    try
+    {
+        UpdateInstaller.ReplaceVerified(installed, payload, Hash(File.ReadAllBytes(payload)), publisherKey, verifier);
+        throw new Exception("post-replace signature failure was accepted");
+    }
+    catch (CryptographicException) { }
+    Require(File.ReadAllText(installed) == "verified previous version", "verified previous EXE was not restored");
+    Require(Directory.GetFiles(directory, "*.rejected-*").Length == 0, "rejected replacement was left executable");
+    Require(installedVerifications >= 3, "restored EXE was not verified before returning");
     return Task.CompletedTask;
 });
 
@@ -135,4 +211,9 @@ sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> reply) : 
         Requests.Add(request.RequestUri!);
         return Task.FromResult(reply(request));
     }
+}
+
+sealed class FakeAuthenticodeVerifier(Func<string, AuthenticodeVerification> verify) : IAuthenticodeVerifier
+{
+    public AuthenticodeVerification Verify(string path) => verify(path);
 }

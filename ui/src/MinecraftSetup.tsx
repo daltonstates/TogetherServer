@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { Profile } from './GameProfile'
 import { Button, Input } from './Controls'
 
@@ -74,7 +75,7 @@ function InstallationChoice({ item, busy, selected, onSelect }: {
 }) {
   return <div className="choice">
     <span>{item.artifactPath}<small>{item.source} · {item.note}</small></span>
-    <Button type="button" className="secondary" disabled={busy || selected} onClick={() => onSelect(item)}>
+    <Button type="button" aria-pressed={selected} className="secondary" disabled={busy || selected} onClick={() => onSelect(item)}>
       {selected ? 'Selected' : 'Use this server'}
     </Button>
   </div>
@@ -83,16 +84,18 @@ function InstallationChoice({ item, busy, selected, onSelect }: {
 export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discovery, onSelect, onScan, onInstall,
   acceptedTerms, onTermsChange, installBusy, mode }: MinecraftServerSetupProps) {
   const edition = profile.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'
+  const termsId = useId()
 
   if (mode === 'install') {
     return <div className="settings-grid">
       <div className="wide minecraft-install">
         <strong>Install a new official {edition} server</strong>
         <p className="helper-text">TogetherServer installs the latest official server in a new private folder. {profile.kind === 'MinecraftJava' ? 'It also installs the required Java runtime. ' : ''}This may take a few minutes. Existing folders and worlds are left alone.</p>
-        <label className="minecraft-terms">
-          <Input type="checkbox" checked={acceptedTerms} disabled={busy || installBusy} onChange={event => onTermsChange(event.target.checked)} />
-          <span>I have read and accept the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer">Minecraft EULA</a> and <a href="https://www.microsoft.com/en-us/privacy/privacystatement" target="_blank" rel="noreferrer">Microsoft Privacy Statement</a> for this download.</span>
-        </label>
+        <div className="minecraft-terms">
+          <Input id={termsId} type="checkbox" checked={acceptedTerms} disabled={busy || installBusy} onChange={event => onTermsChange(event.target.checked)} />
+          <span><label htmlFor={termsId}>I have read and accept the terms for this download.</label>
+            <small>Review the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer">Minecraft EULA</a> and <a href="https://www.microsoft.com/en-us/privacy/privacystatement" target="_blank" rel="noreferrer">Microsoft Privacy Statement</a>.</small></span>
+        </div>
         <div className="setup-tools">
           <Button type="button" disabled={busy || installBusy || !acceptedTerms} onClick={onInstall}>
             {installBusy ? 'Installing…' : `Install ${edition} server`}

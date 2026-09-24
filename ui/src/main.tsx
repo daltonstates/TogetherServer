@@ -1,72 +1,36 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Button, Input, Select, TextArea } from './Controls'
+import { ApiError, changeJson, errorMessage, getJson } from './api'
+import { AppErrorBoundary } from './AppErrorBoundary'
+import { Button, Input, Select } from './Controls'
 import { ConnectionDetails } from './ConnectionDetails'
+import { DataRecoveryPanel } from './DataRecoveryPanel'
+import {
+  HostSetupDialog
+} from './features/setup/HostSetupDialog'
+import { useHostSetup } from './features/setup/useHostSetup'
+import {
+  parseActionResult, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
+  parseDataRecoveryView, parseDesktopPreferenceResult, parseDesktopPreferences,
+  parseFriendSnapshot, parseGameEndpointResult, parseInternetRouteCheck, parseInviteResult,
+  parseInviteState, parsePasswordResult, parsePortDiagnostics, parsePublicIpDetection, parseRouteDiscovery,
+  parseSnapshot, parseUpdateView, parseWorldBackupList,
+  type ActionResult, type BasicResult, type CompanionInfo,
+  type DataRecoveryView, type DesktopPreferences, type Device, type FriendIssue,
+  type FriendSnapshot, type GameEndpointResult, type PublicIpDetection, type PublicProfile, type RouteDiscovery, type Settings,
+  type Snapshot, type UpdateView, type WorldBackupList
+} from './contracts'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
-import { gameLabel, profileGameLabel, type CustomPort, type Profile } from './GameProfile'
-import { MinecraftWorldSetup, MinecraftServerSetup, minecraftSetupIssues, type MinecraftDiscovery, type MinecraftInstallation } from './MinecraftSetup'
+import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
+import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import './theme.css'
 import './style.css'
 import './companion.css'
 
-type Settings = {
-  maxConcurrentServers: number
-  idleMinutes: number
-  friendTimerExtensionMinutes: number
-  friendTimerExtensionMaximumMinutes: number
-  autoShutdownEnabled: boolean
-  remoteControlsEnabled: boolean
-  companionListeningEnabled: boolean
-  companionBindAddress: string
-  companionEndpoint: string
-  companionPort: number
-  connectionRoute: { mode: 'DirectInternet' | 'PrivateMesh' | 'AdvancedAddress'; address: string }
-  publicGameIp: string
-  publicGameIpCheckedUtc: string | null
-  profiles: Profile[]
-}
-type Run = { profileId: string; state: string; detail: string; processId: number | null; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; hostAddedTime: boolean; playerNames: string[] | null; playerCountTrusted: boolean; friendAddedMinutes: number }
-type CustomCertificationState = { profileId: string; stage: string; message: string; inProgress: boolean; certified: boolean; certifiedUtc: string | null; onlinePlayers: number | null; blockReason: string | null }
-type CrashRecoveryState = { profileId: string; cycleId: string; state: 'Pending' | 'Starting' | 'Recovered' | 'Suspended'; attempts: number; crashDetectedUtc: string; nextAttemptUtc: string | null; readinessDeadlineUtc: string | null; recoveredUtc: string | null; lastFailure: string | null }
-type WorldBackupStatus = { profileId: string; lastSuccessfulUtc: string | null; lastFailureUtc: string | null; lastFailure: string | null; completedCount: number }
-type WorldBackupRecord = { id: string; profileId: string; kind: string; worldId: string; backupKind: 'Rolling' | 'PreRestore'; createdUtc: string; sizeBytes: number; fileCount: number }
-type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
-type ActivityEvent = { id: string; occurredUtc: string; category: string; action: string; message: string; severity: 'Info' | 'Important' | 'Warning'; profileId: string | null; deviceId: string | null; visibility: string }
-type HostSnapshot = { mode: 'Host'; evidence: string; settings: Settings; runs: Run[]; passwordConfigured: Record<string, boolean>; managedWorldsRoot: string; customCertifications?: Record<string, CustomCertificationState>; crashRecovery?: Record<string, CrashRecoveryState>; backups?: Record<string, WorldBackupStatus>; activity?: ActivityEvent[] }
-type RemoteOperation = { id: string; action: string; state: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Interrupted'; ok: boolean | null; code: string; message: string; requestedUtc: string; completedUtc: string | null; portConflicts?: PortConflict[] | null }
-type PublicProfile = { id: string; name: string; state: string; joinAddress: string | null; canStopNow: boolean; stopReason: string | null; kind: string; onlinePlayers: number | null; maxPlayers: number | null; autoShutdownAtUtc: string | null; autoShutdownReason: string | null; canStart: boolean; canStop: boolean; canRestartNow: boolean; restartReason: string | null; operation?: RemoteOperation | null; maintenanceEnabled: boolean; maintenanceMessage: string | null; canExtendTimer: boolean; timerExtensionMinutes: number; timerExtensionRemainingMinutes: number }
-type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean }
-type Device = { id: string; profileId: string; assignedProfileIds: string[]; name: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; revoked: boolean; paired: boolean; approvalPending: boolean; credentialExpiresUtc: string | null; lastHeartbeatUtc: string | null; serverPermissions: ServerPermission[] }
-type HostCertificateState = { hostId: string; activeFingerprint: string; activeExpiresUtc: string; nextFingerprint: string | null; nextExpiresUtc: string | null; previousFingerprint: string | null; previousAcceptedUntilUtc: string | null }
-type CompanionInfo = { listenerActive: boolean; listenerWarning: string | null; endpoint: string; fingerprint: string | null; certificates: HostCertificateState | null; route: { mode: string; address: string }; devices: Device[]; stopSafety: Record<string, { available: boolean; reason: string }> }
-type FriendSnapshot = { mode: 'Friend'; state: string; detail: string; endpoint: string; lastConnectedUtc: string | null; remoteControlsEnabled: boolean; canStart: boolean; canStop: boolean; profiles: PublicProfile[]; connectionId: string; connections: FriendSnapshot[] | null; connectionCode?: string | null; hostVersion?: string | null; friendVersion?: string; hostProtocolVersion?: number | null; protocolCompatible?: boolean; credentialExpiresUtc?: string | null; certificateExpiresUtc?: string | null; expiryWarning?: string | null; routeMode?: string; routeAddress?: string | null; hostId?: string; connectionName?: string | null; activity?: ActivityEvent[] }
-type Snapshot = HostSnapshot | FriendSnapshot
-type GamePort = { protocol: string; port: number; label: string; family: string }
-type PortConflict = { profileId: string; profileName: string; sharedPorts: GamePort[]; canReplace: boolean; blockReason: string | null }
-type BasicResult = { ok: boolean; code: string; message: string; portConflicts?: PortConflict[] | null; operationId?: string | null; operationState?: RemoteOperation['state'] | null }
-type ActionResult = BasicResult & { snapshot: HostSnapshot }
-type PublicIpDetection = BasicResult & { address: string | null; snapshot?: HostSnapshot }
-type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
-type ImportResult = BasicResult & { worldDirectory: string | null }
-type ServerBrowseResult = BasicResult & { executablePath?: string }
-type MinecraftBrowseResult = BasicResult & { path?: string }
-type MinecraftInstallResult = BasicResult & { installation?: MinecraftInstallation }
-type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
-type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string }
-type DesktopPreferences = { available: boolean; launchAtLogin: boolean; closeToTray: boolean; startupAvailable: boolean }
-type DesktopPreferenceResult = BasicResult & { preferences: DesktopPreferences }
-type FriendIssue = { code: string; message: string }
-type SetupStep = 'game' | 'world' | 'server' | 'review'
 type HostSettingsSection = 'access' | 'stop' | 'network' | 'advanced'
-type BrowseResult = BasicResult & { path?: string | null }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean }>
-type CustomScriptBundle = { start: string; status: string; stop: string }
-type CustomScriptResult = BasicResult & { scripts: CustomScriptBundle }
-type CustomCertificationResult = BasicResult & { snapshot: HostSnapshot; certification: CustomCertificationState }
-type RouteDiscovery = { privateMeshCandidates: { provider: string; interfaceName: string; address: string }[]; advancedCandidates: { provider: string; interfaceName: string; address: string }[] }
-type GameEndpointResult = { answered: boolean; code: string; message: string; checkedUtc: string; onlinePlayers: number | null; maxPlayers: number | null }
 
 function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
   const ref = useRef<HTMLInputElement | null>(null)
@@ -74,54 +38,6 @@ function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputE
     if (ref.current) ref.current.indeterminate = mixed
   }, [mixed])
   return <Input ref={ref} aria-checked={mixed ? 'mixed' : props.checked} {...props} />
-}
-
-type PlannedPort = { protocol: 'TCP' | 'UDP'; port: number; family: 'Any' | 'IPv4' | 'IPv6' }
-
-function plannedPorts(profile: Profile, basePort = profile.gamePort): PlannedPort[] {
-  if (profile.kind === 'MinecraftJava') return [{ protocol: 'TCP', port: basePort, family: 'Any' }]
-  if (profile.kind === 'MinecraftBedrock') return [{ protocol: 'UDP', port: basePort, family: 'IPv4' }]
-  if (profile.kind === 'Custom') return [
-    { protocol: profile.custom?.primaryProtocol ?? 'UDP', port: basePort, family: 'Any' },
-    ...(profile.custom?.additionalPorts ?? []).map(port => ({ protocol: port.protocol, port: port.port, family: port.family }))
-  ]
-  return [
-    { protocol: 'UDP', port: basePort, family: 'Any' },
-    { protocol: 'UDP', port: basePort + 1, family: 'Any' }
-  ]
-}
-
-function plannedPortOverlap(left: PlannedPort, right: PlannedPort) {
-  return left.protocol === right.protocol && left.port === right.port &&
-    (left.family === 'Any' || right.family === 'Any' || left.family === right.family)
-}
-
-function configuredPortWarning(profile: Profile, profiles: Profile[]) {
-  const requested = plannedPorts(profile)
-  const conflicts = profiles.filter(other => other.id !== profile.id &&
-    plannedPorts(other).some(owned => requested.some(port => plannedPortOverlap(owned, port))))
-  if (conflicts.length === 0) return null
-  const maximum = profile.kind === 'Valheim' || profile.kind === 'Fixture' ? 65534 : 65535
-  let suggestion: number | null = null
-  for (let candidate = Math.max(1024, profile.gamePort + 1); candidate <= maximum; candidate++) {
-    const candidatePorts = plannedPorts(profile, candidate)
-    if (profiles.every(other => other.id === profile.id ||
-      !plannedPorts(other).some(owned => candidatePorts.some(port => plannedPortOverlap(owned, port))))) {
-      suggestion = candidate
-      break
-    }
-  }
-  return { conflicts, suggestion }
-}
-
-function ConfiguredPortWarning({ profile, profiles }: { profile: Profile; profiles: Profile[] }) {
-  const warning = configuredPortWarning(profile, profiles)
-  if (!warning) return null
-  const ports = plannedPorts(profile).map(port => `${port.protocol} ${port.port}`).join(', ')
-  return <div className="configured-port-warning" role="status"><strong>Duplicate saved game port</strong>
-    <p>{ports} overlaps {warning.conflicts.map(conflict => conflict.name).join(', ')}. TogetherServer will not run both configurations at once.</p>
-    {warning.suggestion && <small>Try port {warning.suggestion}; it does not overlap another saved server. Windows availability is checked again only when Start is requested.</small>}
-  </div>
 }
 
 function FriendConnectionHelp({ code }: { code: string }) {
@@ -242,84 +158,16 @@ function hostAddress(endpoint: string): string {
   } catch { return '' }
 }
 
-const localHeaders = { 'Content-Type': 'application/json', 'X-TogetherServer-Local': '1' }
-const setupDraftKey = 'togetherserver-first-server-draft-v1'
-
-async function readSnapshot(): Promise<Snapshot> {
-  const response = await fetch('/api/local/snapshot', { cache: 'no-store' })
-  if (!response.ok) throw new Error(`Local app returned ${response.status}`)
-  return response.json()
+function readSnapshot(signal?: AbortSignal): Promise<Snapshot> {
+  return getJson('/api/local/snapshot', parseSnapshot, signal)
 }
 
-async function change<T extends BasicResult>(path: string, method: 'POST' | 'PUT', body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    headers: localHeaders,
-    body: body === undefined ? undefined : JSON.stringify(body)
-  })
-  if (!response.ok) throw new Error(`Local app returned ${response.status}`)
-  return response.json()
+function change(path: string, method: 'POST' | 'PUT', body?: unknown, signal?: AbortSignal): Promise<BasicResult> {
+  return changeJson(path, method, parseBasicResult, body, signal)
 }
 
-function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPassword: string,
-  customScripts: CustomScriptBundle | undefined, customScriptsSaved: boolean): string[] {
-  const issues: string[] = []
-  if (profile.kind === 'Valheim') {
-    if (!profile.serverName.trim()) issues.push('Name your world.')
-    if (profile.worldSource === 'Existing' && (!profile.worldId || !profile.worldDirectory))
-      issues.push('Choose an existing world to copy.')
-    if (profile.worldSource === 'New') {
-      if (!profile.worldId.trim()) issues.push('Name your new world.')
-      if (!profile.worldDirectory.trim()) issues.push('Choose where the new world will be saved.')
-    }
-    if (!profile.executablePath.trim()) issues.push('Select your installed Valheim Dedicated Server.')
-    if (!hasPassword && !enteredPassword) issues.push('Enter a game password.')
-    if (enteredPassword && (enteredPassword.length < 5 || enteredPassword.length > 64 || /[\x00-\x1f\x7f]/.test(enteredPassword)))
-      issues.push('Use a game password of 5 to 64 characters.')
-  } else if (profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') {
-    issues.push(...minecraftSetupIssues(profile))
-  } else if (profile.kind === 'Custom') {
-    if (!profile.custom?.gameName.trim()) issues.push('Enter the game name.')
-    if (!profile.name.trim()) issues.push('Name this server.')
-    if (!profile.worldId.trim()) issues.push('Enter a save/world key.')
-    if (!profile.worldDirectory.trim()) issues.push('Choose the game working and save directory.')
-    if (!customScriptsSaved && (!customScripts?.start.trim() || !customScripts?.status.trim() || !customScripts?.stop.trim()))
-      issues.push('Enter and save all three custom game scripts.')
-  } else {
-    if (!profile.name.trim()) issues.push('Enter a test profile name in step 1.')
-    if (!profile.worldId.trim()) issues.push('Enter a world ID in step 1.')
-    if (!profile.worldDirectory.trim()) issues.push('Choose a disposable directory in step 1.')
-    if (!profile.executablePath.trim()) issues.push('Select the fixture executable in step 2.')
-  }
-  return issues
-}
-
-function getStepIssues(step: SetupStep, profile: Profile, hasPassword: boolean, enteredPassword: string,
-  customScripts: CustomScriptBundle | undefined, customScriptsSaved: boolean): string[] {
-  if (step === 'game') return []
-  if (step === 'review') return getSetupIssues(profile, hasPassword, enteredPassword, customScripts, customScriptsSaved)
-  if (step === 'world') {
-    if (profile.kind === 'Valheim') {
-      if (profile.worldSource === 'Existing' && (!profile.worldId || !profile.worldDirectory)) return ['Choose a world to copy.']
-      if (profile.worldSource === 'New' && !profile.worldId.trim()) return ['Name your new world.']
-      if (!hasPassword && !enteredPassword) return ['Enter the password friends will use in Valheim.']
-      if (enteredPassword && (enteredPassword.length < 5 || enteredPassword.length > 64 || /[\x00-\x1f\x7f]/.test(enteredPassword)))
-        return ['Use a game password of 5 to 64 characters.']
-    }
-    if ((profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && !profile.name.trim())
-      return ['Name this server.']
-    if (profile.kind === 'Custom' && (!profile.name.trim() || !profile.worldId.trim() || !profile.worldDirectory.trim()))
-      return ['Name the server, enter a save/world key, and choose its working directory.']
-    return []
-  }
-  if (profile.kind === 'Valheim' && !profile.executablePath.trim()) return ['Choose the installed Valheim Dedicated Server.']
-  if ((profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && !profile.executablePath.trim())
-    return ['Choose or install the game server.']
-  if (profile.kind === 'Custom' && !customScriptsSaved &&
-      (!customScripts?.start.trim() || !customScripts?.status.trim() || !customScripts?.stop.trim()))
-    return ['Enter Start, Status/players, and Stop scripts.']
-  if (profile.kind === 'Fixture' && !profile.executablePath.trim()) return ['Choose the fixture executable.']
-  return []
+function changeAction(path: string, method: 'POST' | 'PUT', body?: unknown, signal?: AbortSignal): Promise<ActionResult> {
+  return changeJson(path, method, parseActionResult, body, signal)
 }
 
 function useModalDialog(open: boolean) {
@@ -340,8 +188,6 @@ function useModalDialog(open: boolean) {
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const [draft, setDraft] = useState<Settings | null>(null)
-  const [dirty, setDirty] = useState(false)
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
   const [loadError, setLoadError] = useState('')
@@ -376,39 +222,69 @@ function App() {
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
   const [showPairing, setShowPairing] = useState(false)
   const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
-  const [passwords, setPasswords] = useState<Record<string, string>>({})
-  const [customScripts, setCustomScripts] = useState<Record<string, CustomScriptBundle>>({})
-  const [customScriptsSaved, setCustomScriptsSaved] = useState<Record<string, boolean>>({})
-  const [discovery, setDiscovery] = useState<Discovery | null>(null)
-  const [minecraftDiscovery, setMinecraftDiscovery] = useState<MinecraftDiscovery | null>(null)
-  const [minecraftTerms, setMinecraftTerms] = useState<Record<string, boolean>>({})
-  const [sourceRoots, setSourceRoots] = useState<Record<string, string>>({})
-  const [showSetup, setShowSetup] = useState(false)
+  const [dataRecovery, setDataRecovery] = useState<DataRecoveryView | null>(null)
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false)
   const [showHostSettings, setShowHostSettings] = useState(false)
   const [serverAccessDeviceId, setServerAccessDeviceId] = useState('')
   const [serverAccessDraft, setServerAccessDraft] = useState<string[]>([])
   const [serverPermissionDraft, setServerPermissionDraft] = useState<PermissionDraft>({})
   const [serverAccessSearch, setServerAccessSearch] = useState('')
-  const [setupStep, setSetupStep] = useState<SetupStep>('game')
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('access')
-  const [minecraftSetupMode, setMinecraftSetupMode] = useState<Record<string, 'existing' | 'install'>>({})
-  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({})
   const [revealedConnections, setRevealedConnections] = useState<Record<string, boolean>>({})
   const [revealedGamePasswords, setRevealedGamePasswords] = useState<Record<string, string>>({})
   const [connectionActivity, setConnectionActivity] = useState<ConnectionActivity>({})
-  const [activeProfileId, setActiveProfileId] = useState('')
-  const initialDraftSet = useRef(false)
   const inviteLoad = useRef(0)
-  const dirtyRef = useRef(false)
+  const snapshotEpochRef = useRef(0)
   const liveConnectionKeysRef = useRef<Set<string>>(new Set())
   const connectionRevealRequestRef = useRef<Record<string, number>>({})
-  const setupRef = useModalDialog(showSetup)
   const hostSettingsRef = useModalDialog(showHostSettings)
   const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
+
+  const applySnapshot = useCallback((next: Snapshot) => {
+    snapshotEpochRef.current += 1
+    setSnapshot(next)
+  }, [])
+  const setup = useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot,
+    dataRecoveryBlocked: !!dataRecovery?.lifecycleBlocked })
+  const {
+    draft, dirty, passwords, customScripts, customScriptsSaved, customScriptsLoading, discovery,
+    minecraftDiscovery, minecraftTerms, sourceRoots, showSetup, setupStep, minecraftSetupMode,
+    showPasswords, editedProfile, setupIssues, stepIssues, customScriptsChanged, setupRef,
+    sensitiveDraft, edit, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
+    synchronizeHostSnapshot, resetForMode, saveSetup, updateProfile, editCustomScripts, updateCustomPort,
+    addCustomPort, removeCustomPort, browseCustomDirectory, applyMinecraftInstallation, scanMinecraft,
+    installMinecraft, changeGameKind, addProfile, removeProfile, cancelSetup, finishSetupLater, openSetup,
+    continueSetup, scanValheim, importWorld, browseServer, browseMinecraft, browseWorld, setSetupStep,
+    setSourceRoot, setPassword, setShowPassword, setMinecraftSetupModeFor, setMinecraftTermsFor
+  } = setup
+  const currentMode = snapshot?.mode
+  const currentFriendEndpoint = snapshot?.mode === 'Friend' ? snapshot.endpoint : ''
+  const currentFriendConnectionId = snapshot?.mode === 'Friend' ? snapshot.connectionId : ''
+  const currentFriendConnectionName = snapshot?.mode === 'Friend' ? snapshot.connectionName : null
+  const recoverySignature = dataRecovery ? JSON.stringify({ lifecycleBlocked: dataRecovery.lifecycleBlocked,
+    notices: dataRecovery.notices.map(item => [item.stateFile, item.quarantinedFile, item.detectedUtc]) }) : ''
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => setRecoveryConfirmed(false), [recoverySignature])
+
+  useEffect(() => {
+    const clearRevealedValues = () => {
+      for (const key of Object.keys(connectionRevealRequestRef.current))
+        connectionRevealRequestRef.current[key] = (connectionRevealRequestRef.current[key] ?? 0) + 1
+      setRevealedConnections({})
+      setRevealedGamePasswords({})
+    }
+    const handleVisibilityChange = () => { if (document.hidden) clearRevealedValues() }
+    window.addEventListener('blur', clearRevealedValues)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('blur', clearRevealedValues)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [])
 
   useEffect(() => {
@@ -421,53 +297,42 @@ function App() {
   }, [latestActivityId])
 
   useEffect(() => {
-    let alive = true
-    void fetch('/api/local/desktop/preferences', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() as Promise<DesktopPreferences> : null)
-      .then(result => { if (alive && result) setDesktopPreferences(result) })
+    const controller = new AbortController()
+    void getJson('/api/local/desktop/preferences', parseDesktopPreferences, controller.signal)
+      .then(setDesktopPreferences)
       .catch(() => { /* The server and Friend controls remain usable. */ })
-    return () => { alive = false }
+    return () => controller.abort()
   }, [])
 
   const saveDesktopPreference = async (preference: { launchAtLogin: boolean } | { closeToTray: boolean }) => {
     setDesktopBusy(true)
     try {
-      const result = await change<DesktopPreferenceResult>('/api/local/desktop/preferences', 'PUT', preference)
+      const result = await changeJson('/api/local/desktop/preferences', 'PUT', parseDesktopPreferenceResult, preference)
       setDesktopPreferences(result.preferences)
       setNotice({ good: result.ok, text: result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setDesktopBusy(false) }
   }
 
   const quitApp = async () => {
     try {
-      const result = await change<BasicResult>('/api/local/quit', 'POST')
+      const result = await change('/api/local/quit', 'POST')
       if (!result.ok) setNotice({ good: false, text: result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
 
-  useEffect(() => {
-    let alive = true
-    const check = async () => {
-      try {
-        const response = await fetch('/api/local/update', { cache: 'no-store' })
-        if (response.ok && alive) setUpdate(await response.json())
-      } catch { /* An update check must not interrupt hosting or joining. */ }
-    }
-    void check()
-    const timer = window.setInterval(() => void check(), 30 * 60 * 1000)
-    return () => { alive = false; window.clearInterval(timer) }
-  }, [])
+  useSingleFlightPolling(async signal => {
+    try { setUpdate(await getJson('/api/local/update', parseUpdateView, signal)) }
+    catch { /* An update check must not interrupt hosting or joining. */ }
+  }, 30 * 60 * 1000)
 
   const checkUpdate = async () => {
     setUpdateBusy(true)
     try {
-      const response = await fetch('/api/local/update/check', { method: 'POST', headers: localHeaders })
-      if (!response.ok) throw new Error(`Update check returned ${response.status}`)
-      const result: UpdateView = await response.json()
+      const result = await changeJson('/api/local/update/check', 'POST', parseUpdateView)
       setUpdate(result)
       if (result.state !== 'Available') setNotice({ good: result.state === 'Current' || result.state === 'NoRelease', text: result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setUpdateBusy(false) }
   }
 
@@ -475,114 +340,55 @@ function App() {
     setUpdateBusy(true)
     setNotice(null)
     try {
-      const result = await change<BasicResult>('/api/local/update/install', 'POST')
+      const result = await change('/api/local/update/install', 'POST')
       setNotice({ good: result.ok, text: result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setUpdateBusy(false) }
   }
 
-  useEffect(() => {
-    let alive = true
-    const refresh = async () => {
-      try {
-        const next = await readSnapshot()
-        if (!alive) return
-        setSnapshot(next)
-        setLoadError('')
-        if (next.mode === 'Host') {
-          if (!initialDraftSet.current) {
-            initialDraftSet.current = true
-            let restored: Settings | null = null
-            if (next.settings.profiles.length === 0) try {
-              const saved = window.localStorage.getItem(setupDraftKey)
-              if (saved) restored = JSON.parse(saved) as Settings
-            } catch { window.localStorage.removeItem(setupDraftKey) }
-            if (restored?.profiles?.length) {
-              setDraft(restored)
-              setActiveProfileId(restored.profiles[0].id)
-              dirtyRef.current = true
-              setDirty(true)
-            } else setDraft(next.settings)
-          } else if (!dirtyRef.current) setDraft(next.settings)
-          const response = await fetch('/api/local/companion', { cache: 'no-store' })
-          if (response.ok && alive) {
-            const current: CompanionInfo = await response.json()
-            setCompanion(current)
-            setDeviceNames(names => {
-              const next = { ...names }
-              for (const device of current.devices) if (next[device.id] === undefined) next[device.id] = device.name
-              return next
-            })
-          }
-          const ports = await fetch('/api/local/network/ports', { cache: 'no-store' })
-          if (ports.ok && alive) setPortDiagnostics(await ports.json())
-        }
-      } catch (error) {
-        if (alive) setLoadError(String(error))
-      }
+  useSingleFlightPolling(async signal => {
+    const startedEpoch = snapshotEpochRef.current
+    const [next, recovery] = await Promise.all([
+      readSnapshot(signal),
+      getJson('/api/local/data-recovery', parseDataRecoveryView, signal)
+    ])
+    const hostDetails = next.mode === 'Host'
+      ? await Promise.all([
+        getJson('/api/local/companion', parseCompanionInfo, signal),
+        getJson('/api/local/network/ports', parsePortDiagnostics, signal)
+      ])
+      : null
+    if (signal.aborted || snapshotEpochRef.current !== startedEpoch) return
+
+    setSnapshot(next)
+    setDataRecovery(recovery)
+    setLoadError('')
+    if (next.mode !== 'Host') return
+
+    synchronizeHostSnapshot(next)
+
+    if (hostDetails) {
+      const [current, ports] = hostDetails
+      setCompanion(current)
+      setPortDiagnostics(ports)
+      setDeviceNames(names => {
+        const updated = { ...names }
+        for (const device of current.devices) if (updated[device.id] === undefined) updated[device.id] = device.name
+        return updated
+      })
     }
-    void refresh()
-    const timer = window.setInterval(refresh, 3000)
-    return () => { alive = false; window.clearInterval(timer) }
-  }, [])
+  }, 3000, error => setLoadError(errorMessage(error)))
 
   useEffect(() => {
-    if (snapshot?.mode !== 'Host' || !showSetup || !draft || !discovery) return
-    const serverPath = discovery.installations.length === 1 ? discovery.installations[0].executablePath : ''
-    const profiles = draft.profiles.map(profile => profile.kind === 'Valheim' && !profile.executablePath && serverPath
-      ? { ...profile, executablePath: serverPath } : profile)
-    if (profiles.some((profile, index) => profile !== draft.profiles[index])) {
-      setDraft({ ...draft, profiles })
-      dirtyRef.current = true
-      setDirty(true)
-    }
-  }, [snapshot?.mode, showSetup, discovery, draft])
+    if (currentFriendEndpoint)
+      setFriendHostAddress(current => current || hostAddress(currentFriendEndpoint))
+  }, [currentFriendEndpoint])
 
   useEffect(() => {
-    if (snapshot?.mode !== 'Host' || !draft?.profiles.some(profile => profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') || minecraftDiscovery) return
-    let alive = true
-    void fetch('/api/local/minecraft/discover', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() as Promise<MinecraftDiscovery> : null)
-      .then(result => { if (alive && result) setMinecraftDiscovery(result) })
-      .catch(() => { /* Manual browsing and installation remain available. */ })
-    return () => { alive = false }
-  }, [snapshot?.mode, draft?.profiles, minecraftDiscovery])
+    if (currentMode === 'Friend')
+      setFriendConnectionName(currentFriendConnectionName ?? hostAddress(currentFriendEndpoint))
+  }, [currentMode, currentFriendConnectionId, currentFriendConnectionName, currentFriendEndpoint])
 
-  useEffect(() => {
-    if (snapshot?.mode !== 'Host' || !showSetup || !draft || !minecraftDiscovery) return
-    const profiles = draft.profiles.map(profile => {
-      if (profile.kind !== 'MinecraftJava' && profile.kind !== 'MinecraftBedrock') return profile
-      if (profile.worldDirectory || profile.minecraft?.serverJarPath || profile.executablePath) return profile
-      const found = minecraftDiscovery.installations.filter(item => item.kind === profile.kind)
-      return found.length === 1 ? minecraftProfile(profile, found[0]) : profile
-    })
-    if (profiles.some((profile, index) => profile !== draft.profiles[index])) {
-      setDraft({ ...draft, profiles })
-      dirtyRef.current = true
-      setDirty(true)
-    }
-  }, [snapshot?.mode, showSetup, draft, minecraftDiscovery])
-
-  useEffect(() => {
-    if (snapshot?.mode === 'Friend' && snapshot.endpoint && !friendHostAddress)
-      setFriendHostAddress(hostAddress(snapshot.endpoint))
-  }, [snapshot?.mode, snapshot?.mode === 'Friend' ? snapshot.endpoint : ''])
-
-  useEffect(() => {
-    if (snapshot?.mode === 'Friend') setFriendConnectionName(snapshot.connectionName ?? hostAddress(snapshot.endpoint))
-  }, [snapshot?.mode, snapshot?.mode === 'Friend' ? snapshot.connectionId : '', snapshot?.mode === 'Friend' ? snapshot.connectionName : ''])
-
-  useEffect(() => {
-    if (snapshot?.mode !== 'Host' || snapshot.settings.profiles.length !== 0 || !dirty || !draft) return
-    try { window.localStorage.setItem(setupDraftKey, JSON.stringify(draft)) }
-    catch { /* Setup remains usable even when browser storage is unavailable. */ }
-  }, [snapshot?.mode, snapshot?.mode === 'Host' ? snapshot.settings.profiles.length : -1, dirty, draft])
-
-  const edit = (next: Settings) => {
-    setDraft(next)
-    dirtyRef.current = true
-    setDirty(true)
-  }
   const copyText = async (value: string, label: string, fallback = 'Select and copy it instead.') => {
     try {
       await navigator.clipboard.writeText(value)
@@ -609,9 +415,8 @@ function App() {
   const revealConnectionDetails = (key: string) =>
     setRevealedConnections(current => ({ ...current, [key]: true }))
   const readGamePassword = async (profile: Profile) => {
-    const response = await fetch(`/api/local/profiles/${profile.id}/game-password/reveal`, { method: 'POST', headers: localHeaders })
-    const result: BasicResult & { password?: string } = await response.json()
-    if (!response.ok || !result.ok || !result.password)
+    const result = await changeJson(`/api/local/profiles/${profile.id}/game-password/reveal`, 'POST', parsePasswordResult)
+    if (!result.ok || !result.password)
       throw new Error(result.message ?? 'Could not read the saved game password.')
     return result.password
   }
@@ -628,7 +433,7 @@ function App() {
     try {
       const password = await readGamePassword(profile)
       await copyText(password, 'Game password', 'Show the password, then select and copy it instead.')
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setConnectionBusy(key, null) }
   }
   const revealGamePassword = async (profile: Profile, key: string) => {
@@ -641,7 +446,7 @@ function App() {
         document.hidden || !document.hasFocus()) return
       setRevealedGamePasswords(current => ({ ...current, [key]: password }))
       revealConnectionDetails(key)
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setConnectionBusy(key, null) }
   }
   const copyConnectionValue = async (key: string, value: string, label: string) => {
@@ -649,36 +454,37 @@ function App() {
     try { await copyText(value, label, 'Show the value, then select and copy it instead.') }
     finally { setConnectionBusy(key, null) }
   }
-  const detectPublicIp = async () => {
+  const detectPublicIp = useCallback(async () => {
     setDetectingPublicIp(true)
     try {
-      const result = await change<PublicIpDetection>('/api/local/network/detect-public-ip', 'POST')
+      const result = await changeJson('/api/local/network/detect-public-ip', 'POST', parsePublicIpDetection)
       setPublicIpDetection(result)
       if (result.ok && result.address && result.snapshot) {
-        setSnapshot(current => current?.mode === 'Host' ? result.snapshot! : current)
-        setDraft(current => current ? { ...current, publicGameIp: result.address!,
-          publicGameIpCheckedUtc: result.snapshot!.settings.publicGameIpCheckedUtc } : current)
+        applySnapshot(result.snapshot)
+        syncDetectedPublicIp(result.address, result.snapshot.settings)
       }
     } catch {
       setPublicIpDetection({ ok: false, code: 'PublicIpUnavailable', address: null,
         message: 'Could not check the public IPv4 address. Check this PC’s Internet connection and retry.' })
     } finally { setDetectingPublicIp(false) }
-  }
+  }, [applySnapshot, syncDetectedPublicIp])
   useEffect(() => {
-    if (snapshot?.mode !== 'Host') return
+    if (currentMode !== 'Host') return
     void detectPublicIp()
     const timer = window.setInterval(() => void detectPublicIp(), 15 * 60 * 1000)
     return () => window.clearInterval(timer)
-  }, [snapshot?.mode])
+  }, [currentMode, detectPublicIp])
   const checkPorts = async (announce = false) => {
     if (announce) setCheckingPorts(true)
+    const requestEpoch = ++snapshotEpochRef.current
     try {
-      const response = await fetch('/api/local/network/ports', { cache: 'no-store' })
-      if (!response.ok) throw new Error(`Connection check returned ${response.status}`)
-      setPortDiagnostics(await response.json())
+      const result = await getJson('/api/local/network/ports', parsePortDiagnostics)
+      if (snapshotEpochRef.current !== requestEpoch) return
+      snapshotEpochRef.current += 1
+      setPortDiagnostics(result)
       if (announce) setNotice({ good: true, text: 'Connection details updated.' })
     } catch (error) {
-      if (announce) setNotice({ good: false, text: `Could not refresh connection details: ${String(error)}` })
+      if (announce) setNotice({ good: false, text: `Could not refresh connection details: ${errorMessage(error)}` })
       /* The regular refresh will retry without replacing the current evidence. */
     } finally {
       if (announce) setCheckingPorts(false)
@@ -687,13 +493,18 @@ function App() {
   const checkInternetRoute = async () => {
     setCheckingInternetRoute(true)
     try {
-      const response = await fetch('/api/local/network/test-friend-route', { method: 'POST', headers: localHeaders })
-      const result: InternetRouteCheck = await response.json()
-      setInternetRouteCheck(result)
+      setInternetRouteCheck(await changeJson('/api/local/network/test-friend-route', 'POST', parseInternetRouteCheck))
     } catch (error) {
-      setInternetRouteCheck({ state: 'Unavailable', detail: `Internet TCP test failed: ${String(error)}`,
+      setInternetRouteCheck({ state: 'Unavailable', detail: `Internet TCP test failed: ${errorMessage(error)}`,
         port: draft?.companionPort ?? 0, checkedUtc: new Date().toISOString() })
     } finally { setCheckingInternetRoute(false) }
+  }
+  const refreshCompanion = async () => {
+    const requestEpoch = ++snapshotEpochRef.current
+    const result = await getJson('/api/local/companion', parseCompanionInfo)
+    if (snapshotEpochRef.current !== requestEpoch) return
+    snapshotEpochRef.current += 1
+    setCompanion(result)
   }
   const issueInvite = async (profileId: string, refresh = false, preserveActivePolicy = false): Promise<string | null> => {
     if (refresh && !window.confirm('Refresh this server code? Every Friend PC that connected with this code will lose its credential and need to connect again. Any extra servers assigned to those credentials will also be removed.')) return null
@@ -708,10 +519,7 @@ function App() {
         setNotice({ good: false, text: 'Use 5 to 1440 minutes and a limit of 1 to 25 PCs.' })
         return null
       }
-      const currentResponse = await fetch(`/api/local/servers/${profileId}/invite/current`, { method: 'POST', headers: localHeaders })
-      if (!currentResponse.ok) throw new Error('Could not read this server’s current pairing state.')
-      const current: { exists: boolean; open: boolean; canStart: boolean; durationMinutes: number; deviceLimit: number; requireApproval: boolean } = await currentResponse.json()
-      if (typeof current.canStart !== 'boolean') throw new Error('Could not confirm this invite’s Start permission.')
+      const current = await changeJson(`/api/local/servers/${profileId}/invite/current`, 'POST', parseInviteState)
       const canStart = current.canStart
       if (preserveActivePolicy && current.exists && current.open) {
         durationMinutes = current.durationMinutes
@@ -721,10 +529,8 @@ function App() {
         setPairingDeviceLimit(String(deviceLimit))
         setPairingRequireApproval(requireApproval)
       }
-      const response = await fetch(`/api/local/servers/${profileId}/invite`, { method: 'POST', headers: localHeaders,
-        body: JSON.stringify({ refresh, canStart, enableConnections: true, durationMinutes, deviceLimit,
-          requireApproval }) })
-      const result: { ok: boolean; code: string; message: string; password?: string; expiresUtc?: string; listenerActive?: boolean; listenerWarning?: string } = await response.json()
+      const result = await changeJson(`/api/local/servers/${profileId}/invite`, 'POST', parseInviteResult,
+        { refresh, canStart, enableConnections: true, durationMinutes, deviceLimit, requireApproval })
       const listenerWarning = result.ok && result.listenerActive !== true
         ? result.listenerWarning || `The HTTPS listener on TCP ${draft?.companionPort ?? 'the configured port'} did not start. Check Connection help before sharing this code.`
         : null
@@ -733,93 +539,81 @@ function App() {
       if (result.ok && result.password) {
         setInvitation(result.password)
         setPairingExpiresUtc(result.expiresUtc ?? new Date(Date.now() + durationMinutes * 60_000).toISOString())
-        const latest = await fetch('/api/local/companion')
-        if (latest.ok) setCompanion(await latest.json())
+        await refreshCompanion()
         const host = await readSnapshot()
         if (host.mode === 'Host') {
-          setSnapshot(host)
-          if (!dirty) setDraft(host.settings)
+          applySnapshot(host)
+          setDraftIfClean(host.settings)
         }
         await checkPorts()
         return listenerWarning ? null : result.password
       }
       return null
-    } catch (error) { setInviteListenerWarning(String(error)); setNotice({ good: false, text: String(error) }); return null }
+    } catch (error) { setInviteListenerWarning(errorMessage(error)); setNotice({ good: false, text: errorMessage(error) }); return null }
     finally { setPending('') }
   }
   const revokeDevice = async (id: string) => {
     if (!window.confirm('Revoke this Friend device now? Its next request will be denied.')) return
     setPending(id)
     try {
-      const response = await fetch(`/api/local/devices/${id}/revoke`, { method: 'POST', headers: localHeaders })
-      const result: { ok: boolean; code: string; message: string } = await response.json()
+      const result = await change(`/api/local/devices/${id}/revoke`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const approveDevice = async (id: string) => {
     setPending(id)
     try {
-      const result = await change<BasicResult>(`/api/local/devices/${id}/approve`, 'POST')
+      const result = await change(`/api/local/devices/${id}/approve`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const pairingPolicyAction = async (profileId: string, action: 'close' | 'emergency-revoke') => {
     if (action === 'emergency-revoke' && !window.confirm('Emergency-revoke every PC credential issued through this server code? This does not affect PCs paired through other server codes.')) return
     setPending('invite')
     try {
-      const result = await change<BasicResult>(`/api/local/servers/${profileId}/pairing/${action}`, 'POST')
+      const result = await change(`/api/local/servers/${profileId}/pairing/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) { setInvitation(''); setPairingExpiresUtc(null); setInviteProfileId('') }
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const saveDeviceName = async (id: string) => {
     setPending(id)
     try {
       const name = (deviceNames[id] ?? '').trim()
-      const result = await change<BasicResult>(`/api/local/devices/${id}/name`, 'PUT', { name })
+      const result = await change(`/api/local/devices/${id}/name`, 'PUT', { name })
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) setDeviceNames(current => ({ ...current, [id]: name }))
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const setDevicePermissions = async (device: Device, canStart: boolean, canStop: boolean,
     canExtendTimer: boolean, scope: 'start' | 'stop' | 'extend') => {
     setPending(device.id)
     try {
-      const result = await change<BasicResult>(`/api/local/devices/${device.id}/permissions`, 'PUT',
+      const result = await change(`/api/local/devices/${device.id}/permissions`, 'PUT',
         { canStart, canStop, canExtendTimer, scope })
       setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const saveHostFlags = async (patch: Partial<Settings>) => {
-    if (!draft) return
+  const saveHostFlags = async (patch: Partial<Pick<Settings, 'companionListeningEnabled' | 'remoteControlsEnabled' | 'autoShutdownEnabled'>>) => {
     setPending('host-flags')
     setNotice(null)
     try {
-      const next = { ...draft, ...patch }
-      const result = await change<ActionResult>('/api/local/settings', 'PUT', next)
-      setSnapshot(result.snapshot)
-      setDraft(result.snapshot.settings)
-      dirtyRef.current = false
-      setDirty(false)
+      const result = await changeAction('/api/local/settings/control-policy', 'PUT', patch)
+      applySnapshot(result.snapshot)
+      syncControlPolicy(result.snapshot.settings)
       setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const pairFriend = async () => {
@@ -831,71 +625,70 @@ function App() {
     setPairIssue(null)
     setNotice(null)
     try {
-      const response = await fetch('/api/local/friend/pair', { method: 'POST', headers: localHeaders,
-        body: JSON.stringify({ invitation: friendInvite, hostAddress: friendHostAddress || null }) })
-      const result: BasicResult = await response.json()
-      if (!response.ok || !result.ok) {
-        const message = result.message || `Local app returned ${response.status} while connecting.`
-        setPairIssue({ code: result.code || 'Disconnected', message })
+      const result = await change('/api/local/friend/pair', 'POST',
+        { invitation: friendInvite, hostAddress: friendHostAddress || null })
+      if (!result.ok) {
+        setPairIssue({ code: result.code || 'Disconnected', message: result.message })
         return
       }
       setNotice({ good: true, text: result.message })
       if (result.ok) {
         setFriendInvite('')
         setShowPairing(false)
-        await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
-        setSnapshot(await readSnapshot())
+        await changeJson('/api/local/friend/poll', 'POST', parseFriendSnapshot)
+        applySnapshot(await readSnapshot())
       }
-    } catch (error) { setPairIssue({ code: 'LocalAppUnavailable', message: `Could not finish connecting to this app: ${String(error)}` }) }
+    } catch (error) {
+      setPairIssue({ code: error instanceof ApiError ? error.code : 'LocalAppUnavailable',
+        message: `Could not finish connecting to this app: ${errorMessage(error)}` })
+    }
     finally { setPending('') }
   }
   const checkFriendConnection = async () => {
     setPending('poll')
     try {
-      const response = await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
-      if (!response.ok) throw new Error(`Local app returned ${response.status}`)
-      const next: FriendSnapshot = await response.json()
-      setSnapshot(next)
+      const next = await changeJson('/api/local/friend/poll', 'POST', parseFriendSnapshot)
+      applySnapshot(next)
       setNotice({ good: next.state === 'Connected' || next.state === 'Disabled', text: next.detail })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const selectFriendConnection = async (id: string) => {
     setPending('select-connection')
     try {
-      const result = await change<BasicResult>(`/api/local/friend/connections/${id}/select`, 'POST')
+      const result = await change(`/api/local/friend/connections/${id}/select`, 'POST')
       if (!result.ok) setNotice({ good: false, text: result.message })
       else {
         setShowPairing(false)
-        setSnapshot(await readSnapshot())
+        applySnapshot(await readSnapshot())
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const recoverFriendEndpoint = async () => {
     if (snapshot?.mode !== 'Friend' || !snapshot.connectionId || !recoveryEndpoint.trim()) return
     setPending('recover-endpoint')
     try {
-      const result = await change<BasicResult>(`/api/local/friend/connections/${snapshot.connectionId}/endpoint`, 'PUT',
+      const result = await change(`/api/local/friend/connections/${snapshot.connectionId}/endpoint`, 'PUT',
         { endpoint: recoveryEndpoint.trim() })
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
-        await fetch('/api/local/friend/poll', { method: 'POST', headers: localHeaders })
-        setSnapshot(await readSnapshot())
+        await changeJson('/api/local/friend/poll', 'POST', parseFriendSnapshot)
+        applySnapshot(await readSnapshot())
         setRecoveryEndpoint('')
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const renameFriendConnection = async () => {
     if (snapshot?.mode !== 'Friend' || !snapshot.connectionId) return
     setPending('rename-connection')
     try {
-      const result = await change<BasicResult>(`/api/local/friend/connections/${snapshot.connectionId}/name`, 'PUT',
+      const result = await change(`/api/local/friend/connections/${snapshot.connectionId}/name`, 'PUT',
         { name: friendConnectionName.trim() })
       setNotice({ good: result.ok, text: result.message })
-      if (result.ok) setSnapshot(await readSnapshot())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      if (result.ok) applySnapshot(await readSnapshot())
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const forgetFriendConnection = async () => {
@@ -903,22 +696,20 @@ function App() {
         !window.confirm('Forget this saved Host? TogetherServer will first try to revoke this PC on the Host.')) return
     setPending('forget-connection')
     try {
-      const result = await change<BasicResult>(`/api/local/friend/connections/${snapshot.connectionId}/forget`, 'POST')
+      const result = await change(`/api/local/friend/connections/${snapshot.connectionId}/forget`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      if (result.ok) { setShowPairing(false); setSnapshot(await readSnapshot()) }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      if (result.ok) { setShowPairing(false); applySnapshot(await readSnapshot()) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const probeGameEndpoint = async (profileId: string) => {
     setPending(`probe-game-${profileId}`)
     try {
-      const response = await fetch(`/api/local/friend/${profileId}/probe-game`, { method: 'POST', headers: localHeaders })
-      if (!response.ok) throw new Error(`Local app returned ${response.status}`)
-      const result: GameEndpointResult = await response.json()
+      const result = await changeJson(`/api/local/friend/${profileId}/probe-game`, 'POST', parseGameEndpointResult)
       setGameEndpointResults(current => ({ ...current, [profileId]: result }))
     } catch (error) {
       setGameEndpointResults(current => ({ ...current, [profileId]: { answered: false,
-        code: 'ProbeFailed', message: String(error), checkedUtc: new Date().toISOString(), onlinePlayers: null, maxPlayers: null } }))
+        code: 'ProbeFailed', message: errorMessage(error), checkedUtc: new Date().toISOString(), onlinePlayers: null, maxPlayers: null } }))
     } finally { setPending('') }
   }
   const friendAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'replace' | 'extend') => {
@@ -926,114 +717,74 @@ function App() {
     setPending(key)
     if (action === 'stop' || action === 'restart') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}-address`)
     try {
-      const result = await change<BasicResult>(`/api/local/friend/${id}/${action}`, 'POST')
+      const result = await change(`/api/local/friend/${id}/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      setSnapshot(await readSnapshot())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const saveSetup = async (startAfterSave = false) => {
-    if (!draft) return
-    const profile = draft.profiles.find(item => item.id === activeProfileId) ?? draft.profiles[0]
-    if (!profile) return
-    const unmet = getSetupIssues(profile,
-      snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[profile.id], passwords[profile.id] ?? '',
-      customScripts[profile.id], !!customScriptsSaved[profile.id])
-      .map(message => ({ id: profile.id, message }))
-    if (unmet.length) {
-      setActiveProfileId(unmet[0].id)
-      setSetupStep('review')
-      setNotice({ good: false, text: unmet[0].message })
-      return
-    }
-    const password = profile ? passwords[profile.id] ?? '' : ''
-    if (password && (password.length < 5 || password.length > 64 || /[\x00-\x1f\x7f]/.test(password))) {
-      setNotice({ good: false, text: 'Use a server password of 5 to 64 characters without control characters.' })
-      return
-    }
-    setPending('save')
-    setNotice(null)
-    try {
-      let result: ActionResult | null = null
-      if (dirty) {
-        result = await change<ActionResult>('/api/local/settings', 'PUT', draft)
-        setSnapshot(result.snapshot)
-        if (!result.ok) { setNotice({ good: false, text: result.message }); return }
-        setDraft(result.snapshot.settings)
-        dirtyRef.current = false
-        setDirty(false)
-      }
-      if (profile?.kind === 'Valheim' && password) {
-        result = await change<ActionResult>(`/api/local/profiles/${profile.id}/password`, 'POST', { password })
-        setSnapshot(result.snapshot)
-        if (!result.ok) { setNotice({ good: false, text: result.message }); return }
-        setPasswords(current => ({ ...current, [profile.id]: '' }))
-      }
-      if (profile?.kind === 'Custom' && !customScriptsSaved[profile.id]) {
-        const scripts = customScripts[profile.id] ?? { start: '', status: '', stop: '' }
-        result = await change<ActionResult>(`/api/local/profiles/${profile.id}/custom-scripts`, 'PUT', scripts)
-        setSnapshot(result.snapshot)
-        if (!result.ok) { setNotice({ good: false, text: result.message }); return }
-        setCustomScriptsSaved(current => ({ ...current, [profile.id]: true }))
-      }
-      const passwordWasConfigured = snapshot?.mode === 'Host' && profile ? snapshot.passwordConfigured[profile.id] : false
-      const needsPassword = profile?.kind === 'Valheim' && !password && !passwordWasConfigured
-      if (startAfterSave && !needsPassword && profile) {
-        const started = await change<ActionResult>(`/api/local/profiles/${profile.id}/start`, 'POST')
-        setSnapshot(started.snapshot)
-        setNotice({ good: started.ok, text: started.message })
-        if (!started.ok) return
-      } else setNotice({ good: true, text: needsPassword ? 'Add a game password before starting.' : 'Server setup saved.' })
-      if (!needsPassword && profile) {
-        window.localStorage.removeItem(setupDraftKey)
-        setShowSetup(false)
-        window.scrollTo({ top: 0, behavior: 'smooth' })
-      }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      applySnapshot(await readSnapshot())
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const switchMode = async (mode: 'host' | 'friend') => {
-    if (dirty && !window.confirm('Discard unsaved server settings and change pages?')) return
+    if ((dirty || sensitiveDraft) && !window.confirm('Discard unsaved server settings, passwords, and custom scripts and change pages?')) return
     setPending('mode')
     setNotice(null)
     try {
-      const response = await fetch(`/api/local/mode/${mode}`, { method: 'POST', headers: localHeaders })
-      const result: { ok: boolean; code: string; message: string } = await response.json()
+      const result = await change(`/api/local/mode/${mode}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
         setRevealedConnections({})
         setRevealedGamePasswords({})
         const next = await readSnapshot()
-        setSnapshot(next)
-        setDraft(next.mode === 'Host' ? next.settings : null)
-        setShowSetup(false)
-        dirtyRef.current = false
-        setDirty(false)
+        applySnapshot(next)
+        resetForMode(next)
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const acknowledgeDataRecovery = async () => {
+    if (snapshot?.mode !== 'Host') return
+    if (!recoveryConfirmed) {
+      setNotice({ good: false, text: dataRecovery?.lifecycleBlocked
+        ? 'Confirm that no TogetherServer-managed game server is still running.'
+        : 'Confirm that you reviewed the quarantined local data.' })
+      return
+    }
+    setPending('data-recovery')
+    setNotice(null)
+    try {
+      const result = await changeAction('/api/local/data-recovery/acknowledge', 'POST',
+        { confirmNoManagedServersRunning: true })
+      applySnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) {
+        setDataRecovery(await getJson('/api/local/data-recovery', parseDataRecoveryView))
+        setRecoveryConfirmed(false)
+      }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const run = async (key: string, path: string, method: 'POST' | 'PUT', body?: unknown) => {
+    if (dataRecovery?.lifecycleBlocked && (key.startsWith('start-') || key.startsWith('restart-'))) {
+      setNotice({ good: false, text: 'Resolve the local data recovery warning before starting or restarting a server.' })
+      return
+    }
     setPending(key)
     setNotice(null)
     try {
-      const result = await change<ActionResult>(path, method, body)
-      setSnapshot(result.snapshot)
+      const result = await changeAction(path, method, body)
+      applySnapshot(result.snapshot)
       setNotice({ good: result.ok, text: result.message })
-      if (result.ok && key.startsWith('save')) { setDraft(result.snapshot.settings); dirtyRef.current = false; setDirty(false) }
+      if (result.ok && key.startsWith('save')) acceptSavedSettings(result.snapshot.settings)
       if (result.ok) void checkPorts()
     } catch (error) {
-      setNotice({ good: false, text: String(error) })
+      setNotice({ good: false, text: errorMessage(error) })
     } finally { setPending('') }
   }
   const loadBackups = async (profileId: string) => {
     setPending(`backups-${profileId}`)
     try {
-      const response = await fetch(`/api/local/profiles/${profileId}/backups`, { cache: 'no-store' })
-      if (!response.ok) throw new Error(`Backup list returned ${response.status}`)
-      const result: WorldBackupList = await response.json()
+      const result = await getJson(`/api/local/profiles/${profileId}/backups`, parseWorldBackupList)
       setBackupLists(current => ({ ...current, [profileId]: result }))
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const restoreBackup = async (profileId: string, backupId: string, createdUtc: string) => {
@@ -1041,11 +792,11 @@ function App() {
     setPending(`restore-${profileId}`)
     setNotice(null)
     try {
-      const result = await change<ActionResult>(`/api/local/profiles/${profileId}/backups/${backupId}/restore`, 'POST')
-      setSnapshot(result.snapshot)
+      const result = await changeAction(`/api/local/profiles/${profileId}/backups/${backupId}/restore`, 'POST')
+      applySnapshot(result.snapshot)
       setNotice({ good: result.ok, text: result.message })
       await loadBackups(profileId)
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const customCertificationAction = async (profileId: string, action: 'begin' | 'status' | 'confirm' | 'cancel' | 'revoke') => {
@@ -1053,11 +804,11 @@ function App() {
     setPending(key)
     setNotice(null)
     try {
-      const result = await change<CustomCertificationResult>(`/api/local/profiles/${profileId}/custom-certification/${action}`, 'POST')
-      setSnapshot(result.snapshot)
+      const result = await changeJson(`/api/local/profiles/${profileId}/custom-certification/${action}`, 'POST', parseCustomCertificationResult)
+      applySnapshot(result.snapshot)
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) void checkPorts()
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const openDeviceServerAccess = (device: Device) => {
@@ -1084,7 +835,7 @@ function App() {
     if (!serverAccessDeviceId) return
     setPending(serverAccessDeviceId)
     try {
-      const result = await change<BasicResult>(`/api/local/devices/${serverAccessDeviceId}/servers`, 'PUT',
+      const result = await change(`/api/local/devices/${serverAccessDeviceId}/servers`, 'PUT',
         { profileIds: serverAccessDraft, permissions: serverAccessDraft.map(profileId => ({
           profileId,
           canStart: serverPermissionDraft[profileId]?.canStart ?? serverAccessDevice?.canStart ?? false,
@@ -1092,15 +843,14 @@ function App() {
           canExtendTimer: serverPermissionDraft[profileId]?.canExtendTimer ?? serverAccessDevice?.canExtendTimer ?? false
         })) })
       setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion')
-      if (latest.ok) setCompanion(await latest.json())
+      await refreshCompanion()
       if (result.ok) {
         setServerAccessDeviceId('')
         setServerAccessDraft([])
         setServerPermissionDraft({})
         setServerAccessSearch('')
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const extendCountdown = async (profileId: string) => {
@@ -1119,195 +869,16 @@ function App() {
     try {
       const next = { ...snapshot.settings, profiles: snapshot.settings.profiles.map(item => item.id === profile.id
         ? { ...item, maintenance: { enabled, message } } : item) }
-      const result = await change<ActionResult>('/api/local/settings', 'PUT', next)
-      setSnapshot(result.snapshot)
-      setDraft(result.snapshot.settings)
+      const result = await changeAction('/api/local/settings', 'PUT', next)
+      applySnapshot(result.snapshot)
+      acceptSavedSettings(result.snapshot.settings)
       setNotice({ good: result.ok, text: result.ok
         ? enabled ? 'Maintenance mode enabled. Friends can still see status, but remote actions are paused.' : 'Maintenance mode ended.'
         : result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
 
-  const updateProfile = (id: string, patch: Partial<Profile>) => {
-    if (!draft) return
-    edit({ ...draft, profiles: draft.profiles.map(profile => profile.id === id ? { ...profile, ...patch } : profile) })
-  }
-
-  const editCustomScripts = (id: string, patch: Partial<CustomScriptBundle>) => {
-    setCustomScripts(current => {
-      const existing = current[id] ?? { start: '', status: '', stop: '' }
-      return { ...current, [id]: { ...existing, ...patch } }
-    })
-    setCustomScriptsSaved(current => ({ ...current, [id]: false }))
-  }
-
-  const updateCustomPort = (profile: Profile, index: number, patch: Partial<CustomPort>) => {
-    const custom = profile.custom ?? { gameName: 'Custom game', primaryProtocol: 'UDP' as const, shareJoinAddress: true, additionalPorts: [] }
-    updateProfile(profile.id, { custom: { ...custom, additionalPorts: custom.additionalPorts.map((port, portIndex) =>
-      portIndex === index ? { ...port, ...patch } : port) } })
-  }
-
-  const addCustomPort = (profile: Profile) => {
-    const custom = profile.custom ?? { gameName: 'Custom game', primaryProtocol: 'UDP' as const, shareJoinAddress: true, additionalPorts: [] }
-    updateProfile(profile.id, { custom: { ...custom, additionalPorts: [...custom.additionalPorts,
-      { protocol: 'UDP', port: Math.min(65535, profile.gamePort + custom.additionalPorts.length + 1), label: 'Additional', family: 'Any' }] } })
-  }
-
-  const removeCustomPort = (profile: Profile, index: number) => {
-    const custom = profile.custom
-    if (!custom) return
-    updateProfile(profile.id, { custom: { ...custom, additionalPorts: custom.additionalPorts.filter((_, portIndex) => portIndex !== index) } })
-  }
-
-  const loadCustomScripts = async (profileId: string) => {
-    try {
-      const result = await change<CustomScriptResult>(`/api/local/profiles/${profileId}/custom-scripts/reveal`, 'POST')
-      if (!result.ok) { setNotice({ good: false, text: result.message }); return }
-      setCustomScripts(current => ({ ...current, [profileId]: result.scripts }))
-      setCustomScriptsSaved(current => ({ ...current, [profileId]: result.code === 'CustomScriptsLoaded' }))
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-  }
-
-  const browseCustomDirectory = async (profile: Profile) => {
-    setPending(profile.id)
-    try {
-      const result = await change<BrowseResult>('/api/local/custom/browse-working-directory', 'POST')
-      if (result.ok && result.path) updateProfile(profile.id, { worldDirectory: result.path })
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-
-  const minecraftProfile = (profile: Profile, item: MinecraftInstallation): Profile => ({
-    ...profile,
-    name: profile.name || `${item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'} server`,
-    worldId: item.worldName,
-    worldDirectory: item.serverDirectory,
-    gamePort: item.gamePort,
-    executablePath: item.executablePath || profile.executablePath,
-    minecraft: item.kind === 'MinecraftJava' ? { serverJarPath: item.artifactPath } : null
-  })
-
-  const useMinecraft = (profile: Profile, item: MinecraftInstallation, announce = true) => {
-    setDraft(current => current ? { ...current, profiles: current.profiles.map(saved =>
-      saved.id === profile.id ? minecraftProfile(saved, item) : saved) } : current)
-    dirtyRef.current = true
-    setDirty(true)
-    if (announce) setNotice({ good: true, text: `${item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'} server selected. Continue to review.` })
-  }
-
-  const scanMinecraft = async (folder?: string) => {
-    try {
-      const path = '/api/local/minecraft/discover' + (folder ? `?folder=${encodeURIComponent(folder)}` : '')
-      const response = await fetch(path, { cache: 'no-store' })
-      if (!response.ok) throw new Error(`Minecraft search returned ${response.status}`)
-      setMinecraftDiscovery(await response.json() as MinecraftDiscovery)
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-  }
-
-  const installMinecraft = async (profile: Profile) => {
-    setPending('install-minecraft')
-    setNotice(null)
-    try {
-      const result = await change<MinecraftInstallResult>('/api/local/minecraft/install', 'POST', {
-        kind: profile.kind, worldName: profile.worldId.trim() || 'world', gamePort: profile.gamePort,
-        acceptedTerms: !!minecraftTerms[profile.id]
-      })
-      setNotice({ good: result.ok, text: result.message })
-      if (result.ok && result.installation) {
-        useMinecraft(profile, result.installation, false)
-        setMinecraftTerms(current => ({ ...current, [profile.id]: false }))
-        void scanMinecraft(result.installation.serverDirectory)
-      }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-
-  const changeGameKind = (profile: Profile, kind: Profile['kind']) => {
-    if (profile.kind === kind || snapshot?.mode !== 'Host') return
-    setPasswords(current => ({ ...current, [profile.id]: '' }))
-    setMinecraftTerms(current => ({ ...current, [profile.id]: false }))
-    setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))
-    if (kind === 'Custom') {
-      setCustomScripts(current => ({ ...current, [profile.id]: current[profile.id] ?? { start: '', status: '', stop: '' } }))
-      setCustomScriptsSaved(current => ({ ...current, [profile.id]: false }))
-    }
-    updateProfile(profile.id, { kind, name: '', serverName: '', crossplay: false, publicListing: false,
-      worldId: '', worldSource: kind === 'Valheim' ? 'New' : 'Existing',
-      worldDirectory: kind === 'Valheim' ? `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` : '',
-      gamePort: kind === 'Valheim' ? 2456 : kind === 'MinecraftJava' ? 25565 : kind === 'MinecraftBedrock' ? 19132 : 2456,
-      executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null,
-      custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null,
-      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
-      maintenance: { enabled: false, message: '' } })
-  }
-
-  const addProfile = () => {
-    if (!draft || snapshot?.mode !== 'Host') return
-    setNotice(null)
-    const id = crypto.randomUUID()
-    edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
-      publicListing: false, worldId: '', worldSource: 'New',
-      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '', custom: null,
-      crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
-      maintenance: { enabled: false, message: '' } }] })
-    setActiveProfileId(id)
-    setSetupStep('game')
-    setMinecraftSetupMode(current => ({ ...current, [id]: 'existing' }))
-    setShowSetup(true)
-    if (!discovery) void scanValheim()
-  }
-
-  const removeProfile = async (profile: Profile) => {
-    if (!draft || !window.confirm(`Remove ${profile.name || profile.serverName || 'this server'} from TogetherServer? Its world files are left in place.`)) return
-    setPending('remove-profile')
-    try {
-      const profiles = draft.profiles.filter(item => item.id !== profile.id)
-      const result = await change<ActionResult>('/api/local/settings', 'PUT', { ...draft, profiles,
-        companionListeningEnabled: profiles.length > 0 && draft.companionListeningEnabled,
-        remoteControlsEnabled: profiles.length > 0 && draft.remoteControlsEnabled })
-      setSnapshot(result.snapshot)
-      setDraft(result.snapshot.settings)
-      dirtyRef.current = false
-      setDirty(false)
-      if (result.ok) setShowSetup(false)
-      setNotice({ good: result.ok, text: result.ok ? 'Server removed from TogetherServer. Its world files were left in place.' : result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-
-  const cancelSetup = () => {
-    if (snapshot?.mode !== 'Host' || pending) return
-    if (dirty && !window.confirm('Discard these setup changes?')) return
-    setDraft(snapshot.settings)
-    setActiveProfileId(snapshot.settings.profiles[0]?.id ?? '')
-    setPasswords({})
-    setCustomScripts({})
-    setCustomScriptsSaved({})
-    setMinecraftTerms({})
-    setSourceRoots({})
-    dirtyRef.current = false
-    setDirty(false)
-    window.localStorage.removeItem(setupDraftKey)
-    setShowSetup(false)
-    setNotice(null)
-  }
-
-  const finishSetupLater = () => {
-    if (pending) return
-    setShowSetup(false)
-    setNotice({ good: true, text: 'Setup is paused. Choose Continue setup when you are ready.' })
-  }
-
-  const openSetup = (id: string) => {
-    setNotice(null)
-    setActiveProfileId(id)
-    setSetupStep('review')
-    setShowSetup(true)
-    if (snapshot?.mode === 'Host' && snapshot.settings.profiles.some(profile => profile.id === id && profile.kind === 'Custom'))
-      void loadCustomScripts(id)
-  }
   const changeRoute = (mode: Settings['connectionRoute']['mode'], address = '') => {
     if (!draft) return
     const selected = address.trim()
@@ -1319,28 +890,24 @@ function App() {
   const certificateAction = async (action: 'stage' | 'activate' | 'retire-previous') => {
     setPending(`certificate-${action}`)
     try {
-      const result = await change<BasicResult>(`/api/local/companion/certificate/${action}`, 'POST')
+      const result = await change(`/api/local/companion/certificate/${action}`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      const latest = await fetch('/api/local/companion', { cache: 'no-store' })
-      if (latest.ok) setCompanion(await latest.json())
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const openHostSettings = (section: HostSettingsSection = 'access') => {
     setNotice(null)
     setHostSettingsSection(section)
     setShowHostSettings(true)
-    if (!routeDiscovery) void fetch('/api/local/network/routes', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() as Promise<RouteDiscovery> : null)
-      .then(result => { if (result) setRouteDiscovery(result) })
+    if (!routeDiscovery) void getJson('/api/local/network/routes', parseRouteDiscovery)
+      .then(setRouteDiscovery)
       .catch(() => { /* Manual route entry remains available. */ })
   }
   const closeHostSettings = () => {
     if (snapshot?.mode !== 'Host' || pending) return
     if (dirty && !window.confirm('Discard unsaved advanced settings?')) return
-    setDraft(snapshot.settings)
-    dirtyRef.current = false
-    setDirty(false)
+    acceptSavedSettings(snapshot.settings)
     setShowHostSettings(false)
     setNotice(null)
   }
@@ -1359,90 +926,14 @@ function App() {
         }
         catch { setNotice({ good: false, text: 'Invite ready, but it could not be copied. Choose Copy again.' }) }
       }
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
 
-  const scanValheim = async () => {
-    setPending('scan')
-    try {
-      const response = await fetch('/api/local/valheim/discover', { cache: 'no-store' })
-      if (!response.ok) throw new Error(`Discovery returned ${response.status}`)
-      const result: Discovery = await response.json()
-      setDiscovery(result)
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const importWorld = async (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local') => {
-    if (sourceFolder === 'worlds' && !window.confirm('Close Valheim and wait for Steam Cloud to finish syncing before copying this cached world folder. Continue?')) return
-    setPending(profile.id)
-    try {
-      const result = await change<ImportResult>('/api/local/valheim/import', 'POST', {
-        profileId: profile.id, sourceSaveRoot, worldId, sourceFolder
-      })
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}${result.ok ? ' Save the profile next.' : ''}` })
-      if (result.ok && result.worldDirectory) updateProfile(profile.id, {
-        name: profile.name || worldId, serverName: profile.serverName || worldId,
-        worldId, worldSource: 'Existing', worldDirectory: result.worldDirectory
-      })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const browseServer = async (profile: Profile) => {
-    setPending(profile.id)
-    try {
-      const result = await change<ServerBrowseResult>('/api/local/valheim/browse-server', 'POST')
-      if (result.ok && result.executablePath) updateProfile(profile.id, { executablePath: result.executablePath })
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const browseMinecraft = async (profile: Profile, target: 'folder' | 'executable' | 'jar') => {
-    setPending(profile.id)
-    try {
-      const result = await change<MinecraftBrowseResult>('/api/local/minecraft/browse', 'POST', { kind: profile.kind, target })
-      if (result.ok && result.path) {
-        if (target === 'folder') { updateProfile(profile.id, { worldDirectory: result.path }); void scanMinecraft(result.path) }
-        if (target === 'executable') updateProfile(profile.id, { executablePath: result.path,
-          worldDirectory: profile.kind === 'MinecraftBedrock' && !profile.worldDirectory
-            ? result.path.slice(0, result.path.lastIndexOf('\\')) : profile.worldDirectory })
-        if (target === 'jar') updateProfile(profile.id, { minecraft: { serverJarPath: result.path },
-          worldDirectory: profile.worldDirectory || result.path.slice(0, result.path.lastIndexOf('\\')) })
-        if (target === 'jar') void scanMinecraft(result.path.slice(0, result.path.lastIndexOf('\\')))
-      }
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-  const browseWorld = async (profile: Profile, folder = false) => {
-    setPending(profile.id)
-    try {
-      const result = await change<WorldBrowseResult>(folder ? '/api/local/valheim/browse-world-folder' : '/api/local/valheim/browse-world', 'POST')
-      if (result.ok && result.sourceSaveRoot && result.worldId) {
-        if (result.sourceFolder === 'worlds_local')
-          setSourceRoots(current => ({ ...current, [profile.id]: result.sourceSaveRoot! }))
-        await importWorld(profile, result.sourceSaveRoot, result.worldId, result.sourceFolder)
-      } else if (result.code !== 'Canceled') setNotice({ good: false, text: `${result.code}: ${result.message}` })
-    } catch (error) { setNotice({ good: false, text: String(error) }) }
-    finally { setPending('') }
-  }
-
-  const editedProfile = draft?.profiles.find(profile => profile.id === activeProfileId) ?? draft?.profiles[0]
   const detectedGameIp = snapshot?.mode === 'Host' && snapshot.settings.publicGameIpCheckedUtc &&
     Date.now() - Date.parse(snapshot.settings.publicGameIpCheckedUtc) < 60 * 60 * 1000
     ? snapshot.settings.publicGameIp : ''
   const friendAppAddress = hostAddress(draft?.companionEndpoint ?? '') ||
     (detectedGameIp ? `${detectedGameIp}${draft?.companionPort === 5131 ? '' : `:${draft?.companionPort}`}` : '')
-  const setupIssues = editedProfile ? getSetupIssues(editedProfile,
-    snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[editedProfile.id], passwords[editedProfile.id] ?? '',
-    customScripts[editedProfile.id], !!customScriptsSaved[editedProfile.id])
-    .map(message => ({ id: editedProfile.id, name: editedProfile.name || editedProfile.serverName || 'New server', message })) : []
-  const stepIssues = editedProfile ? getStepIssues(setupStep, editedProfile,
-    snapshot?.mode === 'Host' && !!snapshot.passwordConfigured[editedProfile.id], passwords[editedProfile.id] ?? '',
-    customScripts[editedProfile.id], !!customScriptsSaved[editedProfile.id]) : []
-  const customScriptsChanged = !!editedProfile && editedProfile.kind === 'Custom' && !customScriptsSaved[editedProfile.id] &&
-    !!customScripts[editedProfile.id] && Object.values(customScripts[editedProfile.id]).some(value => value.trim().length > 0)
-  const setupSteps: SetupStep[] = ['game', 'world', 'server', 'review']
-  const setupStepIndex = setupSteps.indexOf(setupStep)
   const savedProfiles = snapshot?.mode === 'Host' ? snapshot.settings.profiles : []
   const liveConnectionKeySignature = JSON.stringify((snapshot?.mode === 'Host'
     ? snapshot.runs.filter(run => run.state === 'Ready' && detectedGameIp)
@@ -1489,8 +980,8 @@ function App() {
   return <div className="shell">
     <header className="topbar">
       <nav className="mode-switch" aria-label="App pages">
-        <Button className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</Button>
-        <Button className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</Button>
+        <Button aria-current={snapshot?.mode === 'Host' ? 'page' : undefined} className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</Button>
+        <Button aria-current={snapshot?.mode === 'Friend' ? 'page' : undefined} className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</Button>
       </nav>
       <div className="header-tools">
         <details className="notification-menu" onToggle={event => { if (event.currentTarget.open) setNotificationUnread(false) }}>
@@ -1522,6 +1013,14 @@ function App() {
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
       {!snapshot && !loadError && <section className="panel">Loading local state…</section>}
+
+      {dataRecovery && <DataRecoveryPanel recovery={dataRecovery} mode={snapshot?.mode ?? null}
+        runs={snapshot?.mode === 'Host' ? snapshot.runs : []}
+        configuredProfileIds={snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : []}
+        pending={pending} confirmed={recoveryConfirmed} onConfirmedChange={setRecoveryConfirmed}
+        onAcknowledge={() => void acknowledgeDataRecovery()} onSwitchToHost={() => void switchMode('host')}
+        onStopRecordedRun={profileId => void run(`recovery-stop-${profileId}`, `/api/local/profiles/${profileId}/stop`, 'POST')}
+        onForgetRecordedRun={profileId => void run(`recovery-forget-${profileId}`, `/api/local/profiles/${profileId}/forget`, 'POST')} />}
 
       {snapshot?.mode === 'Friend' && <>
         {(snapshot.connections?.length ?? 0) > 1 && <section className="panel saved-connections"><div className="section-heading"><div><h2>Saved servers</h2><p>Choose which Host you want to view.</p></div></div>
@@ -1638,9 +1137,9 @@ function App() {
                   refreshing={checkingPorts || detectingPublicIp} />}
                 {status?.autoShutdownAtUtc && <div className="timer-extension"><label>Extend this countdown<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Extra minutes for this countdown only.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
                 <div className="actions server-actions">
-                  {status?.state === 'Offline' && <Button disabled={!!pending || dirty} onClick={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
+                  {status?.state === 'Offline' && <Button disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
                   {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
-                  {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}>{pending === `restart-${profile.id}` ? <><Icon name="loader" /><span>Restarting…</span></> : <><Icon name="refresh" /><span>Restart server</span></>}</Button>}
+                  {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}>{pending === `restart-${profile.id}` ? <><Icon name="loader" /><span>Restarting…</span></> : <><Icon name="refresh" /><span>Restart server</span></>}</Button>}
                   <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">
@@ -1701,123 +1200,51 @@ function App() {
         </>}
 
         {savedProfiles.length === 0 && !showSetup && <section className="panel welcome-panel"><div className="section-heading"><div><h2>What would you like to do?</h2><p>You can host and join at the same time. Switching pages never stops a running server.</p></div></div>
-          {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><Button onClick={() => { setActiveProfileId(draft.profiles[0].id); setSetupStep('world'); setShowSetup(true) }}>Continue setup</Button></div> : <div className="welcome-grid">
+          {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><Button onClick={continueSetup}>Continue setup</Button></div> : <div className="welcome-grid">
             <Button className="welcome-choice" disabled={!!pending} onClick={addProfile}><span className="section-icon"><Icon name="server" /></span><span><strong>Host a server</strong><small>Create a new world or use a server already on this PC.</small></span></Button>
             <Button className="welcome-choice secondary-choice" disabled={!!pending} onClick={() => void switchMode('friend')}><span className="section-icon"><Icon name="link" /></span><span><strong>Join a server</strong><small>Paste the private code your friend sent you.</small></span></Button>
           </div>}
         </section>}
 
-        {showSetup && <dialog ref={setupRef} className="panel settings-panel modal-dialog" aria-labelledby="setup-title" onCancel={event => { event.preventDefault(); cancelSetup() }}>
-          <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p>Choose the game, world, and server files.</p></div></div>
-          {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-          <ol className="setup-progress" aria-label="Setup progress">{(['game', 'world', 'server', 'review'] as SetupStep[]).map((step, index) => <li className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
-          {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={addProfile}>Set up a server</Button></div></div>}
-          {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-            {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">Choose a reviewed built-in game or an advanced Host-only script profile. You can change technical defaults during Review.</p><div className="game-choice-grid">
-              <Button className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></Button>
-              <Button className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
-              <Button className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
-              <Button className={profile.kind === 'Custom' ? 'game-choice selected' : 'game-choice'} onClick={() => changeGameKind(profile, 'Custom')}><strong>Custom game</strong><small>Advanced · local PowerShell actions</small></Button>
-              {profile.kind === 'Fixture' && <Button className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
-            </div></div>}
-            {setupStep === 'world' && <div className="setup-step world-step"><h3><Icon name="game" /> {profile.kind === 'Valheim' ? 'Choose a world' : 'Name this server'}</h3>
-              {profile.kind === 'Valheim' && <div className="choice-pills">
-                <Button className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>Create new</Button>
-                <Button className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => updateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</Button>
-              </div>}
-              {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <>
-                {profile.worldId && profile.worldDirectory && <p className="selection-summary">Copy ready: <strong>{profile.worldId}</strong>. Your original save stays separate.</p>}
-                {discovery && <div className="choices"><strong>Worlds found on this PC</strong>{discovery.worlds.length === 0 ? <p>None found. Browse to a world folder below.</p> : discovery.worlds.map(world => <div className="choice" key={world.saveRoot + world.sourceFolder + world.name}><span>{world.name} <small>{world.format === 'Steam cloud folder' ? 'Steam Cloud' : 'Local save'} · {world.saveRoot}</small></span><Button className="secondary" disabled={!!pending} onClick={() => void importWorld(profile, world.saveRoot, world.name, world.sourceFolder)}>Copy world</Button></div>)}</div>}
-                <div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile, true)}>{pending === profile.id ? 'Browsing…' : 'Browse for a world folder'}</Button></div>
-                <p className="helper-text">Close Valheim and let Steam finish syncing before copying a cloud world.</p>
-                <details className="advanced-block"><summary>Older saves and custom paths</summary>
-                  <Button className="secondary" disabled={!!pending} onClick={() => void browseWorld(profile)}>Choose an older .db or .fwl file</Button>
-                  <div className="settings-grid"><label>Local save root<Input value={sourceRoots[profile.id] ?? ''} onChange={event => setSourceRoots(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="C:\\...\\IronGate\\Valheim" /></label><label>World ID<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="World folder name" /></label></div>
-                  <Button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => void importWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</Button>
-                </details>
-              </>}
-              {profile.kind === 'Valheim' && profile.worldSource === 'New' && <div className="quick-setup-fields"><label className="invite-input">World name<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value, name: event.target.value, serverName: event.target.value })} placeholder="My Valheim world" /><small>Stored in TogetherServer's private data.</small></label>
-                <label className="invite-input">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label></div>}
-              {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test profile name<Input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
-              {profile.kind === 'Custom' && <div className="settings-grid custom-game-basics">
-                <label>Game name<Input value={profile.custom?.gameName ?? ''} onChange={event => updateProfile(profile.id, { custom: { gameName: event.target.value, primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: profile.custom?.shareJoinAddress ?? true, additionalPorts: profile.custom?.additionalPorts ?? [] } })} placeholder="Palworld, Factorio, Terraria…" /></label>
-                <label>Server name<Input value={profile.name} onChange={event => updateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Friends server" /></label>
-                <label>Save / world key<Input value={profile.worldId} onChange={event => updateProfile(profile.id, { worldId: event.target.value })} placeholder="main-world" /><small>Used to prevent two managed profiles from writing the same save.</small></label>
-                <label className="wide">Working and save directory<div className="field-with-button"><Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} placeholder="C:\\GameServers\\MyServer" /><Button className="secondary" disabled={!!pending} onClick={() => void browseCustomDirectory(profile)}>Browse</Button></div><small>TogetherServer never deletes this folder.</small></label>
-              </div>}
-              {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && <><div className="choice-pills">
-                <Button className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))}>Use an existing server</Button>
-                <Button className={minecraftSetupMode[profile.id] === 'install' ? 'selected' : 'secondary'} onClick={() => setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'install' }))}>Install a new official server</Button>
-              </div><MinecraftWorldSetup profile={profile} busy={!!pending} onChange={patch => updateProfile(profile.id, patch)} /></>}
-              {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <label className="invite-input setup-password">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => setPasswords(current => ({ ...current, [profile.id]: event.target.value }))} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => setShowPasswords(current => ({ ...current, [profile.id]: event.target.checked }))} /> Show password</span></label>}
-            </div>}
-            {setupStep === 'server' && <div className="setup-step server-step"><h3><Icon name="search" /> Server app</h3>
-              <div className="server-step-content">{profile.kind === 'Valheim' ? <>
-                {profile.executablePath ? <p className="selection-summary"><Icon name="check" /> Valheim Dedicated Server found <small>{profile.executablePath}</small></p> : <>
-                  {discovery && <div className="choices">{discovery.installations.length === 0 ? <p>Valheim Dedicated Server was not found.</p> : discovery.installations.map(item => <div className="choice" key={item.executablePath}><span>{item.executablePath}</span><Button className="secondary" onClick={() => updateProfile(profile.id, { executablePath: item.executablePath })}>Use this install</Button></div>)}</div>}
-                  <div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => void scanValheim()}>{pending === 'scan' ? 'Searching…' : 'Search this PC'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void browseServer(profile)}>Browse for server</Button>{discovery?.installations.length === 0 && <a href="steam://install/896660">Open install in Steam</a>}</div>
-                  <p className="helper-text">Steam handles installation and any terms when you open it.</p>
-                </>}
-              </> : profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock' ?
-                <MinecraftServerSetup profile={profile} busy={!!pending} onChange={patch => updateProfile(profile.id, patch)}
-                  onBrowse={target => void browseMinecraft(profile, target)} discovery={minecraftDiscovery}
-                  mode={minecraftSetupMode[profile.id] ?? 'existing'}
-                  onSelect={item => useMinecraft(profile, item)} onScan={() => void scanMinecraft(profile.worldDirectory)}
-                  onInstall={() => void installMinecraft(profile)} acceptedTerms={!!minecraftTerms[profile.id]}
-                  onTermsChange={accepted => setMinecraftTerms(current => ({ ...current, [profile.id]: accepted }))}
-                  installBusy={pending === 'install-minecraft'} />
-              : profile.kind === 'Custom' ? <div className="custom-script-manager">
-                <div className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></div>
-                <label>Start script<TextArea value={customScripts[profile.id]?.start ?? ''} onChange={event => editCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
-                <label>Status and players script<TextArea value={customScripts[profile.id]?.status ?? ''} onChange={event => editCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and echo every contract value.\n@{ contractVersion = [int]$env:TOGETHERSERVER_CONTRACT_VERSION; probeId = $env:TOGETHERSERVER_PROBE_ID; operationId = $env:TOGETHERSERVER_OPERATION_ID; state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Existing scripts still show status, but contract v2 echoes plus the guided live certification are required before player counts can authorize remote lifecycle actions.</small></label>
-                <label>Stop script<TextArea value={customScripts[profile.id]?.stop ?? ''} onChange={event => editCustomScripts(profile.id, { stop: event.target.value })} placeholder={'# Ask the real server to save and exit gracefully.\n# The Start script process must then exit within 90 seconds.'} /><small>Finish within 15 seconds after sending the game’s own save/stop command. TogetherServer never force-kills the game.</small></label>
-                <details className="advanced-block"><summary>Script environment and output contract</summary><p className="helper-text">Every action receives TOGETHERSERVER_ACTION, TOGETHERSERVER_PROFILE_ID, TOGETHERSERVER_WORLD_ID, TOGETHERSERVER_WORKING_DIRECTORY, TOGETHERSERVER_GAME_PORT, and TOGETHERSERVER_MANAGED_PID. Status output must be a single JSON object with optional detail, onlinePlayers, maxPlayers, and players fields.</p></details>
-              </div>
-              : <label>Fixture executable path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
-            </div>}
-            {setupStep === 'review' && <div className="setup-stage review-stage"><h3>Review and start</h3><div className="review-summary"><div><span>Game</span><strong>{profileGameLabel(profile)}</strong></div><div><span>Server</span><strong>{profile.name || profile.serverName || 'Needs a name'}</strong></div><div><span>World / save key</span><strong>{profile.worldId || 'Not selected'}</strong></div><div><span>Server control</span><strong>{profile.kind === 'Custom' ? (customScriptsSaved[profile.id] || customScriptsChanged ? 'Scripts ready' : 'Scripts needed') : profile.executablePath ? 'Selected' : 'Not selected'}</strong></div></div>
-            <ConfiguredPortWarning profile={profile} profiles={draft.profiles} />
-            <details className="advanced-block"><summary>Advanced server settings</summary>
-              <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<Input type="number" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<Input value={profile.serverName} onChange={event => updateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<Input value={profile.executablePath} onChange={event => updateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<Input value={profile.worldDirectory} onChange={event => updateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
-              {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><Input type="checkbox" checked={profile.crossplay} onChange={event => updateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><Input type="checkbox" checked={profile.publicListing} onChange={event => updateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
-              {profile.kind === 'Custom' && <div className="custom-ports"><div className="settings-grid"><label>Primary protocol<Select value={profile.custom?.primaryProtocol ?? 'UDP'} onChange={event => updateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: event.target.value as 'TCP' | 'UDP', shareJoinAddress: profile.custom?.shareJoinAddress ?? true, additionalPorts: profile.custom?.additionalPorts ?? [] } })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select></label><label>Primary game port<Input type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => updateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label></div>
-                <label className="check-row"><Input type="checkbox" checked={profile.custom?.shareJoinAddress ?? true} onChange={event => updateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: event.target.checked, additionalPorts: profile.custom?.additionalPorts ?? [] } })} /> Share public IP and primary port with assigned Friends</label>
-                {(profile.custom?.additionalPorts ?? []).map((port, index) => <div className="custom-port-row" key={`${index}-${port.protocol}-${port.port}`}><Select aria-label={`Additional port ${index + 1} protocol`} value={port.protocol} onChange={event => updateCustomPort(profile, index, { protocol: event.target.value as 'TCP' | 'UDP' })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select><Input aria-label={`Additional port ${index + 1}`} type="number" min="1024" max="65535" value={port.port} onChange={event => updateCustomPort(profile, index, { port: Number(event.target.value) })} /><Input aria-label={`Additional port ${index + 1} label`} value={port.label} onChange={event => updateCustomPort(profile, index, { label: event.target.value })} placeholder="Query or RCON" /><Select aria-label={`Additional port ${index + 1} address family`} value={port.family} onChange={event => updateCustomPort(profile, index, { family: event.target.value as 'Any' | 'IPv4' | 'IPv6' })}><option value="Any">Any IP</option><option value="IPv4">IPv4</option><option value="IPv6">IPv6</option></Select><Button className="text-button" onClick={() => removeCustomPort(profile, index)}>Remove</Button></div>)}
-                <Button className="secondary" disabled={(profile.custom?.additionalPorts.length ?? 0) >= 15} onClick={() => addCustomPort(profile)}>Add another port</Button><p className="helper-text">Declared ports participate in conflict and local-listener checks. TogetherServer does not create firewall or router rules.</p></div>}
-              {['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <div className="device-options world-protection-options">
-                <label className="check-row"><Input type="checkbox" checked={profile.crashRecovery?.enabled ?? false} onChange={event => updateProfile(profile.id, { crashRecovery: { enabled: event.target.checked } })} /> Restart after an unexpected server exit</label>
-                <small>Off by default. Only a previously Ready server with a definitively exited exact process is eligible. Retries wait 1, 5, and 15 minutes, then suspend.</small>
-                <label className="check-row"><Input type="checkbox" checked={profile.backups?.enabled ?? false} onChange={event => updateProfile(profile.id, { backups: { enabled: event.target.checked, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /> Back up after each confirmed graceful Stop</label>
-                {(profile.backups?.enabled ?? false) && <div className="settings-grid"><label>Completed backups to keep<Input type="number" min="1" max="50" value={profile.backups?.retentionCount ?? 5} onChange={event => updateProfile(profile.id, { backups: { enabled: true, retentionCount: Number(event.target.value), minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /></label><label>Free-space reserve (MB)<Input type="number" min="0" max="1048576" value={profile.backups?.minimumFreeSpaceMb ?? 1024} onChange={event => updateProfile(profile.id, { backups: { enabled: true, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: Number(event.target.value) } })} /></label></div>}
-                <p className="helper-text">Backups use staged, verified copies. Restore stays on this Host, requires Offline, and takes a pre-restore snapshot. Complete real-game save/restart acceptance before relying on automation for a valued world.</p>
-              </div>}
-              {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
-            </details></div>}
-          </div>)}
-          {editedProfile && <>{setupStep === 'review' && savedProfiles.some(saved => saved.id === editedProfile.id) && <details className="advanced-block danger-zone"><summary>Danger zone</summary><p className="helper-text">Removing this server forgets its setup and Friend access. TogetherServer leaves its world files in place.</p><Button className="text-button danger" disabled={!!pending} onClick={() => void removeProfile(editedProfile)}>Remove from TogetherServer</Button></details>}
-          {(setupStep === 'review' ? setupIssues : stepIssues).length > 0 && <p className="field-error" role="status">{setupStep === 'review' ? setupIssues[0].message : stepIssues[0]}</p>}
-          <div className="wizard-footer">{savedProfiles.length === 0
-            ? <Button className="text-button" disabled={!!pending} onClick={finishSetupLater}>Finish later</Button>
-            : <Button className="text-button" disabled={!!pending} onClick={cancelSetup}>Cancel</Button>}<div className="actions">
-            {setupStepIndex > 0 && <Button className="secondary" disabled={!!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex - 1])}>Back</Button>}
-            {setupStep !== 'review' && <Button disabled={stepIssues.length > 0 || !!pending} onClick={() => setSetupStep(setupSteps[setupStepIndex + 1])}>Continue</Button>}
-            {setupStep === 'review' && <><Button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id] && !customScriptsChanged) || !!pending} onClick={() => void saveSetup()}>Save for later</Button><Button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id] && !customScriptsChanged) || !!pending} onClick={() => void saveSetup(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Save and start'}</Button></>}
-          </div></div></>}
-        </dialog>}
+        {showSetup && <HostSetupDialog dialogRef={setupRef} snapshot={snapshot} draft={draft}
+          savedProfiles={savedProfiles} editedProfile={editedProfile} notice={notice} pending={pending} dirty={dirty}
+          setupStep={setupStep} setupIssues={setupIssues} stepIssues={stepIssues} discovery={discovery}
+          minecraftDiscovery={minecraftDiscovery} sourceRoots={sourceRoots} passwords={passwords}
+          showPasswords={showPasswords} minecraftSetupMode={minecraftSetupMode} minecraftTerms={minecraftTerms}
+          customScripts={customScripts} customScriptsSaved={customScriptsSaved}
+          customScriptsLoading={customScriptsLoading} customScriptsChanged={customScriptsChanged}
+          dataRecoveryBlocked={!!dataRecovery?.lifecycleBlocked} onCancel={cancelSetup}
+          onFinishLater={finishSetupLater} onAddProfile={addProfile} onStepChange={setSetupStep}
+          onChangeGameKind={changeGameKind} onUpdateProfile={updateProfile}
+          onImportWorld={(profile, root, worldId, folder) => void importWorld(profile, root, worldId, folder)}
+          onBrowseWorld={(profile, folder) => void browseWorld(profile, folder)}
+          onSourceRootChange={setSourceRoot}
+          onPasswordChange={setPassword}
+          onShowPasswordChange={setShowPassword}
+          onBrowseCustomDirectory={profile => void browseCustomDirectory(profile)}
+          onMinecraftSetupModeChange={setMinecraftSetupModeFor}
+          onBrowseMinecraft={(profile, target) => void browseMinecraft(profile, target)}
+          onApplyMinecraftInstallation={applyMinecraftInstallation} onScanMinecraft={folder => void scanMinecraft(folder)}
+          onInstallMinecraft={profile => void installMinecraft(profile)}
+          onMinecraftTermsChange={setMinecraftTermsFor}
+          onScanValheim={() => void scanValheim()} onBrowseServer={profile => void browseServer(profile)}
+          onEditCustomScripts={editCustomScripts} onUpdateCustomPort={updateCustomPort}
+          onAddCustomPort={addCustomPort} onRemoveCustomPort={removeCustomPort}
+          onRemoveProfile={profile => void removeProfile(profile)} onSave={startAfterSave => void saveSetup(startAfterSave)} />}
         {savedProfiles.length > 0 && showHostSettings && <dialog ref={hostSettingsRef} className="panel modal-dialog host-settings-dialog" aria-labelledby="host-settings-title" onCancel={event => { event.preventDefault(); closeHostSettings() }}>
           <div className="modal-heading"><div><h2 id="host-settings-title">Friend access and settings</h2><p>Everyday permissions first. Network and game paths stay under Advanced.</p></div>
             <Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>{dirty ? 'Cancel' : 'Close'}</Button></div>
           {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
           <nav className="settings-tabs" aria-label="Host settings sections">
-            <Button className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</Button>
-            <Button className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Stop & timer</Button>
-            <Button className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</Button>
-            <Button className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</Button>
+            <Button aria-current={hostSettingsSection === 'access' ? 'page' : undefined} className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</Button>
+            <Button aria-current={hostSettingsSection === 'stop' ? 'page' : undefined} className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Stop & timer</Button>
+            <Button aria-current={hostSettingsSection === 'network' ? 'page' : undefined} className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</Button>
+            <Button aria-current={hostSettingsSection === 'advanced' ? 'page' : undefined} className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</Button>
           </nav>
             <div className="settings-content">
               {hostSettingsSection === 'access' && <section className="settings-section"><h3>Friend access</h3>
                 <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
-                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked, remoteControlsEnabled: event.target.checked ? draft.remoteControlsEnabled : false })} /></label>
+                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
                   <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
                 {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
                   <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
@@ -1859,7 +1286,7 @@ function App() {
 
               {hostSettingsSection === 'stop' && <section className="settings-section"><h3>Empty-server countdown</h3>
                 <p>When a Ready server reports 0 players, TogetherServer counts down and stops it gracefully. Friend apps do not gate the timer. A player or unavailable server count cancels it, and a fresh zero-player server check is required again at the end.</p>
-                <div className="idle-settings"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong><small>Off by default. Host and Friend cards share the countdown or explain why it is paused.</small></span><Input type="checkbox" checked={draft.autoShutdownEnabled} disabled={!!pending || dirty} onChange={event => void saveHostFlags({ autoShutdownEnabled: event.target.checked })} /></label>
+                <div className="idle-settings"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong><small>Off by default. Host and Friend cards share the countdown or explain why it is paused.</small></span><Input type="checkbox" checked={draft.autoShutdownEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ autoShutdownEnabled: event.target.checked })} /></label>
                   <label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" value={draft.idleMinutes} disabled={!!pending} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Minutes, from 1 to 1440.</small></label>
                   <label>Friend extension increment<Input type="number" min="1" max="120" value={draft.friendTimerExtensionMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMinutes: Number(event.target.value) })} /><small>Fixed minutes added per approved Friend request.</small></label>
                   <label>Friend extension maximum<Input type="number" min="1" max="1440" value={draft.friendTimerExtensionMaximumMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMaximumMinutes: Number(event.target.value) })} /><small>Total Friend-added minutes allowed during one countdown.</small></label>
@@ -1929,4 +1356,5 @@ function App() {
   </div>
 }
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>)
+createRoot(document.getElementById('root')!).render(
+  <React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>)

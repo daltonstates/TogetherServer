@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -12,6 +13,7 @@ namespace TogetherServer;
 internal sealed class DesktopWindow
 {
     private const string RuntimeDownload = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/";
+    private static readonly TimeSpan GuiLoadDeadline = TimeSpan.FromSeconds(15);
     private static readonly Color WindowBorderColor = Color.FromArgb(48, 46, 44);
     private static readonly Color WindowCanvasColor = Color.FromArgb(14, 14, 15);
     private static readonly Color TitleBarColor = Color.FromArgb(17, 17, 18);
@@ -33,7 +35,14 @@ internal sealed class DesktopWindow
     private bool trayHintShown;
     private volatile bool closeToTray;
     private int started;
+    private int startupShowRequested;
     private int fileDialogOpen;
+    private int loadState = (int)GuiLoadState.NotStarted;
+    private int loadErrorCode = (int)GuiLoadError.None;
+    private int loadFailureKind = (int)GuiLoadFailureKind.None;
+    private int loadFailureHResult;
+    private int hasLoadFailureHResult;
+    private int loadTerminal;
     private volatile bool rendered;
     private volatile bool visible;
 
@@ -48,6 +57,27 @@ internal sealed class DesktopWindow
 
     public bool Visible => visible;
     public bool Rendered => rendered;
+    public string LoadState => ((GuiLoadState)Volatile.Read(ref loadState)).ToString();
+    public string? LoadErrorCode
+    {
+        get
+        {
+            var code = (GuiLoadError)Volatile.Read(ref loadErrorCode);
+            return code == GuiLoadError.None ? null : code.ToString();
+        }
+    }
+    public string? LoadFailureKind
+    {
+        get
+        {
+            if (Volatile.Read(ref hasLoadFailureHResult) == 0) return null;
+            var kind = (GuiLoadFailureKind)Volatile.Read(ref loadFailureKind);
+            return kind == GuiLoadFailureKind.None ? null : kind.ToString();
+        }
+    }
+    public string? LoadFailureHResult => Volatile.Read(ref hasLoadFailureHResult) == 0
+        ? null
+        : unchecked((uint)Volatile.Read(ref loadFailureHResult)).ToString("X8", CultureInfo.InvariantCulture);
     public bool FileDialogOpen => Volatile.Read(ref fileDialogOpen) != 0;
     public bool CustomChrome => form is ChromeForm;
     public void SetCloseToTray(bool enabled) => closeToTray = enabled;
@@ -62,6 +92,7 @@ internal sealed class DesktopWindow
 
     public async Task<bool> ShowAsync()
     {
+        Interlocked.Exchange(ref startupShowRequested, 1);
         try { await shown.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { return false; }
         var target = form;
@@ -74,12 +105,7 @@ internal sealed class DesktopWindow
                 if (target.IsDisposed) { completed.TrySetResult(false); return; }
                 try
                 {
-                    if (target.WindowState == FormWindowState.Minimized) target.WindowState = FormWindowState.Normal;
-                    target.ShowInTaskbar = true;
-                    target.Opacity = 1;
-                    target.Show();
-                    target.BringToFront();
-                    target.Activate();
+                    RevealWindow(target);
                     completed.TrySetResult(true);
                 }
                 catch (InvalidOperationException) { completed.TrySetResult(false); }
@@ -194,20 +220,21 @@ internal sealed class DesktopWindow
     {
         try
         {
+            TrySetLoadState(GuiLoadState.WindowStarting);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using var window = new ChromeForm
+            using var window = new ChromeForm(startInTray)
             {
                 Text = "TogetherServer",
-                StartPosition = FormStartPosition.CenterScreen,
+                StartPosition = startInTray ? FormStartPosition.Manual : FormStartPosition.CenterScreen,
                 Size = new Size(1180, 820),
                 MinimumSize = new Size(380, 560),
                 BackColor = WindowBorderColor,
                 FormBorderStyle = FormBorderStyle.None,
                 Padding = new Padding(1),
-                Opacity = startInTray ? 0 : 1,
                 ShowInTaskbar = !startInTray
             };
+            if (startInTray) window.Location = OutsideVirtualDesktop(window.Size);
             form = window;
             var content = BuildChrome(window);
             using var trayIconImage = CreateTrayIcon();
@@ -237,13 +264,10 @@ internal sealed class DesktopWindow
             };
             window.Shown += (_, _) =>
             {
+                TrySetLoadState(GuiLoadState.WindowShown);
                 shown.TrySetResult(true);
+                if (Volatile.Read(ref startupShowRequested) != 0) RevealWindow(window);
                 _ = LoadGuiAsync(window, content);
-                if (startInTray)
-                {
-                    window.Hide();
-                    window.Opacity = 1;
-                }
                 visible = window.Visible;
             };
             window.VisibleChanged += (_, _) => visible = window.Visible;
@@ -251,6 +275,7 @@ internal sealed class DesktopWindow
         }
         catch (Exception ex)
         {
+            TrySetLoadFailure(GuiLoadError.WindowInitializationFailed, ex);
             shown.TrySetException(ex);
             DesktopLaunch.ShowError("TogetherServer could not open its window.\n\n" + ex.Message);
             stopApplication();
@@ -395,15 +420,21 @@ internal sealed class DesktopWindow
             Text = "Opening TogetherServer..."
         };
         content.Controls.Add(loading);
+        _ = EnforceLoadDeadlineAsync(window, content, loading);
         try
         {
+            if (!TrySetLoadState(GuiLoadState.CreatingEnvironment)) return;
             _ = CoreWebView2Environment.GetAvailableBrowserVersionString();
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory);
-            if (window.IsDisposed) return;
+            if (window.IsDisposed || !TrySetLoadState(GuiLoadState.InitializingWebView)) return;
             var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = content.BackColor };
             content.Controls.Add(view);
             await view.EnsureCoreWebView2Async(environment);
-            if (window.IsDisposed) return;
+            if (window.IsDisposed || IsLoadTerminal)
+            {
+                view.Dispose();
+                return;
+            }
             view.CoreWebView2.NavigationStarting += (_, eventArgs) =>
             {
                 if (Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var destination) &&
@@ -419,7 +450,16 @@ internal sealed class DesktopWindow
             };
             view.CoreWebView2.NavigationCompleted += async (_, eventArgs) =>
             {
-                if (!eventArgs.IsSuccess) return;
+                if (rendered || window.IsDisposed) return;
+                if (!eventArgs.IsSuccess)
+                {
+                    if (!TrySetLoadFailure(GuiLoadError.NavigationFailed)) return;
+                    ShowLoadError(window, content, loading,
+                        "TogetherServer could not load its local interface. Close the app and try again.", false);
+                    CompleteStartupPresentation(window);
+                    return;
+                }
+                if (!TrySetLoadState(GuiLoadState.ProbingRender)) return;
                 for (var attempt = 0; attempt < 20 && !window.IsDisposed; attempt++)
                 {
                     try
@@ -427,28 +467,153 @@ internal sealed class DesktopWindow
                         var value = await view.ExecuteScriptAsync("document.querySelector('.shell') !== null");
                         if (JsonSerializer.Deserialize<bool>(value))
                         {
+                            if (!TrySetRendered()) return;
                             rendered = true;
                             loading.Dispose();
+                            CompleteStartupPresentation(window);
                             return;
                         }
                     }
                     catch (Exception) when (window.IsDisposed) { return; }
                     catch (Exception) { /* Navigation may still be settling; retry briefly. */ }
                     await Task.Delay(100);
+                    if (IsLoadTerminal) return;
                 }
+                if (!TrySetLoadFailure(GuiLoadError.RenderProbeTimedOut)) return;
                 ShowLoadError(window, content, loading, "TogetherServer loaded its local page, but the interface did not render. Close the app and try again.", false);
+                CompleteStartupPresentation(window);
             };
+            if (!TrySetLoadState(GuiLoadState.Navigating))
+            {
+                view.Dispose();
+                return;
+            }
             view.Source = address;
             view.BringToFront();
         }
-        catch (WebView2RuntimeNotFoundException)
+        catch (WebView2RuntimeNotFoundException ex)
         {
+            if (!TrySetLoadFailure(GuiLoadError.WebViewRuntimeMissing, ex)) return;
             ShowLoadError(window, content, loading, "Microsoft Edge WebView2 Runtime is needed to display TogetherServer. Install it from Microsoft, then reopen this app.", true);
+            CompleteStartupPresentation(window);
         }
         catch (Exception ex)
         {
+            if (!TrySetLoadFailure(CurrentStageFailure(), ex)) return;
             ShowLoadError(window, content, loading, "TogetherServer could not display its interface.\n\n" + ex.Message, false);
+            CompleteStartupPresentation(window);
         }
+    }
+
+    private bool IsLoadTerminal => Volatile.Read(ref loadTerminal) != 0;
+
+    private bool TrySetLoadState(GuiLoadState state)
+    {
+        if (IsLoadTerminal) return false;
+        Volatile.Write(ref loadState, (int)state);
+        return true;
+    }
+
+    private bool TrySetRendered()
+    {
+        if (Interlocked.CompareExchange(ref loadTerminal, 1, 0) != 0) return false;
+        Volatile.Write(ref hasLoadFailureHResult, 0);
+        Volatile.Write(ref loadFailureHResult, 0);
+        Volatile.Write(ref loadFailureKind, (int)GuiLoadFailureKind.None);
+        Volatile.Write(ref loadErrorCode, (int)GuiLoadError.None);
+        Volatile.Write(ref loadState, (int)GuiLoadState.Rendered);
+        return true;
+    }
+
+    private bool TrySetLoadFailure(GuiLoadError error, Exception? exception = null)
+    {
+        if (Interlocked.CompareExchange(ref loadTerminal, 1, 0) != 0) return false;
+        if (exception is null)
+        {
+            Volatile.Write(ref hasLoadFailureHResult, 0);
+            Volatile.Write(ref loadFailureHResult, 0);
+            Volatile.Write(ref loadFailureKind, (int)GuiLoadFailureKind.None);
+        }
+        else
+        {
+            Volatile.Write(ref loadFailureHResult, exception.HResult);
+            Volatile.Write(ref loadFailureKind, (int)FailureKind(exception));
+            Volatile.Write(ref hasLoadFailureHResult, 1);
+        }
+        Volatile.Write(ref loadErrorCode, (int)error);
+        Volatile.Write(ref loadState, (int)GuiLoadState.Failed);
+        return true;
+    }
+
+    private async Task EnforceLoadDeadlineAsync(Form window, Control content, Label loading)
+    {
+        await Task.Delay(GuiLoadDeadline).ConfigureAwait(false);
+        if (window.IsDisposed) return;
+        try
+        {
+            window.BeginInvoke(new Action(() =>
+            {
+                if (window.IsDisposed || !TrySetLoadFailure(GuiLoadError.StartupTimedOut)) return;
+                ShowLoadError(window, content, loading,
+                    "TogetherServer could not initialize its local interface in time. Close the app and try again.", false);
+                CompleteStartupPresentation(window);
+            }));
+        }
+        catch (InvalidOperationException) { /* The window closed before the deadline. */ }
+    }
+
+    private static GuiLoadFailureKind FailureKind(Exception exception) => exception switch
+    {
+        COMException => GuiLoadFailureKind.Com,
+        UnauthorizedAccessException or System.Security.SecurityException => GuiLoadFailureKind.Unauthorized,
+        InvalidOperationException => GuiLoadFailureKind.InvalidOperation,
+        ArgumentException => GuiLoadFailureKind.Argument,
+        IOException => GuiLoadFailureKind.IO,
+        _ => GuiLoadFailureKind.Unexpected
+    };
+
+    private GuiLoadError CurrentStageFailure() =>
+        (GuiLoadState)Volatile.Read(ref loadState) switch
+        {
+            GuiLoadState.CreatingEnvironment => GuiLoadError.EnvironmentCreationFailed,
+            GuiLoadState.InitializingWebView => GuiLoadError.WebViewInitializationFailed,
+            GuiLoadState.Navigating => GuiLoadError.NavigationSetupFailed,
+            _ => GuiLoadError.InitializationFailed
+        };
+
+    private void CompleteStartupPresentation(Form window)
+    {
+        if (!startInTray || window.IsDisposed) return;
+        if (Volatile.Read(ref startupShowRequested) != 0) return;
+        window.Hide();
+        if (window is ChromeForm chrome) chrome.AllowActivation();
+    }
+
+    private static void RevealWindow(Form window)
+    {
+        if (window is ChromeForm chrome) chrome.PrepareForReveal();
+        if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
+        window.ShowInTaskbar = true;
+        window.Show();
+        window.BringToFront();
+        window.Activate();
+    }
+
+    private static Point OutsideVirtualDesktop(Size windowSize)
+    {
+        const int gap = 64;
+        var bounds = SystemInformation.VirtualScreen;
+        var right = (long)bounds.Right + gap;
+        if (right <= int.MaxValue - windowSize.Width)
+            return new Point((int)right, bounds.Top);
+        var left = (long)bounds.Left - windowSize.Width - gap;
+        if (left >= int.MinValue)
+            return new Point((int)left, bounds.Top);
+        var bottom = (long)bounds.Bottom + gap;
+        if (bottom <= int.MaxValue - windowSize.Height)
+            return new Point(bounds.Left, (int)bottom);
+        var top = (long)bounds.Top - windowSize.Height - gap;
+        return new Point(bounds.Left, top >= int.MinValue ? (int)top : int.MinValue);
     }
 
     private static void ShowLoadError(Form window, Control content, Label loading, string message, bool offerRuntimeLink)
@@ -557,6 +722,29 @@ internal sealed class DesktopWindow
     private sealed class ChromeForm : Form
     {
         private const int ResizeBorder = 7;
+        private bool suppressActivation;
+        private bool centerBeforeReveal;
+
+        public ChromeForm(bool startupHidden)
+        {
+            suppressActivation = startupHidden;
+            centerBeforeReveal = startupHidden;
+        }
+
+        public void AllowActivation() => suppressActivation = false;
+
+        public void PrepareForReveal()
+        {
+            suppressActivation = false;
+            if (!centerBeforeReveal) return;
+            centerBeforeReveal = false;
+            var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+            Location = new Point(
+                workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2),
+                workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2));
+        }
+
+        protected override bool ShowWithoutActivation => suppressActivation;
 
         public void MaximizeWithinWorkingArea()
         {
@@ -592,5 +780,43 @@ internal sealed class DesktopWindow
             }
             base.WndProc(ref message);
         }
+    }
+
+    private enum GuiLoadState
+    {
+        NotStarted,
+        WindowStarting,
+        WindowShown,
+        CreatingEnvironment,
+        InitializingWebView,
+        Navigating,
+        ProbingRender,
+        Rendered,
+        Failed
+    }
+
+    private enum GuiLoadError
+    {
+        None,
+        WindowInitializationFailed,
+        WebViewRuntimeMissing,
+        EnvironmentCreationFailed,
+        WebViewInitializationFailed,
+        NavigationSetupFailed,
+        NavigationFailed,
+        RenderProbeTimedOut,
+        StartupTimedOut,
+        InitializationFailed
+    }
+
+    private enum GuiLoadFailureKind
+    {
+        None,
+        Com,
+        Unauthorized,
+        InvalidOperation,
+        Argument,
+        IO,
+        Unexpected
     }
 }

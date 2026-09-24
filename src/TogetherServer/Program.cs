@@ -25,10 +25,22 @@ var root = Environment.GetEnvironmentVariable("TOGETHERSERVER_DATA_DIR")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TogetherServer");
 LocalData data;
 try { data = new LocalData(root); }
-catch (IOException ex) when (openWindow)
+catch (IOException ex)
 {
-    if (await DesktopLaunch.TryShowExistingAsync(port, showWindow: !startupLaunch)) return;
-    DesktopLaunch.ShowError("TogetherServer could not open its local data. Another instance may be starting.\n\n" + ex.Message);
+    if (openWindow && await DesktopLaunch.TryShowExistingAsync(port, showWindow: !startupLaunch)) return;
+    var message = "TogetherServer could not open its local data. Another instance may be starting.\n\n" + ex.Message;
+    if (openWindow) DesktopLaunch.ShowError(message);
+    else Console.Error.WriteLine(message);
+    Environment.ExitCode = 1;
+    return;
+}
+catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessException or
+                           System.Security.SecurityException)
+{
+    var message = "TogetherServer could not safely open its local data. No server action was started.\n\n" + ex.Message;
+    if (openWindow) DesktopLaunch.ShowError(message);
+    else Console.Error.WriteLine(message);
+    Environment.ExitCode = 1;
     return;
 }
 using var ownedData = data;
@@ -40,7 +52,7 @@ var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 var manager = new HostManager(data, games);
 var identity = new HostIdentity(data);
-var friend = new FriendService(data);
+using var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "",
     Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0));
@@ -50,7 +62,7 @@ using var externalProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(
 var externalPortProbe = new ExternalPortProbe(externalProbeClient);
 using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
 var minecraftInstaller = new MinecraftInstaller(minecraftClient, data);
-var modeGate = new SemaphoreSlim(1, 1);
+using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port,
@@ -87,11 +99,16 @@ app.Use(async (context, next) =>
 app.MapGet("/api/local/snapshot", async () => friendMode
     ? Results.Json(friend.View())
     : Results.Json(await manager.SnapshotAsync()));
+app.MapGet("/api/local/data-recovery", () => Results.Json(data.Recovery));
 app.MapGet("/api/local/window", () => Results.Json(new
 {
     available = desktop is not null,
     visible = desktop?.Visible ?? false,
     rendered = desktop?.Rendered ?? false,
+    loadState = desktop?.LoadState ?? "Unavailable",
+    loadErrorCode = desktop?.LoadErrorCode,
+    loadFailureKind = desktop?.LoadFailureKind,
+    loadFailureHResult = desktop?.LoadFailureHResult,
     fileDialogOpen = desktop?.FileDialogOpen ?? false,
     customChrome = desktop?.CustomChrome ?? false
 }));
@@ -109,17 +126,32 @@ object DesktopPreferenceView()
         launchAtLogin = false;
         startupAvailable = false;
     }
-    return new { available = desktop is not null, launchAtLogin,
-        closeToTray = desktopPreferences.CloseToTray, startupAvailable };
+    return new
+    {
+        available = desktop is not null,
+        launchAtLogin,
+        closeToTray = desktopPreferences.CloseToTray,
+        startupAvailable
+    };
 }
 app.MapGet("/api/local/desktop/preferences", () => Results.Json(DesktopPreferenceView()));
 app.MapPut("/api/local/desktop/preferences", (DesktopPreferenceChange change) =>
 {
-    if (desktop is null) return Results.Json(new { ok = false, code = "WindowUnavailable",
-        message = "Open the desktop app to change its startup and tray settings.", preferences = DesktopPreferenceView() });
+    if (desktop is null) return Results.Json(new
+    {
+        ok = false,
+        code = "WindowUnavailable",
+        message = "Open the desktop app to change its startup and tray settings.",
+        preferences = DesktopPreferenceView()
+    });
     if (change.LaunchAtLogin.HasValue == change.CloseToTray.HasValue)
-        return Results.Json(new { ok = false, code = "InvalidPreference",
-            message = "Change one desktop preference at a time.", preferences = DesktopPreferenceView() });
+        return Results.Json(new
+        {
+            ok = false,
+            code = "InvalidPreference",
+            message = "Change one desktop preference at a time.",
+            preferences = DesktopPreferenceView()
+        });
     try
     {
         if (change.LaunchAtLogin is { } launchAtLogin) startupRegistration.SetEnabled(launchAtLogin);
@@ -134,11 +166,21 @@ app.MapPut("/api/local/desktop/preferences", (DesktopPreferenceChange change) =>
     catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or
         IOException or InvalidOperationException)
     {
-        return Results.Json(new { ok = false, code = "PreferenceFailed", message = ex.Message,
-            preferences = DesktopPreferenceView() });
+        return Results.Json(new
+        {
+            ok = false,
+            code = "PreferenceFailed",
+            message = ex.Message,
+            preferences = DesktopPreferenceView()
+        });
     }
-    return Results.Json(new { ok = true, code = "PreferenceSaved", message = "App preference saved.",
-        preferences = DesktopPreferenceView() });
+    return Results.Json(new
+    {
+        ok = true,
+        code = "PreferenceSaved",
+        message = "App preference saved.",
+        preferences = DesktopPreferenceView()
+    });
 });
 app.MapGet("/api/local/update", async () => Results.Json(await updater.CheckAsync()));
 app.MapPost("/api/local/update/check", async () => Results.Json(await updater.CheckAsync(true)));
@@ -215,6 +257,63 @@ app.MapPut("/api/local/settings", async (HostSettings settings) =>
     }
     return Results.Json(result);
 });
+app.MapPut("/api/local/settings/control-policy", async (HostControlPolicyChange change) =>
+{
+    await modeGate.WaitAsync();
+    ActionResult result;
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to My server first." });
+        result = await manager.UpdateControlPolicyAsync(change);
+    }
+    finally { modeGate.Release(); }
+    if (result.Ok) await companionServer.SyncAsync();
+    return Results.Json(result);
+});
+app.MapPost("/api/local/data-recovery/acknowledge", async (DataRecoveryAcknowledgement request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode)
+            return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to My server first." });
+        var recovery = data.Recovery;
+        if (recovery.Notices.Count == 0)
+            return Results.Json(new
+            {
+                ok = true,
+                code = "NoRecoveryRequired",
+                message = "There is no local data recovery notice to acknowledge.",
+                snapshot = await manager.SnapshotAsync()
+            });
+        if (recovery.LifecycleBlocked && !request.ConfirmNoManagedServersRunning)
+            return Results.Json(new
+            {
+                ok = false,
+                code = "ConfirmationRequired",
+                message = "Confirm that no game server managed by TogetherServer is still running."
+            });
+        var snapshot = await manager.SnapshotAsync();
+        if (recovery.LifecycleBlocked && snapshot.Runs.Any(run => run.State != "Offline"))
+            return Results.Json(new
+            {
+                ok = false,
+                code = "ManagedRunPresent",
+                message = "Stop or resolve every recorded managed server before acknowledging data recovery.",
+                snapshot
+            });
+        data.AcknowledgeRecovery();
+        data.TryAudit($"{DateTimeOffset.UtcNow:O} local data recovery acknowledged after explicit no-running-server confirmation");
+        return Results.Json(new
+        {
+            ok = true,
+            code = "RecoveryAcknowledged",
+            message = "Lifecycle actions are available again. Quarantined files were retained for review.",
+            snapshot = await manager.SnapshotAsync()
+        });
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/network/detect-public-ip", async () =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
@@ -287,9 +386,13 @@ app.MapPost("/api/local/profiles/{id:guid}/custom-scripts/reveal", async (Guid i
         if (!snapshot.Settings.Profiles.Any(profile => profile.Id == id && profile.Kind == GameKinds.Custom))
             return Results.NotFound(new { ok = false, code = "ProfileNotFound", message = "Saved custom game was not found." });
         var scripts = data.LoadCustomScripts(id);
-        return Results.Json(new { ok = true, code = scripts is null ? "CustomScriptsEmpty" : "CustomScriptsLoaded",
+        return Results.Json(new
+        {
+            ok = true,
+            code = scripts is null ? "CustomScriptsEmpty" : "CustomScriptsLoaded",
             message = scripts is null ? "No custom scripts have been saved yet." : "Custom scripts loaded from Windows protected storage.",
-            scripts = scripts ?? new CustomScriptBundle("", "", "") });
+            scripts = scripts ?? new CustomScriptBundle("", "", "")
+        });
     }
     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
                                System.Security.Cryptography.CryptographicException or JsonException)
@@ -435,9 +538,14 @@ app.MapPost("/api/local/mode/{mode}", async (string mode) =>
             return Results.BadRequest(new { ok = false, code = "InvalidMode", message = "Choose Host or Friend." });
         data.SavePreferredMode(mode.Equals("friend", StringComparison.OrdinalIgnoreCase) ? "Friend" : "Host");
         friendMode = mode.Equals("friend", StringComparison.OrdinalIgnoreCase);
-        return Results.Json(new { ok = true, code = "ModeChanged", message = friendMode
+        return Results.Json(new
+        {
+            ok = true,
+            code = "ModeChanged",
+            message = friendMode
             ? "Showing your connected Hosts. Your own server and Friend access keep running."
-            : "Showing your server. Connections to other Hosts keep running." });
+            : "Showing your server. Connections to other Hosts keep running."
+        });
     }
     finally { modeGate.Release(); }
 });
@@ -449,8 +557,12 @@ app.MapPost("/api/local/quit", async (HttpContext context) =>
         if (shutdownPending)
             return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
         if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
-            return Results.Json(new { ok = false, code = "ManagedRunPresent",
-                message = "Stop or resolve every managed server before quitting TogetherServer." });
+            return Results.Json(new
+            {
+                ok = false,
+                code = "ManagedRunPresent",
+                message = "Stop or resolve every managed server before quitting TogetherServer."
+            });
         shutdownPending = true;
         context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
         return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
@@ -464,11 +576,17 @@ app.MapGet("/api/local/companion", async () =>
     try { using var certificate = identity.Load(); if (certificate is not null) fingerprint = HostIdentity.Fingerprint(certificate); }
     catch { /* A bad protected identity is reported by the listener warning. */ }
     var snapshot = await manager.SnapshotAsync();
-    return Results.Json(new { listenerActive = companionServer.Active,
+    return Results.Json(new
+    {
+        listenerActive = companionServer.Active,
         listenerWarning = companionServer.Warning,
-        endpoint = snapshot.Settings.CompanionEndpoint, fingerprint, certificates = identity.State(),
-        route = ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute), devices = pairing.Views(),
-        stopSafety = companionServer.StopSafety(snapshot) });
+        endpoint = snapshot.Settings.CompanionEndpoint,
+        fingerprint,
+        certificates = identity.State(),
+        route = ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute),
+        devices = pairing.Views(),
+        stopSafety = companionServer.StopSafety(snapshot)
+    });
 });
 app.MapGet("/api/local/operations", () => Results.Json(companionServer.RecentOperations()));
 app.MapPost("/api/local/companion/certificate/stage", async () =>
@@ -481,7 +599,7 @@ app.MapPost("/api/local/companion/certificate/stage", async () =>
         if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
             return Results.BadRequest(new { ok = false, code = "EndpointRequired", message = "Save the Friend endpoint first." });
         var state = identity.StageNext(settings.CompanionEndpoint);
-        data.Audit($"certificate-stage {state.NextFingerprint} {DateTimeOffset.UtcNow:O}");
+        data.TryAudit($"certificate-stage {state.NextFingerprint} {DateTimeOffset.UtcNow:O}");
         return Results.Json(new { ok = true, code = "CertificateStaged", message = "The next Host certificate is staged and will be announced over authenticated connections.", certificates = state });
     }
     catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
@@ -496,7 +614,7 @@ app.MapPost("/api/local/companion/certificate/activate", async () =>
     {
         if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
         var state = identity.ActivateNext();
-        data.Audit($"certificate-activate {state.ActiveFingerprint} {DateTimeOffset.UtcNow:O}");
+        data.TryAudit($"certificate-activate {state.ActiveFingerprint} {DateTimeOffset.UtcNow:O}");
         result = new { ok = true, code = "CertificateActivated", message = "The staged Host certificate is now active. The prior pin remains in the recovery grace period.", certificates = state };
     }
     catch (Exception ex) when (ex is InvalidOperationException or System.Security.Cryptography.CryptographicException)
@@ -512,7 +630,7 @@ app.MapPost("/api/local/companion/certificate/retire-previous", async () =>
     {
         if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
         var state = identity.RetirePrevious();
-        data.Audit($"certificate-retire-previous {DateTimeOffset.UtcNow:O}");
+        data.TryAudit($"certificate-retire-previous {DateTimeOffset.UtcNow:O}");
         return Results.Json(new { ok = true, code = "PreviousCertificateRetired", message = "The previous Host certificate pin was retired.", certificates = state });
     }
     catch (Exception ex) when (ex is InvalidOperationException or System.Security.Cryptography.CryptographicException)
@@ -532,7 +650,10 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
         current = pairing.CurrentServerInvite(profileId, snapshot.Settings.CompanionEndpoint,
             HostIdentity.Fingerprint(currentCertificate));
     }
-    return Results.Json(new { ok = true, exists = current is not null,
+    return Results.Json(new
+    {
+        ok = true,
+        exists = current is not null,
         open = current?.Open ?? false,
         password = current?.Open == true ? PairingPassword.Encode(current.Invitation) : null,
         canStart = current?.CanStart ?? true,
@@ -540,7 +661,8 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
         durationMinutes = current?.DurationMinutes ?? 30,
         deviceLimit = current?.DeviceLimit ?? 1,
         activatedDevices = current?.ActivatedDevices ?? 0,
-        requireApproval = current?.RequireApproval ?? false });
+        requireApproval = current?.RequireApproval ?? false
+    });
 });
 app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId, ServerInviteRequest request) =>
 {
@@ -561,8 +683,13 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
                     GameConnection.IsPublicIpv4(settings.PublicGameIp) ? settings.PublicGameIp : null
                 : ConnectionRoutes.ValidAddress(route.Address) ? route.Address : null;
             if (address is null)
-                return Results.BadRequest(new { ok = false, code = "AddressUnavailable", message = route.Mode == ConnectionRouteModes.DirectInternet
-                    ? "Check this PC's public IP address first." : "Choose an address for the selected route first." });
+                return Results.BadRequest(new
+                {
+                    ok = false,
+                    code = "AddressUnavailable",
+                    message = route.Mode == ConnectionRouteModes.DirectInternet
+                    ? "Check this PC's public IP address first." : "Choose an address for the selected route first."
+                });
             settings.CompanionEndpoint = $"https://{address}:{settings.CompanionPort}";
             settings.CompanionBindAddress = route.Mode == ConnectionRouteModes.DirectInternet ? "0.0.0.0" : address;
             var saved = await manager.UpdateSettingsAsync(settings);
@@ -596,11 +723,17 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
     }
     finally { modeGate.Release(); }
     if (request.EnableConnections) await companionServer.SyncAsync();
-    return Results.Json(new { ok = true, code = request.Refresh ? "InviteRefreshed" : "InviteReady",
+    return Results.Json(new
+    {
+        ok = true,
+        code = request.Refresh ? "InviteRefreshed" : "InviteReady",
         message = request.Refresh ? "Earlier credentials from this server code were revoked and a new pairing window opened."
             : $"Pairing is open until {pairingExpiresUtc:u}, or until its device limit is reached.",
-        password, expiresUtc = pairingExpiresUtc,
-        listenerActive = companionServer.Active, listenerWarning = companionServer.Warning });
+        password,
+        expiresUtc = pairingExpiresUtc,
+        listenerActive = companionServer.Active,
+        listenerWarning = companionServer.Warning
+    });
 });
 app.MapPost("/api/local/servers/{profileId:guid}/pairing/close", async (Guid profileId) =>
 {
@@ -635,24 +768,33 @@ app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
 app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePermissionRequest request) =>
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
+    try
+    {
+        return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
         Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop, request.Scope,
-            request.CanExtendTimer)); }
+            request.CanExtendTimer));
+    }
     finally { modeGate.Release(); }
 });
 app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerAccessRequest request) =>
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
+    try
+    {
+        return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
         Results.Json(pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
-            data.LoadSettings().Profiles.Select(profile => profile.Id))); }
+            data.LoadSettings().Profiles.Select(profile => profile.Id)));
+    }
     finally { modeGate.Release(); }
 });
 app.MapPut("/api/local/devices/{id:guid}/name", async (Guid id, DeviceNameRequest request) =>
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetName(id, request.Name)); }
+    try
+    {
+        return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
+        Results.Json(pairing.SetName(id, request.Name));
+    }
     finally { modeGate.Release(); }
 });
 app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>

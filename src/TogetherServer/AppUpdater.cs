@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -10,17 +12,26 @@ namespace TogetherServer;
 public sealed record UpdateView(string State, string CurrentVersion, string? LatestVersion, string Message);
 public sealed record UpdateResult(bool Ok, string Code, string Message);
 public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256);
+public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message);
 
-public sealed class AppUpdater(HttpClient client, string dataRoot, string executablePath, Version currentVersion)
+public interface IAuthenticodeVerifier
+{
+    AuthenticodeVerification Verify(string path);
+}
+
+public sealed class AppUpdater(HttpClient client, string dataRoot, string executablePath, Version currentVersion,
+    IAuthenticodeVerifier? authenticodeVerifier = null)
 {
     public const string AssetName = "TogetherServer-win-x64.exe";
     public const long MaximumBytes = 200L * 1024 * 1024;
     public static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromMinutes(30);
     private const string LatestUrl = "https://api.github.com/repos/daltonstates/TogetherServer/releases/latest";
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly IAuthenticodeVerifier signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
     private UpdateView view = new("Checking", currentVersion.ToString(3), null, "Checking for updates.");
     private UpdateRelease? available;
     private string? preparedPath;
+    private string? publisherKey;
     private DateTimeOffset checkedUtc;
 
     public UpdateView View => view;
@@ -37,6 +48,16 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             checkedUtc = DateTimeOffset.UtcNow;
             if (!IsStandalone)
                 return view = new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.");
+            var installedSignature = signatureVerifier.Verify(executablePath);
+            if (!installedSignature.Valid || string.IsNullOrWhiteSpace(installedSignature.PublisherKey))
+            {
+                available = null;
+                preparedPath = null;
+                publisherKey = null;
+                return view = new("Unsupported", currentVersion.ToString(3), null,
+                    "Automatic updates are disabled because this installed EXE does not have a valid Authenticode signature.");
+            }
+            publisherKey = installedSignature.PublisherKey;
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, LatestUrl);
@@ -93,7 +114,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (available is null || view.State != "Available")
                 return new(false, "NoUpdate", view.Message);
             if (preparedPath is not null && File.Exists(preparedPath) &&
-                await HasHashAsync(preparedPath, available.Sha256))
+                await HasHashAsync(preparedPath, available.Sha256) &&
+                HasMatchingPublisher(preparedPath, publisherKey))
                 return new(true, "Ready", "Update downloaded and verified.");
             var directory = Path.Combine(dataRoot, "updates", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
@@ -131,6 +153,9 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                     packagedVersion.Minor != available.Version.Minor ||
                     packagedVersion.Build != available.Version.Build)
                     return new(false, "InvalidDownload", "The release EXE version does not match its tag.");
+                if (!HasMatchingPublisher(path, publisherKey))
+                    return new(false, "InvalidSignature",
+                        "The release EXE is not validly signed by the same publisher as this installed app.");
                 preparedPath = path;
                 valid = true;
                 return new(true, "Ready", "Update downloaded and verified.");
@@ -156,12 +181,18 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             return new(false, "NotReady", "No verified update is ready.");
         try
         {
+            var expectedPublisherKey = publisherKey!;
             var helper = Path.Combine(Path.GetDirectoryName(preparedPath)!, "TogetherServer-updater.exe");
             if (!HasHashAsync(preparedPath, available.Sha256).GetAwaiter().GetResult())
                 return new(false, "InvalidDownload", "The downloaded update changed before installation.");
+            if (!HasMatchingPublisher(executablePath, expectedPublisherKey) ||
+                !HasMatchingPublisher(preparedPath, expectedPublisherKey))
+                return new(false, "InvalidSignature", "The installed app or downloaded update failed publisher verification.");
             File.Copy(preparedPath, helper, true);
             if (!HasHashAsync(helper, available.Sha256).GetAwaiter().GetResult())
                 return new(false, "InvalidDownload", "The updater copy failed its SHA-256 check.");
+            if (!HasMatchingPublisher(helper, expectedPublisherKey))
+                return new(false, "InvalidSignature", "The updater copy failed publisher verification.");
             var ready = Path.Combine(Path.GetDirectoryName(preparedPath)!, "ready.signal");
             if (File.Exists(ready)) File.Delete(ready);
             using var process = Process.GetCurrentProcess();
@@ -169,7 +200,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             foreach (var argument in new[] { "--apply-update", process.Id.ToString(CultureInfo.InvariantCulture),
                          process.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),
                          Path.GetFullPath(executablePath), Path.GetFullPath(preparedPath), available.Sha256,
-                         Path.GetFullPath(dataRoot), ready })
+                         Path.GetFullPath(dataRoot), ready, expectedPublisherKey })
                 start.ArgumentList.Add(argument);
             using var launched = Process.Start(start);
             if (launched is null) return new(false, "LaunchFailed", "Could not start the updater.");
@@ -223,5 +254,121 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var actual = Convert.ToHexString(await SHA256.HashDataAsync(file));
         return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool HasMatchingPublisher(string path, string? expectedPublisherKey)
+    {
+        if (string.IsNullOrWhiteSpace(expectedPublisherKey)) return false;
+        var signature = signatureVerifier.Verify(path);
+        if (!signature.Valid || string.IsNullOrWhiteSpace(signature.PublisherKey)) return false;
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(
+                Convert.FromHexString(signature.PublisherKey), Convert.FromHexString(expectedPublisherKey));
+        }
+        catch (FormatException) { return false; }
+    }
+}
+
+public sealed class WindowsAuthenticodeVerifier : IAuthenticodeVerifier
+{
+    private static readonly Guid GenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+    private const uint UiNone = 2;
+    private const uint RevokeWholeChain = 1;
+    private const uint ChoiceFile = 1;
+    private const uint StateActionVerify = 1;
+    private const uint StateActionClose = 2;
+    private const uint RevocationCheckChain = 0x40;
+
+    public AuthenticodeVerification Verify(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            return new(false, null, "Authenticode verification requires Windows.");
+        if (!File.Exists(path)) return new(false, null, "The executable does not exist.");
+        try
+        {
+            var trustStatus = VerifyTrust(path);
+            if (trustStatus != 0)
+                return new(false, null, $"Windows rejected the Authenticode signature (0x{trustStatus:X8}).");
+#pragma warning disable SYSLIB0057 // The BCL has no loader replacement for extracting an Authenticode signer from a PE file.
+            using var signedCertificate = X509Certificate.CreateFromSignedFile(path);
+#pragma warning restore SYSLIB0057
+            using var certificate = X509CertificateLoader.LoadCertificate(signedCertificate.GetRawCertData());
+            var publisherKey = Convert.ToHexString(SHA256.HashData(certificate.GetPublicKey()));
+            return new(true, publisherKey, "The Authenticode signature is valid.");
+        }
+        catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException)
+        {
+            return new(false, null, "Could not verify the Authenticode signature: " + ex.Message);
+        }
+    }
+
+    private static int VerifyTrust(string path)
+    {
+        var filePath = Marshal.StringToCoTaskMemUni(path);
+        var fileInfoPointer = IntPtr.Zero;
+        var data = new WinTrustData();
+        try
+        {
+            var fileInfo = new WinTrustFileInfo
+            {
+                Size = (uint)Marshal.SizeOf<WinTrustFileInfo>(),
+                FilePath = filePath
+            };
+            fileInfoPointer = Marshal.AllocCoTaskMem(Marshal.SizeOf<WinTrustFileInfo>());
+            Marshal.StructureToPtr(fileInfo, fileInfoPointer, false);
+            data = new WinTrustData
+            {
+                Size = (uint)Marshal.SizeOf<WinTrustData>(),
+                UiChoice = UiNone,
+                RevocationChecks = RevokeWholeChain,
+                UnionChoice = ChoiceFile,
+                File = fileInfoPointer,
+                StateAction = StateActionVerify,
+                ProviderFlags = RevocationCheckChain
+            };
+            var action = GenericVerifyV2;
+            return WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+        }
+        finally
+        {
+            if (data.StateData != IntPtr.Zero)
+            {
+                data.StateAction = StateActionClose;
+                var action = GenericVerifyV2;
+                _ = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+            }
+            if (fileInfoPointer != IntPtr.Zero) Marshal.FreeCoTaskMem(fileInfoPointer);
+            Marshal.FreeCoTaskMem(filePath);
+        }
+    }
+
+    [DllImport("wintrust.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    private static extern int WinVerifyTrust(IntPtr window, ref Guid actionId, ref WinTrustData trustData);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinTrustFileInfo
+    {
+        public uint Size;
+        public IntPtr FilePath;
+        public IntPtr FileHandle;
+        public IntPtr KnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinTrustData
+    {
+        public uint Size;
+        public IntPtr PolicyCallbackData;
+        public IntPtr SipClientData;
+        public uint UiChoice;
+        public uint RevocationChecks;
+        public uint UnionChoice;
+        public IntPtr File;
+        public uint StateAction;
+        public IntPtr StateData;
+        public IntPtr UrlReference;
+        public uint ProviderFlags;
+        public uint UiContext;
     }
 }

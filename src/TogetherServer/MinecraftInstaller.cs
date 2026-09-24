@@ -69,6 +69,7 @@ public sealed class MinecraftInstaller(HttpClient client, LocalData data)
                     throw new InvalidDataException("Server JAR URL and checksum disagree.");
                 artifact = Path.Combine(stage, "server.jar");
                 await DownloadAsync(serverUrl, artifact, JarLimit, size, sha1, HashAlgorithmName.SHA1, ct);
+                MinecraftSetup.WriteManagedJavaProvenance(stage, version, sha1);
                 var javaMajor = metadata.RootElement.GetProperty("javaVersion").GetProperty("majorVersion").GetInt32();
                 if (javaMajor is < 17 or > 40) throw new InvalidDataException("Unsupported Java runtime version in Minecraft metadata.");
                 executable = await EnsureRuntimeAsync(javaMajor, ct);

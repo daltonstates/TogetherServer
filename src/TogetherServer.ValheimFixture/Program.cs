@@ -26,7 +26,7 @@ if (!Inside(saveDir) || !Inside(log) || Value("-password") != "fixture-pass-123"
     return 2;
 
 using var gameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-    { ExclusiveAddressUse = true };
+{ ExclusiveAddressUse = true };
 gameSocket.Bind(new IPEndPoint(IPAddress.Any, gamePort));
 using var querySocket = new UdpClient(new IPEndPoint(IPAddress.Any, gamePort + 1));
 using var queryDone = new CancellationTokenSource();

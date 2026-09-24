@@ -44,7 +44,7 @@ public sealed record RemoteOperationSubmission(bool Accepted, bool Existing, str
 
 // Remote requests are journaled before execution. A Host restart marks unfinished
 // work Interrupted and never replays a destructive operation automatically.
-public sealed class RemoteOperationCoordinator
+public sealed class RemoteOperationCoordinator : IAsyncDisposable
 {
     private const int MaximumEntries = 500;
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
@@ -53,6 +53,9 @@ public sealed class RemoteOperationCoordinator
     private readonly List<RemoteOperation> operations;
     private readonly ConcurrentQueue<QueuedOperation> queue = new();
     private readonly SemaphoreSlim queueSignal = new(0);
+    private readonly CancellationTokenSource workerStop = new();
+    private readonly Task worker;
+    private int disposed;
 
     private sealed record QueuedOperation(Guid OperationId, Func<Task<RemoteOperationOutcome>> Execute);
 
@@ -73,7 +76,7 @@ public sealed class RemoteOperationCoordinator
         }
         var pruned = PruneLocked();
         if (interrupted || pruned) data.SaveRemoteOperations(operations);
-        _ = Task.Run(ProcessQueueAsync);
+        worker = Task.Run(() => ProcessQueueAsync(workerStop.Token));
     }
 
     public RemoteOperationSubmission Submit(Guid deviceId, Guid requestId, Guid profileId, string action,
@@ -82,6 +85,9 @@ public sealed class RemoteOperationCoordinator
         RemoteOperation operation;
         lock (sync)
         {
+            if (disposed != 0)
+                return new(false, false, "OperationCoordinatorStopped",
+                    "The Host is closing and cannot accept another remote operation.", null);
             var existing = operations.SingleOrDefault(item => item.DeviceId == deviceId && item.RequestId == requestId);
             if (existing is not null)
             {
@@ -116,10 +122,10 @@ public sealed class RemoteOperationCoordinator
                 return new(false, false, "OperationJournalUnavailable",
                     "The Host could not safely record this request, so it was not run.", null);
             }
+            queue.Enqueue(new(operation.Id, execute));
+            queueSignal.Release();
         }
 
-        queue.Enqueue(new(operation.Id, execute));
-        queueSignal.Release();
         data.TryAudit($"remote-operation-accepted {operation.Id} {deviceId} {profileId} {action} {operation.RequestedUtc:O}");
         RecordActivity("RemoteActionAccepted", $"A Friend requested {ActionLabel(action)}.",
             ActivitySeverity.Important, profileId);
@@ -161,20 +167,24 @@ public sealed class RemoteOperationCoordinator
             .Take(Math.Clamp(maximum, 1, MaximumEntries)).Select(View).ToList();
     }
 
-    private async Task ProcessQueueAsync()
+    private async Task ProcessQueueAsync(CancellationToken cancellationToken)
     {
-        while (true)
+        try
         {
-            await queueSignal.WaitAsync();
-            while (queue.TryDequeue(out var queued))
+            while (true)
             {
-                try { await ExecuteAsync(queued.OperationId, queued.Execute); }
-                catch (Exception ex)
+                await queueSignal.WaitAsync(cancellationToken);
+                while (!cancellationToken.IsCancellationRequested && queue.TryDequeue(out var queued))
                 {
-                    data.TryAudit($"remote-operation-worker-failed {queued.OperationId} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}");
+                    try { await ExecuteAsync(queued.OperationId, queued.Execute); }
+                    catch (Exception ex)
+                    {
+                        data.TryAudit($"remote-operation-worker-failed {queued.OperationId} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}");
+                    }
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
     private async Task ExecuteAsync(Guid operationId, Func<Task<RemoteOperationOutcome>> execute)
@@ -282,9 +292,46 @@ public sealed class RemoteOperationCoordinator
 
     private void RecordActivity(string action, string message, string severity, Guid profileId)
     {
-        try { data.RecordActivity("Remote", action, message, severity, profileId,
-            visibility: ActivityVisibility.AssignedFriends); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
+        try
+        {
+            data.RecordActivity("Remote", action, message, severity, profileId,
+            visibility: ActivityVisibility.AssignedFriends);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+            System.Security.SecurityException or ArgumentException or System.Text.Json.JsonException or NotSupportedException)
         { data.TryAudit($"activity-write-failed Remote {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        lock (sync)
+        {
+            if (disposed != 0) return;
+            disposed = 1;
+            workerStop.Cancel();
+        }
+        try { await worker; }
+        catch (OperationCanceledException) { }
+        lock (sync)
+        {
+            var interrupted = false;
+            foreach (var operation in operations.Where(item => item.State == RemoteOperationStates.Pending))
+            {
+                operation.State = RemoteOperationStates.Interrupted;
+                operation.Ok = false;
+                operation.Code = "HostShuttingDown";
+                operation.Message = "The Host closed before this queued operation started. It was not run.";
+                operation.CompletedUtc = DateTimeOffset.UtcNow;
+                interrupted = true;
+            }
+            if (interrupted)
+            {
+                try { data.SaveRemoteOperations(operations); }
+                catch (Exception ex) when (JournalFailure(ex))
+                { data.TryAudit($"remote-operation-journal-failed during-shutdown {DateTimeOffset.UtcNow:O}"); }
+            }
+        }
+        workerStop.Dispose();
+        queueSignal.Dispose();
     }
 }

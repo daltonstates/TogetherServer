@@ -63,6 +63,9 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
                 return new("MinecraftJarRequired", "Choose an installed Minecraft Java server JAR.");
             if (!Path.GetDirectoryName(Path.GetFullPath(jar))!.Equals(root, StringComparison.OrdinalIgnoreCase))
                 return new("MinecraftJarFolderMismatch", "Keep the server JAR in the prepared server folder.");
+            if (!MinecraftSetup.IsSupportedVanillaServerJar(jar, root))
+                return new("MinecraftVanillaJarRequired",
+                    "Choose an official vanilla Minecraft Java server JAR. Modded server JARs are not supported.");
             if (!string.Equals(Property(root, "eula.txt", "eula"), "true", StringComparison.OrdinalIgnoreCase))
                 return new("MinecraftEulaRequired", "Review and accept Minecraft's EULA yourself in this server folder before Start.");
         }
@@ -209,7 +212,7 @@ internal static class MinecraftStatusProbe
         try
         {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-                { ReceiveTimeout = 800, SendTimeout = 800 };
+            { ReceiveTimeout = 800, SendTimeout = 800 };
             socket.Connect(address, port);
             var ping = new byte[33];
             ping[0] = 0x01;

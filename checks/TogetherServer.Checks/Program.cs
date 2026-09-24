@@ -43,12 +43,125 @@ int FreePort()
     }
     throw new Exception("No free UDP pair found.");
 }
+void CreateJunction(string link, string target)
+{
+    var shell = Environment.GetEnvironmentVariable("ComSpec") ?? Path.Combine(Environment.SystemDirectory, "cmd.exe");
+    var info = new ProcessStartInfo(shell)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    };
+    foreach (var argument in new[] { "/d", "/c", "mklink", "/J", link, target }) info.ArgumentList.Add(argument);
+    using var process = Process.Start(info) ?? throw new Exception("junction helper did not start");
+    process.WaitForExit();
+    if (process.ExitCode != 0)
+        throw new Exception("junction creation failed: " + process.StandardError.ReadToEnd());
+}
 LocalData Data(string name) => new(Path.Combine(root, name));
+GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
+HostManager Manager(LocalData data) => new(data, Games(data));
+
+await Check("control policy remains fail closed when audit logging is unavailable", async () =>
+{
+    using var data = Data("control-policy-audit");
+    var profile = Profile("control-policy-audit", "control-policy-audit", FreePort());
+    var seeded = Settings(profile);
+    seeded.RemoteControlsEnabled = true;
+    data.SaveSettings(seeded);
+    var manager = Manager(data);
+    using var auditLock = new FileStream(Path.Combine(root, "control-policy-audit", "audit.log"),
+        FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+    var result = await manager.UpdateControlPolicyAsync(new(RemoteControlsEnabled: false));
+    Require(result.Ok && !manager.RemoteControlsEnabled && !data.LoadSettings().RemoteControlsEnabled,
+        "an unavailable audit log left remote controls enabled in memory or on disk");
+});
+
+await Check("malformed lifecycle state is quarantined and blocks Start until acknowledgement", async () =>
+{
+    var dataRoot = Path.Combine(root, "malformed-runs-recovery");
+    Directory.CreateDirectory(dataRoot);
+    File.WriteAllText(Path.Combine(dataRoot, "runs.json"), "{not valid json");
+    using var data = new LocalData(dataRoot);
+    var manager = Manager(data);
+    var profile = Profile("recovered-world", "recovered-world", FreePort());
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "recovery settings failed");
+    var snapshot = await manager.SnapshotAsync();
+    Require(snapshot.Recovery is { LifecycleBlocked: true } &&
+        snapshot.Recovery.Notices.Any(notice => notice.StateFile == "runs.json") &&
+        Directory.EnumerateFiles(Path.Combine(dataRoot, "quarantine"), "*-runs.json").Any(),
+        "malformed runs state was not quarantined and exposed as lifecycle-blocking recovery");
+    Require((await manager.StartAsync(profile.Id)).Code == "DataRecoveryRequired",
+        "Start was allowed before recovered lifecycle state was acknowledged");
+    Require((await manager.RestartAsync(profile.Id)).Code == "DataRecoveryRequired" &&
+        (await manager.StopAsync(profile.Id, _ => true)).Code == "DataRecoveryRequired" &&
+        (await manager.StopAsync(profile.Id)).Code == "NotManaged" &&
+        (await manager.RestoreBackupAsync(profile.Id, Guid.NewGuid())).Code == "DataRecoveryRequired" &&
+        (await manager.MaintainIdleShutdownAsync()).Single().Code == "DataRecoveryRequired" &&
+        (await manager.MaintainCrashRecoveryAsync()).Single().Code == "DataRecoveryRequired",
+        "recovery did not pause restart, remote/automatic stop, restore, or crash recovery while retaining local Stop");
+    data.AcknowledgeRecovery();
+    Require((await manager.StartAsync(profile.Id)).Ok, "acknowledgement did not release a normal fixture Start");
+    Require((await manager.StopAsync(profile.Id)).Ok, "recovery fixture cleanup failed");
+});
+
+await Check("an interrupted lifecycle quarantine is reconstructed until owner acknowledgement", () =>
+{
+    var dataRoot = Path.Combine(root, "orphaned-lifecycle-quarantine");
+    var quarantineRoot = Path.Combine(dataRoot, "quarantine");
+    Directory.CreateDirectory(quarantineRoot);
+    var quarantineName = $"20260924T1200000000000Z-{Guid.NewGuid():N}-runs.json";
+    var quarantinePath = Path.Combine(quarantineRoot, quarantineName);
+    File.WriteAllText(quarantinePath, "{interrupted quarantine payload");
+    using (var data = new LocalData(dataRoot))
+    {
+        Require(data.Recovery is { LifecycleBlocked: true } &&
+            data.Recovery.Notices.Any(notice => notice.StateFile == "runs.json" &&
+                notice.QuarantinedFile == quarantineName),
+            "an orphaned lifecycle quarantine did not reconstruct a blocking recovery notice");
+        data.AcknowledgeRecovery();
+        Require(File.Exists(quarantinePath), "acknowledgement deleted the retained quarantine artifact");
+    }
+    using (var reopened = new LocalData(dataRoot))
+        Require(!reopened.Recovery.LifecycleBlocked && reopened.Recovery.Notices.Count == 0,
+            "an acknowledged retained quarantine artifact blocked lifecycle again after restart");
+    return Task.CompletedTask;
+});
+
+await Check("corrupt Host settings cannot hide an authoritative recorded run", async () =>
+{
+    var dataRoot = Path.Combine(root, "malformed-host-with-run");
+    using var data = new LocalData(dataRoot);
+    var profile = Profile("orphan-profile", "orphan", FreePort(), Path.Combine(root, "orphan-world"));
+    var seedingManager = Manager(data);
+    Require((await seedingManager.UpdateSettingsAsync(Settings(profile))).Ok &&
+        (await seedingManager.StartAsync(profile.Id)).Ok, "orphan fixture setup failed");
+    var recorded = data.LoadRuns().Single(item => item.ProfileId == profile.Id);
+    try
+    {
+        File.WriteAllText(Path.Combine(dataRoot, "host.json"), "{not valid json");
+        var manager = Manager(data);
+        var snapshot = await manager.SnapshotAsync();
+        var orphan = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+        Require(snapshot.Recovery is { LifecycleBlocked: true } &&
+            orphan.State == "Process running" &&
+            orphan.Detail.Contains("profile", StringComparison.OrdinalIgnoreCase),
+            "a valid exact recorded run disappeared or was not locally stoppable when Host settings were quarantined");
+        Require((await manager.StopAsync(profile.Id)).Ok,
+            "an exact live orphan could not be stopped locally while recovery remained blocked");
+    }
+    finally
+    {
+        if (data.LoadRuns().Any(item => item.ProfileId == profile.Id))
+            await DirectFixtureStop(recorded);
+    }
+});
 
 await Check("duplicate start is serialized", async () =>
 {
     using var data = Data("duplicate");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var profile = Profile("duplicate-world", "duplicate-world", FreePort());
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     try
@@ -68,7 +181,7 @@ await Check("duplicate start is serialized", async () =>
 await Check("snapshots consume the observation supervisor cache", async () =>
 {
     using var data = Data("observation-cache");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var profile = Profile("observation-cache", "observation-cache", FreePort());
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
@@ -94,20 +207,29 @@ await Check("snapshots consume the observation supervisor cache", async () =>
 await Check("one writer per world", async () =>
 {
     using var data = Data("world");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var port = FreePort();
     var a = Profile("world-a", "same-world", port);
-    var b = Profile("world-b", "same-world", port + 10, a.WorldDirectory);
-    Require((await manager.UpdateSettingsAsync(Settings(a, b))).Ok, "settings failed");
+    var b = Profile("world-b", "same-world", port + 10, a.WorldDirectory + Path.DirectorySeparatorChar);
+    var alias = Path.Combine(root, "world-junction");
+    CreateJunction(alias, a.WorldDirectory);
+    var c = Profile("world-c", "same-world", port + 20, alias);
+    Require((await manager.UpdateSettingsAsync(Settings(a, b, c))).Ok, "settings failed");
     Require((await manager.StartAsync(a.Id)).Ok, "first start failed");
-    try { Require((await manager.StartAsync(b.Id)).Code == "WorldConflict", "second world writer was allowed"); }
+    try
+    {
+        Require((await manager.StartAsync(b.Id)).Code == "WorldConflict",
+            "trailing-separator world alias was allowed a second writer");
+        Require((await manager.StartAsync(c.Id)).Code == "WorldConflict",
+            "junction world alias was allowed a second writer");
+    }
     finally { Require((await manager.StopAsync(a.Id)).Ok, "fixture cleanup failed"); }
 });
 
 await Check("separate save folders can use the same world name", async () =>
 {
     using var data = Data("same-name-separate-folders");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var port = FreePort();
     var a = Profile("same-name-a", "same-name", port);
     var b = Profile("same-name-b", "same-name", port + 10);
@@ -125,7 +247,7 @@ await Check("separate save folders can use the same world name", async () =>
 await Check("managed maximum", async () =>
 {
     using var data = Data("maximum");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var port = FreePort();
     var a = Profile("max-a", "max-a", port);
     var b = Profile("max-b", "max-b", port + 10);
@@ -140,7 +262,7 @@ await Check("managed maximum", async () =>
 await Check("managed port overlap", async () =>
 {
     using var data = Data("ports");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var port = FreePort();
     var a = Profile("port-a", "port-a", port);
     var b = Profile("port-b", "port-b", port + 1);
@@ -163,7 +285,7 @@ await Check("managed port overlap", async () =>
 await Check("occupied local UDP port", async () =>
 {
     using var data = Data("bound-port");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     var port = FreePort();
     var profile = Profile("bound-port", "bound-port", port);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
@@ -177,13 +299,13 @@ await Check("restart reattaches exact fixture identity", async () =>
     var profile = Profile("restart", "restart", FreePort());
     using (var data = Data("restart"))
     {
-        var manager = new HostManager(data);
+        var manager = Manager(data);
         Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
         Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
     }
     using (var data = Data("restart"))
     {
-        var manager = new HostManager(data);
+        var manager = Manager(data);
         Require((await manager.HealthAsync(profile.Id)).Code == "FixtureProcessRunning", "reattach identity failed");
         Require((await manager.StopAsync(profile.Id)).Ok, "reattached fixture stop failed");
     }
@@ -196,13 +318,13 @@ await Check("identity mismatch blocks start and never stops an unrelated process
     ManagedRun original;
     using (var data = Data("identity-a"))
     {
-        var manager = new HostManager(data);
+        var manager = Manager(data);
         Require((await manager.UpdateSettingsAsync(Settings(a))).Ok, "A settings failed");
         Require((await manager.StartAsync(a.Id)).Ok, "A start failed");
         original = data.LoadRuns().Single();
     }
     using var otherData = Data("identity-b");
-    var other = new HostManager(otherData);
+    var other = Manager(otherData);
     Require((await other.UpdateSettingsAsync(Settings(b))).Ok, "B settings failed");
     Require((await other.StartAsync(b.Id)).Ok, "B start failed");
     var unrelated = otherData.LoadRuns().Single();
@@ -212,7 +334,7 @@ await Check("identity mismatch blocks start and never stops an unrelated process
         var changed = data.LoadRuns().Single();
         changed.ProcessId = unrelated.ProcessId; // A stale or corrupt PID must never become authority over B.
         data.SaveRuns([changed]);
-        var manager = new HostManager(data);
+        var manager = Manager(data);
         Require((await manager.HealthAsync(a.Id)).Code == "IdentityUnknown", "identity mismatch not detected");
         Require((await manager.StopAsync(a.Id)).Code == "IdentityUnknown", "unrelated process received a stop");
         Require((await manager.ForgetAsync(a.Id)).Code == "IdentityUnknown", "identity-uncertain run was cleared");
@@ -229,7 +351,10 @@ await Check("identity mismatch blocks start and never stops an unrelated process
 await Check("game drivers are explicit and unknown games fail closed", async () =>
 {
     using var data = Data("drivers");
-    var registry = new GameServerRegistry(data);
+    var productionRegistry = new GameServerRegistry(data);
+    Require(!productionRegistry.TryGet(GameKinds.Fixture, out _),
+        "the synthetic fixture driver was enabled without an explicit test opt-in");
+    var registry = Games(data);
     Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[]
         { GameKinds.Custom, GameKinds.Fixture, GameKinds.MinecraftBedrock, GameKinds.MinecraftJava, GameKinds.Valheim }),
         "The built-in, custom, and fixture games were not separately registered");
@@ -251,8 +376,15 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     using var control = new TcpListener(IPAddress.Loopback, 0);
     control.Start();
     var controlPort = ((IPEndPoint)control.LocalEndpoint).Port;
-    var profile = new ServerProfile { Kind = GameKinds.Valheim, Name = "Port check", WorldId = "port-check",
-        WorldDirectory = root, ExecutablePath = fixture, GamePort = gamePort };
+    var profile = new ServerProfile
+    {
+        Kind = GameKinds.Valheim,
+        Name = "Port check",
+        WorldId = "port-check",
+        WorldDirectory = root,
+        ExecutablePath = fixture,
+        GamePort = gamePort
+    };
     var settings = Settings(profile);
     settings.CompanionPort = controlPort;
     settings.CompanionBindAddress = "127.0.0.1";
@@ -264,7 +396,7 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         "fixture", "Host", new Dictionary<Guid, bool>(), root);
     var device = new DeviceView(Guid.NewGuid(), profile.Id, [profile.Id], "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow);
-    var diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
+    var diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
     Require(diagnostics.Games.Single().State == "Open on PC" &&
         diagnostics.Games.Single().RouteKind == "Direct" && diagnostics.Games.Single().Kind == GameKinds.Valheim,
         "open Valheim Steam UDP ports or their direct route were not reported");
@@ -273,33 +405,37 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         diagnostics.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
         "local TCP listener or authenticated Friend evidence overstated the outside-network route");
     profile.Crossplay = true;
-    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
+    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
     Require(diagnostics.Games.Single().RouteKind == "Relay" && diagnostics.Games.Single().State == "Relay ready",
         "Valheim Crossplay relay was presented as direct game-port forwarding");
     profile.Crossplay = false;
     settings.CompanionBindAddress = "0.0.0.0";
-    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [device]);
+    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
     Require(diagnostics.Control.State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
         "a listener on the wrong bind address was reported open");
     settings.CompanionBindAddress = "127.0.0.1";
     var staleDevice = device with { LastHeartbeatUtc = DateTimeOffset.UtcNow.AddSeconds(-46) };
-    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, [staleDevice]);
+    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [staleDevice]);
     Require(diagnostics.Control.RemoteState == "Not verified", "a stale heartbeat was reported as connected");
-    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), false, [], "TLS listener failed");
+    diagnostics = PortDiagnostics.Read(snapshot, Games(data), false, [], "TLS listener failed");
     Require(diagnostics.Control.State == "Not listening" && diagnostics.Control.Detail == "TLS listener failed",
         "an enabled but failed HTTPS listener was reported off");
     query.Dispose();
-    diagnostics = PortDiagnostics.Read(snapshot, new GameServerRegistry(data), true, []);
+    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, []);
     Require(diagnostics.Games.Single().State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
         "a missing UDP port or absent Friend route was claimed as open");
     using var loopbackGame = new TcpListener(IPAddress.Loopback, 0);
     loopbackGame.Start();
-    var javaProfile = new ServerProfile { Kind = GameKinds.MinecraftJava, Name = "Local game",
-        GamePort = ((IPEndPoint)loopbackGame.LocalEndpoint).Port };
+    var javaProfile = new ServerProfile
+    {
+        Kind = GameKinds.MinecraftJava,
+        Name = "Local game",
+        GamePort = ((IPEndPoint)loopbackGame.LocalEndpoint).Port
+    };
     var javaSnapshot = new HostSnapshot(Settings(javaProfile),
         [new RunView(javaProfile.Id, "Ready", "fixture", 1)],
         "fixture", "Host", new Dictionary<Guid, bool>(), root);
-    var javaPorts = PortDiagnostics.Read(javaSnapshot, new GameServerRegistry(data), false, []);
+    var javaPorts = PortDiagnostics.Read(javaSnapshot, Games(data), false, []);
     Require(javaPorts.Games.Single().State == "Loopback only" &&
         javaPorts.Games.Single().Kind == GameKinds.MinecraftJava,
         "a loopback-only game socket was reported as available to other PCs");
@@ -356,7 +492,7 @@ await Check("remote operations persist idempotency and interrupt unfinished work
     seeded[^1].Id = interruptedId;
     seeded[^1].DeviceId = interruptedDevice;
     data.SaveRemoteOperations(seeded);
-    var coordinator = new RemoteOperationCoordinator(data);
+    await using var coordinator = new RemoteOperationCoordinator(data);
     var interrupted = coordinator.Find(interruptedDevice, interruptedId);
     Require(interrupted is { State: RemoteOperationStates.Interrupted, Code: "HostRestarted", Ok: false },
         "unfinished operation was not interrupted after Host restart");
@@ -416,7 +552,12 @@ await Check("remote operations persist idempotency and interrupt unfinished work
         !completed.Message.Contains("script output", StringComparison.OrdinalIgnoreCase) &&
         secondCompleted is { State: RemoteOperationStates.Succeeded } && executions == 1 && secondExecutions == 1,
         "FIFO execution, one terminal execution, or operation-result redaction failed");
-    var reloaded = new RemoteOperationCoordinator(data).Find(deviceId, submittedOperation.Id);
+    await coordinator.DisposeAsync();
+    Require(coordinator.Submit(deviceId, Guid.NewGuid(), profileId, "start", () =>
+            Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."))).Code ==
+        "OperationCoordinatorStopped", "a disposed operation worker accepted new work");
+    await using var reloadedCoordinator = new RemoteOperationCoordinator(data);
+    var reloaded = reloadedCoordinator.Find(deviceId, submittedOperation.Id);
     Require(reloaded is { State: RemoteOperationStates.Succeeded }, "terminal operation did not survive reload");
 });
 
@@ -424,7 +565,7 @@ await Check("remote operation execution survives an unavailable audit log", asyn
 {
     var dataRoot = Path.Combine(root, "remote-operation-audit");
     using var data = new LocalData(dataRoot);
-    var coordinator = new RemoteOperationCoordinator(data);
+    await using var coordinator = new RemoteOperationCoordinator(data);
     using var auditLock = new FileStream(Path.Combine(dataRoot, "audit.log"), FileMode.OpenOrCreate,
         FileAccess.ReadWrite, FileShare.None);
     var executions = 0;
@@ -446,12 +587,41 @@ await Check("remote operation execution survives an unavailable audit log", asyn
         "an audit write failure stranded or suppressed an accepted operation");
 });
 
+await Check("remote operation disposal interrupts queued work without executing it", async () =>
+{
+    using var data = Data("remote-operation-disposal");
+    var coordinator = new RemoteOperationCoordinator(data);
+    var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var deviceId = Guid.NewGuid();
+    var first = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", async () =>
+    {
+        firstStarted.TrySetResult(true);
+        await releaseFirst.Task;
+        return new RemoteOperationOutcome(true, "FixtureStarted", "Started.");
+    });
+    await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    var queuedExecutions = 0;
+    var second = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", () =>
+    {
+        Interlocked.Increment(ref queuedExecutions);
+        return Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."));
+    });
+    var disposing = coordinator.DisposeAsync().AsTask();
+    releaseFirst.TrySetResult(true);
+    await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+    var interrupted = coordinator.Find(deviceId, second.Operation!.Id);
+    Require(first.Accepted && second.Accepted && queuedExecutions == 0 &&
+        interrupted is { State: RemoteOperationStates.Interrupted, Code: "HostShuttingDown", Ok: false },
+        "disposing the owned worker ran or stranded queued remote work");
+});
+
 await Check("remote operation rejects safely when its journal cannot commit", async () =>
 {
     var dataRoot = Path.Combine(root, "remote-operation-journal");
     using var data = new LocalData(dataRoot);
     data.SaveRemoteOperations([]);
-    var coordinator = new RemoteOperationCoordinator(data);
+    await using var coordinator = new RemoteOperationCoordinator(data);
     using var journalLock = new FileStream(Path.Combine(dataRoot, "remote-operations.json"), FileMode.Open,
         FileAccess.Read, FileShare.Read);
     var executions = 0;
@@ -486,7 +656,7 @@ await Check("definitive exits archive and crash recovery is bounded", async () =
     var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
     var profile = Profile("crash-recovery", "crash-recovery", FreePort());
     profile.CrashRecovery.Enabled = true;
-    var starter = new HostManager(data, new GameServerRegistry(data), clock);
+    var starter = new HostManager(data, Games(data), clock);
     Require((await starter.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await starter.StartAsync(profile.Id)).Ok, "initial start failed");
     var original = data.LoadRuns().Single();
@@ -494,7 +664,7 @@ await Check("definitive exits archive and crash recovery is bounded", async () =
     data.SaveRuns([original]);
     await KillFixture(original);
 
-    var manager = new HostManager(data, new GameServerRegistry(data), clock);
+    var manager = new HostManager(data, Games(data), clock);
     await manager.RefreshObservationsAsync();
     Require(data.LoadRuns().Count == 0, "definitively absent process was not archived");
     Require(data.LoadRunArchive().Single().CrashRecoveryScheduled, "eligible Ready crash did not schedule recovery");
@@ -523,7 +693,7 @@ await Check("crash recovery suspends a live process that never becomes Ready", a
     var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
     var profile = Profile("crash-readiness-timeout", "crash-readiness-timeout", FreePort());
     profile.CrashRecovery.Enabled = true;
-    var starter = new HostManager(data, new GameServerRegistry(data), clock);
+    var starter = new HostManager(data, Games(data), clock);
     Require((await starter.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await starter.StartAsync(profile.Id)).Ok, "initial start failed");
     var original = data.LoadRuns().Single();
@@ -531,7 +701,7 @@ await Check("crash recovery suspends a live process that never becomes Ready", a
     data.SaveRuns([original]);
     await KillFixture(original);
 
-    var manager = new HostManager(data, new GameServerRegistry(data), clock);
+    var manager = new HostManager(data, Games(data), clock);
     await manager.RefreshObservationsAsync();
     clock.Advance(TimeSpan.FromMinutes(1));
     Require((await manager.MaintainCrashRecoveryAsync()).Single().Ok, "recovery launch failed");
@@ -558,7 +728,7 @@ await Check("graceful stop backup and offline restore protect the world", async 
     profile.Backups = new BackupOptions { Enabled = true, RetentionCount = 3, MinimumFreeSpaceMb = 0 };
     var marker = Path.Combine(profile.WorldDirectory, "world.txt");
     File.WriteAllText(marker, "before stop");
-    var manager = new HostManager(data);
+    var manager = Manager(data);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
     var stopped = await manager.StopAsync(profile.Id);
@@ -621,6 +791,103 @@ await Check("backup staging, integrity, retention, and free-space checks fail cl
     File.WriteAllText(marker, "needs space");
     Require(!noSpace.Create(profile, BackupKinds.Rolling).Ok,
         "backup ignored the configured destination free-space boundary");
+});
+
+await Check("interrupted restore journal reconciles rollback and installed replacement", async () =>
+{
+    using var data = Data("restore-reconciliation");
+    var clock = new ManualTimeProvider(DateTimeOffset.Parse("2026-09-24T12:00:00Z"));
+    var parent = Path.Combine(root, "restore-reconciliation-worlds");
+    Directory.CreateDirectory(parent);
+
+    var rollbackId = Guid.NewGuid();
+    var rollbackBackupId = Guid.NewGuid();
+    var rollbackWorld = Path.Combine(parent, "rollback-world");
+    var rollbackProfile = Profile("rollback-profile", "rollback-world", FreePort(), rollbackWorld);
+    Directory.Delete(rollbackWorld, true);
+    var rollback = Path.Combine(parent, $".togetherserver-restore-{rollbackId:N}.rollback");
+    var stage = Path.Combine(parent, $".togetherserver-restore-{rollbackId:N}.staging");
+    Directory.CreateDirectory(rollback);
+    Directory.CreateDirectory(stage);
+    File.WriteAllText(Path.Combine(rollback, "world.txt"), "original");
+    File.WriteAllText(Path.Combine(stage, "world.txt"), "replacement");
+
+    var installedId = Guid.NewGuid();
+    var installedBackupId = Guid.NewGuid();
+    var installedWorld = Path.Combine(parent, "installed-world");
+    var installedProfile = Profile("installed-profile", "installed-world", FreePort(), installedWorld);
+    var installedRollback = Path.Combine(parent, $".togetherserver-restore-{installedId:N}.rollback");
+    Directory.CreateDirectory(installedRollback);
+    File.WriteAllText(Path.Combine(installedWorld, "world.txt"), "replacement");
+    File.WriteAllText(Path.Combine(installedRollback, "world.txt"), "original");
+    data.SaveSettings(Settings(rollbackProfile, installedProfile));
+    data.SaveBackupCatalog(new BackupCatalog
+    {
+        Records =
+        [
+            new() { Id = rollbackBackupId, ProfileId = rollbackProfile.Id, Kind = rollbackProfile.Kind,
+                WorldId = rollbackProfile.WorldId },
+            new() { Id = installedBackupId, ProfileId = installedProfile.Id, Kind = installedProfile.Kind,
+                WorldId = installedProfile.WorldId }
+        ]
+    });
+    data.SaveState("restore-transactions.json", new List<WorldRestoreTransaction>
+    {
+        new() { Id = rollbackId, ProfileId = rollbackProfile.Id, BackupId = rollbackBackupId,
+            Kind = rollbackProfile.Kind, WorldId = rollbackProfile.WorldId,
+            ProfileWorldDirectory = rollbackProfile.WorldDirectory, WorldDirectory = rollbackWorld,
+            Phase = WorldRestorePhases.LiveMoved },
+        new() { Id = installedId, ProfileId = installedProfile.Id, BackupId = installedBackupId,
+            Kind = installedProfile.Kind, WorldId = installedProfile.WorldId,
+            ProfileWorldDirectory = installedProfile.WorldDirectory, WorldDirectory = installedWorld,
+            Phase = WorldRestorePhases.ReplacementInstalled }
+    });
+    _ = new WorldBackupService(data, clock);
+    Require(File.ReadAllText(Path.Combine(rollbackWorld, "world.txt")) == "original" &&
+        !Directory.Exists(rollback) && !Directory.Exists(stage),
+        "an interrupted live-directory move did not restore the original world");
+    Require(File.ReadAllText(Path.Combine(installedWorld, "world.txt")) == "replacement" &&
+        !Directory.Exists(installedRollback) &&
+        data.LoadState("restore-transactions.json", new List<WorldRestoreTransaction>()).Count == 0,
+        "an installed replacement did not roll forward or clear its restore journal");
+
+    using var tamperData = Data("restore-journal-tamper");
+    var ownedWorld = Path.Combine(parent, "owned-world");
+    var unrelatedWorld = Path.Combine(parent, "unrelated-world");
+    var tamperProfile = Profile("tamper-profile", "tamper-world", FreePort(), ownedWorld);
+    Directory.CreateDirectory(unrelatedWorld);
+    File.WriteAllText(Path.Combine(unrelatedWorld, "do-not-touch.txt"), "owner data");
+    var tamperBackupId = Guid.NewGuid();
+    tamperData.SaveSettings(Settings(tamperProfile));
+    tamperData.SaveBackupCatalog(new BackupCatalog
+    {
+        Records = [new()
+    {
+        Id = tamperBackupId, ProfileId = tamperProfile.Id, Kind = tamperProfile.Kind,
+        WorldId = tamperProfile.WorldId
+    }]
+    });
+    tamperData.SaveState("restore-transactions.json", new List<WorldRestoreTransaction> { new()
+    {
+        Id = Guid.NewGuid(), ProfileId = tamperProfile.Id, BackupId = tamperBackupId,
+        Kind = tamperProfile.Kind, WorldId = tamperProfile.WorldId,
+        ProfileWorldDirectory = tamperProfile.WorldDirectory,
+        WorldDirectory = Path.Combine(tamperProfile.WorldDirectory, "..", Path.GetFileName(unrelatedWorld)),
+        Phase = WorldRestorePhases.Prepared
+    } });
+    _ = new WorldBackupService(tamperData, clock);
+    Require(File.ReadAllText(Path.Combine(unrelatedWorld, "do-not-touch.txt")) == "owner data" &&
+        tamperData.Recovery.LifecycleBlocked &&
+        tamperData.Recovery.Notices.Any(notice => notice.StateFile == "restore-transactions.json"),
+        "a tampered restore journal touched an unrelated directory or failed to block lifecycle");
+
+    using var semanticData = Data("restore-journal-semantic");
+    semanticData.SaveState("restore-transactions.json", new List<WorldRestoreTransaction> { null! });
+    _ = new WorldBackupService(semanticData, clock);
+    Require(semanticData.Recovery.LifecycleBlocked &&
+        semanticData.Recovery.Notices.Any(notice => notice.StateFile == "restore-transactions.json"),
+        "a syntactically valid but semantically invalid restore journal silently disappeared");
+    await Task.CompletedTask;
 });
 
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");

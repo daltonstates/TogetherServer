@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TogetherServer/TogetherServer.csproj" />
+    <Project Path="src/TogetherServer.Fixture/TogetherServer.Fixture.csproj" />
+    <Project Path="src/TogetherServer.MinecraftFixture/TogetherServer.MinecraftFixture.csproj" />
+    <Project Path="src/TogetherServer.ValheimFixture/TogetherServer.ValheimFixture.csproj" />
+  </Folder>
+  <Folder Name="/checks/">
+    <Project Path="checks/TogetherServer.Checks/TogetherServer.Checks.csproj" />
+    <Project Path="checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj" />
+    <Project Path="checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj" />
+    <Project Path="checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj" />
+    <Project Path="checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj" />
+    <Project Path="checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj" />
+    <Project Path="checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj" />
+  </Folder>
+</Solution>

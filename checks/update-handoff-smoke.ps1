@@ -3,6 +3,16 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release-candidate/TogetherServer.exe' }
 $appPath = (Resolve-Path -LiteralPath $AppPath).Path
+$signature = Get-AuthenticodeSignature -LiteralPath $appPath
+if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate) {
+    throw 'Update handoff requires a validly Authenticode-signed candidate.'
+}
+$publisherHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $publisherKey = ([BitConverter]::ToString(
+        $publisherHasher.ComputeHash($signature.SignerCertificate.GetPublicKey()))).Replace('-', '')
+}
+finally { $publisherHasher.Dispose() }
 $root = Join-Path $repository ('local-data/update-handoff/' + [guid]::NewGuid().ToString('N'))
 $dataRoot = Join-Path $root 'data'
 $stage = Join-Path $dataRoot ('updates/' + [guid]::NewGuid().ToString('N'))
@@ -12,10 +22,11 @@ $target = Join-Path $install 'TogetherServer.exe'
 $payload = Join-Path $stage 'TogetherServer-win-x64.exe'
 $helper = Join-Path $stage 'TogetherServer-updater.exe'
 $ready = Join-Path $stage 'ready.signal'
-Set-Content -LiteralPath $target -Value 'previous isolated executable'
+Copy-Item -LiteralPath $appPath -Destination $target
 Copy-Item -LiteralPath $appPath -Destination $payload
 Copy-Item -LiteralPath $appPath -Destination $helper
 $hash = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash
+$previousHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 
 $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 5127)
 $portProbe.Start()
@@ -27,7 +38,7 @@ $updater = $null
 try {
     $parent = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 4') -WindowStyle Hidden -PassThru
     $startTicks = $parent.StartTime.ToUniversalTime().Ticks
-    $argumentLine = "--apply-update $($parent.Id) $startTicks `"$target`" `"$payload`" $hash `"$dataRoot`" `"$ready`""
+    $argumentLine = "--apply-update $($parent.Id) $startTicks `"$target`" `"$payload`" $hash `"$dataRoot`" `"$ready`" $publisherKey"
     $updater = Start-Process -FilePath $helper -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
     $signaled = $false
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
@@ -39,7 +50,7 @@ try {
     Write-Host 'PASS verified updater helper signaled readiness before old process exit'
     if (!$updater.WaitForExit(20000) -or $updater.ExitCode -ne 0) { throw 'Updater did not finish the replacement and relaunch.' }
     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hash) { throw 'The installed EXE does not match the verified payload.' }
-    if ((Get-Content -LiteralPath ($target + '.previous') -Raw).Trim() -ne 'previous isolated executable') { throw 'Previous EXE backup was not preserved.' }
+    if ((Get-FileHash -LiteralPath ($target + '.previous') -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous EXE backup was not preserved.' }
     Write-Host 'PASS isolated EXE replacement kept the old file and installed the verified payload'
 
     $base = 'http://127.0.0.1:5127'

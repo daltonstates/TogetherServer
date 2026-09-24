@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
@@ -48,18 +48,21 @@ public interface IGameServerDriver
 
 public sealed class GameServerRegistry
 {
+    public const string FixtureOptInEnvironmentVariable = "TOGETHERSERVER_ENABLE_FIXTURE_DRIVER";
     private readonly Dictionary<string, IGameServerDriver> drivers;
 
-    public GameServerRegistry(LocalData data)
+    public GameServerRegistry(LocalData data, bool includeFixture = false)
     {
-        var registered = new IGameServerDriver[]
+        var registered = new List<IGameServerDriver>
         {
             new ValheimServerDriver(data),
             new MinecraftJavaServerDriver(),
             new MinecraftBedrockServerDriver(),
-            new CustomGameServerDriver(data),
-            new FixtureServerDriver()
+            new CustomGameServerDriver(data)
         };
+        includeFixture |= string.Equals(Environment.GetEnvironmentVariable(FixtureOptInEnvironmentVariable), "1",
+            StringComparison.Ordinal);
+        if (includeFixture) registered.Add(new FixtureServerDriver());
         drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
     }
 
