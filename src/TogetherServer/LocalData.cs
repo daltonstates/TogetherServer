@@ -15,6 +15,7 @@ public sealed class HostSettings
     public string CompanionBindAddress { get; set; } = "127.0.0.1";
     public string CompanionEndpoint { get; set; } = "";
     public int CompanionPort { get; set; } = 5131;
+    public ConnectionRoute ConnectionRoute { get; set; } = new();
     public string PublicGameIp { get; set; } = "";
     public DateTimeOffset? PublicGameIpCheckedUtc { get; set; }
     public List<ServerProfile> Profiles { get; set; } = [];
@@ -77,6 +78,7 @@ public sealed class LocalData : IDisposable
     private readonly FileStream gate;
     private readonly string root;
     private readonly object auditSync = new();
+    private readonly object stateSync = new();
     public string WorldImportsRoot => Path.Combine(root, "world-imports");
     public string ManagedWorldsRoot => Path.Combine(root, "worlds");
     public string MinecraftInstallRoot => Path.Combine(root, "minecraft-servers");
@@ -166,6 +168,17 @@ public sealed class LocalData : IDisposable
     }
     public void SaveServerInvites(List<ServerInviteState> invites) =>
         SaveProtected("server-invites.protected", JsonSerializer.SerializeToUtf8Bytes(invites, Json));
+    internal CredentialRenewalReceipt? LoadCredentialRenewalReceipt(Guid deviceId)
+    {
+        var bytes = LoadProtected($"credential-renewal-{deviceId:N}.protected");
+        return bytes is null ? null : JsonSerializer.Deserialize<CredentialRenewalReceipt>(bytes, Json)
+            ?? throw new InvalidDataException("Invalid protected credential renewal receipt");
+    }
+    internal void SaveCredentialRenewalReceipt(CredentialRenewalReceipt receipt) =>
+        SaveProtected($"credential-renewal-{receipt.DeviceId:N}.protected",
+            JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
+    internal void DeleteCredentialRenewalReceipt(Guid deviceId) =>
+        DeleteProtected($"credential-renewal-{deviceId:N}.protected");
     public bool HasProtected(string name) => File.Exists(Path.Combine(root, name));
     public string? LoadIdentityEndpoint() => Load("host-identity-endpoint.json", (string?)null);
     public void SaveIdentityEndpoint(string endpoint) => Save("host-identity-endpoint.json", endpoint);
@@ -182,6 +195,13 @@ public sealed class LocalData : IDisposable
         var encoded = Load(name, "");
         return ProtectedData.Unprotect(Convert.FromBase64String(encoded), null, DataProtectionScope.CurrentUser);
     }
+    public void DeleteProtected(string name)
+    {
+        var path = Path.Combine(root, name);
+        if (File.Exists(path)) File.Delete(path);
+    }
+    public T LoadState<T>(string name, T fallback) => Load(name, fallback);
+    public void SaveState<T>(string name, T value) => Save(name, value);
     public void Audit(string entry)
     {
         lock (auditSync) File.AppendAllText(Path.Combine(root, "audit.log"), entry + Environment.NewLine);
@@ -189,23 +209,29 @@ public sealed class LocalData : IDisposable
 
     private T Load<T>(string name, T fallback)
     {
-        var path = Path.Combine(root, name);
-        return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json)
-            ?? throw new InvalidDataException($"Invalid {name}") : fallback;
+        lock (stateSync)
+        {
+            var path = Path.Combine(root, name);
+            return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json)
+                ?? throw new InvalidDataException($"Invalid {name}") : fallback;
+        }
     }
 
     private void Save<T>(string name, T value)
     {
-        var path = Path.Combine(root, name);
-        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
+        lock (stateSync)
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(value, Json));
-            File.Move(temporary, path, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
+            var path = Path.Combine(root, name);
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, JsonSerializer.Serialize(value, Json));
+                File.Move(temporary, path, true);
+            }
+            finally
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+            }
         }
     }
 

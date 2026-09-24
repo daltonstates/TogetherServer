@@ -816,3 +816,21 @@ A matching certification makes the Custom driver's exact count authoritative for
 | Real Custom game and real Friend PC | Not run. Synthetic PowerShell/process checks do not prove a particular game's occupancy source or save implementation. The wizard must be completed with a disposable real world before relying on it. |
 
 No release tag or GitHub release was created. No real game binary, valued world, credential, public listener, router, firewall, or DNS setting was used or changed.
+
+## 2026-09-23 - Endpoint, certificate, credential, and route recovery
+
+Starting Git HEAD: `9da6753`. The Host TLS identity is no longer bound to its first advertised IP. A saved Friend endpoint can change only through a recovery proof at the new address: the presented certificate must match an already accepted pin and the existing device credential must authenticate. The Host stages a next certificate, distributes that pin through authenticated status, activates it with a bounded prior-pin grace period, and lets the owner retire the prior pin. Friends rebuild their reusable pinned HTTP client when the accepted pin set changes, so a staged pin works on the first connection after activation. Certificate and credential expiries, Host/Friend versions, protocol compatibility, last connection, and route mode are visible.
+
+Device credentials renew for another 90 days over the pinned authenticated channel. The former token remains valid for ten minutes, while a Windows-protected receipt makes a retry with the same renewal ID return the original new token instead of rotating twice. Local durable-state reads and atomic writes are serialized after concurrent Friend status calls exposed a replacement race. Expired, revoked, or offline clients still require pairing.
+
+The owner can choose Direct Internet, a read-only detected Tailscale/ZeroTier address, or an Advanced IPv4 address for owner-managed networking. TogetherServer does not install or administer those networks and retains TLS, credentials, assignments, and permissions on every route. Friend mode can send the reviewed Valheim, Minecraft Java, or Bedrock query to the shared game endpoint and says only **Game endpoint answered from this PC**. It never calls that a verified join.
+
+| Check | Result |
+| --- | --- |
+| `scripts/build.ps1` | Pass: npm reported 0 vulnerabilities; TypeScript/Vite bundled 23 modules; all fixtures built; Windows x64 single-file app published. Existing WebView2/WindowsBase `MSB3277` warning remains. |
+| Companion recovery checks | Pass: 25 groups, 0 failures. Covers renewal idempotency and old-token overlap, staged and activated pins, fresh old-only-pin rejection, authenticated endpoint recovery, invite endpoint/pin refresh, per-device throttling, and Friend-side game querying. Data: `local-data/companion-checks/64f96374712e487997010f19945d5eaa`. |
+| Host and game regressions | Pass: core 12, Valheim 10, Minecraft 3, Minecraft setup 4, Custom 5, and updater 7 groups, all with 0 failures. Data: `local-data/checks/9bba0f86b6004880a4c377d0a9599988`, `local-data/valheim-checks/e4b2b824567a49d0adbc2abdd8475f85`, `local-data/minecraft-checks/e27590eb7e574954812c59e3089cbc69`, `local-data/minecraft-setup-checks/0b75f2015f7341bf97974330e08309a5`, `local-data/custom-checks/275517de549e45f6bd14c4b3a4fb3c22`, and `local-data/update-checks/9411ad0ec8534d8a9c3e4232211a8b1c`. |
+| Packaged UI regressions | Pass: served smoke 21 and background native desktop smoke 8 groups, 0 failures. Data: `local-data/served-smoke/69046852ef2b46c5b9e9442998166410` and `local-data/desktop-smoke/b658a84c14e9409da9ad5967ba514875`. |
+| Real two-PC routes and game join | Not run. Loopback fixtures prove protocol behavior, not a public or private-mesh route, a real player join, or provider availability. |
+
+One initial build found and stopped an orphaned repository Valheim fixture from an older disposable check after verifying its exact path and test-data command line. One core-suite run then hit its existing immediate fixture-cleanup race; its clean rerun passed 12/12, and no fixture remained. No release tag or GitHub release was created. No real game binary, valued world, real credential, public listener, router, firewall, DNS setting, mesh policy, or installed release was used or changed.

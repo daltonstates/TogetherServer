@@ -229,6 +229,7 @@ app.MapPost("/api/local/network/detect-public-ip", async () =>
 });
 app.MapGet("/api/local/network/ports", async () => Results.Json(PortDiagnostics.Read(
     await manager.SnapshotAsync(), games, companionServer.Active, pairing.Views(), companionServer.Warning)));
+app.MapGet("/api/local/network/routes", () => Results.Json(ConnectionRoutes.Detect()));
 app.MapPost("/api/local/network/test-friend-route", async () =>
 {
     if (friendMode) return Results.Conflict(new ExternalPortProbeResult("Unavailable",
@@ -455,10 +456,59 @@ app.MapGet("/api/local/companion", async () =>
     var snapshot = await manager.SnapshotAsync();
     return Results.Json(new { listenerActive = companionServer.Active,
         listenerWarning = companionServer.Warning,
-        endpoint = snapshot.Settings.CompanionEndpoint, fingerprint, devices = pairing.Views(),
+        endpoint = snapshot.Settings.CompanionEndpoint, fingerprint, certificates = identity.State(),
+        route = ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute), devices = pairing.Views(),
         stopSafety = companionServer.StopSafety(snapshot) });
 });
 app.MapGet("/api/local/operations", () => Results.Json(companionServer.RecentOperations()));
+app.MapPost("/api/local/companion/certificate/stage", async () =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+        var settings = data.LoadSettings();
+        if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
+            return Results.BadRequest(new { ok = false, code = "EndpointRequired", message = "Save the Friend endpoint first." });
+        var state = identity.StageNext(settings.CompanionEndpoint);
+        data.Audit($"certificate-stage {state.NextFingerprint} {DateTimeOffset.UtcNow:O}");
+        return Results.Json(new { ok = true, code = "CertificateStaged", message = "The next Host certificate is staged and will be announced over authenticated connections.", certificates = state });
+    }
+    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
+    { return Results.BadRequest(new { ok = false, code = "CertificateStageFailed", message = ex.Message }); }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/companion/certificate/activate", async () =>
+{
+    object result;
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+        var state = identity.ActivateNext();
+        data.Audit($"certificate-activate {state.ActiveFingerprint} {DateTimeOffset.UtcNow:O}");
+        result = new { ok = true, code = "CertificateActivated", message = "The staged Host certificate is now active. The prior pin remains in the recovery grace period.", certificates = state };
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or System.Security.Cryptography.CryptographicException)
+    { return Results.BadRequest(new { ok = false, code = "CertificateActivationFailed", message = ex.Message }); }
+    finally { modeGate.Release(); }
+    await companionServer.SyncAsync();
+    return Results.Json(result);
+});
+app.MapPost("/api/local/companion/certificate/retire-previous", async () =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+        var state = identity.RetirePrevious();
+        data.Audit($"certificate-retire-previous {DateTimeOffset.UtcNow:O}");
+        return Results.Json(new { ok = true, code = "PreviousCertificateRetired", message = "The previous Host certificate pin was retired.", certificates = state });
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or System.Security.Cryptography.CryptographicException)
+    { return Results.BadRequest(new { ok = false, code = "CertificateRetireFailed", message = ex.Message }); }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid profileId) =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
@@ -466,6 +516,13 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
     if (!snapshot.Settings.Profiles.Any(profile => profile.Id == profileId))
         return Results.NotFound(new { ok = false, code = "UnknownServer" });
     var current = pairing.CurrentServerInvite(profileId);
+    if (current is not null && !string.IsNullOrWhiteSpace(snapshot.Settings.CompanionEndpoint))
+    {
+        using var currentCertificate = identity.Ensure(snapshot.Settings.CompanionEndpoint);
+        var refreshed = pairing.IssueServer(profileId, current.CanStart, false,
+            snapshot.Settings.CompanionEndpoint, HostIdentity.Fingerprint(currentCertificate), false);
+        current = new ServerInviteView(refreshed, current.CanStart);
+    }
     return Results.Json(new { ok = true, exists = current is not null,
         password = current is null ? null : PairingPassword.Encode(current.Invitation),
         canStart = current?.CanStart ?? true });
@@ -482,12 +539,16 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
             return Results.NotFound(new { ok = false, code = "UnknownServer", message = "Choose a saved server." });
         if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
         {
-            if (settings.PublicGameIpCheckedUtc is not { } checkedUtc ||
-                DateTimeOffset.UtcNow - checkedUtc > TimeSpan.FromHours(1) ||
-                !GameConnection.IsPublicIpv4(settings.PublicGameIp))
-                return Results.BadRequest(new { ok = false, code = "AddressUnavailable", message = "Check this PC's public IP address first." });
-            settings.CompanionEndpoint = $"https://{settings.PublicGameIp}:{settings.CompanionPort}";
-            settings.CompanionBindAddress = "0.0.0.0";
+            var route = ConnectionRoutes.Normalize(settings.ConnectionRoute);
+            var address = route.Mode == ConnectionRouteModes.DirectInternet
+                ? settings.PublicGameIpCheckedUtc is { } checkedUtc && DateTimeOffset.UtcNow - checkedUtc <= TimeSpan.FromHours(1) &&
+                    GameConnection.IsPublicIpv4(settings.PublicGameIp) ? settings.PublicGameIp : null
+                : ConnectionRoutes.ValidAddress(route.Address) ? route.Address : null;
+            if (address is null)
+                return Results.BadRequest(new { ok = false, code = "AddressUnavailable", message = route.Mode == ConnectionRouteModes.DirectInternet
+                    ? "Check this PC's public IP address first." : "Choose an address for the selected route first." });
+            settings.CompanionEndpoint = $"https://{address}:{settings.CompanionPort}";
+            settings.CompanionBindAddress = route.Mode == ConnectionRouteModes.DirectInternet ? "0.0.0.0" : address;
             var saved = await manager.UpdateSettingsAsync(settings);
             if (!saved.Ok) return Results.BadRequest(new { ok = false, code = saved.Code, message = saved.Message });
         }
@@ -555,8 +616,12 @@ app.MapPost("/api/local/friend/pair", async (FriendPairRequest request) =>
     : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/connections/{id:guid}/select", (Guid id) =>
     friendMode ? Results.Json(friend.Select(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPut("/api/local/friend/connections/{id:guid}/endpoint", async (Guid id, EndpointRecoveryRequest request) =>
+    friendMode ? Results.Json(await friend.RecoverEndpointAsync(id, request.Endpoint)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/poll", async () =>
     friendMode ? Results.Json(await friend.PollAsync()) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/probe-game", async (Guid id) =>
+    friendMode ? Results.Json(await friend.ProbeGameEndpointAsync(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/{action}", async (Guid id, string action) =>
     friendMode ? Results.Json(await friend.RequestAsync(id, action)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 

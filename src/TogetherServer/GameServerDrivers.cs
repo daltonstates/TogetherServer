@@ -362,6 +362,9 @@ internal static class ValveServerQuery
     ];
 
     public static ValveServerQueryResult Info(int port)
+        => Info(IPAddress.Loopback, port);
+
+    public static ValveServerQueryResult Info(IPAddress address, int port)
     {
         try
         {
@@ -370,7 +373,7 @@ internal static class ValveServerQuery
                 ReceiveTimeout = 800,
                 SendTimeout = 800
             };
-            socket.Connect(IPAddress.Loopback, port);
+            socket.Connect(address, port);
             socket.Send(InfoRequest);
             var buffer = new byte[4096];
             var length = socket.Receive(buffer);

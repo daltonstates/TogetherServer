@@ -106,6 +106,7 @@ public sealed class HostManager
         await gate.WaitAsync();
         try
         {
+            next.ConnectionRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
             if (settings.PublicGameIpCheckedUtc is { } recorded &&
                 (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
             {
@@ -114,10 +115,6 @@ public sealed class HostManager
             }
             var error = Validate(next);
             if (error is not null) return Result(false, "InvalidSettings", error);
-            var pinnedEndpoint = data.LoadIdentityEndpoint();
-            if (pinnedEndpoint is not null &&
-                !string.Equals(next.CompanionEndpoint, pinnedEndpoint, StringComparison.OrdinalIgnoreCase))
-                return Result(false, "HostAddressPinned", "The Friend app address is pinned by the Host identity. Keep the address used for pairing.");
             var profileIds = next.Profiles.Select(profile => profile.Id).ToHashSet();
             var serverInvites = data.LoadServerInvites()
                 .Where(invite => profileIds.Contains(invite.ProfileId)).ToList();
@@ -1136,6 +1133,15 @@ public sealed class HostManager
         if (!string.IsNullOrWhiteSpace(next.CompanionEndpoint) &&
             (!HostIdentity.TryEndpoint(next.CompanionEndpoint, out var endpoint) || endpoint.Port != next.CompanionPort))
             return "Companion endpoint must be an HTTPS IP address on the configured port.";
+        var route = ConnectionRoutes.Normalize(next.ConnectionRoute);
+        if (!ConnectionRouteModes.Valid(route.Mode))
+            return "Choose Direct Internet, Private mesh, or Advanced address for the Friend route.";
+        if (route.Mode != ConnectionRouteModes.DirectInternet && !ConnectionRoutes.ValidAddress(route.Address))
+            return "Choose a non-loopback IPv4 address for the selected Friend route.";
+        if (route.Mode != ConnectionRouteModes.DirectInternet &&
+            HostIdentity.TryEndpoint(next.CompanionEndpoint, out var routeEndpoint) &&
+            !string.Equals(routeEndpoint.Host, route.Address, StringComparison.OrdinalIgnoreCase))
+            return "The Friend endpoint must use the selected route address.";
         if (next.CompanionListeningEnabled && string.IsNullOrWhiteSpace(next.CompanionEndpoint))
             return "Set the companion endpoint before enabling its listener.";
         if (next.RemoteControlsEnabled && !next.CompanionListeningEnabled)

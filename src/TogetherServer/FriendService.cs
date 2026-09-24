@@ -14,9 +14,14 @@ public sealed class FriendConfiguration
 {
     public string Endpoint { get; set; } = "";
     public string Fingerprint { get; set; } = "";
+    public List<string>? AcceptedFingerprints { get; set; }
+    public Guid HostId { get; set; }
     public Guid DeviceId { get; set; }
     public string Credential { get; set; } = "";
     public DateTimeOffset CredentialExpiresUtc { get; set; }
+    public DateTimeOffset? CertificateExpiresUtc { get; set; }
+    public Guid? PendingRenewalRequestId { get; set; }
+    public ConnectionRoute? Route { get; set; }
 }
 
 public sealed record PublicProfile(Guid Id, string Name, string State, string? JoinAddress,
@@ -26,12 +31,16 @@ public sealed record PublicProfile(Guid Id, string Name, string State, string? J
     bool CanRestartNow = false, string? RestartReason = null,
     RemoteOperationView? Operation = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
-    bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null);
+    bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null,
+    HostCertificateState? Certificates = null, ConnectionRoute? Route = null);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
     Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
     string? ConnectionCode = null, string? HostVersion = null,
-    string FriendVersion = "", int? HostProtocolVersion = null, bool ProtocolCompatible = true);
+    string FriendVersion = "", int? HostProtocolVersion = null, bool ProtocolCompatible = true,
+    DateTimeOffset? CredentialExpiresUtc = null, DateTimeOffset? CertificateExpiresUtc = null,
+    string? ExpiryWarning = null, string RouteMode = ConnectionRouteModes.DirectInternet,
+    string? RouteAddress = null, Guid HostId = default);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status,
     IReadOnlyList<PortConflictView>? PortConflicts = null, Guid? OperationId = null,
     string? OperationState = null);
@@ -53,6 +62,12 @@ internal sealed class FriendLink
         this.data = data;
         this.configFile = configFile;
         config = LoadConfig(data, configFile);
+        if (config is not null)
+        {
+            config.AcceptedFingerprints = ValidFingerprints(config.AcceptedFingerprints)
+                .Append(config.Fingerprint).Where(ValidFingerprint).Distinct(StringComparer.Ordinal).ToList();
+            config.Route = ConnectionRoutes.Normalize(config.Route);
+        }
         view = config is null
             ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, false, false, false, [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
@@ -60,6 +75,14 @@ internal sealed class FriendLink
     }
 
     public FriendView View() => view;
+
+    public GameEndpointProbeResult ProbeGameEndpoint(Guid profileId)
+    {
+        var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId);
+        return profile is null
+            ? new(false, "UnknownProfile", "This server is not available from the selected Host connection.", DateTimeOffset.UtcNow)
+            : GameEndpointProbe.Check(profile);
+    }
 
     public async Task<FriendActionResult> PairAsync(string invitation, string? hostAddress = null)
     {
@@ -88,7 +111,7 @@ internal sealed class FriendLink
                 return new(false, "HostAddressMismatch", "Host IP or port differs from this pairing invitation. Check the address with the Host.", null);
             try
             {
-                using var pairingClient = MakeClient(invite.Endpoint, invite.Fingerprint);
+                using var pairingClient = MakeClient(invite.Endpoint, [invite.Fingerprint]);
                 using var response = await pairingClient.PostAsync("api/companion/pair", new StringContent(
                     JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope), Json), Encoding.UTF8, "application/json"));
                 if (!response.IsSuccessStatusCode)
@@ -104,7 +127,9 @@ internal sealed class FriendLink
                 config = new FriendConfiguration
                 {
                     Endpoint = invite.Endpoint, Fingerprint = invite.Fingerprint, DeviceId = credential.DeviceId,
-                    Credential = credential.Credential, CredentialExpiresUtc = credential.ExpiresUtc
+                    AcceptedFingerprints = [invite.Fingerprint], Credential = credential.Credential,
+                    CredentialExpiresUtc = credential.ExpiresUtc,
+                    Route = new ConnectionRoute()
                 };
                 data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
                 client?.Dispose();
@@ -137,6 +162,7 @@ internal sealed class FriendLink
             }
             try
             {
+                await RenewCredentialIfNeededAsync();
                 var hostClient = HostClient();
                 var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence,
                     CompanionProtocol.AppVersion, CompanionProtocol.Current, CompanionProtocol.Capabilities);
@@ -171,7 +197,9 @@ internal sealed class FriendLink
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
+                ApplyHostMetadata(status.Certificates, status.Route);
                 var compatible = CompanionProtocol.Supports(status.Protocol);
+                var warning = ExpiryWarning();
                 view = new FriendView("Friend", !compatible ? "Update required" :
                         status.RemoteControlsEnabled ? "Connected" : "Disabled",
                     !compatible ? status.Protocol?.CompatibilityMessage ?? "Update required before remote controls can be used." :
@@ -179,7 +207,11 @@ internal sealed class FriendLink
                     config.Endpoint, DateTimeOffset.UtcNow, compatible && status.RemoteControlsEnabled,
                     compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
                     HostVersion: status.Protocol?.AppVersion, FriendVersion: CompanionProtocol.AppVersion,
-                    HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible);
+                    HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible,
+                    CredentialExpiresUtc: config.CredentialExpiresUtc,
+                    CertificateExpiresUtc: config.CertificateExpiresUtc, ExpiryWarning: warning,
+                    RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
+                    RouteAddress: config.Route?.Address, HostId: config.HostId);
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
@@ -189,6 +221,50 @@ internal sealed class FriendLink
                     RemoteControlsEnabled = false, CanStart = false, CanStop = false, Profiles = [] };
                 return view;
             }
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<FriendActionResult> RecoverEndpointAsync(string endpoint)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (config is null) return new(false, "NotPaired", "Choose a saved Host connection first.", null);
+            if (!HostIdentity.TryEndpoint(endpoint, out var parsed))
+                return new(false, "InvalidEndpoint", "Enter an HTTPS IPv4 address and port supplied by the Host.", null);
+            var normalized = parsed.GetLeftPart(UriPartial.Authority);
+            try
+            {
+                using var recoveryClient = MakeClient(normalized, AcceptedPins());
+                recoveryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
+                recoveryClient.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
+                using var response = await recoveryClient.PostAsJsonAsync("api/companion/endpoint/recover",
+                    new EndpointRecoveryProofRequest(config.DeviceId), Json);
+                if (!response.IsSuccessStatusCode)
+                    return new(false, response.StatusCode == HttpStatusCode.Unauthorized ? "CredentialRejected" : "RecoveryRejected",
+                        response.StatusCode == HttpStatusCode.Unauthorized
+                            ? "The Host rejected this saved credential. Pair again with a new code."
+                            : $"The Host did not approve endpoint recovery ({(int)response.StatusCode}).", null);
+                var proof = await response.Content.ReadFromJsonAsync<EndpointRecoveryProof>(Json);
+                if (proof is null || !string.Equals(proof.Endpoint.TrimEnd('/'), normalized.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ||
+                    proof.HostId == Guid.Empty || config.HostId != Guid.Empty && proof.HostId != config.HostId ||
+                    !AcceptedPins().Contains(proof.Certificates.ActiveFingerprint, StringComparer.Ordinal))
+                    return new(false, "RecoveryProofInvalid", "The endpoint did not prove the saved Host identity and credential.", null);
+                config.Endpoint = normalized;
+                config.HostId = proof.HostId;
+                ApplyHostMetadata(proof.Certificates, proof.Route);
+                SaveConfig();
+                client?.Dispose();
+                client = null;
+                view = view with { Endpoint = config.Endpoint, State = "Disconnected/Unknown",
+                    Detail = "Host endpoint recovered; checking the authenticated connection.", ConnectionCode = null,
+                    RouteMode = config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
+                    RouteAddress = config.Route?.Address, HostId = config.HostId };
+                return new(true, "EndpointRecovered", "The saved Host endpoint changed only after its existing TLS pin and device credential were verified.", null);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
+            { return PairConnectionFailure(ex); }
         }
         finally { gate.Release(); }
     }
@@ -247,7 +323,7 @@ internal sealed class FriendLink
     {
         if (config is null) throw new InvalidOperationException("Pair with a Host first.");
         if (client is not null) return client;
-        client = MakeClient(config.Endpoint, config.Fingerprint);
+        client = MakeClient(config.Endpoint, AcceptedPins());
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
         client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
         return client;
@@ -258,6 +334,85 @@ internal sealed class FriendLink
         var bytes = data.LoadProtected(configFile);
         return bytes is null ? null : JsonSerializer.Deserialize<FriendConfiguration>(bytes, Json);
     }
+
+    private void SaveConfig()
+    {
+        if (config is null) return;
+        data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
+    }
+
+    private IReadOnlyList<string> AcceptedPins()
+    {
+        if (config is null) return [];
+        var pins = ValidFingerprints(config.AcceptedFingerprints).Append(config.Fingerprint)
+            .Where(ValidFingerprint).Distinct(StringComparer.Ordinal).ToList();
+        if (pins.Count == 0) throw new InvalidDataException("The saved Host fingerprint is invalid.");
+        return pins;
+    }
+
+    private void ApplyHostMetadata(HostCertificateState? certificates, ConnectionRoute? route)
+    {
+        if (config is null) return;
+        if (certificates is not null)
+        {
+            var accepted = AcceptedPins();
+            if (config.HostId != Guid.Empty && certificates.HostId != config.HostId)
+                throw new AuthenticationException("The authenticated endpoint returned a different Host identity.");
+            if (!accepted.Contains(certificates.ActiveFingerprint, StringComparer.Ordinal))
+                throw new AuthenticationException("The active Host certificate was not one of the saved pins.");
+            var announced = new[] { certificates.ActiveFingerprint, certificates.NextFingerprint,
+                    certificates.PreviousAcceptedUntilUtc > DateTimeOffset.UtcNow ? certificates.PreviousFingerprint : null }
+                .Where(ValidFingerprint).Cast<string>().Distinct(StringComparer.Ordinal).ToList();
+            var pinsChanged = !accepted.ToHashSet(StringComparer.Ordinal).SetEquals(announced);
+            config.HostId = certificates.HostId;
+            config.Fingerprint = certificates.ActiveFingerprint;
+            config.AcceptedFingerprints = announced;
+            config.CertificateExpiresUtc = certificates.ActiveExpiresUtc;
+            if (pinsChanged)
+            {
+                client?.Dispose();
+                client = null;
+            }
+        }
+        config.Route = ConnectionRoutes.Normalize(route ?? config.Route);
+        SaveConfig();
+    }
+
+    private async Task RenewCredentialIfNeededAsync()
+    {
+        if (config is null || config.CredentialExpiresUtc - DateTimeOffset.UtcNow > TimeSpan.FromDays(14)) return;
+        config.PendingRenewalRequestId ??= Guid.NewGuid();
+        SaveConfig();
+        var hostClient = HostClient();
+        using var response = await hostClient.PostAsJsonAsync("api/companion/credential/renew",
+            new CredentialRenewalRequest(config.DeviceId, config.PendingRenewalRequestId.Value), Json);
+        if (!response.IsSuccessStatusCode) return;
+        var renewal = await response.Content.ReadFromJsonAsync<CredentialRenewal>(Json);
+        if (renewal is null || renewal.DeviceId != config.DeviceId ||
+            renewal.RequestId != config.PendingRenewalRequestId || renewal.Credential.Length < 32 ||
+            renewal.ExpiresUtc <= DateTimeOffset.UtcNow)
+            throw new IOException("Host returned an invalid credential renewal.");
+        config.Credential = renewal.Credential;
+        config.CredentialExpiresUtc = renewal.ExpiresUtc;
+        config.PendingRenewalRequestId = null;
+        SaveConfig();
+        client?.Dispose();
+        client = null;
+    }
+
+    private string? ExpiryWarning()
+    {
+        if (config is null) return null;
+        var warnings = new List<string>();
+        if (config.CredentialExpiresUtc - DateTimeOffset.UtcNow <= TimeSpan.FromDays(14))
+            warnings.Add($"Device credential expires {config.CredentialExpiresUtc.LocalDateTime:g}");
+        if (config.CertificateExpiresUtc is { } certificateExpiry && certificateExpiry - DateTimeOffset.UtcNow <= TimeSpan.FromDays(30))
+            warnings.Add($"Host certificate expires {certificateExpiry.LocalDateTime:g}");
+        return warnings.Count == 0 ? null : string.Join(". ", warnings) + ".";
+    }
+
+    private static IEnumerable<string> ValidFingerprints(IEnumerable<string>? values) =>
+        values?.Where(ValidFingerprint) ?? [];
 
     private static bool ValidFingerprint(string? value)
     {
@@ -299,14 +454,16 @@ internal sealed class FriendLink
         return new("Disconnected", "Could not verify the Host over HTTPS. Check this PC's internet connection and the invite address.");
     }
 
-    private static HttpClient MakeClient(string endpoint, string fingerprint)
+    private static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints)
     {
+        var pins = fingerprints.Where(ValidFingerprint).Select(Convert.FromHexString).ToList();
+        if (pins.Count == 0) throw new AuthenticationException("No valid Host certificate pin is saved.");
         var handler = new HttpClientHandler
         {
             ServerCertificateCustomValidationCallback = (_, certificate, _, _) => certificate is not null &&
                 DateTimeOffset.UtcNow >= certificate.NotBefore.ToUniversalTime() &&
                 DateTimeOffset.UtcNow <= certificate.NotAfter.ToUniversalTime() &&
-                CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), Convert.FromHexString(fingerprint))
+                pins.Any(pin => CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin))
         };
         return new HttpClient(handler) { BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"), Timeout = TimeSpan.FromSeconds(6) };
     }

@@ -80,6 +80,30 @@ public sealed class FriendService
         }
     }
 
+    public Task<FriendActionResult> RecoverEndpointAsync(Guid connectionId, string endpoint)
+    {
+        lock (sync)
+        {
+            var link = links.SingleOrDefault(item => item.Id == connectionId).Link;
+            return link is null
+                ? Task.FromResult(new FriendActionResult(false, "UnknownConnection", "Choose a saved Host connection.", null))
+                : link.RecoverEndpointAsync(endpoint);
+        }
+    }
+
+    public Task<GameEndpointProbeResult> ProbeGameEndpointAsync(Guid profileId)
+    {
+        FriendLink? link;
+        lock (sync)
+        {
+            var matching = links.Where(item => item.Link.View().Profiles.Any(profile => profile.Id == profileId)).ToList();
+            link = matching.FirstOrDefault(item => item.Id == selectedId).Link ?? matching.FirstOrDefault().Link;
+        }
+        return Task.Run(() => link is null
+            ? new GameEndpointProbeResult(false, "UnknownProfile", "This server is not available from a saved Host connection.", DateTimeOffset.UtcNow)
+            : link.ProbeGameEndpoint(profileId));
+    }
+
     public Task<FriendActionResult> RequestAsync(Guid profileId, string action)
     {
         lock (sync)

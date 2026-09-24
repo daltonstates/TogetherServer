@@ -146,21 +146,24 @@ internal static class MinecraftStatusProbe
     private static readonly byte[] RakNetMagic = Convert.FromHexString("00FFFF00FEFEFEFEFDFDFDFD12345678");
 
     public static MinecraftStatusResult? Java(int port)
+        => Java(IPAddress.Loopback, port);
+
+    public static MinecraftStatusResult? Java(IPAddress address, int port)
     {
         try
         {
             using var client = new TcpClient(AddressFamily.InterNetwork);
             using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
-            client.ConnectAsync(IPAddress.Loopback, port, timeout.Token).GetAwaiter().GetResult();
+            client.ConnectAsync(address, port, timeout.Token).GetAwaiter().GetResult();
             using var stream = client.GetStream();
             stream.ReadTimeout = 800;
             stream.WriteTimeout = 800;
             using var handshake = new MemoryStream();
             WriteVarInt(handshake, 0);
             WriteVarInt(handshake, 760);
-            var address = Encoding.UTF8.GetBytes("localhost");
-            WriteVarInt(handshake, address.Length);
-            handshake.Write(address);
+            var hostBytes = Encoding.UTF8.GetBytes(address.ToString());
+            WriteVarInt(handshake, hostBytes.Length);
+            handshake.Write(hostBytes);
             handshake.WriteByte((byte)(port >> 8));
             handshake.WriteByte((byte)port);
             WriteVarInt(handshake, 1);
@@ -194,12 +197,15 @@ internal static class MinecraftStatusProbe
     }
 
     public static MinecraftStatusResult? Bedrock(int port)
+        => Bedrock(IPAddress.Loopback, port);
+
+    public static MinecraftStatusResult? Bedrock(IPAddress address, int port)
     {
         try
         {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
                 { ReceiveTimeout = 800, SendTimeout = 800 };
-            socket.Connect(IPAddress.Loopback, port);
+            socket.Connect(address, port);
             var ping = new byte[33];
             ping[0] = 0x01;
             BinaryPrimitives.WriteInt64BigEndian(ping.AsSpan(1, 8), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());

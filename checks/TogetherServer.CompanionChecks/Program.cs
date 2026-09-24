@@ -124,8 +124,10 @@ try
         "the Host did not return the same current code and saved Start default for each server");
     settings.CompanionEndpoint = $"https://127.0.0.2:{companionPort}";
     var changedPinnedAddress = await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings);
-    Require(!changedPinnedAddress.Ok && changedPinnedAddress.Code == "HostAddressPinned",
-        "the Host app address changed after its TLS identity was pinned");
+    var identityAfterEndpointChange = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
+    Require(changedPinnedAddress.Ok &&
+        identityAfterEndpointChange.GetProperty("fingerprint").GetString() == inviteA.Fingerprint,
+        "changing the advertised endpoint replaced or rejected the stable Host identity");
     settings.CompanionEndpoint = endpoint;
     settings.CompanionListeningEnabled = true;
     settings.RemoteControlsEnabled = false;
@@ -283,7 +285,8 @@ try
         $"/api/local/friend/connections/{firstConnection.ConnectionId}/select", new { })).Ok,
         "Friend could not select the earlier saved connection");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
-    Require(aView.Profiles.Single().Id == profile.Id, "selecting the earlier server lost its pairing");
+    Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
+        "selecting the earlier server lost its pairing: " + JsonSerializer.Serialize(aView, webJson));
     settings.PublicGameIpCheckedUtc = DateTimeOffset.UtcNow;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "fresh Host address update failed");
@@ -307,6 +310,32 @@ try
         new PairingActivation(inviteA.DeviceId, inviteA.Code, true), webJson);
     Require(activation.IsSuccessStatusCode, "retry device activation failed");
     var credentialC = await activation.Content.ReadFromJsonAsync<PairingCredential>(webJson) ?? throw new Exception("empty activation");
+    var priorCredentialC = credentialC;
+    var renewalId = Guid.NewGuid();
+    async Task<(HttpStatusCode Status, CredentialRenewal? Renewal)> RenewCredential(PairingCredential credential)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/companion/credential/renew")
+            { Content = JsonContent.Create(new CredentialRenewalRequest(credential.DeviceId, renewalId), options: webJson) };
+        request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
+        using var response = await publicClient.SendAsync(request);
+        return (response.StatusCode, response.IsSuccessStatusCode
+            ? await response.Content.ReadFromJsonAsync<CredentialRenewal>(webJson) : null);
+    }
+    var firstRenewal = await RenewCredential(priorCredentialC);
+    var retriedRenewal = await RenewCredential(priorCredentialC);
+    Require(firstRenewal.Status == HttpStatusCode.OK && retriedRenewal.Status == HttpStatusCode.OK &&
+        firstRenewal.Renewal is not null && retriedRenewal.Renewal is not null &&
+        firstRenewal.Renewal.Credential == retriedRenewal.Renewal.Credential &&
+        firstRenewal.Renewal.RequestId == renewalId &&
+        firstRenewal.Renewal.PreviousAcceptedUntilUtc > DateTimeOffset.UtcNow,
+        "credential renewal was not idempotent or did not retain the old-token overlap");
+    credentialC = new PairingCredential(credentialC.DeviceId, firstRenewal.Renewal!.Credential,
+        firstRenewal.Renewal.ExpiresUtc);
+    Require((await PublicStatus(publicClient, priorCredentialC)).Protocol?.Compatible == true &&
+        (await PublicStatus(publicClient, credentialC)).Protocol?.Compatible == true,
+        "credential renewal stranded either the old overlap token or the new token");
+    Console.WriteLine("PASS credential renewal is idempotent with a bounded old-token overlap"); passes++;
     var joinActivation = await publicClient.PostAsJsonAsync("/api/companion/pair",
         new PairingActivation(inviteB.DeviceId, inviteB.Code, true), webJson);
     Require(joinActivation.IsSuccessStatusCode, "second server code activation failed");
@@ -339,7 +368,8 @@ try
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "remote controls enable failed");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     bView = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
-    Require(aView.State == "Connected" && bView.State == "Connected", "connected status missing");
+    Require(aView.State == "Connected" && bView.State == "Connected", "connected status missing: A=" +
+        JsonSerializer.Serialize(aView, webJson) + " B=" + JsonSerializer.Serialize(bView, webJson));
     var deniedStart = await FriendAction(bLocal, profile.Id, "start");
     Require(deniedStart.Code == "PermissionDenied", "Friend Start permission was ignored");
     using (var injected = new HttpRequestMessage(HttpMethod.Post, "/api/companion/start"))
@@ -593,6 +623,66 @@ try
         "one device's authentication burst throttled another device behind the same source IP");
     Console.WriteLine("PASS per-device authentication limiting preserves another device behind one source IP"); passes++;
 
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    var recoveryConnection = aView.Connections!.Single(connection =>
+        connection.Profiles.SingleOrDefault()?.Id == joinProfile.Id);
+    Require((await OwnerPost<object, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{recoveryConnection.ConnectionId}/select", new { })).Ok,
+        "could not select the non-throttled connection for recovery checks");
+    var staged = await OwnerPost<object, JsonElement>(owner, "/api/local/companion/certificate/stage", new { });
+    Require(staged.GetProperty("ok").GetBoolean(), "the Host could not stage its next certificate");
+    var stagedCertificates = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion"))
+        .GetProperty("certificates");
+    var nextFingerprint = stagedCertificates.GetProperty("nextFingerprint").GetString();
+    Require(nextFingerprint is { Length: 64 }, "staged certificate fingerprint was not exposed locally");
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(aView.State == "Connected" && aView.CertificateExpiresUtc is not null && aView.HostId != Guid.Empty,
+        "the Friend did not receive authenticated certificate and Host identity metadata");
+    var activated = await OwnerPost<object, JsonElement>(owner, "/api/local/companion/certificate/activate", new { });
+    Require(activated.GetProperty("ok").GetBoolean(), "the Host could not activate its staged certificate: " + activated);
+    var oldPinRejected = false;
+    using var oldOnlyAfterRotation = PinnedClient(endpoint, inviteA.Fingerprint);
+    try
+    {
+        using var oldPinRequest = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
+        oldPinRequest.Headers.Add("X-Device-Id", joinCredential.DeviceId.ToString());
+        oldPinRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", joinCredential.Credential);
+        using var response = await oldOnlyAfterRotation.SendAsync(oldPinRequest);
+        oldPinRejected = !response.IsSuccessStatusCode;
+    }
+    catch (HttpRequestException) { oldPinRejected = true; }
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(oldPinRejected && aView.State == "Connected",
+        $"certificate activation did not reject an old-only pin or stranded a Friend that received the staged pin: oldRejected={oldPinRejected}, friend={JsonSerializer.Serialize(aView, webJson)}");
+
+    var recoveredEndpoint = $"https://127.0.0.2:{companionPort}";
+    settings.CompanionEndpoint = recoveredEndpoint;
+    settings.CompanionBindAddress = "0.0.0.0";
+    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
+        "the owner could not deliberately change the advertised endpoint while retaining Host identity");
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(aView.State == "Disconnected/Unknown", "a saved Friend endpoint changed silently without recovery proof");
+    var recovered = await OwnerPut<EndpointRecoveryRequest, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{recoveryConnection.ConnectionId}/endpoint", new(recoveredEndpoint));
+    aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(recovered.Ok && recovered.Code == "EndpointRecovered" && aView.State == "Connected" &&
+        aView.Endpoint == recoveredEndpoint && aView.RouteMode == ConnectionRouteModes.DirectInternet,
+        "endpoint recovery did not require and preserve the saved pin, credential, route, and Host identity");
+    var badRecovery = await OwnerPut<EndpointRecoveryRequest, FriendActionResult>(aLocal,
+        $"/api/local/friend/connections/{recoveryConnection.ConnectionId}/endpoint",
+        new($"https://127.0.0.3:{companionPort}"));
+    Require(!badRecovery.Ok, "endpoint recovery trusted an address that could not prove the saved Host");
+    var currentAfterRecovery = await OwnerPost<object, JsonElement>(owner,
+        $"/api/local/servers/{joinProfile.Id}/invite/current", new { });
+    Require(PairingPassword.TryDecode(currentAfterRecovery.GetProperty("password").GetString(), null, out var recoveredInvite) &&
+        recoveredInvite!.Endpoint == recoveredEndpoint && recoveredInvite.Fingerprint == nextFingerprint,
+        "new invite copies did not advertise the recovered endpoint and active staged pin");
+    var retired = await OwnerPost<object, JsonElement>(owner, "/api/local/companion/certificate/retire-previous", new { });
+    Require(retired.GetProperty("ok").GetBoolean() &&
+        retired.GetProperty("certificates").GetProperty("previousFingerprint").ValueKind == JsonValueKind.Null,
+        "the owner could not retire the previous certificate pin after the grace path");
+    Console.WriteLine("PASS staged certificate rotation and credential-bound endpoint recovery fail closed"); passes++;
+
     var stopHostData = Path.Combine(root, "stop-host");
     var stopFriendData = Path.Combine(root, "stop-friend");
     stopHostPort = FreeTcpPort(hostPort, companionPort, friendAPort, friendBPort, peerHostPort, peerCompanionPort);
@@ -657,6 +747,16 @@ try
         await Task.Delay(100);
     }
     Require(ready, "restricted synthetic server never reached Ready");
+    var gameEndpointAnswer = GameEndpointProbe.Check(new PublicProfile(stopProfile.Id, stopProfile.Name, "Ready",
+        $"127.0.0.1:{stopProfile.GamePort}", Kind: GameKinds.Valheim));
+    var unsupportedEndpointAnswer = GameEndpointProbe.Check(new PublicProfile(profile.Id, profile.Name, "Ready",
+        $"127.0.0.1:{profile.GamePort}", Kind: GameKinds.Custom));
+    Require(gameEndpointAnswer.Answered && gameEndpointAnswer.Code == "GameEndpointAnswered" &&
+        gameEndpointAnswer.Message.StartsWith("Game endpoint answered from this PC", StringComparison.Ordinal) &&
+        !gameEndpointAnswer.Message.Contains("Join verified", StringComparison.OrdinalIgnoreCase) &&
+        !unsupportedEndpointAnswer.Answered && unsupportedEndpointAnswer.Code == "UnsupportedGameProbe",
+        "Friend-side built-in game probing did not require a valid protocol reply or overstated a successful join");
+    Console.WriteLine("PASS Friend-side game query reports an endpoint answer without claiming a join"); passes++;
     var readySnapshot = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
     var hostRun = readySnapshot.Runs.Single(run => run.ProfileId == stopProfile.Id);
     var hostDeadline = hostRun.AutoShutdownAtUtc;

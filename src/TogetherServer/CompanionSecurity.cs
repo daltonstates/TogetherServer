@@ -28,6 +28,8 @@ public sealed class PairedDevice
     public DateTimeOffset? InviteExpiresUtc { get; set; }
     public string? CredentialHash { get; set; }
     public DateTimeOffset? CredentialExpiresUtc { get; set; }
+    public string? PreviousCredentialHash { get; set; }
+    public DateTimeOffset? PreviousCredentialExpiresUtc { get; set; }
 
     public bool CanStartProfile(Guid profileId) => ServerPermissionOverrides?
         .FirstOrDefault(item => item.ProfileId == profileId)?.CanStart ?? CanStart;
@@ -168,6 +170,8 @@ public static class PairingPassword
 public sealed class HostIdentity(LocalData data)
 {
     private const string FileName = "host-certificate.protected";
+    private const string NextFileName = "host-certificate-next.protected";
+    private const string MetadataFileName = "host-identity.json";
 
     public static bool TryAddress(string? address, out string endpoint)
     {
@@ -186,26 +190,115 @@ public sealed class HostIdentity(LocalData data)
 
     public X509Certificate2? Load()
     {
-        var bytes = data.LoadProtected(FileName);
-        // Windows Schannel cannot serve TLS with an ephemeral imported private key.
-        return bytes is null ? null : X509CertificateLoader.LoadPkcs12(bytes, null, X509KeyStorageFlags.UserKeySet);
+        return Load(FileName);
     }
 
     public X509Certificate2 Ensure(string endpoint)
     {
+        if (!TryEndpoint(endpoint, out _)) throw new ArgumentException("Enter an HTTPS endpoint with an IP address and port.");
         var existing = Load();
         if (existing is not null)
         {
-            if (!string.Equals(data.LoadIdentityEndpoint(), endpoint, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Host identity is pinned to a different endpoint. Rotate it deliberately before changing the endpoint.");
             if (!existing.HasPrivateKey || DateTimeOffset.UtcNow < existing.NotBefore.ToUniversalTime() ||
                 DateTimeOffset.UtcNow > existing.NotAfter.ToUniversalTime())
                 throw new InvalidOperationException("Host TLS identity is not currently usable. Renew it before creating invites.");
+            _ = Metadata();
+            data.SaveIdentityEndpoint(endpoint); // Last advertised endpoint; never an identity trust anchor.
             return existing;
         }
+        using var certificate = Create(endpoint, Metadata().HostId);
+        data.SaveProtected(FileName, certificate.Export(X509ContentType.Pkcs12));
+        data.SaveIdentityEndpoint(endpoint);
+        return Load()!;
+    }
+
+    public HostCertificateState? State()
+    {
+        using var current = Load();
+        if (current is null) return null;
+        using var next = Load(NextFileName);
+        var metadata = Metadata();
+        if (metadata.PreviousAcceptedUntilUtc <= DateTimeOffset.UtcNow && metadata.PreviousFingerprint is not null)
+        {
+            metadata.PreviousFingerprint = null;
+            metadata.PreviousAcceptedUntilUtc = null;
+            data.SaveState(MetadataFileName, metadata);
+            return new(metadata.HostId, Fingerprint(current), current.NotAfter.ToUniversalTime(),
+                next is null ? null : Fingerprint(next), next?.NotAfter.ToUniversalTime(), null, null);
+        }
+        return new(metadata.HostId, Fingerprint(current), current.NotAfter.ToUniversalTime(),
+            next is null ? null : Fingerprint(next), next?.NotAfter.ToUniversalTime(),
+            metadata.PreviousFingerprint, metadata.PreviousAcceptedUntilUtc);
+    }
+
+    public HostCertificateState StageNext(string endpoint, bool force = false)
+    {
+        using var current = Ensure(endpoint);
+        using var existingNext = Load(NextFileName);
+        if (existingNext is null || force)
+        {
+            using var generated = Create(endpoint, Metadata().HostId);
+            data.SaveProtected(NextFileName, generated.Export(X509ContentType.Pkcs12));
+        }
+        return State()!;
+    }
+
+    public HostCertificateState StageNextIfExpiring(string endpoint, TimeSpan warning)
+    {
+        using var current = Ensure(endpoint);
+        return current.NotAfter.ToUniversalTime() - DateTimeOffset.UtcNow <= warning
+            ? StageNext(endpoint)
+            : State()!;
+    }
+
+    public HostCertificateState ActivateNext()
+    {
+        using var current = Load() ?? throw new InvalidOperationException("The current Host certificate is unavailable.");
+        using var next = Load(NextFileName) ?? throw new InvalidOperationException("Stage the next Host certificate first.");
+        if (DateTimeOffset.UtcNow < next.NotBefore.ToUniversalTime() || DateTimeOffset.UtcNow > next.NotAfter.ToUniversalTime())
+            throw new InvalidOperationException("The staged Host certificate is not currently usable.");
+        var nextBytes = data.LoadProtected(NextFileName)
+            ?? throw new InvalidOperationException("The staged Host certificate is unavailable.");
+        data.SaveProtected(FileName, nextBytes);
+        data.DeleteProtected(NextFileName);
+        var metadata = Metadata();
+        metadata.PreviousFingerprint = Fingerprint(current);
+        metadata.PreviousAcceptedUntilUtc = DateTimeOffset.UtcNow.AddDays(14);
+        data.SaveState(MetadataFileName, metadata);
+        return State()!;
+    }
+
+    public HostCertificateState RetirePrevious()
+    {
+        var metadata = Metadata();
+        metadata.PreviousFingerprint = null;
+        metadata.PreviousAcceptedUntilUtc = null;
+        data.SaveState(MetadataFileName, metadata);
+        return State() ?? throw new InvalidOperationException("The current Host certificate is unavailable.");
+    }
+
+    private X509Certificate2? Load(string fileName)
+    {
+        var bytes = data.LoadProtected(fileName);
+        // Windows Schannel cannot serve TLS with an ephemeral imported private key.
+        return bytes is null ? null : X509CertificateLoader.LoadPkcs12(bytes, null, X509KeyStorageFlags.UserKeySet);
+    }
+
+    private HostIdentityMetadata Metadata()
+    {
+        var metadata = data.LoadState<HostIdentityMetadata?>(MetadataFileName, null);
+        if (metadata is not null && metadata.HostId != Guid.Empty) return metadata;
+        metadata ??= new HostIdentityMetadata();
+        metadata.HostId = Guid.NewGuid();
+        data.SaveState(MetadataFileName, metadata);
+        return metadata;
+    }
+
+    private static X509Certificate2 Create(string endpoint, Guid hostId)
+    {
         if (!TryEndpoint(endpoint, out var uri)) throw new ArgumentException("Enter an HTTPS endpoint with an IP address and port.");
         using var rsa = RSA.Create(3072);
-        var request = new CertificateRequest("CN=TogetherServer Host", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var request = new CertificateRequest($"CN=TogetherServer Host {hostId:N}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
@@ -213,10 +306,7 @@ public sealed class HostIdentity(LocalData data)
         var names = new SubjectAlternativeNameBuilder();
         names.AddIpAddress(IPAddress.Parse(uri.Host));
         request.CertificateExtensions.Add(names.Build());
-        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddYears(1));
-        data.SaveProtected(FileName, certificate.Export(X509ContentType.Pkcs12));
-        data.SaveIdentityEndpoint(endpoint);
-        return Load()!;
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddYears(1));
     }
 
     public static string Fingerprint(X509Certificate2 certificate) => Convert.ToHexString(SHA256.HashData(certificate.RawData));
@@ -354,7 +444,17 @@ public sealed class PairingService
         {
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             if (state is not null && !refresh)
+            {
+                if (!string.Equals(state.Endpoint, endpoint, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(state.Fingerprint, fingerprint, StringComparison.Ordinal))
+                {
+                    state.Endpoint = endpoint;
+                    state.Fingerprint = fingerprint;
+                    data.SaveServerInvites(serverInvites);
+                    data.Audit($"server-invite endpoint-update {profileId} {DateTimeOffset.UtcNow:O}");
+                }
                 return new(state.Endpoint, state.Fingerprint, profileId, state.Code, DateTimeOffset.MaxValue, true);
+            }
             var next = new ServerInviteState
             {
                 ProfileId = profileId, Generation = Guid.NewGuid(),
@@ -470,6 +570,9 @@ public sealed class PairingService
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             device.CredentialHash = Hash(token);
             device.CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90);
+            device.PreviousCredentialHash = null;
+            device.PreviousCredentialExpiresUtc = null;
+            data.DeleteCredentialRenewalReceipt(device.Id);
             device.InviteHash = null;
             device.InviteExpiresUtc = null;
             heartbeats.TryRemove(device.Id, out _);
@@ -484,8 +587,11 @@ public sealed class PairingService
         lock (sync)
         {
             device = devices.SingleOrDefault(d => d.Id == id);
-            if (device is null || device.CredentialHash is null || bearer is null ||
-                bearer.Length > 128 || !Matches(bearer, device.CredentialHash))
+            var current = device?.CredentialHash is not null && bearer is not null && bearer.Length <= 128 &&
+                Matches(bearer, device.CredentialHash);
+            var previous = device?.PreviousCredentialHash is not null && bearer is not null && bearer.Length <= 128 &&
+                device.PreviousCredentialExpiresUtc > DateTimeOffset.UtcNow && Matches(bearer, device.PreviousCredentialHash);
+            if (device is null || !current && !previous)
             {
                 device = null;
                 return new PairingDecision(false, "Unauthorized", "Device credential was not accepted.");
@@ -494,6 +600,39 @@ public sealed class PairingService
             if (device.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
                 return new PairingDecision(false, "Expired", "This device credential has expired.");
             return new PairingDecision(true, "Authenticated", "Device authenticated.");
+        }
+    }
+
+    public CredentialRenewal? Renew(PairedDevice authenticatedDevice, CredentialRenewalRequest request)
+    {
+        if (request.DeviceId != authenticatedDevice.Id || request.RequestId == Guid.Empty) return null;
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == authenticatedDevice.Id);
+            if (device is null || IsRevoked(device) || device.CredentialHash is null ||
+                device.CredentialExpiresUtc <= DateTimeOffset.UtcNow) return null;
+            var existing = data.LoadCredentialRenewalReceipt(device.Id);
+            if (existing is not null && existing.RequestId == request.RequestId &&
+                existing.PreviousAcceptedUntilUtc > DateTimeOffset.UtcNow)
+                return new(existing.DeviceId, existing.RequestId, existing.Credential,
+                    existing.ExpiresUtc, existing.PreviousAcceptedUntilUtc);
+
+            var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var overlap = DateTimeOffset.UtcNow.AddMinutes(10);
+            device.PreviousCredentialHash = device.CredentialHash;
+            device.PreviousCredentialExpiresUtc = overlap;
+            device.CredentialHash = Hash(token);
+            device.CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90);
+            var receipt = new CredentialRenewalReceipt
+            {
+                DeviceId = device.Id, RequestId = request.RequestId, Credential = token,
+                ExpiresUtc = device.CredentialExpiresUtc.Value, PreviousAcceptedUntilUtc = overlap
+            };
+            data.SaveDevices(devices);
+            data.SaveCredentialRenewalReceipt(receipt);
+            data.Audit($"credential-renew {device.Id} {DateTimeOffset.UtcNow:O}");
+            return new(receipt.DeviceId, receipt.RequestId, receipt.Credential,
+                receipt.ExpiresUtc, receipt.PreviousAcceptedUntilUtc);
         }
     }
 
@@ -522,6 +661,9 @@ public sealed class PairingService
             device.Revoked = true;
             device.InviteHash = null;
             device.InviteExpiresUtc = null;
+            device.PreviousCredentialHash = null;
+            device.PreviousCredentialExpiresUtc = null;
+            data.DeleteCredentialRenewalReceipt(device.Id);
             heartbeats.TryRemove(id, out _);
             data.SaveDevices(devices);
             data.Audit($"revoke {device.Id} {DateTimeOffset.UtcNow:O}");

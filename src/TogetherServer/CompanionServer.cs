@@ -39,8 +39,6 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             return;
         }
         var address = settings.CompanionBindAddress + ":" + settings.CompanionPort;
-        if (active is not null && activeAddress == address) return;
-        await StopCoreAsync();
         X509Certificate2? nextCertificate = null;
         WebApplication? nextApp = null;
         try
@@ -48,14 +46,22 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out var endpoint) ||
                 endpoint.Port != settings.CompanionPort || !IPAddress.TryParse(settings.CompanionBindAddress, out var bind) ||
                 !pairing.HasInviteOrCredential() || settings.CompanionPort < 1024 ||
-                settings.CompanionPort == localPort ||
-                !string.Equals(data.LoadIdentityEndpoint(), settings.CompanionEndpoint, StringComparison.OrdinalIgnoreCase))
+                settings.CompanionPort == localPort)
                 throw new InvalidOperationException("Pairing, Host address, port, or TLS identity is incomplete.");
+            _ = identity.StageNextIfExpiring(settings.CompanionEndpoint, TimeSpan.FromDays(30));
             nextCertificate = identity.Load();
             if (nextCertificate is null || !nextCertificate.HasPrivateKey ||
                 DateTimeOffset.UtcNow < nextCertificate.NotBefore.ToUniversalTime() ||
                 DateTimeOffset.UtcNow > nextCertificate.NotAfter.ToUniversalTime())
                 throw new InvalidOperationException("The Host TLS identity is unavailable or expired.");
+            var configurationKey = address + "|" + endpoint.GetLeftPart(UriPartial.Authority) + "|" +
+                HostIdentity.Fingerprint(nextCertificate);
+            if (active is not null && activeAddress == configurationKey)
+            {
+                nextCertificate.Dispose();
+                return;
+            }
+            await StopCoreAsync();
             var builder = WebApplication.CreateBuilder(Array.Empty<string>());
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(bind, settings.CompanionPort, listener => listener.UseHttps(nextCertificate)));
@@ -96,7 +102,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             await nextApp.StartAsync();
             active = nextApp;
             certificate = nextCertificate;
-            activeAddress = address;
+            activeAddress = configurationKey;
             Warning = null;
             Console.WriteLine($"Companion HTTPS listener: {address}");
         }
@@ -105,6 +111,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (nextApp is not null) await nextApp.DisposeAsync();
             nextCertificate?.Dispose();
+            await StopCoreAsync();
             Warning = "Friend connections could not start: " + ex.Message;
             Console.Error.WriteLine(Warning);
         }
@@ -157,8 +164,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         async Task<CompanionStatus> PublicStatus(Guid deviceId)
         {
             var snapshot = await manager.SnapshotAsync();
-            var address = snapshot.Settings.PublicGameIpCheckedUtc is { } checkedUtc &&
-                DateTimeOffset.UtcNow - checkedUtc <= TimeSpan.FromHours(1) ? snapshot.Settings.PublicGameIp : null;
+            var address = ConnectionRoutes.GameAddress(snapshot.Settings);
             var own = pairing.Views().SingleOrDefault(view => view.Id == deviceId);
             var recentOperations = operations.RecentFor(deviceId);
             var profiles = snapshot.Settings.Profiles.Where(profile =>
@@ -186,7 +192,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 !protocol.Compatible ? protocol.CompatibilityMessage :
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",
                 profiles, profiles.Any(profile => profile.CanStart), profiles.Any(profile => profile.CanStop),
-                DateTimeOffset.UtcNow, protocol);
+                DateTimeOffset.UtcNow, protocol, identity.State(), ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute));
         }
 
         var companion = app.MapGroup("/api/companion");
@@ -209,6 +215,31 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
             return Results.Json(await PublicStatus(device!.Id));
+        }).RequireRateLimiting("device");
+        companion.MapPost("/credential/renew", (HttpContext context, CredentialRenewalRequest request) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+            if (request.DeviceId != device!.Id)
+                return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
+            var renewed = pairing.Renew(device, request);
+            return renewed is null
+                ? Results.Json(new PairingDecision(false, "RenewalRejected", "The credential could not be renewed."), statusCode: 409)
+                : Results.Json(renewed);
+        }).RequireRateLimiting("device");
+        companion.MapPost("/endpoint/recover", async (HttpContext context, EndpointRecoveryProofRequest request) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: decision.Code == "Revoked" ? 403 : 401);
+            if (request.DeviceId != device!.Id)
+                return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
+            var snapshot = await manager.SnapshotAsync();
+            var certificates = identity.State();
+            if (certificates is null)
+                return Results.Json(new PairingDecision(false, "IdentityUnavailable", "The Host identity is unavailable."), statusCode: 503);
+            return Results.Json(new EndpointRecoveryProof(certificates.HostId,
+                snapshot.Settings.CompanionEndpoint, certificates,
+                ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute)));
         }).RequireRateLimiting("device");
 
         async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, string action)
