@@ -266,23 +266,7 @@ internal sealed class FriendLink : IDisposable
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
-                config.CachedProfiles = status.Profiles.ToList();
-                ApplyHostMetadata(status.Certificates, status.Route);
-                var compatible = CompanionProtocol.Supports(status.Protocol);
-                var warning = ExpiryWarning();
-                view = new FriendView("Friend", !compatible ? "Update required" :
-                        status.RemoteControlsEnabled ? "Connected" : "Disabled",
-                    !compatible ? status.Protocol?.CompatibilityMessage ?? "Update required before remote controls can be used." :
-                        status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
-                    config.Endpoint, DateTimeOffset.UtcNow, compatible && status.RemoteControlsEnabled,
-                    compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
-                    HostVersion: status.Protocol?.AppVersion, FriendVersion: CompanionProtocol.AppVersion,
-                    HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible,
-                    CredentialExpiresUtc: config.CredentialExpiresUtc,
-                    CertificateExpiresUtc: config.CertificateExpiresUtc, ExpiryWarning: warning,
-                    RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
-                    RouteAddress: config.Route?.Address, HostId: config.HostId,
-                    ConnectionName: config.DisplayName, Activity: status.Activity);
+                ApplyStatus(status);
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
@@ -416,8 +400,9 @@ internal sealed class FriendLink : IDisposable
         try
         {
             if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
-            if (action is not ("start" or "stop" or "restart" or "replace" or "extend"))
-                return new(false, "InvalidAction", "Only fixed server lifecycle and countdown-extension actions are available.", null);
+            if (action is not ("start" or "stop" or "restart" or "replace" or "extend" or "refresh"))
+                return new(false, "InvalidAction", "Only fixed server lifecycle, countdown-extension, and player-count refresh actions are available.", null);
+            if (action == "refresh") return await RefreshPlayerCountAsync(profileId);
             config.PendingOperations ??= [];
             var pending = config.PendingOperations.FirstOrDefault(item => item.ProfileId == profileId);
             if (pending is not null && !pending.Action.Equals(action, StringComparison.Ordinal))
@@ -472,6 +457,42 @@ internal sealed class FriendLink : IDisposable
             }
         }
         finally { gate.Release(); ReleaseRetained(); }
+    }
+
+    private async Task<FriendActionResult> RefreshPlayerCountAsync(Guid profileId)
+    {
+        if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/refresh")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                { deviceId = config.DeviceId, profileId }, Json), Encoding.UTF8, "application/json")
+            };
+            using var response = await HostClient().SendAsync(request);
+            FriendActionResult? result = null;
+            try { result = await response.Content.ReadFromJsonAsync<FriendActionResult>(Json); }
+            catch (JsonException) { /* Converted into a bounded invalid-response result below. */ }
+            result ??= new(false, "InvalidResponse", "Host returned an unreadable player-count refresh result.", null);
+            ApplyActionConnectionState(response.StatusCode, result);
+            if (result.Status is { } status) ApplyStatus(status);
+            return result;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
+        {
+            var issue = ConnectionFailure(ex);
+            view = view with
+            {
+                State = "Disconnected/Unknown",
+                Detail = issue.Message,
+                ConnectionCode = issue.Code,
+                RemoteControlsEnabled = false,
+                CanStart = false,
+                CanStop = false,
+                Profiles = ProfilesWithPendingOperations()
+            };
+            return new(false, issue.Code, issue.Message + " The player-count refresh did not return a result.", null);
+        }
     }
 
     private async Task<FriendActionResult> SubmitPendingOperationAsync(PendingFriendOperation pending)
@@ -640,6 +661,28 @@ internal sealed class FriendLink : IDisposable
                 CanStop = false,
                 Profiles = ProfilesWithPendingOperations()
             };
+    }
+
+    private void ApplyStatus(CompanionStatus status)
+    {
+        if (config is null) throw new InvalidOperationException("Pair with a Host first.");
+        config.CachedProfiles = status.Profiles.ToList();
+        ApplyHostMetadata(status.Certificates, status.Route);
+        var compatible = CompanionProtocol.Supports(status.Protocol);
+        var warning = ExpiryWarning();
+        view = new FriendView("Friend", !compatible ? "Update required" :
+                status.RemoteControlsEnabled ? "Connected" : "Disabled",
+            !compatible ? status.Protocol?.CompatibilityMessage ?? "Update required before remote controls can be used." :
+                status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
+            config.Endpoint, DateTimeOffset.UtcNow, compatible && status.RemoteControlsEnabled,
+            compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
+            HostVersion: status.Protocol?.AppVersion, FriendVersion: CompanionProtocol.AppVersion,
+            HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible,
+            CredentialExpiresUtc: config.CredentialExpiresUtc,
+            CertificateExpiresUtc: config.CertificateExpiresUtc, ExpiryWarning: warning,
+            RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
+            RouteAddress: config.Route?.Address, HostId: config.HostId,
+            ConnectionName: config.DisplayName, Activity: status.Activity);
     }
 
     private HttpClient HostClient()

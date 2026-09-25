@@ -462,6 +462,24 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
     Require(!result.Ok && result.Code == "InvalidSettings", "an unregistered game profile was accepted");
 });
 
+await Check("Valheim startup connection sequences survive the ready boundary", () =>
+{
+    var startupJoin = ValheimServerLog.Parse(new StringReader(
+        "09/25/2026 12:00:00: New connection\n" +
+        "09/25/2026 12:00:01: Game server connected\n" +
+        "09/25/2026 12:00:02: Got connection SteamID 111111\n"));
+    var startupRoundTrip = ValheimServerLog.Parse(new StringReader(
+        "09/25/2026 12:00:00: New connection\n" +
+        "09/25/2026 12:00:01: Got connection SteamID 222222\n" +
+        "09/25/2026 12:00:02: Game server connected\n" +
+        "09/25/2026 12:00:03: RPC_Disconnect\n" +
+        "09/25/2026 12:00:04: Closing socket 222222\n"));
+    Require(startupJoin.Ready && startupJoin.Players?.Online == 1 &&
+        startupRoundTrip.Ready && startupRoundTrip.Players?.Online == 0,
+        "a complete connection sequence crossing the ready marker was discarded");
+    return Task.CompletedTask;
+});
+
 await Check("port diagnostics show local game and Friend listeners honestly", async () =>
 {
     using var data = Data("port-diagnostics");

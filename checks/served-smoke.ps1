@@ -99,6 +99,7 @@ try {
         'Maintenance mode', 'Extend empty-server timer', 'Friend extension increment',
         'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
+        'Retry player count', 'Refresh player count',
         'Extra minutes for this countdown only.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
         'Custom game', 'local PowerShell actions', 'Status and players script',
         'contract v2 echoes plus the guided live certification are required', 'TogetherServer never force-kills the game.',
@@ -114,6 +115,9 @@ try {
     }
     if (!$css.Content.Contains('.idle-countdown{') -or !$css.Content.Contains('font-variant-numeric:tabular-nums')) {
         throw 'The shared empty-server countdown styles were not bundled.'
+    }
+    if (!$css.Content.Contains('.player-count-refresh.ui-button{')) {
+        throw 'The compact player-count refresh control styles were not bundled.'
     }
     if (!$css.Content.Contains('.technical-details-grid{') -or !$css.Content.Contains('.technical-detail-card{')) {
         throw 'The grouped Host technical-detail styles were not bundled.'
@@ -370,6 +374,11 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     }
     if ($valheimView.onlinePlayers -ne 0 -or $valheimView.maxPlayers -ne 10 -or $null -eq $valheimView.autoShutdownAtUtc) {
         throw 'Published EXE did not expose the synthetic Valheim 0 of 10 player count and shutdown deadline.'
+    }
+    $refreshedPlayers = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/players/refresh" -Method Post -Headers $headers
+    $refreshedPlayerView = @($refreshedPlayers.snapshot.runs) | Where-Object profileId -EQ $valheimId
+    if (!$refreshedPlayers.ok -or $refreshedPlayers.code -ne 'PlayerCountRefreshed' -or $refreshedPlayerView.onlinePlayers -ne 0) {
+        throw 'Published EXE did not return the canonical player count from the manual Host refresh.'
     }
     $originalDeadline = [DateTimeOffset]::Parse($valheimView.autoShutdownAtUtc)
     $extension = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/countdown/extend" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"minutes":23}'

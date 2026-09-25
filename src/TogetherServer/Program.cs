@@ -394,6 +394,8 @@ app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) => HostOnly(() =>
 app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, CountdownExtensionRequest request) =>
     HostOnly(() => manager.ExtendAutoShutdownAsync(id, request.Minutes)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/players/refresh", (Guid id) =>
+    HostOnly(() => manager.RefreshPlayerCountAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
     ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })

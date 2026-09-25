@@ -348,6 +348,12 @@ try
     Require(aView.State == "Disabled" && bView.State == "Disabled", "initial disabled notice missing");
     Require(aView.Profiles.Count == 1 && aView.Profiles.Single().Id == profile.Id,
         "a server code exposed a different server profile");
+    var pausedRefresh = await FriendAction(aLocal, profile.Id, "refresh");
+    var unassignedRefresh = await FriendAction(bLocal, joinProfile.Id, "refresh");
+    Require(pausedRefresh.Code == "NotManaged" && pausedRefresh.Status?.Profiles.Single().Id == profile.Id &&
+        unassignedRefresh.Code == "PermissionDenied",
+        "read-only refresh was blocked by paused lifecycle controls or bypassed server assignment");
+    Console.WriteLine("PASS assigned Friends can refresh status while lifecycle controls are paused"); passes++;
     var differentServerDenied = await FriendAction(bLocal, joinProfile.Id, "start");
     Require(differentServerDenied.Code == "PermissionDenied",
         "a Friend controlled a server that was not assigned to its code or device");
@@ -1026,19 +1032,18 @@ try
         "Friend UI did not receive the player count, shared countdown, and available remote Stop state");
     var playerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
     File.WriteAllText(playerCountPath, "1");
-    FriendView? occupiedView = null;
-    for (var i = 0; i < 80; i++)
-    {
-        occupiedView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
-        if (occupiedView.Profiles.Single().OnlinePlayers == 1 &&
-            occupiedView.Profiles.Single().AutoShutdownAtUtc is null) break;
-        await Task.Delay(100);
-    }
-    var observedOccupied = occupiedView ?? throw new Exception("Friend status was unavailable after player-count change");
-    Require(observedOccupied.Profiles.Single().OnlinePlayers == 1 &&
-        observedOccupied.Profiles.Single().AutoShutdownAtUtc is null && !observedOccupied.Profiles.Single().CanStopNow &&
-        observedOccupied.Profiles.Single().StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
-        "Friend UI did not cancel the countdown and receive the online-player Stop blocker");
+    var friendRefresh = await FriendAction(stopFriendLocal, stopProfile.Id, "refresh");
+    var refreshedFriendView = await stopFriendLocal.GetFromJsonAsync<FriendView>("/api/local/snapshot");
+    var refreshedHostView = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    var observedOccupied = refreshedFriendView!.Profiles.Single();
+    Require(friendRefresh.Ok && friendRefresh.Code == "PlayerCountRefreshed" &&
+        friendRefresh.Status?.Profiles.Single().OnlinePlayers == 1 &&
+        refreshedHostView!.Runs.Single(run => run.ProfileId == stopProfile.Id).OnlinePlayers == 1 &&
+        observedOccupied.OnlinePlayers == 1 && observedOccupied.AutoShutdownAtUtc is null &&
+        !observedOccupied.CanStopNow &&
+        observedOccupied.StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
+        "Friend refresh did not update the Host cache, response status, and local Friend view together");
+    Console.WriteLine("PASS Friend player-count refresh returns one canonical Host status to both views"); passes++;
     var occupiedStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(!occupiedStop.Ok && occupiedStop.Code == "PlayersOnline",
         "Host accepted remote Stop while the server reported an online player");

@@ -119,13 +119,20 @@ function countdownLabel(deadline: string | null, nowMs: number) {
   return `Stops in ${hours > 0 ? `${hours}:` : ''}${hours > 0 ? String(minutes).padStart(2, '0') : minutes}:${String(remainder).padStart(2, '0')}`
 }
 
-function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs, players }: {
+function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs, players,
+  onRefresh, refreshing = false, refreshDisabled = false }: {
   state: string; online: number | null; capacity: number | null; deadline: string | null; timerReason: string | null; nowMs: number; players?: string[] | null
+  onRefresh?: () => void; refreshing?: boolean; refreshDisabled?: boolean
 }) {
   if (state !== 'Ready') return null
   const countdown = online === 0 ? countdownLabel(deadline, nowMs) : null
   return <div className="server-activity-wrap"><div className="server-activity">
       <span className={`player-count ${online === null ? 'unknown' : ''}`}>{playerCount(online, capacity)}</span>
+      {onRefresh && <Button className="secondary icon-button player-count-refresh" disabled={refreshing || refreshDisabled}
+        onClick={onRefresh} aria-label={online === null ? 'Retry player count' : 'Refresh player count'}
+        title={online === null ? 'Retry player count' : 'Refresh player count'}>
+        <Icon name={refreshing ? 'loader' : 'refresh'} size={15} /><span className="sr-only">{online === null ? 'Retry player count' : 'Refresh player count'}</span>
+      </Button>}
       {countdown && <span className="idle-countdown" role="timer" title="No players are online and automatic shutdown is on.">{countdown}</span>}
     </div>
     {!!players?.length && <small className="player-names">Players: {players.join(', ')}</small>}
@@ -715,7 +722,7 @@ function App() {
         code: 'ProbeFailed', message: errorMessage(error), checkedUtc: new Date().toISOString(), onlinePlayers: null, maxPlayers: null } }))
     } finally { setPending('') }
   }
-  const friendAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'replace' | 'extend') => {
+  const friendAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'replace' | 'extend' | 'refresh') => {
     const key = `friend-${action}-${id}`
     setPending(key)
     if (action === 'stop' || action === 'restart') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}-address`)
@@ -1069,7 +1076,9 @@ function App() {
             const operationConflict = profile.operation?.code === 'PortConflict' && profile.operation.portConflicts?.length
               ? { message: profile.operation.message, conflicts: profile.operation.portConflicts } : null
             return <article className="profile-card" key={profile.id} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
-              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
+              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
+                refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
+                onRefresh={() => void friendAction(profile.id, 'refresh')} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
               {profile.operation && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
               {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
               {profile.state === 'Ready' && profile.joinAddress && <ConnectionDetails
@@ -1129,7 +1138,9 @@ function App() {
                 onHide: () => hideConnectionDetails(passwordKey),
                 onCopy: () => void copyGamePassword(profile, passwordKey) }] : [])]
               return <article className="profile-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
-              <div className="profile-top"><div><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={status?.onlinePlayers ?? null} capacity={status?.maxPlayers ?? null} deadline={status?.autoShutdownAtUtc ?? null} timerReason={status?.autoShutdownReason ?? null} nowMs={nowMs} players={status?.playerNames} /></div>
+              <div className="profile-top"><div><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={status?.onlinePlayers ?? null} capacity={status?.maxPlayers ?? null} deadline={status?.autoShutdownAtUtc ?? null} timerReason={status?.autoShutdownReason ?? null} nowMs={nowMs} players={status?.playerNames}
+                refreshing={pending === `players-${profile.id}`} refreshDisabled={!!pending || dirty}
+                onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 <ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} />

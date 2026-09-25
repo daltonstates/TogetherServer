@@ -243,6 +243,36 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(await PublicStatus(device!.Id));
         });
+        companion.MapPost("/refresh", async (HttpContext context, RemoteActionRequest request) =>
+        {
+            if (isUpdating?.Invoke() == true)
+                return Results.Json(new FriendActionResult(false, "UpdatePending",
+                    "The Host is restarting for an update.", null), statusCode: 503);
+            if (isShuttingDown?.Invoke() == true)
+                return Results.Json(new FriendActionResult(false, "HostShuttingDown",
+                    "The Host is closing and cannot refresh the player count.", null), statusCode: 503);
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                    statusCode: AuthenticationStatus(decision));
+            if (request.DeviceId != device!.Id || request.ProfileId == Guid.Empty)
+                return Results.BadRequest(new FriendActionResult(false, "InvalidRequest",
+                    "Device or profile ID is invalid.", null));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName].ToString(), out var clientProtocol) ||
+                !CompanionProtocol.IsCompatible(clientProtocol))
+                return Results.Json(new FriendActionResult(false, "ProtocolIncompatible",
+                    int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName].ToString(), out var reportedProtocol)
+                        ? CompanionProtocol.CompatibilityMessage(reportedProtocol)
+                        : "Update required: this Friend app did not identify a supported companion protocol.", null),
+                    statusCode: StatusCodes.Status409Conflict);
+            if (!pairing.CanAccess(device, request.ProfileId))
+                return Results.Json(new FriendActionResult(false, "PermissionDenied",
+                    "The Host has not assigned this server to this PC.", null), statusCode: 403);
+
+            var result = await manager.RefreshPlayerCountAsync(request.ProfileId);
+            data.TryAudit($"remote-player-count-refresh {device.Id} {request.ProfileId} {result.Code} {DateTimeOffset.UtcNow:O}");
+            return Results.Json(new FriendActionResult(result.Ok, result.Code, result.Message,
+                await PublicStatus(device.Id)));
+        });
         companion.MapPost("/credential/renew", (HttpContext context, CredentialRenewalRequest request) =>
         {
             if (!AuthenticateDetailed(context, out var device, out var decision, out var usedPreviousCredential))

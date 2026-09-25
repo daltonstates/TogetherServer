@@ -487,11 +487,17 @@ try
             Require(unknownTimer.OnlinePlayers is null && unknownTimer.AutoShutdownAtUtc is null,
                 "an unavailable count was treated as zero or left the countdown running");
 
-            File.WriteAllText(timerCountPath, "0");
-            await host.RefreshObservationsAsync();
-            var third = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
-            Require(third.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
-                "the countdown did not restart after an unavailable count recovered");
+            var recoverCount = Task.Run(async () =>
+            {
+                await Task.Delay(100);
+                File.WriteAllText(timerCountPath, "0");
+            });
+            var refreshed = await host.RefreshPlayerCountAsync(stopProfile.Id);
+            await recoverCount;
+            var third = refreshed.Snapshot.Runs.Single(run => run.ProfileId == stopProfile.Id);
+            Require(refreshed.Ok && refreshed.Code == "PlayerCountRefreshed" &&
+                third.OnlinePlayers == 0 && third.AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
+                "the bounded retry did not recover a transient unavailable count or restart the countdown");
             clock.Advance(TimeSpan.FromSeconds(59));
             await host.RefreshObservationsAsync();
             Require((await host.MaintainIdleShutdownAsync()).Count == 0 &&

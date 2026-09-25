@@ -18,6 +18,7 @@ public static class CompanionProtocol
         "maintenance",
         "activity-feed",
         "timer-extension",
+        "player-count-refresh",
         "pairing-windows",
         "action-protocol-header"
     ];

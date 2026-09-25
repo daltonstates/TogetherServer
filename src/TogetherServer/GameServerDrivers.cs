@@ -253,16 +253,11 @@ internal static class ValheimServerLog
         {
             if (line.Contains(ReadyMarker, StringComparison.OrdinalIgnoreCase))
             {
-                if (!ready)
-                {
-                    ready = true;
-                    count = 0;
-                    pendingConnections = 0;
-                    pendingDisconnects = 0;
-                    inconsistent = false;
-                    activeIds.Clear();
-                    closedIds.Clear();
-                }
+                // This log belongs to one exact managed run, so retain a
+                // connection sequence that began while Valheim was still
+                // spinning up. A client can log "New connection" just before
+                // the ready marker and its Steam ID immediately afterward.
+                ready = true;
                 continue;
             }
 
@@ -282,8 +277,6 @@ internal static class ValheimServerLog
                 closedIds.Clear();
                 continue;
             }
-            if (!ready) continue;
-
             if (EndsWithMessage(line, "New connection"))
             {
                 pendingConnections++;

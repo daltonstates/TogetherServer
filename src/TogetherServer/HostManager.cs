@@ -33,6 +33,11 @@ public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string 
 public sealed class HostManager
 {
     private static readonly TimeSpan CrashRecoveryReadinessTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan[] PlayerCountRetryDelays =
+    [
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(750)
+    ];
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly LocalData data;
     private readonly GameServerRegistry games;
@@ -89,9 +94,14 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
-    public async Task RefreshObservationsAsync()
+    public Task RefreshObservationsAsync() => RefreshObservationsAsync(null, false);
+
+    private async Task RefreshObservationsAsync(Guid? profileId, bool waitForRefresh)
     {
-        if (!await observationRefresh.WaitAsync(0)) return;
+        if (waitForRefresh)
+            await observationRefresh.WaitAsync();
+        else if (!await observationRefresh.WaitAsync(0))
+            return;
         try
         {
             List<(ManagedRun Run, IGameServerDriver Driver)> targets;
@@ -100,7 +110,7 @@ public sealed class HostManager
             {
                 if (data.Recovery.LifecycleBlocked) return;
                 targets = [];
-                foreach (var run in runs.ToList())
+                foreach (var run in runs.Where(run => profileId is null || run.ProfileId == profileId).ToList())
                 {
                     var identity = Identity(run);
                     if (identity == "Missing")
@@ -116,13 +126,7 @@ public sealed class HostManager
 
             var checkedRuns = await Task.WhenAll(targets.Select(async target =>
             {
-                GameHealthResult health;
-                try { health = await Task.Run(() => target.Driver.Health(target.Run)); }
-                catch (Exception ex)
-                {
-                    health = new(false, "HealthProbeFailed", "Unknown",
-                        "The server status probe failed: " + ex.GetType().Name + ".", PlayerCountTrusted: false);
-                }
+                var health = await ProbeHealthWithRetriesAsync(target.Run, target.Driver);
                 return (target.Run.ProfileId, target.Run.OperationId, Health: health);
             }));
 
@@ -176,6 +180,39 @@ public sealed class HostManager
         }
         finally { observationRefresh.Release(); }
     }
+
+    private static async Task<GameHealthResult> ProbeHealthWithRetriesAsync(ManagedRun run,
+        IGameServerDriver driver)
+    {
+        GameHealthResult health = default!;
+        var attempts = 0;
+        while (true)
+        {
+            attempts++;
+            try { health = await Task.Run(() => driver.Health(run)); }
+            catch (Exception ex)
+            {
+                health = new(false, "HealthProbeFailed", "Unknown",
+                    "The server status probe failed: " + ex.GetType().Name + ".", PlayerCountTrusted: false);
+            }
+
+            if (!ShouldRetryPlayerCount(run, health) || attempts > PlayerCountRetryDelays.Length)
+                break;
+            await Task.Delay(PlayerCountRetryDelays[attempts - 1]);
+        }
+
+        if (ShouldRetryPlayerCount(run, health) && attempts > 1)
+            health = health with
+            {
+                Detail = health.Detail.TrimEnd().TrimEnd('.') +
+                    $". Player count stayed unavailable after {attempts} attempts; TogetherServer will keep retrying automatically."
+            };
+        return health;
+    }
+
+    private static bool ShouldRetryPlayerCount(ManagedRun run, GameHealthResult health) =>
+        run.Kind is GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock &&
+        health.OnlinePlayers is null && health.State is "Starting" or "Ready";
 
     public async Task<ActionResult> UpdateSettingsAsync(HostSettings next)
     {
@@ -1286,6 +1323,40 @@ public sealed class HostManager
                 "Missing" => Result(false, "ProcessExited", "The recorded process is no longer running."),
                 _ => Result(false, "IdentityUnknown", "The recorded process identity cannot be verified.")
             };
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> RefreshPlayerCountAsync(Guid profileId)
+    {
+        await RefreshObservationsAsync(profileId, true);
+        await gate.WaitAsync();
+        try
+        {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Player-count refresh is paused until the owner reviews and acknowledges the recovered local data.");
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+            var run = runs.SingleOrDefault(item => item.ProfileId == profileId);
+            if (run is null) return Result(false, "NotManaged", "This server is offline, so there is no player count to refresh.");
+            if (Identity(run) != "Matched")
+                return Result(false, "IdentityUnknown", "The managed process identity cannot be verified, so its player count was not used.");
+            if (!games.TryGet(run.Kind, out _))
+                return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
+
+            var health = ObservedHealth(run);
+            if (health.State != "Ready")
+                return Result(false, "ServerNotReady",
+                    $"{profile.Name} is {health.State.ToLowerInvariant()}. TogetherServer will keep checking automatically.");
+            if (health.OnlinePlayers is not { } online)
+                return Result(false, "PlayerCountUnavailable",
+                    "The player count is still unavailable after the retry attempts. TogetherServer will keep trying automatically; Unknown continues to block remote and automatic Stop.");
+
+            var capacity = health.MaxPlayers is { } maximum ? $" of {maximum}" : "";
+            var trust = health.PlayerCountTrusted ? "" : " This count is display-only and cannot authorize lifecycle actions.";
+            return Result(true, "PlayerCountRefreshed",
+                $"{profile.Name} reports {online}{capacity} players online.{trust}");
         }
         finally { gate.Release(); }
     }
