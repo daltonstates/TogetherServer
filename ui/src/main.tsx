@@ -987,7 +987,7 @@ function App() {
     : null)
   const recentActivity = snapshot?.activity ?? []
 
-  return <div className="shell">
+  return <div className={appInstance?.isStaging ? 'shell staging-shell' : 'shell'}>
     <header className="topbar">
       <nav className="mode-switch" aria-label="App pages">
         <Button aria-current={snapshot?.mode === 'Host' ? 'page' : undefined} className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</Button>
@@ -1016,7 +1016,7 @@ function App() {
       </div>
     </header>
 
-    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>STAGING</strong><span>Fresh disposable worlds only. Production profiles, credentials, settings, runs, and world saves are not loaded or copied.</span></aside>}
+    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Fresh disposable worlds only. Production profiles, credentials, settings, runs, and world saves are not loaded or copied.</span></aside>}
 
     <main>
       <div className="page-heading"><div><h1>{snapshot?.mode === 'Friend' ? 'Join' : 'Host'}</h1>

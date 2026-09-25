@@ -6,6 +6,13 @@ $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $caseRoot = Join-Path $repository ('local-data/staging-smoke/' + [guid]::NewGuid().ToString('N'))
 $productionRoot = Join-Path $caseRoot 'production'
 $stagingRoot = Join-Path $caseRoot 'staging'
+$developmentAppPath = Join-Path $caseRoot 'TogetherServer DEVELOPMENT.exe'
+New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+Copy-Item -LiteralPath $appPath -Destination $developmentAppPath -Force
+if ((Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash -ne
+    (Get-FileHash -LiteralPath $developmentAppPath -Algorithm SHA256).Hash) {
+    throw 'The development executable copy does not match the candidate bytes.'
+}
 $productionWorld = Join-Path $productionRoot 'worlds/live-world'
 New-Item -ItemType Directory -Path $productionWorld -Force | Out-Null
 $productionSave = Join-Path $productionWorld 'owner-save.db'
@@ -63,7 +70,7 @@ try {
 
     $env:TOGETHERSERVER_DATA_DIR = $productionRoot
     $env:TOGETHERSERVER_STAGING_DATA_DIR = $stagingRoot
-    $stagingProcess = Start-Process -FilePath $appPath -ArgumentList @('--staging', '--host', '--port', $stagingPort) `
+    $stagingProcess = Start-Process -FilePath $developmentAppPath -ArgumentList @('--host', '--port', $stagingPort) `
         -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $caseRoot 'staging-stdout.txt') `
         -RedirectStandardError (Join-Path $caseRoot 'staging-stderr.txt')
     Wait-LocalApp $stagingProcess $stagingUrl 'Staging instance'
@@ -71,7 +78,7 @@ try {
     $productionInstance = Invoke-RestMethod -Uri "$productionUrl/api/local/instance"
     $stagingInstance = Invoke-RestMethod -Uri "$stagingUrl/api/local/instance"
     if ($productionInstance.kind -ne 'Production' -or $productionInstance.isStaging -or
-        $stagingInstance.kind -ne 'Staging' -or $stagingInstance.displayName -ne 'TogetherServer STAGING' -or
+        $stagingInstance.kind -ne 'Staging' -or $stagingInstance.displayName -ne 'TogetherServer DEVELOPMENT' -or
         !$stagingInstance.isStaging -or !$stagingInstance.freshWorldsOnly) {
         throw 'The two running processes did not report distinct production and staging identities.'
     }
@@ -129,11 +136,12 @@ try {
     }
     $stagingScriptPath = [regex]::Match($stagingPage.Content, '/assets/[^" ]+\.js').Value
     $stagingScript = Invoke-WebRequest -Uri ($stagingUrl + $stagingScriptPath) -UseBasicParsing
-    if (!$stagingScript.Content.Contains('Fresh disposable worlds only') -or
+    if (!$stagingScript.Content.Contains('DEVELOPMENT / STAGING') -or
+        !$stagingScript.Content.Contains('Fresh disposable worlds only') -or
         !$stagingScript.Content.Contains('Production profiles, credentials, settings, runs, and world saves are not loaded or copied.')) {
         throw 'The bundled staging UI is missing its visible data-isolation warning.'
     }
-    Write-Host 'PASS production and staging run simultaneously with separate roots and ports'
+    Write-Host 'PASS production and directly opened development app run simultaneously with separate roots and ports'
     Write-Host 'PASS staging rejects production world paths and existing-world import'
     Write-Host 'PASS staging leaves Windows startup and automatic updates disabled'
 

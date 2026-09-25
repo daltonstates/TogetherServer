@@ -16,24 +16,38 @@ $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 
-$allowed = @(
+$developmentExecutable = 'TogetherServer DEVELOPMENT.exe'
+$legacyNames = @(
     'TogetherServer.exe',
     'Start TogetherServer STAGING Host.cmd',
     'Start TogetherServer STAGING Friend.cmd',
     'README-STAGING.txt'
 )
-$unexpected = @(Get-ChildItem -LiteralPath $output -Force | Where-Object Name -NotIn $allowed)
+$allowed = @(
+    $developmentExecutable,
+    'Start TogetherServer DEVELOPMENT Host.cmd',
+    'Start TogetherServer DEVELOPMENT Friend.cmd',
+    'README-DEVELOPMENT.txt'
+)
+$recognized = @($allowed) + @($legacyNames)
+$unexpected = @(Get-ChildItem -LiteralPath $output -Force | Where-Object Name -NotIn $recognized)
 if ($unexpected.Count -gt 0) {
     throw "Refusing to mix the staging package with other files: $($unexpected[0].FullName)"
 }
+foreach ($name in $legacyNames) {
+    $legacyPath = Join-Path $output $name
+    if (Test-Path -LiteralPath $legacyPath -PathType Leaf) { Remove-Item -LiteralPath $legacyPath -Force }
+}
 
-Copy-Item -LiteralPath $appPath -Destination (Join-Path $output 'TogetherServer.exe') -Force
-foreach ($name in $allowed | Where-Object { $_ -ne 'TogetherServer.exe' }) {
+Copy-Item -LiteralPath $appPath -Destination (Join-Path $output $developmentExecutable) -Force
+foreach ($name in $allowed | Where-Object { $_ -ne $developmentExecutable }) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "staging/$name") -Destination (Join-Path $output $name) -Force
 }
-$hash = (Get-FileHash -LiteralPath (Join-Path $output 'TogetherServer.exe') -Algorithm SHA256).Hash
-$signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $output 'TogetherServer.exe')
+$developmentPath = Join-Path $output $developmentExecutable
+$hash = (Get-FileHash -LiteralPath $developmentPath -Algorithm SHA256).Hash
+$signature = Get-AuthenticodeSignature -LiteralPath $developmentPath
 Write-Host "Staging package: $output"
+Write-Host "Double-click: $developmentPath"
 Write-Host "SHA-256: $hash"
 Write-Host "Authenticode: $($signature.Status)"
 Write-Host 'No settings, credentials, runs, or world saves were included.'

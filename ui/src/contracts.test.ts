@@ -46,7 +46,7 @@ describe('runtime contracts', () => {
 
   it('validates the staging isolation contract', () => {
     const instance = parseAppInstance({
-      kind: 'Staging', displayName: 'TogetherServer STAGING', isStaging: true, freshWorldsOnly: true,
+      kind: 'Staging', displayName: 'TogetherServer DEVELOPMENT', isStaging: true, freshWorldsOnly: true,
       startupAvailable: false, updatesAvailable: false, localPort: 5128, companionPort: 5132,
       valheimPort: 2458, minecraftJavaPort: 25566, minecraftBedrockPort: 19134,
       dataRoot: 'C:\\TogetherServer-Staging', dataIsolation: 'No production data is loaded.'

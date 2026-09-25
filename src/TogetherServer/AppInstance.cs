@@ -10,6 +10,7 @@ public sealed record InstanceValidation(bool Ok, string Code, string Message);
 
 public sealed class AppInstance
 {
+    public const string DevelopmentExecutableName = "TogetherServer DEVELOPMENT.exe";
     private const string MarkerFile = ".togetherserver-instance.json";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private sealed record InstanceMarker(int SchemaVersion, string Kind);
@@ -23,7 +24,7 @@ public sealed class AppInstance
 
     public bool IsStaging { get; }
     public string Kind => IsStaging ? "Staging" : "Production";
-    public string DisplayName => IsStaging ? "TogetherServer STAGING" : "TogetherServer";
+    public string DisplayName => IsStaging ? "TogetherServer DEVELOPMENT" : "TogetherServer";
     public string DataRoot { get; }
     public string ProductionDataRoot { get; }
     public bool FreshWorldsOnly => IsStaging;
@@ -35,15 +36,20 @@ public sealed class AppInstance
     public int DefaultMinecraftJavaPort => IsStaging ? 25566 : 25565;
     public int DefaultMinecraftBedrockPort => IsStaging ? 19134 : 19132;
 
+    public static bool RequestsStaging(string[] arguments, string? executablePath = null) =>
+        arguments.Contains("--staging", StringComparer.OrdinalIgnoreCase) ||
+        string.Equals(Path.GetFileName(executablePath ?? Environment.ProcessPath),
+            DevelopmentExecutableName, StringComparison.OrdinalIgnoreCase);
+
     public static AppInstance Resolve(string[] arguments, Func<string, string?>? environment = null,
-        string? localApplicationData = null)
+        string? localApplicationData = null, string? executablePath = null)
     {
         environment ??= Environment.GetEnvironmentVariable;
         var local = localApplicationData ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var productionRoot = environment("TOGETHERSERVER_DATA_DIR") ?? Path.Combine(local, "TogetherServer");
-        var staging = arguments.Contains("--staging", StringComparer.OrdinalIgnoreCase);
+        var staging = RequestsStaging(arguments, executablePath);
         if (staging && arguments.Contains("--startup", StringComparer.OrdinalIgnoreCase))
-            throw new ArgumentException("Staging cannot start at Windows sign-in. Open it explicitly with the staging launcher.");
+            throw new ArgumentException("Development staging cannot start at Windows sign-in. Open it explicitly.");
         var dataRoot = staging
             ? environment("TOGETHERSERVER_STAGING_DATA_DIR") ?? Path.Combine(local, "TogetherServer-Staging")
             : productionRoot;

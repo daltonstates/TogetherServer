@@ -675,8 +675,9 @@ internal sealed class DesktopWindow
         using (var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
         {
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.FillEllipse(background, 1, 1, 30, 30);
-            graphics.DrawString(staging ? "S" : "T", font, foreground, new RectangleF(0, 1, 32, 30), centered);
+            if (staging) graphics.FillRectangle(background, 2, 2, 28, 28);
+            else graphics.FillEllipse(background, 1, 1, 30, 30);
+            graphics.DrawString(staging ? "D" : "T", font, foreground, new RectangleF(0, 1, 32, 30), centered);
         }
         var handle = bitmap.GetHicon();
         try { return (Icon)Icon.FromHandle(handle).Clone(); }

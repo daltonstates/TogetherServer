@@ -69,6 +69,31 @@ LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
 HostManager Manager(LocalData data) => new(data, Games(data));
 
+await Check("development executable selects isolated staging without a command-line flag", () =>
+{
+    var productionRoot = Path.Combine(root, "named-instance-production");
+    var stagingRoot = Path.Combine(root, "named-instance-staging");
+    string? EnvironmentValue(string name) => name switch
+    {
+        "TOGETHERSERVER_DATA_DIR" => productionRoot,
+        "TOGETHERSERVER_STAGING_DATA_DIR" => stagingRoot,
+        _ => null
+    };
+    var developmentPath = Path.Combine(root, AppInstance.DevelopmentExecutableName);
+    var development = AppInstance.Resolve([], EnvironmentValue, Path.Combine(root, "unused-local"), developmentPath);
+    var production = AppInstance.Resolve([], EnvironmentValue, Path.Combine(root, "unused-local"),
+        Path.Combine(root, "TogetherServer.exe"));
+    Require(development.IsStaging && development.DataRoot == Path.GetFullPath(stagingRoot) &&
+        development.DisplayName == "TogetherServer DEVELOPMENT",
+        "the clearly named development executable did not select isolated staging");
+    Require(!production.IsStaging && production.DataRoot == Path.GetFullPath(productionRoot),
+        "the ordinary executable stopped selecting production");
+    RequireThrows<ArgumentException>(() => AppInstance.Resolve(["--startup"], EnvironmentValue,
+        Path.Combine(root, "unused-local"), developmentPath),
+        "the development executable accepted Windows startup mode");
+    return Task.CompletedTask;
+});
+
 await Check("staging starts with isolated empty data and fresh-world defaults", () =>
 {
     var productionRoot = Path.Combine(root, "instance-production");

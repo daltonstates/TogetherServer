@@ -12,7 +12,7 @@ if (args.Length > 0 && args[0] == "--apply-update")
 var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase);
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
 var startupLaunch = args.Contains("--startup", StringComparer.OrdinalIgnoreCase);
-var stagingRequested = args.Contains("--staging", StringComparer.OrdinalIgnoreCase);
+var stagingRequested = AppInstance.RequestsStaging(args);
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
 var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase) || startupLaunch;
