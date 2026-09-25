@@ -10,7 +10,7 @@ namespace TogetherServer;
 public sealed record MinecraftInstallRequest(string Kind, string WorldName, int GamePort, bool AcceptedTerms);
 public sealed record MinecraftInstallResult(bool Ok, string Code, string Message, MinecraftInstallation? Installation = null);
 
-public sealed class MinecraftInstaller(HttpClient client, LocalData data)
+public sealed class MinecraftInstaller(HttpClient client, LocalData data, bool isolatedNetworking = false)
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private const long JarLimit = 200L * 1024 * 1024;
@@ -27,6 +27,8 @@ public sealed class MinecraftInstaller(HttpClient client, LocalData data)
             return new(false, "InvalidWorldName", "Use 1 to 32 letters, numbers, spaces, hyphens, or underscores for the world name.");
         if (request.GamePort is < 1024 or > 65535)
             return new(false, "InvalidPort", "Choose a game port from 1024 to 65535.");
+        if (isolatedNetworking && request.Kind == GameKinds.MinecraftBedrock && request.GamePort > 65534)
+            return new(false, "InvalidPort", "Staging Bedrock needs this port and the next port for isolated IPv4 and IPv6 traffic.");
 
         await gate.WaitAsync(cancellationToken);
         try { return await InstallCoreAsync(request, cancellationToken); }
@@ -96,7 +98,8 @@ public sealed class MinecraftInstaller(HttpClient client, LocalData data)
                 artifact = Path.Combine(stage, "bedrock_server.exe");
                 if (!File.Exists(artifact)) throw new InvalidDataException("Official Bedrock archive has no bedrock_server.exe.");
                 executable = artifact;
-                UpdateProperties(Path.Combine(stage, "server.properties"), request.WorldName, request.GamePort);
+                UpdateProperties(Path.Combine(stage, "server.properties"), request.WorldName, request.GamePort,
+                    isolatedNetworking);
             }
             var final = Path.Combine(data.MinecraftInstallRoot, $"{edition}-{version}-{Guid.NewGuid():N}");
             Directory.Move(stage, final);
@@ -148,13 +151,20 @@ public sealed class MinecraftInstaller(HttpClient client, LocalData data)
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    private static void UpdateProperties(string path, string world, int port)
+    private static void UpdateProperties(string path, string world, int port, bool isolateLan)
     {
         if (!File.Exists(path)) throw new InvalidDataException("Bedrock archive has no server.properties.");
         var lines = File.ReadAllLines(path).Where(line =>
-            !IsSetting(line, "level-name") && !IsSetting(line, "server-port")).ToList();
+            !IsSetting(line, "level-name") && !IsSetting(line, "server-port") &&
+            (!isolateLan || !IsSetting(line, "server-portv6")) &&
+            (!isolateLan || !IsSetting(line, "enable-lan-visibility"))).ToList();
         lines.Add("level-name=" + world);
         lines.Add("server-port=" + port);
+        if (isolateLan)
+        {
+            lines.Add("server-portv6=" + (port + 1));
+            lines.Add("enable-lan-visibility=false");
+        }
         File.WriteAllLines(path, lines, new UTF8Encoding(false));
 
         static bool IsSetting(string line, string key)

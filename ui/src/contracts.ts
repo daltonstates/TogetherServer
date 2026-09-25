@@ -226,6 +226,21 @@ export type ServerBrowseResult = BasicResult & { executablePath?: string }
 export type MinecraftBrowseResult = BasicResult & { path?: string }
 export type MinecraftInstallResult = BasicResult & { installation?: MinecraftInstallation }
 export type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
+export type AppInstanceView = {
+  kind: 'Production' | 'Staging'
+  displayName: string
+  isStaging: boolean
+  freshWorldsOnly: boolean
+  startupAvailable: boolean
+  updatesAvailable: boolean
+  localPort: number
+  companionPort: number
+  valheimPort: number
+  minecraftJavaPort: number
+  minecraftBedrockPort: number
+  dataRoot: string
+  dataIsolation: string
+}
 export type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string }
 export type DesktopPreferences = { available: boolean; launchAtLogin: boolean; closeToTray: boolean; startupAvailable: boolean }
 export type DesktopPreferenceResult = BasicResult & { preferences: DesktopPreferences }
@@ -601,6 +616,25 @@ export const parseDesktopPreferences: Decoder<DesktopPreferences> = (value, cont
 export const parseDesktopPreferenceResult: Decoder<DesktopPreferenceResult> = (value, context = 'desktop preference result') => {
   const { source, basic } = withBasicResult(value, context)
   return { ...basic, preferences: parseDesktopPreferences(source.preferences, `${context}.preferences`) }
+}
+
+export const parseAppInstance: Decoder<AppInstanceView> = (value, context = 'app instance') => {
+  const source = object(value, context)
+  return {
+    kind: literal(source.kind, ['Production', 'Staging'] as const, `${context}.kind`),
+    displayName: text(source.displayName, `${context}.displayName`),
+    isStaging: flag(source.isStaging, `${context}.isStaging`),
+    freshWorldsOnly: flag(source.freshWorldsOnly, `${context}.freshWorldsOnly`),
+    startupAvailable: flag(source.startupAvailable, `${context}.startupAvailable`),
+    updatesAvailable: flag(source.updatesAvailable, `${context}.updatesAvailable`),
+    localPort: numeric(source.localPort, `${context}.localPort`),
+    companionPort: numeric(source.companionPort, `${context}.companionPort`),
+    valheimPort: numeric(source.valheimPort, `${context}.valheimPort`),
+    minecraftJavaPort: numeric(source.minecraftJavaPort, `${context}.minecraftJavaPort`),
+    minecraftBedrockPort: numeric(source.minecraftBedrockPort, `${context}.minecraftBedrockPort`),
+    dataRoot: text(source.dataRoot, `${context}.dataRoot`),
+    dataIsolation: text(source.dataIsolation, `${context}.dataIsolation`)
+  }
 }
 
 export const parseUpdateView: Decoder<UpdateView> = (value, context = 'update status') => {

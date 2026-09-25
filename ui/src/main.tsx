@@ -10,12 +10,12 @@ import {
 } from './features/setup/HostSetupDialog'
 import { useHostSetup } from './features/setup/useHostSetup'
 import {
-  parseActionResult, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
+  parseActionResult, parseAppInstance, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
   parseDataRecoveryView, parseDesktopPreferenceResult, parseDesktopPreferences,
   parseFriendSnapshot, parseGameEndpointResult, parseInternetRouteCheck, parseInviteResult,
   parseInviteState, parsePasswordResult, parsePortDiagnostics, parsePublicIpDetection, parseRouteDiscovery,
   parseSnapshot, parseUpdateView, parseWorldBackupList,
-  type ActionResult, type BasicResult, type CompanionInfo,
+  type ActionResult, type AppInstanceView, type BasicResult, type CompanionInfo,
   type DataRecoveryView, type DesktopPreferences, type Device, type FriendIssue,
   type FriendSnapshot, type GameEndpointResult, type PublicIpDetection, type PublicProfile, type RouteDiscovery, type Settings,
   type Snapshot, type UpdateView, type WorldBackupList
@@ -187,6 +187,7 @@ function useModalDialog(open: boolean) {
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [appInstance, setAppInstance] = useState<AppInstanceView | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
@@ -245,7 +246,7 @@ function App() {
     setSnapshot(next)
   }, [])
   const setup = useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot,
-    dataRecoveryBlocked: !!dataRecovery?.lifecycleBlocked })
+    dataRecoveryBlocked: !!dataRecovery?.lifecycleBlocked, instance: appInstance })
   const {
     draft, dirty, passwords, customScripts, customScriptsSaved, customScriptsLoading, discovery,
     minecraftDiscovery, minecraftTerms, sourceRoots, showSetup, setupStep, minecraftSetupMode,
@@ -348,9 +349,10 @@ function App() {
 
   useSingleFlightPolling(async signal => {
     const startedEpoch = snapshotEpochRef.current
-    const [next, recovery] = await Promise.all([
+    const [next, recovery, currentInstance] = await Promise.all([
       readSnapshot(signal),
-      getJson('/api/local/data-recovery', parseDataRecoveryView, signal)
+      getJson('/api/local/data-recovery', parseDataRecoveryView, signal),
+      getJson('/api/local/instance', parseAppInstance, signal)
     ])
     const hostDetails = next.mode === 'Host'
       ? await Promise.all([
@@ -361,6 +363,7 @@ function App() {
     if (signal.aborted || snapshotEpochRef.current !== startedEpoch) return
 
     setSnapshot(next)
+    setAppInstance(currentInstance)
     setDataRecovery(recovery)
     setLoadError('')
     if (next.mode !== 'Host') return
@@ -998,13 +1001,15 @@ function App() {
           </div>
         </details>
         <details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong>
-          <div className="app-version"><span>Version {update?.currentVersion ?? 'checking…'}</span><Button className="text-button" disabled={updateBusy || !!pending} onClick={() => void checkUpdate()}>{updateBusy ? 'Checking…' : 'Check for updates'}</Button></div>
-          <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>Starts quietly in the tray.</small>
+          <div className="app-version"><span>Version {update?.currentVersion ?? 'checking…'}</span><Button className="text-button" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking…' : 'Check for updates'}</Button></div>
+          <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small>
           <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} />Close to tray</label><small>Hosting and Friend checks keep running.</small>
-          <Button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit TogetherServer</Button>
+          <Button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button>
         </div></details>
       </div>
     </header>
+
+    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>STAGING</strong><span>Fresh disposable worlds only. Production profiles, credentials, settings, runs, and world saves are not loaded or copied.</span></aside>}
 
     <main>
       <div className="page-heading"><div><h1>{snapshot?.mode === 'Friend' ? 'Join' : 'Host'}</h1>
@@ -1012,7 +1017,7 @@ function App() {
       </div>
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
-      {!snapshot && !loadError && <section className="panel">Loading local state…</section>}
+      {(!snapshot || !appInstance) && !loadError && <section className="panel">Loading local state…</section>}
 
       {dataRecovery && <DataRecoveryPanel recovery={dataRecovery} mode={snapshot?.mode ?? null}
         runs={snapshot?.mode === 'Host' ? snapshot.runs : []}
@@ -1042,7 +1047,7 @@ function App() {
               <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}>Rename</Button></div></label>
               <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
               <p className="helper-text">Credential expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Certificate expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
-              <label>New Host endpoint<Input value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder="https://100.64.0.2:5131" /><small>The existing Host certificate pin and this PC's credential must both work at the new address. A different certificate is never trusted silently.</small></label>
+              <label>New Host endpoint<Input value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The existing Host certificate pin and this PC's credential must both work at the new address. A different certificate is never trusted silently.</small></label>
               <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Verifying...' : 'Verify and update endpoint'}</Button>
               <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
             </details>
@@ -1201,7 +1206,7 @@ function App() {
 
         {savedProfiles.length === 0 && !showSetup && <section className="panel welcome-panel"><div className="section-heading"><div><h2>What would you like to do?</h2><p>You can host and join at the same time. Switching pages never stops a running server.</p></div></div>
           {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><Button onClick={continueSetup}>Continue setup</Button></div> : <div className="welcome-grid">
-            <Button className="welcome-choice" disabled={!!pending} onClick={addProfile}><span className="section-icon"><Icon name="server" /></span><span><strong>Host a server</strong><small>Create a new world or use a server already on this PC.</small></span></Button>
+            <Button className="welcome-choice" disabled={!!pending} onClick={addProfile}><span className="section-icon"><Icon name="server" /></span><span><strong>Host a server</strong><small>{appInstance?.freshWorldsOnly ? 'Create a fresh disposable staging world.' : 'Create a new world or use a server already on this PC.'}</small></span></Button>
             <Button className="welcome-choice secondary-choice" disabled={!!pending} onClick={() => void switchMode('friend')}><span className="section-icon"><Icon name="link" /></span><span><strong>Join a server</strong><small>Paste the private code your friend sent you.</small></span></Button>
           </div>}
         </section>}
@@ -1213,7 +1218,7 @@ function App() {
           showPasswords={showPasswords} minecraftSetupMode={minecraftSetupMode} minecraftTerms={minecraftTerms}
           customScripts={customScripts} customScriptsSaved={customScriptsSaved}
           customScriptsLoading={customScriptsLoading} customScriptsChanged={customScriptsChanged}
-          dataRecoveryBlocked={!!dataRecovery?.lifecycleBlocked} onCancel={cancelSetup}
+          dataRecoveryBlocked={!!dataRecovery?.lifecycleBlocked} freshWorldsOnly={appInstance?.freshWorldsOnly ?? false} onCancel={cancelSetup}
           onFinishLater={finishSetupLater} onAddProfile={addProfile} onStepChange={setSetupStep}
           onChangeGameKind={changeGameKind} onUpdateProfile={updateProfile}
           onImportWorld={(profile, root, worldId, folder) => void importWorld(profile, root, worldId, folder)}
@@ -1319,7 +1324,7 @@ function App() {
                   if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
                   edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
                 }} /></label>
-                <label>Custom HTTPS endpoint<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder="https://127.0.0.1:5131" /></label>
+                <label>Custom HTTPS endpoint<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder={`https://127.0.0.1:${appInstance?.companionPort ?? 5131}`} /></label>
                 <label>Bind IP<Input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
               </div>
               {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}

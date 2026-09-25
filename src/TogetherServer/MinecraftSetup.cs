@@ -45,6 +45,9 @@ public static class MinecraftSetup
         return ScanRoots(roots, FindJava(data.MinecraftRuntimeRoot, profiles));
     }
 
+    public static MinecraftDiscoveryResult ScanManaged(LocalData data, IEnumerable<ServerProfile> profiles) =>
+        ScanRoots([data.MinecraftInstallRoot], FindJava(data.MinecraftRuntimeRoot, profiles));
+
     // Inspect only named roots and their immediate folders. Browse handles other locations.
     public static MinecraftDiscoveryResult ScanRoots(IEnumerable<string> roots, string javaPath)
     {

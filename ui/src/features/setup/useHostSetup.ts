@@ -12,6 +12,7 @@ import {
   parseServerBrowseResult,
   parseWorldBrowseResult,
   type ActionResult,
+  type AppInstanceView,
   type CustomScriptBundle,
   type Discovery,
   type HostSnapshot,
@@ -38,6 +39,7 @@ type UseHostSetupOptions = {
   setNotice: Dispatch<SetStateAction<SetupNotice | null>>
   applySnapshot: (snapshot: Snapshot) => void
   dataRecoveryBlocked: boolean
+  instance: AppInstanceView | null
 }
 
 const setupDraftKey = 'togetherserver-first-server-draft-v2'
@@ -74,7 +76,7 @@ function useModalDialog(open: boolean) {
 }
 
 export function useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot,
-  dataRecoveryBlocked }: UseHostSetupOptions) {
+  dataRecoveryBlocked, instance }: UseHostSetupOptions) {
   const [draft, setDraft] = useState<Settings | null>(null)
   const [dirty, setDirty] = useState(false)
   const [passwords, setPasswords] = useState<Record<string, string>>({})
@@ -97,6 +99,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const setupRef = useModalDialog(showSetup)
 
   const currentMode = snapshot?.mode
+  const freshWorldsOnly = instance?.freshWorldsOnly ?? false
   const hasMinecraftDraft = draft?.profiles.some(profile =>
     profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') ?? false
   const hostProfileCount = snapshot?.mode === 'Host' ? snapshot.settings.profiles.length : -1
@@ -123,7 +126,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   }, [currentMode, hasMinecraftDraft, minecraftDiscovery])
 
   useEffect(() => {
-    if (currentMode !== 'Host' || !showSetup || !draft || !minecraftDiscovery) return
+    if (currentMode !== 'Host' || !showSetup || !draft || !minecraftDiscovery || freshWorldsOnly) return
     const profiles = draft.profiles.map(profile => {
       if (profile.kind !== 'MinecraftJava' && profile.kind !== 'MinecraftBedrock') return profile
       if (profile.worldDirectory || profile.minecraft?.serverJarPath || profile.executablePath) return profile
@@ -135,7 +138,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       dirtyRef.current = true
       setDirty(true)
     }
-  }, [currentMode, showSetup, draft, minecraftDiscovery])
+  }, [currentMode, showSetup, draft, minecraftDiscovery, freshWorldsOnly])
 
   useEffect(() => {
     if (currentMode !== 'Host' || hostProfileCount !== 0 || !dirty || !draft) return
@@ -372,10 +375,14 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
 
   const changeGameKind = (profile: Profile, kind: Profile['kind']) => {
     if (profile.kind === kind || snapshot?.mode !== 'Host') return
+    if (freshWorldsOnly && kind === 'Custom') {
+      setNotice({ good: false, text: 'Custom scripts are disabled in staging so they cannot reference production files.' })
+      return
+    }
     setPasswords(current => ({ ...current, [profile.id]: '' }))
     setShowPasswords(current => ({ ...current, [profile.id]: false }))
     setMinecraftTerms(current => ({ ...current, [profile.id]: false }))
-    setMinecraftSetupMode(current => ({ ...current, [profile.id]: 'existing' }))
+    setMinecraftSetupMode(current => ({ ...current, [profile.id]: freshWorldsOnly ? 'install' : 'existing' }))
     customScriptLoadRequestRef.current[profile.id] = (customScriptLoadRequestRef.current[profile.id] ?? 0) + 1
     if (kind === 'Custom') {
       setCustomScripts(current => ({ ...current, [profile.id]: current[profile.id] ?? { start: '', status: '', stop: '' } }))
@@ -388,7 +395,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     updateProfile(profile.id, { kind, name: '', serverName: '', crossplay: false, publicListing: false,
       worldId: '', worldSource: kind === 'Valheim' ? 'New' : 'Existing',
       worldDirectory: kind === 'Valheim' ? `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` : '',
-      gamePort: kind === 'Valheim' ? 2456 : kind === 'MinecraftJava' ? 25565 : kind === 'MinecraftBedrock' ? 19132 : 2456,
+      gamePort: kind === 'Valheim' ? (instance?.valheimPort ?? 2456)
+        : kind === 'MinecraftJava' ? (instance?.minecraftJavaPort ?? 25565)
+          : kind === 'MinecraftBedrock' ? (instance?.minecraftBedrockPort ?? 19132) : (instance?.valheimPort ?? 2456),
       executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null,
       custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null,
       crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
@@ -401,12 +410,13 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     const id = crypto.randomUUID()
     edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
       publicListing: false, worldId: '', worldSource: 'New',
-      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`, gamePort: 2456, executablePath: '', custom: null,
+      worldDirectory: `${snapshot.managedWorldsRoot}\\${id.replaceAll('-', '')}`,
+      gamePort: instance?.valheimPort ?? 2456, executablePath: '', custom: null,
       crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
       maintenance: { enabled: false, message: '' } }] })
     setActiveProfileId(id)
     setSetupStep('game')
-    setMinecraftSetupMode(current => ({ ...current, [id]: 'existing' }))
+    setMinecraftSetupMode(current => ({ ...current, [id]: freshWorldsOnly ? 'install' : 'existing' }))
     setShowSetup(true)
     if (!discovery) void scanValheim()
   }

@@ -10,6 +10,20 @@ Use the gear in the app header to enable **Open at Windows sign-in** and **Close
 
 Build a fresh unsigned development EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1`. The repository pins .NET in `global.json` and Node in `.node-version`.
 
+## Develop beside the stable app
+
+Use the explicit staging instance when friends need the stable app to keep working while a candidate is tested. Build and assemble it with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-staging-package.ps1 -Build
+```
+
+The package is written to `local-data\staging-package` and contains the EXE, separate **STAGING Host** and **STAGING Friend** launchers, and a short testing guide. A staging process is visibly labeled in its native title, tray icon, and orange in-app banner. It can run beside the normal app because it uses `%LOCALAPPDATA%\TogetherServer-Staging`, loopback UI port 5128, and Friend-control port 5132 by default; the normal app keeps `%LOCALAPPDATA%\TogetherServer`, ports 5127 and 5131, and its own process lock. Windows sign-in startup and automatic release updating are disabled for staging so it cannot replace or deregister the stable app.
+
+Staging begins with no production profiles, settings, credentials, managed runs, or worlds. Its data folder must be new and empty on first use, is permanently marked as staging, and cannot equal, contain, or sit inside the production data folder. The staging API accepts only save paths inside that staging folder. Valheim can create only a fresh disposable world; existing-world browsing/import is disabled. Minecraft staging uses a fresh in-app install and separate port defaults. Custom scripts are disabled because unrestricted owner scripts could reference production files. Do not manually copy production data into the staging folder.
+
+For a real friend test, the Host opens **Start TogetherServer STAGING Host**, creates a disposable world, and sends the invite created by that staging window. Each tester opens the same candidate with **Start TogetherServer STAGING Friend**; their stable saved connections remain in the normal data folder. Test **Connect** from an actual Friend PC on another network, then test the game join separately. The staging TCP 5132 route and staging game ports (Valheim 2458-2459, Java 25566, Bedrock 19134-19135 by default) need their own owner-approved route. TogetherServer does not change firewall, router, DNS, or private-mesh configuration. A local listener or Host-side test is not proof that the Friend PC connected.
+
 ## App updates
 
 The published Windows app checks the [TogetherServer GitHub Releases](https://github.com/daltonstates/TogetherServer/releases) page at startup and every 30 minutes afterward. Automatic updates are enabled only when the installed EXE has a valid Windows Authenticode signature. A development build or any unsigned/tampered installation stays usable but reports that automatic updates are unavailable and does not contact the release service. The version control in App settings checks again on demand.

@@ -136,6 +136,7 @@ public sealed class LocalData : IDisposable
     private const int RetainedAuditFiles = 3;
     private readonly FileStream gate;
     private readonly string root;
+    private readonly int defaultCompanionPort;
     private readonly object auditSync = new();
     private readonly object activitySync = new();
     private readonly object stateSync = new();
@@ -160,9 +161,10 @@ public sealed class LocalData : IDisposable
         Save("new-world-ownership.json", known);
     }
 
-    public LocalData(string root)
+    public LocalData(string root, int defaultCompanionPort = 5131)
     {
         this.root = Path.GetFullPath(root);
+        this.defaultCompanionPort = defaultCompanionPort;
         Directory.CreateDirectory(this.root);
         gate = new FileStream(Path.Combine(this.root, "host.lock"), FileMode.OpenOrCreate,
             FileAccess.ReadWrite, FileShare.None);
@@ -208,7 +210,7 @@ public sealed class LocalData : IDisposable
         }
     }
 
-    public HostSettings LoadSettings() => Load("host.json", new HostSettings());
+    public HostSettings LoadSettings() => Load("host.json", new HostSettings { CompanionPort = defaultCompanionPort });
     public DesktopPreferences LoadDesktopPreferences() => Load("desktop.json", new DesktopPreferences());
     public void SaveDesktopPreferences(DesktopPreferences preferences) => Save("desktop.json", preferences);
     public string LoadPreferredMode() => Load("mode.json", "Host");

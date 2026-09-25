@@ -18,7 +18,7 @@ public static partial class ValheimSetup
     private const string DedicatedServerAppId = "896660";
     private static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
 
-    public static ValheimDiscoveryResult Scan(IEnumerable<string>? extraSaveRoots = null)
+    public static ValheimDiscoveryResult Scan(IEnumerable<string>? extraSaveRoots = null, bool includeWorlds = true)
     {
         var steamRoots = new List<string>();
         try
@@ -34,7 +34,7 @@ public static partial class ValheimSetup
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (!string.IsNullOrWhiteSpace(profile))
             saveRoots.Add(Path.Combine(profile, "AppData", "LocalLow", "IronGate", "Valheim"));
-        if (extraSaveRoots is not null) saveRoots.AddRange(extraSaveRoots);
+        if (includeWorlds && extraSaveRoots is not null) saveRoots.AddRange(extraSaveRoots);
         var driveRoots = new List<string>();
         foreach (var drive in DriveInfo.GetDrives())
         {
@@ -46,12 +46,12 @@ public static partial class ValheimSetup
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             { /* An unavailable drive does not prevent scanning the others. */ }
         }
-        return ScanDriveRoots(driveRoots, steamRoots, saveRoots);
+        return ScanDriveRoots(driveRoots, steamRoots, saveRoots, includeWorlds);
     }
 
     // Only the root and its immediate folders are inspected. Browse handles arbitrary deeper locations.
     public static ValheimDiscoveryResult ScanDriveRoots(IEnumerable<string> driveRoots,
-        IEnumerable<string> extraSteamRoots, IEnumerable<string> extraSaveRoots)
+        IEnumerable<string> extraSteamRoots, IEnumerable<string> extraSaveRoots, bool includeWorlds = true)
     {
         var steamRoots = new HashSet<string>(extraSteamRoots, PathComparer);
         var saveRoots = new HashSet<string>(extraSaveRoots, PathComparer);
@@ -62,23 +62,27 @@ public static partial class ValheimSetup
             foreach (var relative in new[] { "Steam", "SteamLibrary", "Program Files (x86)\\Steam",
                          "Program Files\\Steam", "" })
                 steamRoots.Add(Path.Combine(root, relative));
-            saveRoots.Add(root);
+            if (includeWorlds) saveRoots.Add(root);
             try
             {
                 foreach (var folder in Directory.EnumerateDirectories(root))
                 {
                     if (Directory.Exists(Path.Combine(folder, "steamapps"))) steamRoots.Add(folder);
-                    if (Directory.Exists(Path.Combine(folder, "worlds_local"))) saveRoots.Add(folder);
+                    if (includeWorlds && Directory.Exists(Path.Combine(folder, "worlds_local"))) saveRoots.Add(folder);
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
             { /* An inaccessible drive does not prevent browsing another drive. */ }
         }
-        return ScanRoots(steamRoots, saveRoots);
+        return ScanRoots(steamRoots, saveRoots, includeWorlds);
     }
 
     // Public for disposable discovery checks. Roots are checked directly; no drive-wide recursive search.
     public static ValheimDiscoveryResult ScanRoots(IEnumerable<string> steamRoots, IEnumerable<string> saveRoots)
+        => ScanRoots(steamRoots, saveRoots, true);
+
+    private static ValheimDiscoveryResult ScanRoots(IEnumerable<string> steamRoots, IEnumerable<string> saveRoots,
+        bool includeWorlds)
     {
         var libraries = new HashSet<string>(PathComparer);
         var cloudWorldRoots = new HashSet<string>(PathComparer);
@@ -90,7 +94,7 @@ public static partial class ValheimSetup
             var userdata = Path.Combine(full, "userdata");
             try
             {
-                if (Directory.Exists(userdata))
+                if (includeWorlds && Directory.Exists(userdata))
                     foreach (var account in Directory.EnumerateDirectories(userdata))
                         cloudWorldRoots.Add(Path.Combine(account, "892970", "remote"));
             }
@@ -131,7 +135,8 @@ public static partial class ValheimSetup
 
         var worlds = new List<ValheimWorld>();
         var seenWorlds = new HashSet<string>(PathComparer);
-        foreach (var saveRoot in saveRoots)
+        var worldSaveRoots = includeWorlds ? saveRoots : Enumerable.Empty<string>();
+        foreach (var saveRoot in worldSaveRoots)
         {
             if (string.IsNullOrWhiteSpace(saveRoot) || !Path.IsPathFullyQualified(saveRoot)) continue;
             var full = Path.GetFullPath(saveRoot);
@@ -153,7 +158,8 @@ public static partial class ValheimSetup
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
-        foreach (var remoteRoot in cloudWorldRoots)
+        var remoteWorldRoots = includeWorlds ? cloudWorldRoots : Enumerable.Empty<string>();
+        foreach (var remoteRoot in remoteWorldRoots)
         {
             var folder = Path.Combine(remoteRoot, "worlds");
             try

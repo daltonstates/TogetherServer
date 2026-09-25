@@ -12,19 +12,30 @@ if (args.Length > 0 && args[0] == "--apply-update")
 var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase);
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
 var startupLaunch = args.Contains("--startup", StringComparer.OrdinalIgnoreCase);
+var stagingRequested = args.Contains("--staging", StringComparer.OrdinalIgnoreCase);
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
 var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase) || startupLaunch;
 DesktopLaunch.EnsureConsoleForGameStop(openWindow);
 var portIndex = Array.IndexOf(args, "--port");
 var port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
-    ? parsedPort : 5127;
+    ? parsedPort : stagingRequested ? 5128 : 5127;
 if (port is < 1024 or > 65535) throw new ArgumentException("Local GUI port must be between 1024 and 65535.");
 
-var root = Environment.GetEnvironmentVariable("TOGETHERSERVER_DATA_DIR")
-    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TogetherServer");
+AppInstance instance;
 LocalData data;
-try { data = new LocalData(root); }
+try
+{
+    instance = AppInstance.Resolve(args);
+    instance.PrepareDataRoot();
+    data = new LocalData(instance.DataRoot, instance.DefaultCompanionPort);
+    var existingSettings = instance.ValidateSettings(data.LoadSettings());
+    if (!existingSettings.Ok)
+    {
+        data.Dispose();
+        throw new InvalidDataException(existingSettings.Message);
+    }
+}
 catch (IOException ex)
 {
     if (openWindow && await DesktopLaunch.TryShowExistingAsync(port, showWindow: !startupLaunch)) return;
@@ -34,7 +45,7 @@ catch (IOException ex)
     Environment.ExitCode = 1;
     return;
 }
-catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessException or
+catch (Exception ex) when (ex is ArgumentException or InvalidDataException or UnauthorizedAccessException or
                            System.Security.SecurityException)
 {
     var message = "TogetherServer could not safely open its local data. No server action was started.\n\n" + ex.Message;
@@ -44,6 +55,7 @@ catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessExcep
     return;
 }
 using var ownedData = data;
+var root = instance.DataRoot;
 var desktopPreferences = data.LoadDesktopPreferences();
 var startupRegistration = new WindowsStartup(Environment.ProcessPath ?? "");
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
@@ -55,13 +67,15 @@ var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "",
-    Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0));
+    Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0),
+    enabled: instance.UpdatesAvailable,
+    disabledMessage: "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.");
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
 using var externalProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 var externalPortProbe = new ExternalPortProbe(externalProbeClient);
 using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-var minecraftInstaller = new MinecraftInstaller(minecraftClient, data);
+var minecraftInstaller = new MinecraftInstaller(minecraftClient, data, instance.IsStaging);
 using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var shutdownPending = false;
@@ -71,7 +85,8 @@ var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
 var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"), root,
-    app.Lifetime.StopApplication, desktopPreferences.CloseToTray, startupLaunch) : null;
+    app.Lifetime.StopApplication, desktopPreferences.CloseToTray, startupLaunch,
+    instance.DisplayName, instance.IsStaging) : null;
 app.Use(async (context, next) =>
 {
     var localGui = context.Connection.LocalPort == port;
@@ -99,6 +114,7 @@ app.Use(async (context, next) =>
 app.MapGet("/api/local/snapshot", async () => friendMode
     ? Results.Json(friend.View())
     : Results.Json(await manager.SnapshotAsync()));
+app.MapGet("/api/local/instance", () => Results.Json(instance.View(port)));
 app.MapGet("/api/local/data-recovery", () => Results.Json(data.Recovery));
 app.MapGet("/api/local/window", () => Results.Json(new
 {
@@ -114,6 +130,14 @@ app.MapGet("/api/local/window", () => Results.Json(new
 }));
 object DesktopPreferenceView()
 {
+    if (!instance.StartupAvailable)
+        return new
+        {
+            available = desktop is not null,
+            launchAtLogin = false,
+            closeToTray = desktopPreferences.CloseToTray,
+            startupAvailable = false
+        };
     bool startupAvailable;
     bool launchAtLogin;
     try
@@ -137,6 +161,14 @@ object DesktopPreferenceView()
 app.MapGet("/api/local/desktop/preferences", () => Results.Json(DesktopPreferenceView()));
 app.MapPut("/api/local/desktop/preferences", (DesktopPreferenceChange change) =>
 {
+    if (!instance.StartupAvailable && change.LaunchAtLogin.HasValue)
+        return Results.Json(new
+        {
+            ok = false,
+            code = "StagingStartupDisabled",
+            message = "Staging never changes the production Windows sign-in registration. Open staging explicitly with its launcher.",
+            preferences = DesktopPreferenceView()
+        });
     if (desktop is null) return Results.Json(new
     {
         ok = false,
@@ -186,6 +218,9 @@ app.MapGet("/api/local/update", async () => Results.Json(await updater.CheckAsyn
 app.MapPost("/api/local/update/check", async () => Results.Json(await updater.CheckAsync(true)));
 app.MapPost("/api/local/update/install", async (HttpContext context) =>
 {
+    if (!instance.UpdatesAvailable)
+        return Results.Json(new UpdateResult(false, "UpdatesDisabled",
+            "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly."));
     if (desktop is null) return Results.Json(new UpdateResult(false, "WindowUnavailable", "Open the published app window to update."));
     await modeGate.WaitAsync();
     try
@@ -247,7 +282,10 @@ app.MapPut("/api/local/settings", async (HostSettings settings) =>
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to My server first." });
-        result = await manager.UpdateSettingsAsync(settings);
+        var validation = instance.ValidateSettings(settings);
+        result = validation.Ok
+            ? await manager.UpdateSettingsAsync(settings)
+            : new ActionResult(false, validation.Code, validation.Message, await manager.SnapshotAsync());
     }
     finally { modeGate.Release(); }
     if (result.Ok)
@@ -417,15 +455,27 @@ app.MapPost("/api/local/profiles/{id:guid}/game-password/reveal", async (Guid id
     }
     finally { modeGate.Release(); }
 });
-app.MapGet("/api/local/valheim/discover", async () => Results.Json(friendMode
-    ? ValheimSetup.Scan()
-    : ValheimSetup.Scan((await manager.SnapshotAsync()).Settings.Profiles
-        .Where(profile => profile.Kind == "Valheim").Select(profile => profile.WorldDirectory))));
+app.MapGet("/api/local/valheim/discover", async () =>
+{
+    var discovery = instance.FreshWorldsOnly
+        ? ValheimSetup.Scan(includeWorlds: false)
+        : friendMode
+        ? ValheimSetup.Scan()
+        : ValheimSetup.Scan((await manager.SnapshotAsync()).Settings.Profiles
+            .Where(profile => profile.Kind == "Valheim").Select(profile => profile.WorldDirectory));
+    return Results.Json(instance.FreshWorldsOnly
+        ? new ValheimDiscoveryResult(discovery.Installations, [])
+        : discovery);
+});
 app.MapGet("/api/local/minecraft/discover", async (string? folder) =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
     var profiles = (await manager.SnapshotAsync()).Settings.Profiles;
-    return Results.Json(MinecraftSetup.Scan(data, profiles, folder));
+    if (instance.FreshWorldsOnly && !string.IsNullOrWhiteSpace(folder))
+        return Results.Conflict(new { ok = false, code = "StagingFreshWorldRequired", message = "Staging does not scan an existing Minecraft server folder." });
+    return Results.Json(instance.FreshWorldsOnly
+        ? MinecraftSetup.ScanManaged(data, profiles)
+        : MinecraftSetup.Scan(data, profiles, folder));
 });
 app.MapPost("/api/local/minecraft/install", async (MinecraftInstallRequest request, CancellationToken ct) =>
     friendMode
@@ -449,6 +499,8 @@ app.MapPost("/api/local/valheim/browse-server", async () =>
 app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request) =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (instance.FreshWorldsOnly)
+        return Results.Conflict(new { ok = false, code = "StagingFreshWorldRequired", message = "Staging installs a new isolated Minecraft server instead of opening an existing server folder." });
     if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
     if (request.Kind is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock) ||
         request.Target is not ("folder" or "executable" or "jar") ||
@@ -478,6 +530,8 @@ app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request
 app.MapPost("/api/local/custom/browse-working-directory", async () =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (instance.FreshWorldsOnly)
+        return Results.Conflict(new { ok = false, code = "StagingCustomDisabled", message = "Custom scripts are disabled in staging to protect files outside its isolated data folder." });
     if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse folders." });
     try
     {
@@ -491,6 +545,8 @@ app.MapPost("/api/local/custom/browse-working-directory", async () =>
 app.MapPost("/api/local/valheim/browse-world", async () =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    if (instance.FreshWorldsOnly)
+        return Results.Conflict(new WorldFileSelection(false, "StagingFreshWorldRequired", "Staging cannot open or copy an existing Valheim world.", null, null));
     if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
     try
     {
@@ -507,6 +563,8 @@ app.MapPost("/api/local/valheim/browse-world", async () =>
 app.MapPost("/api/local/valheim/browse-world-folder", async () =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    if (instance.FreshWorldsOnly)
+        return Results.Conflict(new WorldFileSelection(false, "StagingFreshWorldRequired", "Staging cannot open or copy an existing Valheim world folder.", null, null));
     if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse folders." });
     try
     {
@@ -525,6 +583,9 @@ app.MapPost("/api/local/valheim/import", async (ImportWorldRequest request) =>
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+        if (instance.FreshWorldsOnly)
+            return Results.Json(new ImportWorldResult(false, "StagingFreshWorldRequired",
+                "Staging cannot copy an existing Valheim world. Create a new disposable staging world.", null));
         return Results.Json(ValheimSetup.ImportCopy(data, request));
     }
     finally { modeGate.Release(); }
@@ -840,7 +901,7 @@ app.MapGet("/{**path}", async (HttpContext context, string? path) =>
     await stream.CopyToAsync(context.Response.Body);
 });
 
-Console.WriteLine($"TogetherServer {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
+Console.WriteLine($"{instance.DisplayName} {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
 await companionServer.SyncAsync();
 using var pollStop = new CancellationTokenSource();
 var friendPollTask = Task.Run(async () =>
@@ -867,7 +928,7 @@ var idleShutdownTask = Task.Run(async () =>
         catch (OperationCanceledException) { break; }
     }
 });
-var updateCheckTask = Task.Run(async () =>
+var updateCheckTask = instance.UpdatesAvailable ? Task.Run(async () =>
 {
     while (!pollStop.IsCancellationRequested)
     {
@@ -876,7 +937,7 @@ var updateCheckTask = Task.Run(async () =>
         try { await Task.Delay(AppUpdater.AutomaticCheckInterval, pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
-});
+}) : Task.CompletedTask;
 var notificationStartedUtc = DateTimeOffset.UtcNow;
 var notifiedActivity = new HashSet<Guid>();
 var notificationTask = Task.Run(async () =>
@@ -896,7 +957,7 @@ var notificationTask = Task.Run(async () =>
                     .OrderBy(item => item.OccurredUtc)
                     .ToList();
                 foreach (var item in visible.Where(item => notifiedActivity.Add(item.Id)))
-                    desktop.Notify($"TogetherServer - {item.Category}", item.Message,
+                    desktop.Notify($"{instance.DisplayName} - {item.Category}", item.Message,
                         item.Severity == ActivitySeverity.Warning);
                 if (notifiedActivity.Count > 1000)
                     notifiedActivity.IntersectWith(visible.Select(item => item.Id));

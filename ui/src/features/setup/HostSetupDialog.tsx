@@ -159,6 +159,7 @@ type HostSetupDialogProps = {
   customScriptsLoading: Record<string, boolean>
   customScriptsChanged: boolean
   dataRecoveryBlocked: boolean
+  freshWorldsOnly: boolean
   onCancel: () => void
   onFinishLater: () => void
   onAddProfile: () => void
@@ -190,7 +191,7 @@ type HostSetupDialogProps = {
 export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, editedProfile, notice, pending, dirty,
   setupStep, setupIssues, stepIssues, discovery, minecraftDiscovery, sourceRoots, passwords, showPasswords,
   minecraftSetupMode, minecraftTerms, customScripts, customScriptsSaved, customScriptsLoading,
-  customScriptsChanged, dataRecoveryBlocked, onCancel, onFinishLater, onAddProfile, onStepChange,
+  customScriptsChanged, dataRecoveryBlocked, freshWorldsOnly, onCancel, onFinishLater, onAddProfile, onStepChange,
   onChangeGameKind, onUpdateProfile, onImportWorld, onBrowseWorld, onSourceRootChange, onPasswordChange,
   onShowPasswordChange, onBrowseCustomDirectory, onMinecraftSetupModeChange, onBrowseMinecraft,
   onApplyMinecraftInstallation, onScanMinecraft, onInstallMinecraft, onMinecraftTermsChange, onScanValheim,
@@ -201,23 +202,24 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
   return <dialog ref={dialogRef} className="panel settings-panel modal-dialog" aria-labelledby="setup-title"
     onCancel={event => { event.preventDefault(); onCancel() }}>
     <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p>Choose the game, world, and server files.</p></div></div>
+    {freshWorldsOnly && <div className="staging-setup-notice"><strong>Staging uses fresh disposable worlds only.</strong><span>Existing production worlds cannot be selected, scanned, or copied. Every staging save stays in the staging data folder.</span></div>}
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
     <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-      {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">Choose a reviewed built-in game or an advanced Host-only script profile. You can change technical defaults during Review.</p><div className="game-choice-grid">
+      {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">{freshWorldsOnly ? 'Choose a reviewed built-in game for this disposable staging test.' : 'Choose a reviewed built-in game or an advanced Host-only script profile. You can change technical defaults during Review.'}</p><div className="game-choice-grid">
         <Button aria-pressed={profile.kind === 'Valheim'} className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></Button>
         <Button aria-pressed={profile.kind === 'MinecraftJava'} className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
         <Button aria-pressed={profile.kind === 'MinecraftBedrock'} className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
-        <Button aria-pressed={profile.kind === 'Custom'} className={profile.kind === 'Custom' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Custom')}><strong>Custom game</strong><small>Advanced · local PowerShell actions</small></Button>
+        {!freshWorldsOnly && <Button aria-pressed={profile.kind === 'Custom'} className={profile.kind === 'Custom' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Custom')}><strong>Custom game</strong><small>Advanced · local PowerShell actions</small></Button>}
         {profile.kind === 'Fixture' && <Button aria-pressed="true" className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
       </div></div>}
       {setupStep === 'world' && <div className="setup-step world-step"><h3><Icon name="game" /> {profile.kind === 'Valheim' ? 'Choose a world' : 'Name this server'}</h3>
         {profile.kind === 'Valheim' && <div className="choice-pills">
-          <Button aria-pressed={profile.worldSource === 'New'} className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>Create new</Button>
-          <Button aria-pressed={profile.worldSource === 'Existing'} className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</Button>
+          <Button aria-pressed={profile.worldSource === 'New'} className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>{freshWorldsOnly ? 'Create fresh staging world' : 'Create new'}</Button>
+          {!freshWorldsOnly && <Button aria-pressed={profile.worldSource === 'Existing'} className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</Button>}
         </div>}
-        {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <>
+        {!freshWorldsOnly && profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <>
           {profile.worldId && profile.worldDirectory && <p className="selection-summary">Copy ready: <strong>{profile.worldId}</strong>. Your original save stays separate.</p>}
           {discovery && <div className="choices"><strong>Worlds found on this PC</strong>{discovery.worlds.length === 0 ? <p>None found. Browse to a world folder below.</p> : discovery.worlds.map(world => <div className="choice" key={world.saveRoot + world.sourceFolder + world.name}><span>{world.name} <small>{world.format === 'Steam cloud folder' ? 'Steam Cloud' : 'Local save'} · {world.saveRoot}</small></span><Button className="secondary" disabled={!!pending} onClick={() => onImportWorld(profile, world.saveRoot, world.name, world.sourceFolder)}>Copy world</Button></div>)}</div>}
           <div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseWorld(profile, true)}>{pending === profile.id ? 'Browsing…' : 'Browse for a world folder'}</Button></div>
@@ -238,10 +240,10 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
           <label className="wide">Working and save directory<div className="field-with-button"><Input value={profile.worldDirectory} onChange={event => onUpdateProfile(profile.id, { worldDirectory: event.target.value })} placeholder="C:\\GameServers\\MyServer" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseCustomDirectory(profile)}>Browse</Button></div><small>TogetherServer never deletes this folder.</small></label>
         </div>}
         {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && <><div className="choice-pills">
-          <Button aria-pressed={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing'} className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'existing')}>Use an existing server</Button>
-          <Button aria-pressed={minecraftSetupMode[profile.id] === 'install'} className={minecraftSetupMode[profile.id] === 'install' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'install')}>Install a new official server</Button>
+          {!freshWorldsOnly && <Button aria-pressed={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing'} className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'existing')}>Use an existing server</Button>}
+          <Button aria-pressed={(minecraftSetupMode[profile.id] ?? (freshWorldsOnly ? 'install' : 'existing')) === 'install'} className={(minecraftSetupMode[profile.id] ?? (freshWorldsOnly ? 'install' : 'existing')) === 'install' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'install')}>Install a new official server</Button>
         </div><MinecraftWorldSetup profile={profile} busy={!!pending} onChange={patch => onUpdateProfile(profile.id, patch)} /></>}
-        {profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <label className="invite-input setup-password">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => onPasswordChange(profile.id, event.target.value)} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => onShowPasswordChange(profile.id, event.target.checked)} /> Show password</span></label>}
+        {!freshWorldsOnly && profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <label className="invite-input setup-password">Game password<Input type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => onPasswordChange(profile.id, event.target.value)} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => onShowPasswordChange(profile.id, event.target.checked)} /> Show password</span></label>}
       </div>}
       {setupStep === 'server' && <div className="setup-step server-step"><h3><Icon name="search" /> Server app</h3>
         <div className="server-step-content">{profile.kind === 'Valheim' ? <>
@@ -253,7 +255,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         </> : profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock' ?
           <MinecraftServerSetup profile={profile} busy={!!pending} onChange={patch => onUpdateProfile(profile.id, patch)}
             onBrowse={target => onBrowseMinecraft(profile, target)} discovery={minecraftDiscovery}
-            mode={minecraftSetupMode[profile.id] ?? 'existing'}
+            mode={minecraftSetupMode[profile.id] ?? (freshWorldsOnly ? 'install' : 'existing')}
             onSelect={item => onApplyMinecraftInstallation(profile, item)} onScan={() => onScanMinecraft(profile.worldDirectory)}
             onInstall={() => onInstallMinecraft(profile)} acceptedTerms={!!minecraftTerms[profile.id]}
             onTermsChange={accepted => onMinecraftTermsChange(profile.id, accepted)}

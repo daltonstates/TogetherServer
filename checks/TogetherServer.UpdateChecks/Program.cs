@@ -46,6 +46,21 @@ await Check("automatic checks use the startup loop's 30-minute cadence", () =>
     return Task.CompletedTask;
 });
 
+await Check("staging update mode is offline and cannot replace the app", async () =>
+{
+    var directory = Path.Combine(root, "staging-disabled");
+    Directory.CreateDirectory(directory);
+    var installed = Path.Combine(directory, "TogetherServer.exe");
+    File.WriteAllText(installed, "staging executable");
+    var handler = new FakeHandler(_ => throw new Exception("disabled staging updater contacted the release service"));
+    var updater = new AppUpdater(new HttpClient(handler), directory, installed, new Version(0, 1, 0),
+        trustedSignature, enabled: false, disabledMessage: "Updates are disabled in staging.");
+    Require((await updater.CheckAsync(true)).State == "Unsupported", "staging update check was not disabled");
+    Require((await updater.PrepareAsync()).Code == "UpdatesDisabled", "staging prepared an update");
+    Require(updater.StartReplacement().Code == "UpdatesDisabled", "staging started update replacement");
+    Require(handler.Requests.Count == 0, "staging updater made a network request");
+});
+
 await Check("no GitHub release is a normal state", async () =>
 {
     var updater = Updater("no-release", new FakeHandler(_ => new(HttpStatusCode.NotFound)));

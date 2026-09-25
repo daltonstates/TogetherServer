@@ -26,6 +26,12 @@ ServerProfile Profile(string name, string world, int port, string? directory = n
     return new ServerProfile { Name = name, WorldId = world, WorldDirectory = path, GamePort = port, ExecutablePath = fixture };
 }
 void Require(bool value, string message) { if (!value) throw new Exception(message); }
+void RequireThrows<T>(Action action, string message) where T : Exception
+{
+    try { action(); }
+    catch (T) { return; }
+    throw new Exception(message);
+}
 int FreePort()
 {
     for (var i = 0; i < 100; i++)
@@ -62,6 +68,97 @@ void CreateJunction(string link, string target)
 LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
 HostManager Manager(LocalData data) => new(data, Games(data));
+
+await Check("staging starts with isolated empty data and fresh-world defaults", () =>
+{
+    var productionRoot = Path.Combine(root, "instance-production");
+    var stagingRoot = Path.Combine(root, "instance-staging");
+    var productionWorld = Path.Combine(productionRoot, "worlds", "live-world");
+    Directory.CreateDirectory(productionWorld);
+    var productionMarker = Path.Combine(productionWorld, "owner-save.db");
+    File.WriteAllText(productionMarker, "production-owner-data");
+    string? EnvironmentValue(string name) => name switch
+    {
+        "TOGETHERSERVER_DATA_DIR" => productionRoot,
+        "TOGETHERSERVER_STAGING_DATA_DIR" => stagingRoot,
+        _ => null
+    };
+    var instance = AppInstance.Resolve(["--staging"], EnvironmentValue, Path.Combine(root, "unused-local"));
+    Require(instance.IsStaging && instance.DefaultLocalPort == 5128 && instance.DefaultCompanionPort == 5132 &&
+        instance.DefaultValheimPort == 2458 && instance.DefaultMinecraftJavaPort == 25566 &&
+        instance.DefaultMinecraftBedrockPort == 19134, "staging defaults did not use their isolated ports");
+    instance.PrepareDataRoot();
+    using (var data = new LocalData(instance.DataRoot, instance.DefaultCompanionPort))
+    {
+        Require(data.LoadSettings().Profiles.Count == 0 && data.LoadSettings().CompanionPort == 5132 &&
+            data.LoadRuns().Count == 0, "staging inherited production settings or runs");
+    }
+    Require(File.ReadAllText(productionMarker) == "production-owner-data" &&
+        !Directory.EnumerateFiles(stagingRoot, "owner-save.db", SearchOption.AllDirectories).Any(),
+        "staging changed or copied the production world marker");
+
+    var profileId = Guid.NewGuid();
+    var valid = Settings(new ServerProfile
+    {
+        Id = profileId,
+        Kind = GameKinds.Valheim,
+        Name = "staging",
+        ServerName = "staging",
+        WorldId = "fresh",
+        WorldSource = "New",
+        WorldDirectory = Path.Combine(stagingRoot, "worlds", profileId.ToString("N")),
+        GamePort = instance.DefaultValheimPort,
+        ExecutablePath = fixture
+    });
+    Require(instance.ValidateSettings(valid).Ok, "a fresh staging world inside the staging root was rejected");
+    valid.Profiles[0].WorldDirectory = productionWorld;
+    Require(instance.ValidateSettings(valid).Code == "StagingDataBoundary", "a production world path crossed the staging boundary");
+    var linkedWorld = Path.Combine(stagingRoot, "worlds", "linked-production-world");
+    Directory.CreateDirectory(Path.GetDirectoryName(linkedWorld)!);
+    CreateJunction(linkedWorld, productionWorld);
+    valid.Profiles[0].WorldDirectory = linkedWorld;
+    Require(instance.ValidateSettings(valid).Code == "StagingDataBoundary",
+        "a staging world junction crossed into the production world");
+    valid.Profiles[0].WorldDirectory = Path.Combine(stagingRoot, "worlds", profileId.ToString("N"));
+    valid.Profiles[0].WorldSource = "Existing";
+    Require(instance.ValidateSettings(valid).Code == "StagingFreshWorldRequired", "staging accepted an existing Valheim world");
+    valid.Profiles[0].Kind = GameKinds.Custom;
+    Require(instance.ValidateSettings(valid).Code == "StagingCustomDisabled", "staging accepted an unrestricted custom script profile");
+    return Task.CompletedTask;
+});
+
+await Check("staging refuses overlapping or pre-populated data roots", () =>
+{
+    var productionRoot = Path.Combine(root, "boundary-production");
+    Directory.CreateDirectory(productionRoot);
+    AppInstance Resolve(string stagingRoot) => AppInstance.Resolve(["--staging"], name => name switch
+    {
+        "TOGETHERSERVER_DATA_DIR" => productionRoot,
+        "TOGETHERSERVER_STAGING_DATA_DIR" => stagingRoot,
+        _ => null
+    }, Path.Combine(root, "unused-local"));
+    RequireThrows<InvalidDataException>(() => Resolve(productionRoot), "staging accepted the production root");
+    RequireThrows<InvalidDataException>(() => Resolve(Path.Combine(productionRoot, "child")), "staging accepted a root inside production");
+    RequireThrows<ArgumentException>(() => AppInstance.Resolve(["--staging", "--startup"], _ => null,
+        Path.Combine(root, "startup-local")), "staging accepted Windows startup mode");
+
+    var populated = Path.Combine(root, "prepopulated-staging");
+    Directory.CreateDirectory(populated);
+    File.WriteAllText(Path.Combine(populated, "unknown.db"), "leave-me-alone");
+    RequireThrows<InvalidDataException>(() => Resolve(populated).PrepareDataRoot(),
+        "staging opened a pre-populated unmarked folder");
+    Require(File.ReadAllText(Path.Combine(populated, "unknown.db")) == "leave-me-alone",
+        "staging changed a refused pre-populated folder");
+
+    var marked = Path.Combine(root, "marked-staging");
+    var staging = Resolve(marked);
+    staging.PrepareDataRoot();
+    var production = AppInstance.Resolve([], name => name == "TOGETHERSERVER_DATA_DIR" ? marked : null,
+        Path.Combine(root, "other-local"));
+    RequireThrows<InvalidDataException>(production.PrepareDataRoot,
+        "production opened a staging-marked folder");
+    return Task.CompletedTask;
+});
 
 await Check("control policy remains fail closed when audit logging is unavailable", async () =>
 {

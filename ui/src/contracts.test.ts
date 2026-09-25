@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseDataRecoveryView, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseDataRecoveryView, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -42,6 +42,19 @@ describe('runtime contracts', () => {
 
   it('rejects invalid settings instead of trusting persisted JSON', () => {
     expect(() => parseSettings({ ...settings, companionPort: '5131' })).toThrow(ContractError)
+  })
+
+  it('validates the staging isolation contract', () => {
+    const instance = parseAppInstance({
+      kind: 'Staging', displayName: 'TogetherServer STAGING', isStaging: true, freshWorldsOnly: true,
+      startupAvailable: false, updatesAvailable: false, localPort: 5128, companionPort: 5132,
+      valheimPort: 2458, minecraftJavaPort: 25566, minecraftBedrockPort: 19134,
+      dataRoot: 'C:\\TogetherServer-Staging', dataIsolation: 'No production data is loaded.'
+    })
+
+    expect(instance.isStaging).toBe(true)
+    expect(instance.freshWorldsOnly).toBe(true)
+    expect(() => parseAppInstance({ ...instance, companionPort: '5132' })).toThrow(ContractError)
   })
 
   it('removes an invalid local setup draft', () => {

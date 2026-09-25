@@ -20,7 +20,8 @@ public interface IAuthenticodeVerifier
 }
 
 public sealed class AppUpdater(HttpClient client, string dataRoot, string executablePath, Version currentVersion,
-    IAuthenticodeVerifier? authenticodeVerifier = null)
+    IAuthenticodeVerifier? authenticodeVerifier = null, bool enabled = true,
+    string disabledMessage = "Automatic updates are disabled for this app instance.")
 {
     public const string AssetName = "TogetherServer-win-x64.exe";
     public const long MaximumBytes = 200L * 1024 * 1024;
@@ -28,7 +29,9 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
     private const string LatestUrl = "https://api.github.com/repos/daltonstates/TogetherServer/releases/latest";
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly IAuthenticodeVerifier signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
-    private UpdateView view = new("Checking", currentVersion.ToString(3), null, "Checking for updates.");
+    private UpdateView view = enabled
+        ? new("Checking", currentVersion.ToString(3), null, "Checking for updates.")
+        : new("Unsupported", currentVersion.ToString(3), null, disabledMessage);
     private UpdateRelease? available;
     private string? preparedPath;
     private string? publisherKey;
@@ -44,6 +47,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         await gate.WaitAsync();
         try
         {
+            if (!enabled) return view;
             if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < AutomaticCheckInterval) return view;
             checkedUtc = DateTimeOffset.UtcNow;
             if (!IsStandalone)
@@ -107,6 +111,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 
     public async Task<UpdateResult> PrepareAsync()
     {
+        if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
         await CheckAsync(true);
         await gate.WaitAsync();
         try
@@ -177,6 +182,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 
     public UpdateResult StartReplacement()
     {
+        if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
         if (!IsStandalone || view.State != "Available" || available is null || preparedPath is null || !File.Exists(preparedPath))
             return new(false, "NotReady", "No verified update is ready.");
         try

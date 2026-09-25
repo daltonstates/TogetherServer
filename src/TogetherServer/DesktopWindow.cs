@@ -27,6 +27,8 @@ internal sealed class DesktopWindow
     private readonly string browserDataDirectory;
     private readonly Action stopApplication;
     private readonly bool startInTray;
+    private readonly string displayName;
+    private readonly bool isStaging;
     private readonly TaskCompletionSource<bool> shown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Form? form;
     private NotifyIcon? trayIcon;
@@ -46,12 +48,15 @@ internal sealed class DesktopWindow
     private volatile bool rendered;
     private volatile bool visible;
 
-    public DesktopWindow(Uri address, string dataDirectory, Action stopApplication, bool closeToTray, bool startInTray)
+    public DesktopWindow(Uri address, string dataDirectory, Action stopApplication, bool closeToTray, bool startInTray,
+        string displayName = "TogetherServer", bool isStaging = false)
     {
         this.address = address;
         this.stopApplication = stopApplication;
         this.closeToTray = closeToTray;
         this.startInTray = startInTray;
+        this.displayName = displayName;
+        this.isStaging = isStaging;
         browserDataDirectory = Path.Combine(dataDirectory, "webview2");
     }
 
@@ -225,7 +230,7 @@ internal sealed class DesktopWindow
             Application.SetCompatibleTextRenderingDefault(false);
             using var window = new ChromeForm(startInTray)
             {
-                Text = "TogetherServer",
+                Text = displayName,
                 StartPosition = startInTray ? FormStartPosition.Manual : FormStartPosition.CenterScreen,
                 Size = new Size(1180, 820),
                 MinimumSize = new Size(380, 560),
@@ -237,20 +242,20 @@ internal sealed class DesktopWindow
             if (startInTray) window.Location = OutsideVirtualDesktop(window.Size);
             form = window;
             var content = BuildChrome(window);
-            using var trayIconImage = CreateTrayIcon();
+            using var trayIconImage = CreateTrayIcon(isStaging);
             window.Icon = trayIconImage;
             using var trayMenu = new ContextMenuStrip();
             using var tray = new NotifyIcon
             {
                 Icon = trayIconImage,
-                Text = "TogetherServer",
+                Text = displayName,
                 ContextMenuStrip = trayMenu,
                 Visible = true
             };
             trayIcon = tray;
-            trayMenu.Items.Add("Open TogetherServer", null, (_, _) => _ = ShowAsync());
+            trayMenu.Items.Add("Open " + displayName, null, (_, _) => _ = ShowAsync());
             trayMenu.Items.Add(new ToolStripSeparator());
-            trayMenu.Items.Add("Quit TogetherServer", null, (_, _) =>
+            trayMenu.Items.Add("Quit " + displayName, null, (_, _) =>
             {
                 if (!requestingQuit) _ = RequestQuitAsync(window);
             });
@@ -305,7 +310,7 @@ internal sealed class DesktopWindow
         var titleBar = new Panel { Dock = DockStyle.Fill, BackColor = TitleBarColor, Margin = Padding.Empty };
         var mark = new Label
         {
-            Text = "T",
+            Text = isStaging ? "S" : "T",
             ForeColor = AccentInkColor,
             BackColor = AccentColor,
             Font = new Font("Segoe UI", 10, FontStyle.Bold),
@@ -315,16 +320,16 @@ internal sealed class DesktopWindow
         };
         var title = new Label
         {
-            Text = "TogetherServer",
+            Text = displayName,
             ForeColor = TextColor,
             BackColor = Color.Transparent,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             AutoSize = true,
             Location = new Point(47, 12)
         };
-        var close = ChromeButton("×", "Close TogetherServer");
-        var maximize = ChromeButton("□", "Maximize TogetherServer");
-        var minimize = ChromeButton("—", "Minimize TogetherServer");
+        var close = ChromeButton("×", "Close " + displayName);
+        var maximize = ChromeButton("□", "Maximize " + displayName);
+        var minimize = ChromeButton("—", "Minimize " + displayName);
         close.Dock = DockStyle.Right;
         maximize.Dock = DockStyle.Right;
         minimize.Dock = DockStyle.Right;
@@ -356,7 +361,7 @@ internal sealed class DesktopWindow
         {
             maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
             maximize.AccessibleName = window.WindowState == FormWindowState.Maximized
-                ? "Restore TogetherServer" : "Maximize TogetherServer";
+                ? "Restore " + displayName : "Maximize " + displayName;
         };
 
         titleBar.Controls.Add(mark);
@@ -417,7 +422,7 @@ internal sealed class DesktopWindow
             BackColor = content.BackColor,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 15),
-            Text = "Opening TogetherServer..."
+            Text = "Opening " + displayName + "..."
         };
         content.Controls.Add(loading);
         _ = EnforceLoadDeadlineAsync(window, content, loading);
@@ -656,11 +661,11 @@ internal sealed class DesktopWindow
         window.ShowInTaskbar = false;
         if (trayHintShown) return;
         trayHintShown = true;
-        tray.ShowBalloonTip(4000, "TogetherServer is still running",
+        tray.ShowBalloonTip(4000, displayName + " is still running",
             "Open it from the tray icon. Right-click the icon to quit.", ToolTipIcon.Info);
     }
 
-    private static Icon CreateTrayIcon()
+    private static Icon CreateTrayIcon(bool staging)
     {
         using var bitmap = new Bitmap(32, 32);
         using (var graphics = Graphics.FromImage(bitmap))
@@ -671,7 +676,7 @@ internal sealed class DesktopWindow
         {
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             graphics.FillEllipse(background, 1, 1, 30, 30);
-            graphics.DrawString("T", font, foreground, new RectangleF(0, 1, 32, 30), centered);
+            graphics.DrawString(staging ? "S" : "T", font, foreground, new RectangleF(0, 1, 32, 30), centered);
         }
         var handle = bitmap.GetHicon();
         try { return (Icon)Icon.FromHandle(handle).Clone(); }

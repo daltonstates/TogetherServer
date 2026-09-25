@@ -90,6 +90,7 @@ try {
     }
     Invoke-Checked 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
     Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
+    Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
     if (!$SkipDesktop) {
         Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 }
     }

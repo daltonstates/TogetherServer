@@ -141,6 +141,21 @@ await Check("fresh Java and Bedrock installs configure separate folders and pres
     Require(File.ReadAllText(Path.Combine(existing, "world.db")) == "keep this", "existing world changed");
 });
 
+await Check("staging Bedrock install isolates IPv4 IPv6 and LAN discovery ports", async () =>
+{
+    using var data = new LocalData(Path.Combine(root, "staging-bedrock"), 5132);
+    using var client = FakeClient(fixtureJar, fixtureBedrock, fixtureRuntime);
+    var installer = new MinecraftInstaller(client, data, isolatedNetworking: true);
+    Require((await installer.InstallAsync(new(GameKinds.MinecraftBedrock, "Staging World", 65535, true))).Code == "InvalidPort",
+        "staging accepted a Bedrock base port without room for its IPv6 port");
+    var result = await installer.InstallAsync(new(GameKinds.MinecraftBedrock, "Staging World", 19134, true));
+    Require(result.Ok && result.Installation is not null, "staging Bedrock install failed: " + result.Message);
+    var properties = File.ReadAllText(Path.Combine(result.Installation!.ServerDirectory, "server.properties"));
+    Require(properties.Contains("server-port=19134") && properties.Contains("server-portv6=19135") &&
+        properties.Contains("enable-lan-visibility=false") && !properties.Contains("server-portv6=19133"),
+        "staging Bedrock did not isolate its IPv4, IPv6, and LAN discovery ports");
+});
+
 await Check("checksum mismatch, foreign URL, and unsafe archive leave no server install", async () =>
 {
     async Task Attempt(string name, HttpClient client, string kind)
