@@ -88,6 +88,14 @@ await Check("development executable selects isolated staging without a command-l
         "the clearly named development executable did not select isolated staging");
     Require(!production.IsStaging && production.DataRoot == Path.GetFullPath(productionRoot),
         "the ordinary executable stopped selecting production");
+    var productionPorts = new[] { production.DefaultLocalPort, production.DefaultCompanionPort,
+        production.DefaultValheimPort, production.DefaultValheimPort + 1, production.DefaultMinecraftJavaPort,
+        production.DefaultMinecraftBedrockPort, production.DefaultMinecraftBedrockPort + 1 };
+    var developmentPorts = new[] { development.DefaultLocalPort, development.DefaultCompanionPort,
+        development.DefaultValheimPort, development.DefaultValheimPort + 1, development.DefaultMinecraftJavaPort,
+        development.DefaultMinecraftBedrockPort, development.DefaultMinecraftBedrockPort + 1 };
+    Require(!productionPorts.Intersect(developmentPorts).Any(),
+        "the production and development default port plans overlap");
     RequireThrows<ArgumentException>(() => AppInstance.Resolve(["--startup"], EnvironmentValue,
         Path.Combine(root, "unused-local"), developmentPath),
         "the development executable accepted Windows startup mode");

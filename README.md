@@ -18,7 +18,7 @@ Use the explicit staging instance when friends need the stable app to keep worki
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-staging-package.ps1 -Build
 ```
 
-The package is written to `local-data\staging-package`. Double-click the unmistakably named **TogetherServer DEVELOPMENT.exe**, or use its separate **DEVELOPMENT Host** and **DEVELOPMENT Friend** launchers. The filename itself selects the isolated staging instance, so opening the EXE directly cannot hand off to the running production app. The development process is also labeled in its native title, square **D** tray/taskbar icon, and bright orange **DEVELOPMENT / STAGING** in-app banner.
+The package is written to `local-data\staging-package`. Double-click the unmistakably named **TogetherServer DEVELOPMENT.exe**, or use its separate **DEVELOPMENT Host** and **DEVELOPMENT Friend** launchers. The filename itself selects the isolated staging instance, so opening the EXE directly cannot hand off to the running production app. The development process is also labeled in its native title, square **D** tray/taskbar icon, and bright orange **DEVELOPMENT / STAGING** in-app banner, which shows the active local-app and Friend-control ports.
 
 Development/staging can run beside the normal app because it uses `%LOCALAPPDATA%\TogetherServer-Staging`, loopback UI port 5128, and Friend-control port 5132 by default; the normal app keeps `%LOCALAPPDATA%\TogetherServer`, ports 5127 and 5131, and its own process lock. Windows sign-in startup and automatic release updating are disabled for staging so it cannot replace or deregister the stable app.
 

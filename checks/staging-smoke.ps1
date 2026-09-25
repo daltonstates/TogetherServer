@@ -82,6 +82,10 @@ try {
         !$stagingInstance.isStaging -or !$stagingInstance.freshWorldsOnly) {
         throw 'The two running processes did not report distinct production and staging identities.'
     }
+    if ($productionInstance.localPort -ne $productionPort -or $stagingInstance.localPort -ne $stagingPort -or
+        $productionInstance.dataRoot -eq $stagingInstance.dataRoot) {
+        throw 'Production and development did not report their own local API ports and data roots.'
+    }
     if ($stagingInstance.companionPort -ne 5132 -or $stagingInstance.valheimPort -ne 2458 -or
         $stagingInstance.minecraftJavaPort -ne 25566 -or $stagingInstance.minecraftBedrockPort -ne 19134) {
         throw 'The staging process did not report its isolated default ports.'
@@ -92,6 +96,12 @@ try {
     if ($productionSnapshot.settings.companionPort -ne 5131 -or $stagingSnapshot.settings.companionPort -ne 5132 -or
         @($stagingSnapshot.settings.profiles).Count -ne 0 -or @($stagingSnapshot.runs).Count -ne 0) {
         throw 'Staging inherited production settings, profiles, or runs.'
+    }
+    $productionPorts = Invoke-RestMethod -Uri "$productionUrl/api/local/network/ports"
+    $stagingPorts = Invoke-RestMethod -Uri "$stagingUrl/api/local/network/ports"
+    if ($productionPorts.control.port -ne 5131 -or $stagingPorts.control.port -ne 5132 -or
+        $null -ne $productionPorts.control.endpoint -or $null -ne $stagingPorts.control.endpoint) {
+        throw 'Production and development port diagnostics crossed instances or mishandled an unconfigured endpoint.'
     }
     if ([IO.File]::ReadAllText($productionSave) -ne 'production-owner-data' -or
         (Get-ChildItem -LiteralPath $stagingRoot -Filter 'owner-save.db' -Recurse -ErrorAction SilentlyContinue)) {

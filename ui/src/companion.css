@@ -72,6 +72,13 @@
   letter-spacing: 1px;
   white-space: nowrap;
 }
+.staging-banner code {
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: var(--color-accent-ink);
+  color: var(--color-accent-light);
+  font-weight: 800;
+}
 .staging-setup-notice {
   display: grid;
   gap: 4px;

@@ -986,6 +986,8 @@ function App() {
     ? companion.listenerWarning || 'Friend app connections are off. Choose Invite friends again to start the HTTPS listener.'
     : null)
   const recentActivity = snapshot?.activity ?? []
+  const developmentControlPort = snapshot?.mode === 'Host'
+    ? snapshot.settings.companionPort : appInstance?.companionPort
 
   return <div className={appInstance?.isStaging ? 'shell staging-shell' : 'shell'}>
     <header className="topbar">
@@ -1016,7 +1018,7 @@ function App() {
       </div>
     </header>
 
-    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Fresh disposable worlds only. Production profiles, credentials, settings, runs, and world saves are not loaded or copied.</span></aside>}
+    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Fresh disposable worlds only. Production profiles, credentials, settings, runs, and world saves are not loaded or copied.</span></aside>}
 
     <main>
       <div className="page-heading"><div><h1>{snapshot?.mode === 'Friend' ? 'Join' : 'Host'}</h1>

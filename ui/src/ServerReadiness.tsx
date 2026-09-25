@@ -24,7 +24,7 @@ export type PortDiagnostics = {
     remoteDetail: string
     bindAddress?: string
     bindScope?: string
-    endpoint?: string
+    endpoint?: string | null
     endpointState?: string
     endpointDetail?: string
     lanAddresses?: { address: string; interfaceName: string; gateway: string }[]

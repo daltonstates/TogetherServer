@@ -713,7 +713,7 @@ export const parsePortDiagnostics: Decoder<PortDiagnostics> = (value, context = 
       port: numeric(control.port, `${context}.control.port`), state: text(control.state, `${context}.control.state`),
       detail: text(control.detail, `${context}.control.detail`), remoteState: text(control.remoteState, `${context}.control.remoteState`),
       remoteDetail: text(control.remoteDetail, `${context}.control.remoteDetail`), bindAddress: optionalText(control.bindAddress, `${context}.control.bindAddress`),
-      bindScope: optionalText(control.bindScope, `${context}.control.bindScope`), endpoint: optionalText(control.endpoint, `${context}.control.endpoint`),
+      bindScope: optionalText(control.bindScope, `${context}.control.bindScope`), endpoint: optionalNullableText(control.endpoint, `${context}.control.endpoint`),
       endpointState: optionalText(control.endpointState, `${context}.control.endpointState`), endpointDetail: optionalText(control.endpointDetail, `${context}.control.endpointDetail`),
       lanAddresses: control.lanAddresses === undefined ? undefined : list(control.lanAddresses, `${context}.control.lanAddresses`, (item, itemContext) => {
         const entry = object(item, itemContext ?? `${context}.control.lanAddresses`)

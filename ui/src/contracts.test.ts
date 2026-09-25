@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseDataRecoveryView, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseDataRecoveryView, parsePortDiagnostics, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -55,6 +55,30 @@ describe('runtime contracts', () => {
     expect(instance.isStaging).toBe(true)
     expect(instance.freshWorldsOnly).toBe(true)
     expect(() => parseAppInstance({ ...instance, companionPort: '5132' })).toThrow(ContractError)
+  })
+
+  it('accepts an unconfigured Friend endpoint in development port diagnostics', () => {
+    const diagnostics = parsePortDiagnostics({
+      checkedUtc: '2026-09-25T22:00:00Z',
+      games: [],
+      control: {
+        port: 5132,
+        state: 'Off',
+        detail: 'Friend connections are off.',
+        remoteState: 'Not verified',
+        remoteDetail: 'No paired Friend has a current authenticated heartbeat.',
+        bindAddress: '0.0.0.0',
+        bindScope: 'All IPv4 interfaces',
+        endpoint: null,
+        endpointState: 'Not configured',
+        endpointDetail: 'Create an invite to set the Friend app address.',
+        lanAddresses: [],
+        lanForwardDetail: 'No local route selected.'
+      }
+    })
+
+    expect(diagnostics.control.port).toBe(5132)
+    expect(diagnostics.control.endpoint).toBeNull()
   })
 
   it('removes an invalid local setup draft', () => {
