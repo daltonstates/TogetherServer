@@ -951,3 +951,16 @@ The normal release-candidate EXE still runs in production mode. Its build output
 | Companion and packaged app checks | Pass: companion 34, served smoke 21, production/development isolation smoke 3, and hidden native desktop smoke 8 groups. The served smoke directly exercised the nullable invite response. |
 
 The first serial run encountered the previously observed synthetic Custom-check immediate-start timing failure. Its immediate isolated rerun passed 6/6, and the complete serial verifier then passed cleanly. Signed update handoff remained skipped because the development candidate is unsigned. No release tag or GitHub release was created, and no installed production data, production process, real game binary, valued world, real Friend route, firewall, router, or DNS setting was changed.
+
+## 2026-09-26 - v0.1.7 unsigned manual release
+
+Release commit `fecf09a` makes Authenticode optional during manual release preparation while preserving strict signed-update enforcement. With no signing thumbprint configured, the release path now requires an ordinary `NotSigned` state, emits the Unknown Publisher and unavailable-auto-update warning, runs the complete exact-artifact matrix, and prepares the EXE plus checksum. Supplying a signing thumbprint later still requires `signtool.exe`, timestamped signing, a Windows-valid signature, and the signed replacement handoff checks.
+
+| Check | Result |
+| --- | --- |
+| Exact release preparation | Pass: UI lint and 26 tests; core 30, Valheim 10, Minecraft 3, Minecraft setup 5, Custom 6, updater 12, and companion 34 groups; served smoke 21, production/development isolation smoke 3, and hidden native desktop smoke 8 groups, all with 0 failures. The signed update handoff was explicitly skipped because the candidate is unsigned. |
+| Exact release asset | `local-data/github-release/v0.1.7/TogetherServer-win-x64.exe`, 64,322,559 bytes, file version `0.1.7.0`, product version `0.1.7+fecf09a14395b492e93d3f0001aceab28e58e69c`, SHA-256 `D8DA51287785435483FE166E5E766542F71A184F735EEC660BBD08B0EFE53C01`, Authenticode `NotSigned`. The adjacent checksum matched. |
+| GitHub publication | Pass: annotated tag `v0.1.7` resolves to `fecf09a14395b492e93d3f0001aceab28e58e69c`; the public non-draft, non-prerelease release is marked latest at `https://github.com/daltonstates/TogetherServer/releases/tag/v0.1.7` and contains exactly the EXE and checksum assets. |
+| Independent public verification | Pass: a fresh unauthenticated download matched the local size, version identity, GitHub `sha256:` digest, checksum file, SHA-256, and `NotSigned` status. Evidence: `local-data/public-release-verification/v0.1.7-eac8dfe085a44223a6605d2f01b2a1d3`. |
+
+The first upload command created the draft but failed before transferring an asset because PowerShell parsed the upload URL variable incorrectly. The same draft was resumed with explicit variable delimiting, received exactly two assets, and was reviewed before publication; no duplicate release was created. The owner's running production EXE stayed on its separate package path throughout preparation. No real game binary, valued world, real Friend route, firewall, router, DNS setting, or production data was changed.
