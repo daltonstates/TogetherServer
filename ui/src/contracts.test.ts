@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseDataRecoveryView, parsePortDiagnostics, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseDataRecoveryView, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -79,6 +79,27 @@ describe('runtime contracts', () => {
 
     expect(diagnostics.control.port).toBe(5132)
     expect(diagnostics.control.endpoint).toBeNull()
+  })
+
+  it('accepts normal nullable fields from invite and browse responses', () => {
+    const invite = parseInviteResult({
+      ok: true,
+      code: 'InviteReady',
+      message: 'Pairing is open.',
+      password: 'TS3-test',
+      expiresUtc: '2026-09-25T23:00:00Z',
+      listenerActive: true,
+      listenerWarning: null
+    })
+    const canceledBrowse = parseMinecraftBrowseResult({
+      ok: false,
+      code: 'Canceled',
+      message: 'No path selected.',
+      path: null
+    })
+
+    expect(invite.listenerWarning).toBeNull()
+    expect(canceledBrowse.path).toBeNull()
   })
 
   it('removes an invalid local setup draft', () => {

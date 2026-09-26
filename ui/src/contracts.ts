@@ -223,7 +223,7 @@ export type PublicIpDetection = BasicResult & { address: string | null; snapshot
 export type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
 export type ImportResult = BasicResult & { worldDirectory: string | null }
 export type ServerBrowseResult = BasicResult & { executablePath?: string }
-export type MinecraftBrowseResult = BasicResult & { path?: string }
+export type MinecraftBrowseResult = BasicResult & { path?: string | null }
 export type MinecraftInstallResult = BasicResult & { installation?: MinecraftInstallation }
 export type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
 export type AppInstanceView = {
@@ -252,7 +252,7 @@ export type CustomCertificationResult = BasicResult & { snapshot: HostSnapshot; 
 export type RouteDiscovery = { privateMeshCandidates: { provider: string; interfaceName: string; address: string }[]; advancedCandidates: { provider: string; interfaceName: string; address: string }[] }
 export type GameEndpointResult = { answered: boolean; code: string; message: string; checkedUtc: string; onlinePlayers: number | null; maxPlayers: number | null }
 export type InviteState = { exists: boolean; open: boolean; canStart: boolean; durationMinutes: number; deviceLimit: number; requireApproval: boolean }
-export type InviteResult = BasicResult & { password?: string; expiresUtc?: string; listenerActive?: boolean; listenerWarning?: string }
+export type InviteResult = BasicResult & { password?: string; expiresUtc?: string | null; listenerActive?: boolean; listenerWarning?: string | null }
 export type PasswordResult = BasicResult & { password?: string }
 
 export type Decoder<T> = (value: unknown, context?: string) => T
@@ -787,9 +787,9 @@ export const parseInviteState: Decoder<InviteState> = (value, context = 'invite 
 
 export const parseInviteResult: Decoder<InviteResult> = (value, context = 'invite result') => {
   const { source, basic } = withBasicResult(value, context)
-  return { ...basic, password: optionalText(source.password, `${context}.password`), expiresUtc: optionalText(source.expiresUtc, `${context}.expiresUtc`),
+  return { ...basic, password: optionalText(source.password, `${context}.password`), expiresUtc: optionalNullableText(source.expiresUtc, `${context}.expiresUtc`),
     listenerActive: source.listenerActive === undefined ? undefined : flag(source.listenerActive, `${context}.listenerActive`),
-    listenerWarning: optionalText(source.listenerWarning, `${context}.listenerWarning`) }
+    listenerWarning: optionalNullableText(source.listenerWarning, `${context}.listenerWarning`) }
 }
 
 export const parsePasswordResult: Decoder<PasswordResult> = (value, context = 'password result') => {
@@ -839,7 +839,7 @@ export const parseServerBrowseResult: Decoder<ServerBrowseResult> = (value, cont
 
 export const parseMinecraftBrowseResult: Decoder<MinecraftBrowseResult> = (value, context = 'Minecraft browse result') => {
   const { source, basic } = withBasicResult(value, context)
-  return { ...basic, path: optionalText(source.path, `${context}.path`) }
+  return { ...basic, path: optionalNullableText(source.path, `${context}.path`) }
 }
 
 export const parseImportResult: Decoder<ImportResult> = (value, context = 'import result') => {

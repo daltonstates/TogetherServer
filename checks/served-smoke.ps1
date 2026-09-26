@@ -284,11 +284,12 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/servers/$profileId/invite/current" -Method Post -UseBasicParsing | Out-Null }
     catch { $inviteReadForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     $invitedSettings = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings
-    if (!$invite.ok -or !$invite.password.StartsWith('TS3-') -or !$sameInvite.exists -or !$sameInvite.open -or $sameInvite.password -ne $invite.password -or !$sameInvite.canStart -or $sameInvite.durationMinutes -ne 30 -or $sameInvite.deviceLimit -ne 1 -or !$inviteReadForbidden -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating a pairing window did not keep one protected bounded code and permission default or prepare the standard Host address safely.' }
+    $inviteHasListenerWarning = $invite.PSObject.Properties.Name -contains 'listenerWarning'
+    if (!$invite.ok -or !$invite.password.StartsWith('TS3-') -or !$inviteHasListenerWarning -or $null -ne $invite.listenerWarning -or !$sameInvite.exists -or !$sameInvite.open -or $sameInvite.password -ne $invite.password -or !$sameInvite.canStart -or $sameInvite.durationMinutes -ne 30 -or $sameInvite.deviceLimit -ne 1 -or !$inviteReadForbidden -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating a pairing window did not keep one protected bounded code and permission default, return its nullable listener warning, or prepare the standard Host address safely.' }
     $settings.companionEndpoint = $invitedSettings.companionEndpoint
     $settings.companionBindAddress = $invitedSettings.companionBindAddress
     $settings.companionPort = $invitedSettings.companionPort
-    Write-Host 'PASS one current bounded server code prepares the standard app address without opening a listener'
+    Write-Host 'PASS one current bounded server code returns a nullable listener warning and prepares the standard app address without opening a listener'
     $started = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/start" -Method Post -Headers $headers
     if (!$started.ok -or $started.code -ne 'FixtureStarted') { throw "Start failed: $($started.message)" }
     $fixtureStarted = $true

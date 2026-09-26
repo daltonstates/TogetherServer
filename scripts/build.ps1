@@ -25,6 +25,12 @@ try {
     $releaseDirectory = Join-Path $repository "local-data/$ReleaseName"
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repository 'local-data/publish/TogetherServer.exe') -Destination (Join-Path $releaseDirectory 'TogetherServer.exe') -Force
-    Write-Host "Ready to double-click: local-data/$ReleaseName/TogetherServer.exe"
+    if ($ReleaseName -eq 'release-candidate') {
+        Write-Host "Production-mode candidate (do not open beside production): local-data/$ReleaseName/TogetherServer.exe"
+        Write-Host 'For the isolated persistent development app, run scripts/prepare-staging-package.ps1 and open TogetherServer DEVELOPMENT.exe.'
+    }
+    else {
+        Write-Host "Production app: local-data/$ReleaseName/TogetherServer.exe"
+    }
 }
 finally { Pop-Location }
