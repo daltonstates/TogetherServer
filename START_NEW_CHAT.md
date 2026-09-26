@@ -24,13 +24,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1 -
 
 That command builds one candidate, validates the committed NuGet lock, runs the source/process suites, and exercises the packaged companion, served, and hidden desktop surfaces against the exact candidate. It does not show the interactive desktop. Unsigned development candidates cannot exercise the real updater handoff and explicitly report that skip.
 
-Automatic in-app updates are disabled when the installed EXE is unsigned or has an invalid Authenticode signature. A downloaded candidate must pass size, SHA-256, version, Windows Authenticode trust, and same-publisher-public-key checks at download and replacement time. Preparing a release requires a clean tree, an unused version/tag/output directory, `signtool.exe`, and a trusted code-signing certificate supplied by the owner:
+Automatic in-app updates are disabled when the installed EXE is unsigned or has an invalid Authenticode signature. A downloaded candidate must pass size, SHA-256, version, Windows Authenticode trust, and same-publisher-public-key checks at download and replacement time. Preparing a release requires a clean tree and an unused version/tag/output directory. Unsigned releases remain allowed for manual installation while signing is not available:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1 -SigningCertificateThumbprint CERT_THUMBPRINT
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-github-release.ps1
 ```
 
-The script signs and verifies one exact candidate and prepares local GitHub assets. It does not create a tag or publish a release. Never invent signing credentials, accept game terms, download a terms-gated game binary, spend money, change firewall/router/DNS settings, or touch a valued world without explicit owner authorization.
+The script verifies one exact candidate and prepares local GitHub assets. If the owner supplies `-SigningCertificateThumbprint CERT_THUMBPRINT` and `signtool.exe`, it also signs and requires a valid signature; otherwise it clearly reports the unsigned release and skips only the real signed-update handoff. It does not create a tag or publish a release. Never invent signing credentials, accept game terms, download a terms-gated game binary, spend money, change firewall/router/DNS settings, or touch a valued world without explicit owner authorization.
 
 ## Acceptance boundary
 

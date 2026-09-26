@@ -44,10 +44,10 @@ try {
     $source = Join-Path $repository 'local-data/release-candidate/TogetherServer.exe'
     if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Candidate EXE was not created: $source" }
     $signature = Get-AuthenticodeSignature -LiteralPath $source
-    if ($signature.Status -ne 'Valid') {
-        $thumbprint = ($SigningCertificateThumbprint -replace '\s', '').ToUpperInvariant()
+    $thumbprint = ($SigningCertificateThumbprint -replace '\s', '').ToUpperInvariant()
+    if ($signature.Status -ne 'Valid' -and $thumbprint) {
         if ($thumbprint -notmatch '^[0-9A-F]{40}([0-9A-F]{24})?$') {
-            throw 'The candidate is unsigned. Supply a CurrentUser/My code-signing certificate thumbprint with -SigningCertificateThumbprint or TOGETHERSERVER_SIGNING_THUMBPRINT.'
+            throw 'The supplied code-signing certificate thumbprint is invalid.'
         }
         if ($SignToolPath) {
             $resolvedSignTool = (Resolve-Path -LiteralPath $SignToolPath).Path
@@ -67,11 +67,21 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Authenticode signing failed.' }
         $signature = Get-AuthenticodeSignature -LiteralPath $source
     }
-    if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate) {
-        throw "Release candidate needs a valid Authenticode signature; status was $($signature.Status)."
+    $signed = $signature.Status -eq 'Valid' -and $null -ne $signature.SignerCertificate
+    if ($thumbprint -and !$signed) {
+        throw "Requested Authenticode signing did not produce a valid signature; status was $($signature.Status)."
+    }
+    if (!$signed -and $signature.Status -ne 'NotSigned') {
+        throw "Release candidate has an invalid Authenticode state: $($signature.Status)."
     }
 
-    & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source -RequireSignature
+    if ($signed) {
+        & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source -RequireSignature
+    }
+    else {
+        Write-Warning 'Preparing an unsigned release. Windows may show Unknown Publisher and automatic updates will remain unavailable.'
+        & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Exact release-candidate verification failed.' }
 
     $assetName = 'TogetherServer-win-x64.exe'
@@ -82,15 +92,21 @@ try {
     $assetHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash
     if ($assetHash -ne $sourceHash) { throw 'Prepared asset bytes differ from the verified candidate.' }
     $assetSignature = Get-AuthenticodeSignature -LiteralPath $asset
-    if ($assetSignature.Status -ne 'Valid' -or
-        $assetSignature.SignerCertificate.Thumbprint -ne $signature.SignerCertificate.Thumbprint) {
-        throw 'Prepared asset did not preserve the verified candidate signature.'
+    if ($signed) {
+        if ($assetSignature.Status -ne 'Valid' -or
+            $assetSignature.SignerCertificate.Thumbprint -ne $signature.SignerCertificate.Thumbprint) {
+            throw 'Prepared asset did not preserve the verified candidate signature.'
+        }
+    }
+    elseif ($assetSignature.Status -ne 'NotSigned') {
+        throw "Prepared unsigned asset has an unexpected Authenticode state: $($assetSignature.Status)."
     }
     $hash = $assetHash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $releaseDirectory "$assetName.sha256") -Value "$hash  $assetName" -Encoding ascii
-    Write-Host "Prepared signed $tag at $asset"
+    Write-Host "Prepared $(if ($signed) { 'signed' } else { 'unsigned' }) $tag at $asset"
     Write-Host "SHA-256: $hash"
-    Write-Host "Signer: $($assetSignature.SignerCertificate.Subject)"
+    Write-Host "Authenticode: $($assetSignature.Status)"
+    if ($signed) { Write-Host "Signer: $($assetSignature.SignerCertificate.Subject)" }
     Write-Host "Publish a GitHub Release with tag $tag and attach $assetName plus its .sha256 file after reviewing the candidate."
 }
 finally { Pop-Location }
