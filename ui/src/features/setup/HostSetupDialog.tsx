@@ -101,7 +101,7 @@ export function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPa
   } else {
     if (!profile.name.trim()) issues.push('Enter a test profile name in step 1.')
     if (!profile.worldId.trim()) issues.push('Enter a world ID in step 1.')
-    if (!profile.worldDirectory.trim()) issues.push('Choose a disposable directory in step 1.')
+    if (!profile.worldDirectory.trim()) issues.push('Choose a separate development directory in step 1.')
     if (!profile.executablePath.trim()) issues.push('Select the fixture executable in step 2.')
   }
   return issues
@@ -202,12 +202,12 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
   return <dialog ref={dialogRef} className="panel settings-panel modal-dialog" aria-labelledby="setup-title"
     onCancel={event => { event.preventDefault(); onCancel() }}>
     <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p>Choose the game, world, and server files.</p></div></div>
-    {freshWorldsOnly && <div className="staging-setup-notice"><strong>Staging uses fresh disposable worlds only.</strong><span>Existing production worlds cannot be selected, scanned, or copied. Every staging save stays in the staging data folder.</span></div>}
+    {freshWorldsOnly && <div className="staging-setup-notice"><strong>Development worlds persist in separate storage.</strong><span>Create and reuse them here. Existing production worlds cannot be selected, scanned, or copied, and every development save stays in the development data folder.</span></div>}
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
     <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-      {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">{freshWorldsOnly ? 'Choose a reviewed built-in game for this disposable staging test.' : 'Choose a reviewed built-in game or an advanced Host-only script profile. You can change technical defaults during Review.'}</p><div className="game-choice-grid">
+      {setupStep === 'game' && <div className="setup-stage"><h3>Choose a game</h3><p className="helper-text">{freshWorldsOnly ? 'Choose a reviewed built-in game for this separate development instance.' : 'Choose a reviewed built-in game or an advanced Host-only script profile. You can change technical defaults during Review.'}</p><div className="game-choice-grid">
         <Button aria-pressed={profile.kind === 'Valheim'} className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></Button>
         <Button aria-pressed={profile.kind === 'MinecraftJava'} className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
         <Button aria-pressed={profile.kind === 'MinecraftBedrock'} className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
@@ -216,7 +216,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
       </div></div>}
       {setupStep === 'world' && <div className="setup-step world-step"><h3><Icon name="game" /> {profile.kind === 'Valheim' ? 'Choose a world' : 'Name this server'}</h3>
         {profile.kind === 'Valheim' && <div className="choice-pills">
-          <Button aria-pressed={profile.worldSource === 'New'} className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>{freshWorldsOnly ? 'Create fresh staging world' : 'Create new'}</Button>
+          <Button aria-pressed={profile.worldSource === 'New'} className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>{freshWorldsOnly ? 'Create development world' : 'Create new'}</Button>
           {!freshWorldsOnly && <Button aria-pressed={profile.worldSource === 'Existing'} className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</Button>}
         </div>}
         {!freshWorldsOnly && profile.kind === 'Valheim' && profile.worldSource === 'Existing' && <>

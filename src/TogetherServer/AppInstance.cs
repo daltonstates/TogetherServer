@@ -95,7 +95,7 @@ public sealed class AppInstance
                     "Custom scripts are disabled in staging because they can reference files outside the staging data folder.");
             if (profile.Kind == GameKinds.Valheim && !profile.WorldSource.Equals("New", StringComparison.OrdinalIgnoreCase))
                 return new(false, "StagingFreshWorldRequired",
-                    "Staging can create a new disposable Valheim world, but it cannot load or copy an existing world.");
+                    "Development creates and keeps worlds in separate storage; it cannot load or copy an existing production world.");
             var saveRoot = profile.Kind is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock
                 ? Path.Combine(DataRoot, "minecraft-servers")
                 : profile.Kind == GameKinds.Valheim ? Path.Combine(DataRoot, "worlds") : DataRoot;

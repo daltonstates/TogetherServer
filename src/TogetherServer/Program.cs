@@ -474,7 +474,7 @@ app.MapGet("/api/local/minecraft/discover", async (string? folder) =>
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
     var profiles = (await manager.SnapshotAsync()).Settings.Profiles;
     if (instance.FreshWorldsOnly && !string.IsNullOrWhiteSpace(folder))
-        return Results.Conflict(new { ok = false, code = "StagingFreshWorldRequired", message = "Staging does not scan an existing Minecraft server folder." });
+        return Results.Conflict(new { ok = false, code = "StagingFreshWorldRequired", message = "Development does not scan production Minecraft server folders." });
     return Results.Json(instance.FreshWorldsOnly
         ? MinecraftSetup.ScanManaged(data, profiles)
         : MinecraftSetup.Scan(data, profiles, folder));
@@ -502,7 +502,7 @@ app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
     if (instance.FreshWorldsOnly)
-        return Results.Conflict(new { ok = false, code = "StagingFreshWorldRequired", message = "Staging installs a new isolated Minecraft server instead of opening an existing server folder." });
+        return Results.Conflict(new { ok = false, code = "StagingFreshWorldRequired", message = "Development installs and keeps a separate Minecraft server instead of opening a production server folder." });
     if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
     if (request.Kind is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock) ||
         request.Target is not ("folder" or "executable" or "jar") ||
@@ -548,7 +548,7 @@ app.MapPost("/api/local/valheim/browse-world", async () =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
     if (instance.FreshWorldsOnly)
-        return Results.Conflict(new WorldFileSelection(false, "StagingFreshWorldRequired", "Staging cannot open or copy an existing Valheim world.", null, null));
+        return Results.Conflict(new WorldFileSelection(false, "StagingFreshWorldRequired", "Development cannot open or copy an existing production Valheim world.", null, null));
     if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
     try
     {
@@ -566,7 +566,7 @@ app.MapPost("/api/local/valheim/browse-world-folder", async () =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
     if (instance.FreshWorldsOnly)
-        return Results.Conflict(new WorldFileSelection(false, "StagingFreshWorldRequired", "Staging cannot open or copy an existing Valheim world folder.", null, null));
+        return Results.Conflict(new WorldFileSelection(false, "StagingFreshWorldRequired", "Development cannot open or copy an existing production Valheim world folder.", null, null));
     if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window to browse folders." });
     try
     {
@@ -587,7 +587,7 @@ app.MapPost("/api/local/valheim/import", async (ImportWorldRequest request) =>
         if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
         if (instance.FreshWorldsOnly)
             return Results.Json(new ImportWorldResult(false, "StagingFreshWorldRequired",
-                "Staging cannot copy an existing Valheim world. Create a new disposable staging world.", null));
+                "Development cannot copy an existing production Valheim world. Create a persistent world in separate development storage.", null));
         return Results.Json(ValheimSetup.ImportCopy(data, request));
     }
     finally { modeGate.Release(); }

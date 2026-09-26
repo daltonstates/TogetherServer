@@ -1,7 +1,7 @@
 TogetherServer DEVELOPMENT / STAGING
 ====================================
 
-This package is an isolated development build for disposable testing beside the stable TogetherServer app.
+This package is a usable, persistent development instance that runs beside the stable TogetherServer app.
 
 The obvious choice
 - Double-click "TogetherServer DEVELOPMENT.exe". It selects the separate staging instance automatically.
@@ -12,7 +12,7 @@ Host PC
 1. Keep the normal/stable TogetherServer app running as usual.
 2. Double-click "Start TogetherServer DEVELOPMENT Host.cmd" (or open the development EXE and choose Host).
 3. Confirm the bright DEVELOPMENT / STAGING banner is visible.
-4. Create a fresh staging world. Existing production worlds cannot be selected or copied.
+4. Create a separate development world. It persists across development launches; existing production worlds cannot be selected or copied.
 5. Use the development app's Invite friends flow to create a staging-only server code.
 
 Friend PC
@@ -24,6 +24,7 @@ Friend PC
 Isolation
 - Normal data stays in %LOCALAPPDATA%\TogetherServer.
 - Development/staging data stays in %LOCALAPPDATA%\TogetherServer-Staging.
+- Development profiles, credentials, settings, and worlds persist there until you remove them.
 - The development app does not load or copy production profiles, credentials, settings, runs, or worlds.
 - Do not manually copy production data or world folders into staging.
 - Staging uses local UI port 5128 and Friend-control port 5132 by default.
@@ -35,4 +36,4 @@ Real friend test
 - Test from a real Friend PC on another network.
 - The staging Friend-control port and staging game's ports need their own reachable route.
 - TogetherServer does not change Windows Firewall, router, DNS, or private-mesh settings for you.
-- Stop the disposable staging server when the test is complete. Stable hosting remains independent.
+- Stop the development server when you are done hosting. Its saved development setup and world remain available next time, while stable hosting stays independent.
