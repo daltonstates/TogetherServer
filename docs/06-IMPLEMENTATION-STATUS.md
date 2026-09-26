@@ -936,3 +936,18 @@ The default production and development port plans are asserted to have no numeri
 The complete pre-commit serial verifier passed UI lint and 25 tests, core 30, Valheim 10, Minecraft 3, Minecraft setup 5, Custom 6, updater 12, companion 34, served smoke 21, enhanced production/development isolation smoke, and hidden native desktop smoke 8. Candidate SHA-256 was `9B941FC3833B9031170B248FBC161C78570CA9BC328AF385863C7B8167F3A67E`; Authenticode and signed update handoff remained skipped because the development candidate is unsigned. No release tag or GitHub release was created, and no installed production data or network configuration was changed.
 
 The development instance is not ephemeral: its own profiles, credentials, settings, installed development servers, and newly created worlds persist between launches. User-facing copy now says this directly instead of calling the instance or its worlds disposable. Isolation remains fail closed: development cannot open or copy production worlds, load production settings or credentials, run unrestricted Custom scripts that could reference production paths, register over production's sign-in entry, or consume stable-app updates.
+
+## 2026-09-25 - Nullable invite contract and development handoff
+
+Starting Git HEAD: `ea4f72c`. The invite endpoint legitimately returns `listenerWarning: null` when there is no listener warning, but the React response decoder required text and replaced the app with `InvalidResponse`. Invite expiry and listener warning now follow the API's nullable contract. A related audit also corrected the canceled Minecraft file picker, whose `path` is legitimately null. Unit coverage pins both shapes, and the packaged served smoke now requires the invite response to contain an explicitly nullable listener warning.
+
+The normal release-candidate EXE still runs in production mode. Its build output now warns not to open it beside production and points to the separately prepared `TogetherServer DEVELOPMENT.exe`. The commit-bound development candidate was published to a separate directory so the owner's running production executable and data remained untouched.
+
+| Check | Result |
+| --- | --- |
+| Exact serial verifier | Pass on clean rerun: candidate file version `0.1.7.0`, product identity `0.1.7+ea4f72c2953829b859b5c39c84db05c576a80353`, SHA-256 `B1ABD05A23390578D635E559DF5EA1FD63525A5A9D0F499618D5C96B1BD0C18B`, Authenticode `NotSigned`; the exact hash remained unchanged. |
+| UI and repository gates | Pass: ESLint, 26 Vitest tests, locked restore, solution formatting, and whitespace checks. |
+| Host and game checks | Pass: core 30, Valheim 10, Minecraft 3, Minecraft setup 5, Custom 6, and updater 12 groups, all with 0 failures on the clean full run. |
+| Companion and packaged app checks | Pass: companion 34, served smoke 21, production/development isolation smoke 3, and hidden native desktop smoke 8 groups. The served smoke directly exercised the nullable invite response. |
+
+The first serial run encountered the previously observed synthetic Custom-check immediate-start timing failure. Its immediate isolated rerun passed 6/6, and the complete serial verifier then passed cleanly. Signed update handoff remained skipped because the development candidate is unsigned. No release tag or GitHub release was created, and no installed production data, production process, real game binary, valued world, real Friend route, firewall, router, or DNS setting was changed.
