@@ -17,7 +17,8 @@ public sealed record PortDiagnosticsView(DateTimeOffset CheckedUtc,
 public static class PortDiagnostics
 {
     public static PortDiagnosticsView Read(HostSnapshot snapshot, GameServerRegistry games,
-        bool companionActive, IReadOnlyList<DeviceView> devices, string? listenerWarning = null)
+        bool companionActive, IReadOnlyList<DeviceView> devices, string? listenerWarning = null,
+        string? listenerState = null)
     {
         var checkedUtc = DateTimeOffset.UtcNow;
         IPEndPoint[]? udp = null;
@@ -88,13 +89,17 @@ public static class PortDiagnostics
         var controlOpen = companionActive && validBind && tcp?.Any(endpoint =>
             endpoint.Port == controlPort && endpoint.Address.Equals(bind)) == true;
         var (controlState, controlDetail) = ControlStatus(settings.CompanionListeningEnabled,
-            companionActive, controlOpen, controlPort, bindAddress, bindScope, inspectionError, listenerWarning);
+            companionActive, controlOpen, controlPort, bindAddress, bindScope, inspectionError,
+            listenerWarning, listenerState);
         var lastFriend = controlOpen ? devices.Where(device => !device.Revoked && device.Paired &&
                 device.CredentialExpiresUtc > checkedUtc && device.LastHeartbeatUtc is { } receivedUtc &&
                 receivedUtc <= checkedUtc && checkedUtc - receivedUtc <= TimeSpan.FromSeconds(45))
             .Select(device => device.LastHeartbeatUtc!.Value).DefaultIfEmpty().Max() : default;
-        var remoteState = lastFriend == default ? "Not verified" : "Friend connected";
-        var remoteDetail = lastFriend == default
+        var remoteState = controlState == CompanionListenerStates.Idle ? "Not needed" :
+            lastFriend == default ? "Not verified" : "Friend connected";
+        var remoteDetail = controlState == CompanionListenerStates.Idle
+            ? "No active invite or usable paired PC needs the Friend listener. Create an invite when another PC needs to pair."
+            : lastFriend == default
             ? "No paired Friend has a current authenticated heartbeat. Test pairing from a PC outside this network to verify that route."
             : $"A paired Friend sent a heartbeat at {lastFriend.ToLocalTime():t}. Its network location is unknown; an outside-network test is still needed.";
         var (endpointState, endpointDetail) = EndpointStatus(settings, checkedUtc);
@@ -107,10 +112,14 @@ public static class PortDiagnostics
     }
 
     private static (string State, string Detail) ControlStatus(bool enabled, bool active, bool open,
-        int port, string bindAddress, string bindScope, string? inspectionError, string? listenerWarning)
+        int port, string bindAddress, string bindScope, string? inspectionError, string? listenerWarning,
+        string? listenerState)
     {
         if (!enabled)
             return ("Off", "Friend connections are off. Create or copy an invite to enable the HTTPS listener.");
+        if (listenerState == CompanionListenerStates.Idle)
+            return (CompanionListenerStates.Idle,
+                "Friend access is idle. Nothing is wrong: no active invite or usable paired PC needs the listener. Choose Invite friends when another PC needs to pair.");
         if (!active)
             return ("Not listening", string.IsNullOrWhiteSpace(listenerWarning)
                 ? "Friend connections are enabled, but the HTTPS listener is not running. Check the Host connection warning."

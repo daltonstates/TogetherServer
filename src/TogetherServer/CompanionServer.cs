@@ -5,6 +5,14 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace TogetherServer;
 
+public static class CompanionListenerStates
+{
+    public const string Off = "Off";
+    public const string Idle = "Idle";
+    public const string Listening = "Listening";
+    public const string Error = "Error";
+}
+
 // The public HTTPS listener is a second listener in the same Windows process.
 // It starts only after the owner enables Friend connections and pairing/TLS
 // material is ready; the local GUI remains bound to loopback.
@@ -21,6 +29,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     private readonly AuthenticatedDeviceRateLimiter deviceRateLimiter = new(180, TimeSpan.FromMinutes(1));
 
     public bool Active => active is not null && manager.CompanionListeningEnabled;
+    public string ListenerState { get; private set; } = CompanionListenerStates.Off;
     public string? Warning { get; private set; }
     public IReadOnlyList<RemoteOperationView> RecentOperations() => operations.Recent();
 
@@ -38,6 +47,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             await StopCoreAsync();
             Warning = null;
+            ListenerState = CompanionListenerStates.Off;
             return;
         }
         var address = settings.CompanionBindAddress + ":" + settings.CompanionPort;
@@ -47,9 +57,15 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out var endpoint) ||
                 endpoint.Port != settings.CompanionPort || !IPAddress.TryParse(settings.CompanionBindAddress, out var bind) ||
-                !pairing.HasInviteOrCredential() || settings.CompanionPort < 1024 ||
-                settings.CompanionPort == localPort)
-                throw new InvalidOperationException("Pairing, Host address, port, or TLS identity is incomplete.");
+                settings.CompanionPort < 1024 || settings.CompanionPort == localPort)
+                throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
+            if (!pairing.HasInviteOrCredential())
+            {
+                await StopCoreAsync();
+                Warning = null;
+                ListenerState = CompanionListenerStates.Idle;
+                return;
+            }
             _ = identity.StageNextIfExpiring(settings.CompanionEndpoint, TimeSpan.FromDays(30));
             nextCertificate = identity.Load();
             if (nextCertificate is null || !nextCertificate.HasPrivateKey ||
@@ -61,6 +77,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (active is not null && activeAddress == configurationKey)
             {
                 nextCertificate.Dispose();
+                Warning = null;
+                ListenerState = CompanionListenerStates.Listening;
                 return;
             }
             await StopCoreAsync();
@@ -102,6 +120,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             certificate = nextCertificate;
             activeAddress = configurationKey;
             Warning = null;
+            ListenerState = CompanionListenerStates.Listening;
             Console.WriteLine($"Companion HTTPS listener: {address}");
         }
         catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or
@@ -111,6 +130,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             nextCertificate?.Dispose();
             await StopCoreAsync();
             Warning = "Friend connections could not start: " + ex.Message;
+            ListenerState = CompanionListenerStates.Error;
             Console.Error.WriteLine(Warning);
         }
     }
@@ -122,6 +142,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             await StopCoreAsync();
             await operations.DisposeAsync();
+            Warning = null;
+            ListenerState = CompanionListenerStates.Off;
         }
         finally { listenerGate.Release(); }
     }

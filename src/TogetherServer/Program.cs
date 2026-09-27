@@ -367,7 +367,8 @@ app.MapPost("/api/local/network/detect-public-ip", async () =>
     finally { modeGate.Release(); }
 });
 app.MapGet("/api/local/network/ports", async () => Results.Json(PortDiagnostics.Read(
-    await manager.SnapshotAsync(), games, companionServer.Active, pairing.Views(), companionServer.Warning)));
+    await manager.SnapshotAsync(), games, companionServer.Active, pairing.Views(), companionServer.Warning,
+    companionServer.ListenerState)));
 app.MapGet("/api/local/network/routes", () => Results.Json(ConnectionRoutes.Detect()));
 app.MapPost("/api/local/network/test-friend-route", async () =>
 {
@@ -642,6 +643,7 @@ app.MapGet("/api/local/companion", async () =>
     return Results.Json(new
     {
         listenerActive = companionServer.Active,
+        listenerState = companionServer.ListenerState,
         listenerWarning = companionServer.Warning,
         endpoint = snapshot.Settings.CompanionEndpoint,
         fingerprint,

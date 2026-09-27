@@ -592,6 +592,10 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     diagnostics = PortDiagnostics.Read(snapshot, Games(data), false, [], "TLS listener failed");
     Require(diagnostics.Control.State == "Not listening" && diagnostics.Control.Detail == "TLS listener failed",
         "an enabled but failed HTTPS listener was reported off");
+    diagnostics = PortDiagnostics.Read(snapshot, Games(data), false, [], null, CompanionListenerStates.Idle);
+    Require(diagnostics.Control.State == "Idle" && diagnostics.Control.RemoteState == "Not needed" &&
+        diagnostics.Control.Detail.Contains("Nothing is wrong", StringComparison.Ordinal),
+        "an unused Friend listener was presented as a connection failure");
     query.Dispose();
     diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, []);
     Require(diagnostics.Games.Single().State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",

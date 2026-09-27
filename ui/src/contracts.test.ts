@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseDataRecoveryView, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -79,6 +79,23 @@ describe('runtime contracts', () => {
 
     expect(diagnostics.control.port).toBe(5132)
     expect(diagnostics.control.endpoint).toBeNull()
+  })
+
+  it('accepts the normal idle Friend listener state', () => {
+    const companion = parseCompanionInfo({
+      listenerActive: false,
+      listenerState: 'Idle',
+      listenerWarning: null,
+      endpoint: 'https://1.2.3.4:5131',
+      fingerprint: null,
+      certificates: null,
+      route: { mode: 'DirectInternet', address: '' },
+      devices: [],
+      stopSafety: {}
+    })
+
+    expect(companion.listenerState).toBe('Idle')
+    expect(companion.listenerWarning).toBeNull()
   })
 
   it('accepts normal nullable fields from invite and browse responses', () => {

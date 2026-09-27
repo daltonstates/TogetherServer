@@ -241,7 +241,10 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     if (!$forbidden) { throw 'A mutation without the local request headers was allowed.' }
     Write-Host 'PASS local mutation gate'
     if (!$js.Content.Contains('Update and restart') -or !$js.Content.Contains('Check for updates') -or
-        !$js.Content.Contains('Clear activity') -or !$js.Content.Contains('Not now')) { throw 'The update and notification controls were not bundled.' }
+        !$js.Content.Contains('Clear activity') -or !$js.Content.Contains('Not now') -or
+        !$js.Content.Contains('Nothing needs fixing') -or !$js.Content.Contains('idle until you create an invite')) {
+        throw 'The update, notification, or calm idle-Friend controls were not bundled.'
+    }
     $updateForbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/update/install" -Method Post -UseBasicParsing | Out-Null }
     catch { $updateForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }

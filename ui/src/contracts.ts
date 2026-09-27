@@ -170,6 +170,7 @@ export type HostCertificateState = {
 
 export type CompanionInfo = {
   listenerActive: boolean
+  listenerState: 'Off' | 'Idle' | 'Listening' | 'Error'
   listenerWarning: string | null
   endpoint: string
   fingerprint: string | null
@@ -760,7 +761,10 @@ const parseCertificateState: Decoder<HostCertificateState> = (value, context = '
 export const parseCompanionInfo: Decoder<CompanionInfo> = (value, context = 'companion information') => {
   const source = object(value, context)
   const route = object(source.route, `${context}.route`)
-  return { listenerActive: flag(source.listenerActive, `${context}.listenerActive`), listenerWarning: nullableText(source.listenerWarning, `${context}.listenerWarning`),
+  return { listenerActive: flag(source.listenerActive, `${context}.listenerActive`),
+    listenerState: literal(source.listenerState, ['Off', 'Idle', 'Listening', 'Error'] as const,
+      `${context}.listenerState`),
+    listenerWarning: nullableText(source.listenerWarning, `${context}.listenerWarning`),
     endpoint: text(source.endpoint, `${context}.endpoint`), fingerprint: nullableText(source.fingerprint, `${context}.fingerprint`),
     certificates: nullableObject(source.certificates, `${context}.certificates`, parseCertificateState),
     route: { mode: text(route.mode, `${context}.route.mode`), address: text(route.address, `${context}.route.address`) },

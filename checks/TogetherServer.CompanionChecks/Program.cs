@@ -240,6 +240,17 @@ try
         CompanionBindAddress = "127.0.0.1"
     };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "initial Host settings failed");
+    _ = await ServerInvite(owner, profile.Id, true, enableConnections: true);
+    var closedInitialWindow = await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/servers/{profile.Id}/pairing/close", new { });
+    var idleListener = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
+    var idlePorts = await owner.GetFromJsonAsync<PortDiagnosticsView>("/api/local/network/ports");
+    Require(closedInitialWindow.Ok && !idleListener.GetProperty("listenerActive").GetBoolean() &&
+        idleListener.GetProperty("listenerState").GetString() == CompanionListenerStates.Idle &&
+        idleListener.GetProperty("listenerWarning").ValueKind == JsonValueKind.Null &&
+        idlePorts?.Control.State == "Idle" && idlePorts.Control.RemoteState == "Not needed",
+        "an enabled listener with no invite or usable credential was reported as a failure");
+    Console.WriteLine("PASS no active invite or paired PC is a normal idle Friend state"); passes++;
     var inviteA = await ServerInvite(owner, profile.Id, true, enableConnections: true);
     var inviteB = await ServerInvite(owner, joinProfile.Id, false);
     var passwordA = PairingPassword.Encode(inviteA);

@@ -74,6 +74,10 @@ function friendGuidance(control: ControlCheck | undefined, result: InternetRoute
     summary: 'Friend app connections are off on this Host.',
     next: 'Choose Invite friends, or turn on Friend access in Settings.'
   }
+  if (control.state === 'Idle') return {
+    summary: 'Friend access is idle because no invite is open and no paired PC needs the listener.',
+    next: 'Choose Invite friends when another PC needs to pair. Nothing needs fixing right now.'
+  }
   if (control.state !== 'Open on PC') return {
     summary: 'The secure Friend listener is not confirmed on this PC.',
     next: 'Open Connection settings and resolve the Friend listener warning before checking the router.'
@@ -136,6 +140,10 @@ function friendSummary(control: ControlCheck | undefined, result: InternetRouteC
   if (control.state === 'Off') return {
     label: 'Friend access', state: 'Off', tone: 'neutral',
     detail: 'Connections from Friend PCs are turned off until you create an invite.'
+  }
+  if (control.state === 'Idle') return {
+    label: 'Friend access', state: 'Idle', tone: 'neutral',
+    detail: 'Nothing needs fixing. Create an invite when another PC needs to pair.'
   }
   if (control.state !== 'Open on PC') return {
     label: 'Friend access', state: 'Needs attention', tone: 'bad',
@@ -225,7 +233,7 @@ function gameSummary(status: string, game: GamePortCheck | undefined): Readiness
 function connectionIssue(control: ControlCheck | undefined, result: InternetRouteCheck | null,
   hadPreviousResult: boolean): ReadinessIssue | null {
   if (!control) return null
-  if (control.state === 'Off') return null
+  if (control.state === 'Off' || control.state === 'Idle') return null
   if (control.state !== 'Open on PC') return {
     title: 'The Friend listener needs attention.', detail: control.detail, connection: true,
     tone: control.state === 'Unknown' ? 'warning' : 'bad'
@@ -331,11 +339,14 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   const friendListenerDetail = control
     ? <>{control.detail}{control.bindAddress && <> Bound to <code>{control.bindAddress}</code> ({control.bindScope ?? 'scope unknown'}).</>}</>
     : 'Waiting for a listener check.'
-  const outsideValue = checkedRoute?.state ?? (routeCheck ? 'Previous result expired' : 'Not checked')
-  const outsideTone: ReadinessTone = checkedRoute?.state === 'Reachable' ? 'good'
+  const idle = control?.state === 'Idle'
+  const outsideValue = idle ? 'Not needed while idle' : checkedRoute?.state ?? (routeCheck ? 'Previous result expired' : 'Not checked')
+  const outsideTone: ReadinessTone = idle ? 'neutral' : checkedRoute?.state === 'Reachable' ? 'good'
     : checkedRoute?.state === 'Not reachable' ? 'bad'
       : checkedRoute || routeCheck ? 'warning' : 'neutral'
-  const outsideDetail = checkedRoute
+  const outsideDetail = idle
+    ? 'Create an invite first, then test outside access only if a Friend cannot connect.'
+    : checkedRoute
     ? <>{checkedRoute.detail}<small>Checked at {new Date(checkedRoute.checkedUtc).toLocaleTimeString()}.</small></>
     : routeCheck
       ? 'The earlier result expired or no longer matches the current listener and invite address.'

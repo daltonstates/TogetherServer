@@ -1018,9 +1018,15 @@ function App() {
     ? currentOutsideResult(portDiagnostics?.control, internetRouteCheck) : null
   const previousRouteVerdict = !currentRouteResult &&
     (internetRouteCheck?.state === 'Reachable' || internetRouteCheck?.state === 'Not reachable')
-  const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false
+  const activeInviteIdle = !!(invitation && companion?.listenerState === 'Idle')
+  const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false && !activeInviteIdle
     ? companion.listenerWarning || 'Friend app connections are off. Choose Invite friends again to start the HTTPS listener.'
     : null)
+  const friendAppStatus = portDiagnostics?.control.remoteState === 'Friend connected' ? 'Friend connected'
+    : currentRouteResult?.state === 'Reachable' ? 'reachable outside this network; Friend pairing untested'
+      : companion?.listenerActive ? 'listening on this PC, outside route unconfirmed'
+        : companion?.listenerState === 'Idle' ? 'idle until you create an invite'
+          : companion?.listenerWarning ? 'needs attention' : 'off'
   const developmentControlPort = snapshot?.mode === 'Host'
     ? snapshot.settings.companionPort : appInstance?.companionPort
   const updateBlockedReason = dirty ? 'Save setup changes before updating.' :
@@ -1206,15 +1212,16 @@ function App() {
                   <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
                 </div>
                 {inviteProfileId === profile.id && <div className="inline-invite">
-                  {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : 'Server code copied'}</strong><p>{activeInviteWarning ? 'Fix the issue below before sharing this code.' : 'Send the copied code privately. Your Friend still needs to test Connect.'}</p></div></div>
-                    {pairingExpiresUtc && <p className="helper-text">This window closes {new Date(pairingExpiresUtc).toLocaleString()}, or sooner when its device limit is reached.</p>}
+                  {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : activeInviteIdle ? 'invite' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : activeInviteIdle ? 'Pairing window ended' : 'Server code copied'}</strong><p>{activeInviteWarning ? 'Fix the issue below before sharing this code.' : activeInviteIdle ? 'Nothing is wrong. Create a new invite only when another PC needs to pair.' : 'Send the copied code privately. Your Friend still needs to test Connect.'}</p></div></div>
+                    {pairingExpiresUtc && <p className="helper-text">{activeInviteIdle ? 'This pairing window is closed.' : `This window closes ${new Date(pairingExpiresUtc).toLocaleString()}, or sooner when its device limit is reached.`}</p>}
                     {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
-                    {!activeInviteWarning && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
+                    {!activeInviteWarning && !activeInviteIdle && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
                     <div className="actions">{activeInviteWarning
                       ? <Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</Button>
-                      : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</Button>}
-                      <Button className="secondary" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'close')}>Close pairing</Button>
-                      <Button className="danger-outline" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'emergency-revoke')}>Emergency-revoke code credentials</Button>
+                      : activeInviteIdle ? <Button disabled={!!pending} onClick={() => void issueInvite(profile.id)}><Icon name="invite" />Create new invite</Button>
+                        : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</Button>}
+                      {!activeInviteIdle && <Button className="secondary" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'close')}>Close pairing</Button>}
+                      {!activeInviteIdle && <Button className="danger-outline" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'emergency-revoke')}>Emergency-revoke code credentials</Button>}
                       <Button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</Button></div>
                     <details className="advanced-block"><summary>Pairing window options</summary><div className="settings-grid"><label>Window minutes<Input type="number" min="5" max="1440" value={pairingDurationMinutes} onChange={event => setPairingDurationMinutes(event.target.value)} /></label><label>New PC limit<Input type="number" min="1" max="25" value={pairingDeviceLimit} onChange={event => setPairingDeviceLimit(event.target.value)} /></label></div><label className="check-row"><Input type="checkbox" checked={pairingRequireApproval} onChange={event => setPairingRequireApproval(event.target.checked)} />Require local Host approval for each new PC</label><Button className="secondary" disabled={!!pending} onClick={() => void issueInvite(profile.id)}>Apply options and copy code</Button><small>The same active policy keeps its current window. Changing the policy opens a replacement window without revoking already paired PCs.</small></details>
                     <p>Close pairing only blocks future PCs. Revoke a single PC under Friend access. Emergency revoke affects every PC issued through this server code.</p></>
@@ -1307,7 +1314,7 @@ function App() {
             <div className="settings-content">
               {hostSettingsSection === 'access' && <section className="settings-section"><h3>Friend access</h3>
                 <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
-                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Needed for pairing, status, and remote requests.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
+                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>The listener runs only while an invite is open or a paired PC can connect.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
                   <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
                 {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
                   <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
@@ -1327,7 +1334,7 @@ function App() {
                 {(draft.connectionRoute?.mode ?? 'DirectInternet') !== 'DirectInternet' && <label>Selected route IPv4<Input value={draft.connectionRoute?.address ?? ''} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /><small>TogetherServer only reads adapters; it does not install clients or change network policy.</small></label>}
                 {draft.connectionRoute?.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>{routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select><small>{routeDiscovery?.privateMeshCandidates.length ? 'Selecting an address does not configure that network.' : 'No known Tailscale or ZeroTier adapter is currently up; enter an address manually if appropriate.'}</small></label>}
               </div>
-              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {portDiagnostics?.control.remoteState === 'Friend connected' ? 'Friend connected' : currentRouteResult?.state === 'Reachable' ? 'reachable outside this network; Friend pairing untested' : companion?.listenerActive ? 'listening on this PC, outside route unconfirmed' : 'off'}.</p>
+              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {friendAppStatus}.</p>
               {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
               {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
               <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Refresh public address</>}</Button></div>
