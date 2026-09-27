@@ -30,11 +30,12 @@ string Metadata(string tag, byte[] bytes, string? digest = null, string? url = n
             digest = "sha256:" + (digest ?? Hash(bytes)), browser_download_url = url ??
                 $"https://github.com/daltonstates/TogetherServer/releases/download/{tag}/{AppUpdater.AssetName}" } }
     });
-AppUpdater Updater(string name, HttpMessageHandler handler, IAuthenticodeVerifier? verifier = null)
+AppUpdater Updater(string name, HttpMessageHandler handler, IAuthenticodeVerifier? verifier = null,
+    string installedName = "TogetherServer.exe")
 {
     var directory = Path.Combine(root, name);
     Directory.CreateDirectory(directory);
-    var installed = Path.Combine(directory, "TogetherServer.exe");
+    var installed = Path.Combine(directory, installedName);
     File.WriteAllText(installed, "old executable");
     return new AppUpdater(new HttpClient(handler), directory, installed, new Version(0, 1, 0), verifier ?? trustedSignature);
 }
@@ -84,7 +85,8 @@ await Check("unsigned installed apps use fixed-release SHA-256 verification", as
         ? new(HttpStatusCode.OK) { Content = new StringContent(metadata) }
         : new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) });
     var updater = Updater("unsigned-installed", handler,
-        new FakeAuthenticodeVerifier(_ => new(false, null, "unsigned", IsUnsigned: true)));
+        new FakeAuthenticodeVerifier(_ => new(false, null, "unsigned", IsUnsigned: true)),
+        "TogetherServer-win-x64 (4).exe");
     var result = await updater.CheckAsync();
     Require(result.State == "Available", "unsigned installed app did not offer the newer release");
     var prepared = await updater.PrepareAsync();
@@ -173,7 +175,7 @@ await Check("replacement preserves previous EXE and rejects changed payload", ()
 {
     var directory = Path.Combine(root, "replace");
     Directory.CreateDirectory(directory);
-    var installed = Path.Combine(directory, "TogetherServer.exe");
+    var installed = Path.Combine(directory, "TogetherServer-win-x64 (4).exe");
     var payload = Path.Combine(directory, AppUpdater.AssetName);
     File.WriteAllText(installed, "previous version");
     File.WriteAllText(payload, "new version");

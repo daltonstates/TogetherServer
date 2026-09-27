@@ -102,6 +102,7 @@ public static class TogetherServerWindowCheck
 }
 '@
 Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName System.Windows.Forms
 
 function Get-ChromeButton($process, [string]$name) {
     $process.Refresh()
@@ -267,16 +268,41 @@ try {
         foreach ($control in @('Minimize TogetherServer', 'Maximize TogetherServer', 'Close TogetherServer')) {
             if ($null -eq (Get-ChromeButton $first $control)) { throw "Missing accessible title-bar control: $control" }
         }
+        $secondaryScreen = [System.Windows.Forms.Screen]::AllScreens |
+            Where-Object { !$_.Primary -and $_.WorkingArea.Left -gt 0 } | Select-Object -First 1
+        if (!$secondaryScreen) {
+            $secondaryScreen = [System.Windows.Forms.Screen]::AllScreens |
+                Where-Object { !$_.Primary } | Select-Object -First 1
+        }
+        if ($secondaryScreen) {
+            $area = $secondaryScreen.WorkingArea
+            $testWidth = [Math]::Min($originalRect.Right - $originalRect.Left, $area.Width - 80)
+            $testHeight = [Math]::Min($originalRect.Bottom - $originalRect.Top, $area.Height - 80)
+            if (![TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $area.Left + 40, $area.Top + 40,
+                $testWidth, $testHeight, $true)) { throw 'Could not move the native window to a secondary monitor.' }
+        }
         Invoke-ChromeButton $first 'Maximize TogetherServer'
         for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
             Start-Sleep -Milliseconds 100
         }
         if (![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom maximize did not maximize.' }
+        if ($secondaryScreen) {
+            $maximizedRect = [TogetherServerWindowCheck+WindowRect]::new()
+            [TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$maximizedRect) | Out-Null
+            $area = $secondaryScreen.WorkingArea
+            if ($maximizedRect.Left -lt $area.Left - 8 -or $maximizedRect.Top -lt $area.Top - 8 -or
+                $maximizedRect.Right -gt $area.Right + 8 -or $maximizedRect.Bottom -gt $area.Bottom + 8) {
+                throw "Maximized window left its selected monitor: $($maximizedRect.Left),$($maximizedRect.Top)-$($maximizedRect.Right),$($maximizedRect.Bottom); expected $area."
+            }
+            Write-Host 'PASS custom maximize stays inside the selected secondary monitor'
+        }
         Invoke-ChromeButton $first 'Restore TogetherServer'
         for ($i = 0; $i -lt 30 -and [TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
             Start-Sleep -Milliseconds 100
         }
         if ([TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom restore did not restore.' }
+        [TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
+            $originalRect.Right - $originalRect.Left, $originalRect.Bottom - $originalRect.Top, $true) | Out-Null
         Invoke-ChromeButton $first 'Minimize TogetherServer'
         for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsIconic($first.MainWindowHandle); $i++) {
             Start-Sleep -Milliseconds 100
@@ -488,15 +514,7 @@ try {
         $login = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
         $state = Wait-ForGui $login
         if ($state.mode -ne 'Friend') { throw 'Windows startup launch lost the saved Friend page.' }
-        $created = $false
-        for ($i = 0; $i -lt 40; $i++) {
-            if ($login.HasExited) { throw 'The Windows startup app exited unexpectedly.' }
-            $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
-            if ($windowState.visible) { throw 'Windows startup opened a visible window instead of starting in the tray.' }
-            if ($windowState.customChrome) { $created = $true }
-            Start-Sleep -Milliseconds 100
-        }
-        if (!$created) { throw 'Windows startup did not create a native window for later reopening.' }
+        Wait-ForBackgroundWindow $login
         $loginDuplicate = Start-Process -FilePath $appPath -ArgumentList @('--startup', '--port', "$Port") -PassThru
         if (!$loginDuplicate.WaitForExit(10000) -or $login.HasExited -or
             (Invoke-RestMethod -Uri "$baseUrl/api/local/window").visible) {

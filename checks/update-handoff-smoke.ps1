@@ -23,7 +23,20 @@ $dataRoot = Join-Path $root 'data'
 $stage = Join-Path $dataRoot ('updates/' + [guid]::NewGuid().ToString('N'))
 $install = Join-Path $root 'install'
 New-Item -ItemType Directory -Path $stage, $install -Force | Out-Null
-$target = Join-Path $install 'TogetherServer.exe'
+$port = 5127
+$targetFileName = 'TogetherServer-win-x64 (4).exe'
+$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+try { $portProbe.Start() }
+catch [Net.Sockets.SocketException] {
+    $port = 5128
+    $targetFileName = 'TogetherServer DEVELOPMENT.exe'
+    $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+    try { $portProbe.Start() }
+    catch [Net.Sockets.SocketException] { throw 'Update handoff needs production port 5127 or staging port 5128 to be free.' }
+}
+finally { $portProbe.Stop() }
+$target = Join-Path $install $targetFileName
+$targetProcessName = [IO.Path]::GetFileName($target)
 $payload = Join-Path $stage 'TogetherServer-win-x64.exe'
 $helper = Join-Path $stage 'TogetherServer-updater.exe'
 $ready = Join-Path $stage 'ready.signal'
@@ -33,11 +46,13 @@ Copy-Item -LiteralPath $appPath -Destination $helper
 $hash = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash
 $previousHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 
-$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 5127)
-$portProbe.Start()
-$portProbe.Stop()
 $oldDataRoot = $env:TOGETHERSERVER_DATA_DIR
-$env:TOGETHERSERVER_DATA_DIR = $dataRoot
+$oldStagingDataRoot = $env:TOGETHERSERVER_STAGING_DATA_DIR
+if ($port -eq 5128) {
+    $env:TOGETHERSERVER_DATA_DIR = Join-Path $root 'production-data'
+    $env:TOGETHERSERVER_STAGING_DATA_DIR = Join-Path $root 'staging-data'
+}
+else { $env:TOGETHERSERVER_DATA_DIR = $dataRoot }
 $parent = $null
 $updater = $null
 try {
@@ -58,7 +73,7 @@ try {
     if ((Get-FileHash -LiteralPath ($target + '.previous') -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous EXE backup was not preserved.' }
     Write-Host 'PASS isolated EXE replacement kept the old file and installed the verified payload'
 
-    $base = 'http://127.0.0.1:5127'
+    $base = "http://127.0.0.1:$port"
     $running = $false
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         try {
@@ -68,7 +83,7 @@ try {
         catch { Start-Sleep -Milliseconds 100 }
     }
     if (!$running) { throw 'The replaced EXE did not relaunch its local app.' }
-    $instance = Get-CimInstance Win32_Process -Filter "name = 'TogetherServer.exe'" |
+    $instance = Get-CimInstance Win32_Process -Filter "name = '$targetProcessName'" |
         Where-Object { $_.ExecutablePath -eq $target }
     if (!$instance) { throw 'The expected isolated EXE was not the app serving the local API.' }
     $headers = @{ Origin = $base; 'X-TogetherServer-Local' = '1' }
@@ -80,8 +95,9 @@ try {
 finally {
     if ($parent -and !$parent.HasExited) { Stop-Process -Id $parent.Id -Force }
     if ($updater -and !$updater.HasExited) { Stop-Process -Id $updater.Id -Force }
-    $remaining = Get-CimInstance Win32_Process -Filter "name = 'TogetherServer.exe'" |
+    $remaining = Get-CimInstance Win32_Process -Filter "name = '$targetProcessName'" |
         Where-Object { $_.ExecutablePath -eq $target }
     foreach ($process in @($remaining)) { if ($process) { Stop-Process -Id $process.ProcessId -Force } }
     $env:TOGETHERSERVER_DATA_DIR = $oldDataRoot
+    $env:TOGETHERSERVER_STAGING_DATA_DIR = $oldStagingDataRoot
 }

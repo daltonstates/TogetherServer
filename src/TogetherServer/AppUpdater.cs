@@ -39,7 +39,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 
     public UpdateView View => view;
     public bool IsStandalone => File.Exists(executablePath) &&
-        Path.GetFileName(executablePath).Equals("TogetherServer.exe", StringComparison.OrdinalIgnoreCase) &&
+        Path.GetExtension(executablePath).Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
         !File.Exists(Path.ChangeExtension(executablePath, ".deps.json"));
 
     public async Task<UpdateView> CheckAsync(bool force = false)

@@ -596,12 +596,26 @@ internal sealed class DesktopWindow
 
     private static void RevealWindow(Form window)
     {
-        if (window is ChromeForm chrome) chrome.PrepareForReveal();
         if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
+        if (window is ChromeForm chrome) chrome.PrepareForReveal();
         window.ShowInTaskbar = true;
         window.Show();
         window.BringToFront();
         window.Activate();
+    }
+
+    internal static Rectangle RelativeMaximizedBounds(Rectangle monitorBounds, Rectangle workingArea) =>
+        new(workingArea.Left - monitorBounds.Left, workingArea.Top - monitorBounds.Top,
+            workingArea.Width, workingArea.Height);
+
+    internal static bool HasUsefulVisibleArea(Rectangle bounds, IEnumerable<Rectangle> workingAreas)
+    {
+        const int minimumVisibleEdge = 64;
+        return workingAreas.Any(workingArea =>
+        {
+            var visible = Rectangle.Intersect(bounds, workingArea);
+            return visible.Width >= minimumVisibleEdge && visible.Height >= minimumVisibleEdge;
+        });
     }
 
     private static Point OutsideVirtualDesktop(Size windowSize)
@@ -742,8 +756,10 @@ internal sealed class DesktopWindow
         public void PrepareForReveal()
         {
             suppressActivation = false;
-            if (!centerBeforeReveal) return;
+            if (!centerBeforeReveal && HasUsefulVisibleArea(Bounds,
+                    Screen.AllScreens.Select(screen => screen.WorkingArea))) return;
             centerBeforeReveal = false;
+            if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
             var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
             Location = new Point(
                 workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2),
@@ -754,7 +770,8 @@ internal sealed class DesktopWindow
 
         public void MaximizeWithinWorkingArea()
         {
-            MaximizedBounds = Screen.FromControl(this).WorkingArea;
+            var screen = Screen.FromControl(this);
+            MaximizedBounds = RelativeMaximizedBounds(screen.Bounds, screen.WorkingArea);
             WindowState = FormWindowState.Maximized;
         }
 

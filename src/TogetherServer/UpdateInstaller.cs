@@ -28,7 +28,7 @@ public static class UpdateInstaller
             var updates = Path.Combine(root, "updates") + Path.DirectorySeparatorChar;
             var helper = Path.GetFullPath(Environment.ProcessPath ?? "");
             var requirePublisher = RequiresPublisher(args[8]);
-            if (!Path.GetFileName(target).Equals("TogetherServer.exe", StringComparison.OrdinalIgnoreCase) ||
+            if (!Path.GetExtension(target).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
                 !payload.StartsWith(updates, StringComparison.OrdinalIgnoreCase) ||
                 !Path.GetDirectoryName(payload)!.Equals(Path.GetDirectoryName(helper), StringComparison.OrdinalIgnoreCase) ||
                 !Path.GetDirectoryName(ready)!.Equals(Path.GetDirectoryName(helper), StringComparison.OrdinalIgnoreCase) ||
@@ -73,7 +73,7 @@ public static class UpdateInstaller
     public static void ReplaceVerified(string target, string payload, string sha256, string publisherKey,
         IAuthenticodeVerifier? authenticodeVerifier = null)
     {
-        if (!Path.GetFileName(target).Equals("TogetherServer.exe", StringComparison.OrdinalIgnoreCase) ||
+        if (!Path.GetExtension(target).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
             !File.Exists(target) || !File.Exists(payload) ||
             !Regex.IsMatch(sha256, "^[0-9A-Fa-f]{64}$", RegexOptions.CultureInvariant) ||
             !ValidVerification(publisherKey))

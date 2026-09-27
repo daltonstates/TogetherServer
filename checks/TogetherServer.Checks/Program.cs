@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
@@ -68,6 +69,29 @@ void CreateJunction(string link, string target)
 LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
 HostManager Manager(LocalData data) => new(data, Games(data));
+
+await Check("borderless window geometry stays on the selected monitor and detects off-screen bounds", () =>
+{
+    var rightMonitor = new Rectangle(1920, 0, 1920, 1032);
+    var relative = DesktopWindow.RelativeMaximizedBounds(new Rectangle(1920, 0, 1920, 1080), rightMonitor);
+    Require(relative == new Rectangle(0, 0, 1920, 1032),
+        "maximized bounds retained the secondary monitor offset");
+    var inset = DesktopWindow.RelativeMaximizedBounds(new Rectangle(1920, 0, 1920, 1080),
+        new Rectangle(1960, 40, 1880, 1040));
+    Require(inset == new Rectangle(40, 40, 1880, 1040),
+        "maximized bounds lost a top or left taskbar inset");
+    var workingAreas = new[]
+    {
+        new Rectangle(-1920, 0, 1920, 1032),
+        new Rectangle(0, 0, 1920, 1032),
+        rightMonitor
+    };
+    Require(DesktopWindow.HasUsefulVisibleArea(new Rectangle(2385, 0, 1180, 820), workingAreas),
+        "a visible secondary-monitor window was treated as off-screen");
+    Require(!DesktopWindow.HasUsefulVisibleArea(new Rectangle(3840, 0, 1920, 1032), workingAreas),
+        "a window beyond the rightmost monitor was treated as visible");
+    return Task.CompletedTask;
+});
 
 await Check("development executable selects isolated staging without a command-line flag", () =>
 {
