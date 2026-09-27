@@ -24,6 +24,12 @@ import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
+import {
+  activityAfterMarker,
+  readActivityClearMarkersFrom,
+  withActivityClearMarker,
+  writeActivityClearMarkersTo
+} from './notificationState'
 import './theme.css'
 import './style.css'
 import './companion.css'
@@ -202,6 +208,10 @@ function App() {
   const [update, setUpdate] = useState<UpdateView | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
   const [notificationUnread, setNotificationUnread] = useState(false)
+  const [activityClearMarkers, setActivityClearMarkers] = useState<Record<string, string>>(() =>
+    readActivityClearMarkersFrom(() => window.localStorage))
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null)
+  const [showUpdatePrompt, setShowUpdatePrompt] = useState(false)
   const [desktopPreferences, setDesktopPreferences] = useState<DesktopPreferences | null>(null)
   const [desktopBusy, setDesktopBusy] = useState(false)
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
@@ -247,6 +257,7 @@ function App() {
   const connectionRevealRequestRef = useRef<Record<string, number>>({})
   const hostSettingsRef = useModalDialog(showHostSettings)
   const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
+  const updatePromptRef = useModalDialog(showUpdatePrompt)
 
   const applySnapshot = useCallback((next: Snapshot) => {
     snapshotEpochRef.current += 1
@@ -269,6 +280,10 @@ function App() {
   const currentFriendEndpoint = snapshot?.mode === 'Friend' ? snapshot.endpoint : ''
   const currentFriendConnectionId = snapshot?.mode === 'Friend' ? snapshot.connectionId : ''
   const currentFriendConnectionName = snapshot?.mode === 'Friend' ? snapshot.connectionName : null
+  const activitySource = snapshot?.mode === 'Host' ? 'host' :
+    snapshot?.mode === 'Friend' ? `friend:${snapshot.connectionId || 'unpaired'}` : 'loading'
+  const recentActivity = snapshot?.activity ?? []
+  const visibleActivity = activityAfterMarker(recentActivity, activityClearMarkers[activitySource])
   const recoverySignature = dataRecovery ? JSON.stringify({ lifecycleBlocked: dataRecovery.lifecycleBlocked,
     notices: dataRecovery.notices.map(item => [item.stateFile, item.quarantinedFile, item.detectedUtc]) }) : ''
 
@@ -299,10 +314,15 @@ function App() {
     if (notice || update?.state === 'Available') setNotificationUnread(true)
   }, [notice, update?.state, update?.latestVersion])
 
-  const latestActivityId = snapshot?.activity?.[0]?.id ?? null
+  const latestActivityId = visibleActivity[0]?.id ?? null
   useEffect(() => {
     if (latestActivityId) setNotificationUnread(true)
-  }, [latestActivityId])
+  }, [activitySource, latestActivityId])
+
+  useEffect(() => {
+    const availableVersion = update?.state === 'Available' ? update.latestVersion : null
+    setShowUpdatePrompt(!!availableVersion && dismissedUpdateVersion !== availableVersion)
+  }, [dismissedUpdateVersion, update?.latestVersion, update?.state])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -352,6 +372,22 @@ function App() {
       setNotice({ good: result.ok, text: result.message })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setUpdateBusy(false) }
+  }
+
+  const dismissUpdatePrompt = () => {
+    if (update?.latestVersion) setDismissedUpdateVersion(update.latestVersion)
+    setShowUpdatePrompt(false)
+  }
+
+  const clearNotificationActivity = () => {
+    const marker = recentActivity[0]?.id
+    if (!marker) return
+    setActivityClearMarkers(current => {
+      const next = withActivityClearMarker(current, activitySource, marker)
+      writeActivityClearMarkersTo(() => window.localStorage, next)
+      return next
+    })
+    setNotificationUnread(false)
   }
 
   useSingleFlightPolling(async signal => {
@@ -985,9 +1021,10 @@ function App() {
   const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false
     ? companion.listenerWarning || 'Friend app connections are off. Choose Invite friends again to start the HTTPS listener.'
     : null)
-  const recentActivity = snapshot?.activity ?? []
   const developmentControlPort = snapshot?.mode === 'Host'
     ? snapshot.settings.companionPort : appInstance?.companionPort
+  const updateBlockedReason = dirty ? 'Save setup changes before updating.' :
+    activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined
 
   return <div className={appInstance?.isStaging ? 'shell staging-shell' : 'shell'}>
     <header className="topbar">
@@ -1002,11 +1039,11 @@ function App() {
             {notificationUnread && <span className="notification-badge"><span className="sr-only">New activity</span></span>}
           </summary>
           <div className="notification-panel">
-            <div className="notification-panel-heading"><strong>Notifications</strong><small>Recent app and connection activity</small></div>
-            {update?.state === 'Available' && <div className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>Stop hosted servers before updating.</p><Button disabled={updateBusy || !!pending || dirty || activeRuns > 0} title={dirty ? 'Save setup changes before updating.' : activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></div>}
+            <div className="notification-panel-heading"><div><strong>Notifications</strong><small>Recent app and connection activity</small></div>{visibleActivity.length > 0 && <Button className="text-button" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
+            {update?.state === 'Available' && <div className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></div>}
             {notice && <div className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></div>}
-            {recentActivity.slice(0, 8).map(item => <div className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}</small></div></div>)}
-            {!notice && update?.state !== 'Available' && recentActivity.length === 0 && <p className="notification-empty">No recent activity.</p>}
+            {visibleActivity.slice(0, 8).map(item => <div className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}</small></div></div>)}
+            {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && <p className="notification-empty">No recent activity.</p>}
           </div>
         </details>
         <details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong>
@@ -1018,7 +1055,15 @@ function App() {
       </div>
     </header>
 
+    {update?.state === 'Available' && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? 'Update and restart when you are ready.'}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
+
     {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Development profiles, credentials, settings, and worlds persist in this separate instance. Production data is not loaded or copied.</span></aside>}
+
+    {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
+      <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
+      <div className="update-dialog-content"><p>{updateBlockedReason ?? 'The download is checked against the fixed GitHub release asset, its declared size and version, and its SHA-256 digest.'}</p>{notice && !notice.good && <div className="notice bad" role="status">{notice.text}</div>}</div>
+      <div className="actions update-dialog-actions"><Button className="secondary" disabled={updateBusy} onClick={dismissUpdatePrompt}>Not now</Button><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div>
+    </dialog>}
 
     <main>
       <div className="page-heading"><div><h1>{snapshot?.mode === 'Friend' ? 'Join' : 'Host'}</h1>

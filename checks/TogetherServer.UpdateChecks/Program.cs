@@ -46,6 +46,14 @@ await Check("automatic checks use the startup loop's 30-minute cadence", () =>
     return Task.CompletedTask;
 });
 
+await Check("Windows verifier distinguishes an ordinary unsigned EXE", () =>
+{
+    var signature = new WindowsAuthenticodeVerifier().Verify(fixture);
+    Require(!signature.Valid && signature.IsUnsigned,
+        "ordinary unsigned EXE was not distinguished from an invalid signature: " + signature.Message);
+    return Task.CompletedTask;
+});
+
 await Check("staging update mode is offline and cannot replace the app", async () =>
 {
     var directory = Path.Combine(root, "staging-disabled");
@@ -68,16 +76,34 @@ await Check("no GitHub release is a normal state", async () =>
     Require(!(await updater.PrepareAsync()).Ok, "missing release was installable");
 });
 
-await Check("unsigned installed apps cannot use automatic updates", async () =>
+await Check("unsigned installed apps use fixed-release SHA-256 verification", async () =>
 {
-    var handler = new FakeHandler(_ => throw new Exception("unsigned app contacted the release service"));
+    var bytes = File.ReadAllBytes(fixture);
+    var metadata = Metadata("v1.0.0", bytes);
+    var handler = new FakeHandler(request => request.RequestUri!.Host == "api.github.com"
+        ? new(HttpStatusCode.OK) { Content = new StringContent(metadata) }
+        : new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) });
     var updater = Updater("unsigned-installed", handler,
-        new FakeAuthenticodeVerifier(_ => new(false, null, "unsigned")));
+        new FakeAuthenticodeVerifier(_ => new(false, null, "unsigned", IsUnsigned: true)));
     var result = await updater.CheckAsync();
-    Require(result.State == "Unsupported", "unsigned installed app was not disabled");
-    Require(result.Message.Contains("valid Authenticode signature", StringComparison.Ordinal),
-        "unsigned installed app did not explain the signing requirement");
-    Require(handler.Requests.Count == 0, "unsigned installed app made a release request");
+    Require(result.State == "Available", "unsigned installed app did not offer the newer release");
+    var prepared = await updater.PrepareAsync();
+    Require(prepared.Ok && prepared.Message.Contains("SHA-256", StringComparison.Ordinal),
+        "unsigned update was not verified through the release digest");
+    Require(handler.Requests.Count(url => url.Host == "api.github.com") == 2 &&
+        handler.Requests.Count(url => url.Host == "github.com") == 1,
+        "unsigned updater did not use the fixed metadata and asset endpoints");
+});
+
+await Check("invalid installed signature cannot downgrade to unsigned verification", async () =>
+{
+    var handler = new FakeHandler(_ => throw new Exception("invalidly signed app contacted the release service"));
+    var updater = Updater("invalid-signature", handler,
+        new FakeAuthenticodeVerifier(_ => new(false, null, "invalid signature")));
+    var result = await updater.CheckAsync();
+    Require(result.State == "Unsupported" && result.Message.Contains("invalid", StringComparison.Ordinal),
+        "invalid installed signature did not fail closed");
+    Require(handler.Requests.Count == 0, "invalidly signed app made a release request");
 });
 
 await Check("newer release downloads only exact asset and digest", async () =>
@@ -163,6 +189,31 @@ await Check("replacement preserves previous EXE and rejects changed payload", ()
     UpdateInstaller.ReplaceVerified(installed, payload, Hash(File.ReadAllBytes(payload)), publisherKey, trustedSignature);
     Require(File.ReadAllText(installed) == "third version", "second update did not replace the EXE");
     Require(File.ReadAllText(installed + ".previous") == "new version", "second update did not keep the immediate previous EXE");
+    return Task.CompletedTask;
+});
+
+await Check("unsigned replacement uses SHA-256 and preserves the previous EXE", () =>
+{
+    var directory = Path.Combine(root, "replace-unsigned");
+    Directory.CreateDirectory(directory);
+    var installed = Path.Combine(directory, "TogetherServer.exe");
+    var payload = Path.Combine(directory, AppUpdater.AssetName);
+    File.WriteAllText(installed, "unsigned previous version");
+    File.WriteAllText(payload, "unsigned new version");
+    var digest = Hash(File.ReadAllBytes(payload));
+    var unsigned = new FakeAuthenticodeVerifier(_ => new(false, null, "unsigned"));
+    UpdateInstaller.ReplaceVerified(installed, payload, digest, UpdateInstaller.HashOnlyVerification, unsigned);
+    Require(File.ReadAllText(installed) == "unsigned new version", "unsigned new EXE was not installed");
+    Require(File.ReadAllText(installed + ".previous") == "unsigned previous version",
+        "unsigned previous EXE was not backed up");
+    File.WriteAllText(payload, "changed unsigned payload");
+    try
+    {
+        UpdateInstaller.ReplaceVerified(installed, payload, digest, UpdateInstaller.HashOnlyVerification, unsigned);
+        throw new Exception("changed unsigned payload installed");
+    }
+    catch (CryptographicException) { }
+    Require(File.ReadAllText(installed) == "unsigned new version", "failed unsigned update changed the installed EXE");
     return Task.CompletedTask;
 });
 

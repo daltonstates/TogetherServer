@@ -96,11 +96,7 @@ try {
     }
     else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
 
-    if ($signature.Status -eq 'Valid' -and $signature.SignerCertificate) {
-        Invoke-Checked 'Signed update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
-    }
-    elseif ($RequireSignature) { throw 'Signed update handoff could not run without a valid candidate signature.' }
-    else { Write-Host 'SKIP signed update handoff: candidate is not Authenticode-valid.' }
+    Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
 
     $finalHash = (Get-FileHash -LiteralPath $AppPath -Algorithm SHA256).Hash
     if ($finalHash -ne $candidateHash) { throw 'Candidate bytes changed during verification.' }

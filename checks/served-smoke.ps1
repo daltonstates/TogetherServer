@@ -92,6 +92,7 @@ try {
         'Game server', 'Friend app', 'Outside connection', 'Reachable outside network', 'Recommended next step',
         'Connection details', 'Hidden for stream safety', 'Server IP', 'Game password',
         'Use an eye to show only that value', 'Copy keeps it hidden', 'Notifications', 'Recent app and connection activity',
+        'Clear activity', 'Update TogetherServer', 'Not now', 'is available',
         'Refreshing connection details', 'Connection details updated.',
         'Maximum servers running at once', 'Duplicate saved game port', 'Stop empty server and start this one',
         'Pairing window options', 'Close pairing', 'Emergency-revoke code credentials',
@@ -123,8 +124,9 @@ try {
         throw 'The grouped Host technical-detail styles were not bundled.'
     }
     if (!$css.Content.Contains('.connection-details-card{') -or !$css.Content.Contains('.notification-badge{') -or
+        !$css.Content.Contains('.update-banner{') -or !$css.Content.Contains('.update-dialog{') -or
         !$css.Content.Contains('@keyframes icon-spin')) {
-        throw 'The private connection card, notification badge, or loading spinner styles were not bundled.'
+        throw 'The private connection card, notification/update UI, or loading spinner styles were not bundled.'
     }
     if ($css.Content -notmatch '\.join-row\{[^}]*align-items:flex-end' -or
         $css.Content -notmatch '\.friend-panel \.join-row \.invite-input\{[^}]*margin-bottom:0' -or
@@ -238,7 +240,8 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     catch { $forbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     if (!$forbidden) { throw 'A mutation without the local request headers was allowed.' }
     Write-Host 'PASS local mutation gate'
-    if (!$js.Content.Contains('Update and restart') -or !$js.Content.Contains('Check for updates')) { throw 'The update controls were not bundled.' }
+    if (!$js.Content.Contains('Update and restart') -or !$js.Content.Contains('Check for updates') -or
+        !$js.Content.Contains('Clear activity') -or !$js.Content.Contains('Not now')) { throw 'The update and notification controls were not bundled.' }
     $updateForbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/update/install" -Method Post -UseBasicParsing | Out-Null }
     catch { $updateForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }

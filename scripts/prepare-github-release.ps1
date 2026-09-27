@@ -79,7 +79,7 @@ try {
         & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source -RequireSignature
     }
     else {
-        Write-Warning 'Preparing an unsigned release. Windows may show Unknown Publisher and automatic updates will remain unavailable.'
+        Write-Warning 'Preparing an unsigned release. Windows may show Unknown Publisher; in-app updates will rely on the fixed GitHub release URL, version, size, and SHA-256 digest without independent publisher verification.'
         & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source
     }
     if ($LASTEXITCODE -ne 0) { throw 'Exact release-candidate verification failed.' }

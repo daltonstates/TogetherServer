@@ -12,7 +12,7 @@ namespace TogetherServer;
 public sealed record UpdateView(string State, string CurrentVersion, string? LatestVersion, string Message);
 public sealed record UpdateResult(bool Ok, string Code, string Message);
 public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256);
-public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message);
+public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message, bool IsUnsigned = false);
 
 public interface IAuthenticodeVerifier
 {
@@ -53,15 +53,20 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (!IsStandalone)
                 return view = new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.");
             var installedSignature = signatureVerifier.Verify(executablePath);
-            if (!installedSignature.Valid || string.IsNullOrWhiteSpace(installedSignature.PublisherKey))
+            var signed = installedSignature.Valid && !string.IsNullOrWhiteSpace(installedSignature.PublisherKey);
+            if (!signed && !installedSignature.IsUnsigned)
             {
                 available = null;
                 preparedPath = null;
                 publisherKey = null;
                 return view = new("Unsupported", currentVersion.ToString(3), null,
-                    "Automatic updates are disabled because this installed EXE does not have a valid Authenticode signature.");
+                    "Automatic updates are disabled because Windows found an invalid or unverifiable signature on this EXE.");
             }
-            publisherKey = installedSignature.PublisherKey;
+            var nextPublisherKey = signed
+                ? installedSignature.PublisherKey
+                : null;
+            if (!string.Equals(publisherKey, nextPublisherKey, StringComparison.Ordinal)) preparedPath = null;
+            publisherKey = nextPublisherKey;
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, LatestUrl);
@@ -120,8 +125,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 return new(false, "NoUpdate", view.Message);
             if (preparedPath is not null && File.Exists(preparedPath) &&
                 await HasHashAsync(preparedPath, available.Sha256) &&
-                HasMatchingPublisher(preparedPath, publisherKey))
-                return new(true, "Ready", "Update downloaded and verified.");
+                HasRequiredPublisher(preparedPath))
+                return new(true, "Ready", ReadyMessage());
             var directory = Path.Combine(dataRoot, "updates", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, AssetName);
@@ -158,12 +163,12 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                     packagedVersion.Minor != available.Version.Minor ||
                     packagedVersion.Build != available.Version.Build)
                     return new(false, "InvalidDownload", "The release EXE version does not match its tag.");
-                if (!HasMatchingPublisher(path, publisherKey))
+                if (!HasRequiredPublisher(path))
                     return new(false, "InvalidSignature",
                         "The release EXE is not validly signed by the same publisher as this installed app.");
                 preparedPath = path;
                 valid = true;
-                return new(true, "Ready", "Update downloaded and verified.");
+                return new(true, "Ready", ReadyMessage());
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
             { return new(false, "DownloadFailed", "Could not download the update. Your current app keeps working."); }
@@ -187,17 +192,17 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             return new(false, "NotReady", "No verified update is ready.");
         try
         {
-            var expectedPublisherKey = publisherKey!;
+            var verification = publisherKey ?? UpdateInstaller.HashOnlyVerification;
             var helper = Path.Combine(Path.GetDirectoryName(preparedPath)!, "TogetherServer-updater.exe");
             if (!HasHashAsync(preparedPath, available.Sha256).GetAwaiter().GetResult())
                 return new(false, "InvalidDownload", "The downloaded update changed before installation.");
-            if (!HasMatchingPublisher(executablePath, expectedPublisherKey) ||
-                !HasMatchingPublisher(preparedPath, expectedPublisherKey))
+            if (publisherKey is not null && (!HasMatchingPublisher(executablePath, publisherKey) ||
+                !HasMatchingPublisher(preparedPath, publisherKey)))
                 return new(false, "InvalidSignature", "The installed app or downloaded update failed publisher verification.");
             File.Copy(preparedPath, helper, true);
             if (!HasHashAsync(helper, available.Sha256).GetAwaiter().GetResult())
                 return new(false, "InvalidDownload", "The updater copy failed its SHA-256 check.");
-            if (!HasMatchingPublisher(helper, expectedPublisherKey))
+            if (publisherKey is not null && !HasMatchingPublisher(helper, publisherKey))
                 return new(false, "InvalidSignature", "The updater copy failed publisher verification.");
             var ready = Path.Combine(Path.GetDirectoryName(preparedPath)!, "ready.signal");
             if (File.Exists(ready)) File.Delete(ready);
@@ -206,7 +211,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             foreach (var argument in new[] { "--apply-update", process.Id.ToString(CultureInfo.InvariantCulture),
                          process.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),
                          Path.GetFullPath(executablePath), Path.GetFullPath(preparedPath), available.Sha256,
-                         Path.GetFullPath(dataRoot), ready, expectedPublisherKey })
+                         Path.GetFullPath(dataRoot), ready, verification })
                 start.ArgumentList.Add(argument);
             using var launched = Process.Start(start);
             if (launched is null) return new(false, "LaunchFailed", "Could not start the updater.");
@@ -257,10 +262,21 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 
     public static async Task<bool> HasHashAsync(string path, string expected)
     {
-        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var actual = Convert.ToHexString(await SHA256.HashDataAsync(file));
+        var actual = await HashAsync(path);
         return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
     }
+
+    public static async Task<string> HashAsync(string path)
+    {
+        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return Convert.ToHexString(await SHA256.HashDataAsync(file));
+    }
+
+    private bool HasRequiredPublisher(string path) => publisherKey is null || HasMatchingPublisher(path, publisherKey);
+
+    private string ReadyMessage() => publisherKey is null
+        ? "Update downloaded and verified against GitHub's SHA-256 digest."
+        : "Update downloaded and verified against GitHub's SHA-256 digest and the installed publisher.";
 
     private bool HasMatchingPublisher(string path, string? expectedPublisherKey)
     {
@@ -278,6 +294,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 
 public sealed class WindowsAuthenticodeVerifier : IAuthenticodeVerifier
 {
+    private const int TrustENoSignature = unchecked((int)0x800B0100);
     private static readonly Guid GenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
     private const uint UiNone = 2;
     private const uint RevokeWholeChain = 1;
@@ -295,7 +312,9 @@ public sealed class WindowsAuthenticodeVerifier : IAuthenticodeVerifier
         {
             var trustStatus = VerifyTrust(path);
             if (trustStatus != 0)
-                return new(false, null, $"Windows rejected the Authenticode signature (0x{trustStatus:X8}).");
+                return trustStatus == TrustENoSignature
+                    ? new(false, null, "The executable is not Authenticode-signed.", IsUnsigned: true)
+                    : new(false, null, $"Windows rejected the Authenticode signature (0x{trustStatus:X8}).");
 #pragma warning disable SYSLIB0057 // The BCL has no loader replacement for extracting an Authenticode signer from a PE file.
             using var signedCertificate = X509Certificate.CreateFromSignedFile(path);
 #pragma warning restore SYSLIB0057
