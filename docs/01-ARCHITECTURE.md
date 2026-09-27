@@ -20,6 +20,8 @@ The borderless native window supplies app-styled drag, resize, minimize, maximiz
 
 The optional per-user Windows Run entry starts this same EXE at sign-in with `--startup`, which opens it in the tray. Close to tray hides the window while the Host supervisor, Friend heartbeat, and loopback GUI continue in the same process. Tray Quit uses the existing guarded local quit action, so an active or unresolved managed server still blocks process exit.
 
+The production installer is a single per-user setup EXE. It places `TogetherServer.exe` under `%LOCALAPPDATA%\Programs\TogetherServer`, creates a current-user Start-menu shortcut and uninstall registration, and needs no elevated service or machine-wide write. Its optional role and desktop-preference pages invoke only fixed internal arguments; decide-later and unchecked preferences are valid defaults. The installer does not configure games, copy worlds, or enable network access. Uninstall removes the installed executable, shortcut, and only the matching startup registration, while the separate `%LOCALAPPDATA%\TogetherServer` data root remains intact. The writable install location also lets the existing verified in-app updater replace the executable without elevation; the portable EXE remains a supported alternative.
+
 ## Host internals
 
 The Host and Friend capabilities may run concurrently in the same process. Host and Join select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Join. Quit remains blocked by any managed game run from either page.

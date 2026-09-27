@@ -649,6 +649,64 @@ await Check("Windows startup and tray preference stay scoped to this user", asyn
     await Task.CompletedTask;
 });
 
+await Check("installer choices are optional, bounded, and preserve later app control", async () =>
+{
+    var keyPath = @"Software\TogetherServer\Checks\Installer\" + Guid.NewGuid().ToString("N");
+    var caseRoot = Path.Combine(root, "installer-integration");
+    var dataRoot = Path.Combine(caseRoot, "data");
+    var appDirectory = Path.Combine(caseRoot, "installed app with spaces");
+    Directory.CreateDirectory(appDirectory);
+    var appPath = Path.Combine(appDirectory, "TogetherServer.exe");
+    File.WriteAllText(appPath, "disposable installed app");
+    string? EnvironmentValue(string name) => name == "TOGETHERSERVER_DATA_DIR" ? dataRoot : null;
+    try
+    {
+        Require(InstallerIntegration.Run(
+            [InstallerIntegration.ConfigureCommand, "--mode", "friend", "--close-to-tray", "--launch-at-login"],
+            appPath, EnvironmentValue, Path.Combine(caseRoot, "unused-local-app-data"), keyPath) == 0,
+            "valid optional installer choices were rejected");
+        using (var data = new LocalData(dataRoot))
+        {
+            Require(data.LoadPreferredMode() == "Friend", "installer mode choice did not persist");
+            Require(data.LoadDesktopPreferences().CloseToTray, "installer tray choice did not persist");
+        }
+        var startup = new WindowsStartup(appPath, keyPath);
+        Require(startup.IsEnabled(), "installer startup choice did not register the installed EXE");
+
+        Require(InstallerIntegration.Run([InstallerIntegration.ConfigureCommand, "--mode", "host"],
+            appPath, EnvironmentValue, Path.Combine(caseRoot, "unused-local-app-data"), keyPath) == 0,
+            "a later explicit installer mode choice failed");
+        using (var data = new LocalData(dataRoot))
+        {
+            Require(data.LoadPreferredMode() == "Host", "later explicit Host choice was not applied");
+            Require(data.LoadDesktopPreferences().CloseToTray,
+                "an omitted installer tray choice disabled an existing app preference");
+        }
+        Require(startup.IsEnabled(), "an omitted installer startup choice disabled an existing registration");
+
+        Require(InstallerIntegration.Run([InstallerIntegration.ConfigureCommand], appPath,
+            EnvironmentValue, Path.Combine(caseRoot, "unused-local-app-data"), keyPath) == 2,
+            "empty installer setup was accepted instead of remaining a no-op");
+        Require(InstallerIntegration.Run([InstallerIntegration.ConfigureCommand, "--mode", "server"], appPath,
+            EnvironmentValue, Path.Combine(caseRoot, "unused-local-app-data"), keyPath) == 2,
+            "an unbounded installer mode was accepted");
+
+        Require(InstallerIntegration.Run([InstallerIntegration.RemoveStartupCommand], appPath,
+            EnvironmentValue, Path.Combine(caseRoot, "unused-local-app-data"), keyPath) == 0 && !startup.IsEnabled(),
+            "uninstall cleanup did not remove its exact startup registration");
+        using (var key = Registry.CurrentUser.CreateSubKey(keyPath, writable: true))
+            key!.SetValue("TogetherServer", "\"C:\\Another App\\TogetherServer.exe\" --startup");
+        Require(InstallerIntegration.Run([InstallerIntegration.RemoveStartupCommand], appPath,
+            EnvironmentValue, Path.Combine(caseRoot, "unused-local-app-data"), keyPath) == 0,
+            "uninstall cleanup rejected a foreign startup registration");
+        using (var key = Registry.CurrentUser.OpenSubKey(keyPath))
+            Require(key?.GetValue("TogetherServer") is not null,
+                "uninstall cleanup removed another TogetherServer location's startup registration");
+    }
+    finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false); }
+    await Task.CompletedTask;
+});
+
 await Check("remote operations persist idempotency and interrupt unfinished work", async () =>
 {
     using var data = Data("remote-operations");

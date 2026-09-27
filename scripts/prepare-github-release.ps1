@@ -85,6 +85,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Exact release-candidate verification failed.' }
 
     $assetName = 'TogetherServer-win-x64.exe'
+    $installerName = 'TogetherServer-Setup-win-x64.exe'
     New-Item -ItemType Directory -Path $releaseDirectory | Out-Null
     $asset = Join-Path $releaseDirectory $assetName
     Copy-Item -LiteralPath $source -Destination $asset
@@ -103,10 +104,45 @@ try {
     }
     $hash = $assetHash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $releaseDirectory "$assetName.sha256") -Value "$hash  $assetName" -Encoding ascii
+
+    $installerBuild = @{
+        AppPath = $asset
+        OutputDirectory = $releaseDirectory
+        TimestampUrl = $TimestampUrl
+    }
+    if ($thumbprint) { $installerBuild['SigningCertificateThumbprint'] = $thumbprint }
+    if ($SignToolPath) { $installerBuild['SignToolPath'] = $SignToolPath }
+    & (Join-Path $PSScriptRoot 'build-installer.ps1') @installerBuild
+    if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+    $installer = Join-Path $releaseDirectory $installerName
+    if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer was not created: $installer" }
+    $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    & (Join-Path $repository 'checks/installer-smoke.ps1') -InstallerPath $installer -ExpectedAppPath $asset
+    if ($LASTEXITCODE -ne 0) { throw 'Installer smoke verification failed.' }
+    if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $installerHash) {
+        throw 'Installer bytes changed during verification.'
+    }
+    if ((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash -ne $assetHash) {
+        throw 'Portable asset bytes changed during installer verification.'
+    }
+    $installerSignature = Get-AuthenticodeSignature -LiteralPath $installer
+    if ($signed) {
+        if ($installerSignature.Status -ne 'Valid' -or
+            $installerSignature.SignerCertificate.Thumbprint -ne $signature.SignerCertificate.Thumbprint) {
+            throw 'Installer did not preserve the verified candidate publisher identity.'
+        }
+    }
+    elseif ($installerSignature.Status -ne 'NotSigned') {
+        throw "Prepared unsigned installer has an unexpected Authenticode state: $($installerSignature.Status)."
+    }
+
     Write-Host "Prepared $(if ($signed) { 'signed' } else { 'unsigned' }) $tag at $asset"
-    Write-Host "SHA-256: $hash"
-    Write-Host "Authenticode: $($assetSignature.Status)"
+    Write-Host "Portable SHA-256: $hash"
+    Write-Host "Portable Authenticode: $($assetSignature.Status)"
+    Write-Host "Installer: $installer"
+    Write-Host "Installer SHA-256: $($installerHash.ToLowerInvariant())"
+    Write-Host "Installer Authenticode: $($installerSignature.Status)"
     if ($signed) { Write-Host "Signer: $($assetSignature.SignerCertificate.Subject)" }
-    Write-Host "Publish a GitHub Release with tag $tag and attach $assetName plus its .sha256 file after reviewing the candidate."
+    Write-Host "Publish a GitHub Release with tag $tag and attach $installerName, $assetName, and both adjacent .sha256 files after reviewing the candidate."
 }
 finally { Pop-Location }

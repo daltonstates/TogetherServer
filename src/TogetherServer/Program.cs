@@ -3,6 +3,12 @@ using System.Reflection;
 using System.Text.Json;
 using TogetherServer;
 
+if (InstallerIntegration.IsCommand(args))
+{
+    Environment.ExitCode = InstallerIntegration.Run(args, Environment.ProcessPath ?? "");
+    return;
+}
+
 if (args.Length > 0 && args[0] == "--apply-update")
 {
     Environment.ExitCode = await UpdateInstaller.RunAsync(args);
@@ -13,6 +19,7 @@ var requestedFriend = args.Contains("--friend", StringComparer.OrdinalIgnoreCase
 var requestedHost = args.Contains("--host", StringComparer.OrdinalIgnoreCase);
 var startupLaunch = args.Contains("--startup", StringComparer.OrdinalIgnoreCase);
 var stagingRequested = AppInstance.RequestsStaging(args);
+using var installerMutex = stagingRequested ? null : new Mutex(false, @"Local\TogetherServer.Application");
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
 var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase) || startupLaunch;
