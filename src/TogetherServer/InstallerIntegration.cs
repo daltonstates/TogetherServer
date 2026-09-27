@@ -22,7 +22,7 @@ internal static class InstallerIntegration
             }
             catch (Exception ex) when (Expected(ex))
             {
-                Console.Error.WriteLine("TogetherServer installer cleanup could not remove its startup entry: " + ex.Message);
+                DiagnosticOutput.WriteError("TogetherServer installer cleanup could not remove its startup entry: " + ex.Message);
                 return 1;
             }
         }
@@ -47,7 +47,7 @@ internal static class InstallerIntegration
         }
         catch (Exception ex) when (Expected(ex))
         {
-            Console.Error.WriteLine("TogetherServer optional installer setup could not be applied: " + ex.Message);
+            DiagnosticOutput.WriteError("TogetherServer optional installer setup could not be applied: " + ex.Message);
             return 1;
         }
     }

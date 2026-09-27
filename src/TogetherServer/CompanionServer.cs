@@ -121,17 +121,18 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             activeAddress = configurationKey;
             Warning = null;
             ListenerState = CompanionListenerStates.Listening;
-            Console.WriteLine($"Companion HTTPS listener: {address}");
+            DiagnosticOutput.WriteLine($"Companion HTTPS listener: {address}");
         }
-        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or
-            System.Security.Cryptography.CryptographicException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+            System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or
+            System.Security.SecurityException or System.Security.Cryptography.CryptographicException)
         {
             if (nextApp is not null) await nextApp.DisposeAsync();
             nextCertificate?.Dispose();
             await StopCoreAsync();
             Warning = "Friend connections could not start: " + ex.Message;
             ListenerState = CompanionListenerStates.Error;
-            Console.Error.WriteLine(Warning);
+            DiagnosticOutput.WriteError(Warning);
         }
     }
 

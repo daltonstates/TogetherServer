@@ -48,7 +48,7 @@ catch (IOException ex)
     if (openWindow && await DesktopLaunch.TryShowExistingAsync(port, showWindow: !startupLaunch)) return;
     var message = "TogetherServer could not open its local data. Another instance may be starting.\n\n" + ex.Message;
     if (openWindow) DesktopLaunch.ShowError(message);
-    else Console.Error.WriteLine(message);
+    else DiagnosticOutput.WriteError(message);
     Environment.ExitCode = 1;
     return;
 }
@@ -57,7 +57,7 @@ catch (Exception ex) when (ex is ArgumentException or InvalidDataException or Un
 {
     var message = "TogetherServer could not safely open its local data. No server action was started.\n\n" + ex.Message;
     if (openWindow) DesktopLaunch.ShowError(message);
-    else Console.Error.WriteLine(message);
+    else DiagnosticOutput.WriteError(message);
     Environment.ExitCode = 1;
     return;
 }
@@ -912,7 +912,7 @@ app.MapGet("/{**path}", async (HttpContext context, string? path) =>
     await stream.CopyToAsync(context.Response.Body);
 });
 
-Console.WriteLine($"{instance.DisplayName} {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
+DiagnosticOutput.WriteLine($"{instance.DisplayName} {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
 await companionServer.SyncAsync();
 using var pollStop = new CancellationTokenSource();
 var friendPollTask = Task.Run(async () =>
@@ -920,7 +920,7 @@ var friendPollTask = Task.Run(async () =>
     while (!pollStop.IsCancellationRequested)
     {
         try { await friend.PollAsync(); }
-        catch (Exception ex) { Console.Error.WriteLine("Friend poll failed: " + ex.GetType().Name); }
+        catch (Exception ex) { DiagnosticOutput.WriteError("Friend poll failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(5), pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
@@ -930,11 +930,11 @@ var idleShutdownTask = Task.Run(async () =>
     while (!pollStop.IsCancellationRequested)
     {
         try { await manager.RefreshObservationsAsync(); }
-        catch (Exception ex) { Console.Error.WriteLine("Server observation failed: " + ex.GetType().Name); }
+        catch (Exception ex) { DiagnosticOutput.WriteError("Server observation failed: " + ex.GetType().Name); }
         try { await manager.MaintainIdleShutdownAsync(); }
-        catch (Exception ex) { Console.Error.WriteLine("Empty-server timer failed: " + ex.GetType().Name); }
+        catch (Exception ex) { DiagnosticOutput.WriteError("Empty-server timer failed: " + ex.GetType().Name); }
         try { await manager.MaintainCrashRecoveryAsync(); }
-        catch (Exception ex) { Console.Error.WriteLine("Crash recovery failed: " + ex.GetType().Name); }
+        catch (Exception ex) { DiagnosticOutput.WriteError("Crash recovery failed: " + ex.GetType().Name); }
         try { await Task.Delay(TimeSpan.FromSeconds(3), pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
@@ -944,7 +944,7 @@ var updateCheckTask = instance.UpdatesAvailable ? Task.Run(async () =>
     while (!pollStop.IsCancellationRequested)
     {
         try { await updater.CheckAsync(); }
-        catch (Exception ex) { Console.Error.WriteLine("Update check failed: " + ex.GetType().Name); }
+        catch (Exception ex) { DiagnosticOutput.WriteError("Update check failed: " + ex.GetType().Name); }
         try { await Task.Delay(AppUpdater.AutomaticCheckInterval, pollStop.Token); }
         catch (OperationCanceledException) { break; }
     }
@@ -973,7 +973,7 @@ var notificationTask = Task.Run(async () =>
                 if (notifiedActivity.Count > 1000)
                     notifiedActivity.IntersectWith(visible.Select(item => item.Id));
             }
-            catch (Exception ex) { Console.Error.WriteLine("Tray notification check failed: " + ex.GetType().Name); }
+            catch (Exception ex) { DiagnosticOutput.WriteError("Tray notification check failed: " + ex.GetType().Name); }
         }
         try { await Task.Delay(TimeSpan.FromSeconds(5), pollStop.Token); }
         catch (OperationCanceledException) { break; }

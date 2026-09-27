@@ -59,7 +59,7 @@ internal static class DesktopLaunch
     public static void ShowError(string message)
     {
         if (OperatingSystem.IsWindows()) MessageBoxW(IntPtr.Zero, message, "TogetherServer", 0x00000010);
-        else Console.Error.WriteLine(message);
+        else DiagnosticOutput.WriteError(message);
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "MessageBoxW")]

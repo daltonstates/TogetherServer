@@ -226,7 +226,8 @@ try
     }
     Console.WriteLine("PASS bounded pairing windows separate approval, close, per-PC credentials, and emergency revoke"); passes++;
 
-    host = StartApp(appPath, "--host", hostPort, hostData);
+    host = StartApp(appPath, "--host", hostPort, hostData, drainDiagnostics: false);
+    DisconnectDiagnosticPipes(host);
     await WaitLocal(hostPort);
     using var owner = LocalClient(hostPort);
     var settings = new HostSettings
@@ -251,6 +252,19 @@ try
         idlePorts?.Control.State == "Idle" && idlePorts.Control.RemoteState == "Not needed",
         "an enabled listener with no invite or usable credential was reported as a failure");
     Console.WriteLine("PASS no active invite or paired PC is a normal idle Friend state"); passes++;
+    using (var occupiedCompanionPort = new TcpListener(IPAddress.Any, companionPort))
+    {
+        occupiedCompanionPort.Server.ExclusiveAddressUse = true;
+        occupiedCompanionPort.Start();
+        var blockedInvite = await OwnerPost<ServerInviteRequest, JsonElement>(owner,
+            $"/api/local/servers/{profile.Id}/invite",
+            new(false, true, true, DurationMinutes: 30, DeviceLimit: 4));
+        Require(blockedInvite.GetProperty("ok").GetBoolean() &&
+                !blockedInvite.GetProperty("listenerActive").GetBoolean() &&
+                blockedInvite.GetProperty("listenerWarning").GetString() is { Length: > 0 },
+            "a listener bind failure with closed GUI diagnostic pipes returned HTTP 500 or lost its typed warning: " +
+            blockedInvite);
+    }
     var inviteA = await ServerInvite(owner, profile.Id, true, enableConnections: true);
     var inviteB = await ServerInvite(owner, joinProfile.Id, false);
     var passwordA = PairingPassword.Encode(inviteA);
@@ -282,7 +296,7 @@ try
         "remote control pause failed");
     var listener = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
     Require(listener.GetProperty("listenerActive").GetBoolean(), "companion listener did not start");
-    Console.WriteLine("PASS one current bounded code per server starts the loopback HTTPS listener without restart"); passes++;
+    Console.WriteLine("PASS closed GUI diagnostic pipes preserve typed listener errors and later HTTPS recovery"); passes++;
     var copiedWhilePaused = await ServerInvite(owner, profile.Id, true, enableConnections: true);
     var pausedSnapshot = await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
     Require(copiedWhilePaused.Code == inviteA.Code && pausedSnapshot?.Settings.RemoteControlsEnabled == false &&
@@ -1301,7 +1315,8 @@ static int FreeTcpPort(params int[] exclude)
     throw new Exception("No local TCP port available.");
 }
 
-static Process StartApp(string path, string mode, int port, string data, int stopDelayMs = 0)
+static Process StartApp(string path, string mode, int port, string data, int stopDelayMs = 0,
+    bool drainDiagnostics = true)
 {
     Directory.CreateDirectory(data);
     var info = new ProcessStartInfo(path)
@@ -1318,8 +1333,18 @@ static Process StartApp(string path, string mode, int port, string data, int sto
     if (stopDelayMs > 0) info.Environment["TOGETHERSERVER_FIXTURE_STOP_DELAY_MS"] = stopDelayMs.ToString();
     info.Environment["Logging__LogLevel__Default"] = "Warning";
     var process = Process.Start(info) ?? throw new Exception("App did not start.");
-    process.BeginOutputReadLine(); process.BeginErrorReadLine();
+    if (drainDiagnostics)
+    {
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+    }
     return process;
+}
+
+static void DisconnectDiagnosticPipes(Process process)
+{
+    process.StandardOutput.Dispose();
+    process.StandardError.Dispose();
 }
 
 static void StopApp(Process? process)

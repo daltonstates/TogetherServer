@@ -62,6 +62,16 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Tracked repository whitespace check failed.' }
         git diff --check
     }
+    Invoke-Checked 'Desktop diagnostic isolation' {
+        $diagnosticOutput = [IO.Path]::GetFullPath((Join-Path $repository 'src/TogetherServer/DiagnosticOutput.cs'))
+        $offenders = @(Get-ChildItem -LiteralPath (Join-Path $repository 'src/TogetherServer') -Filter '*.cs' -File -Recurse |
+            Where-Object { [IO.Path]::GetFullPath($_.FullName) -ne $diagnosticOutput } |
+            Select-String -Pattern '\bConsole\.' -CaseSensitive)
+        if ($offenders.Count -gt 0) {
+            $locations = $offenders | ForEach-Object { "$($_.Path):$($_.LineNumber)" }
+            throw "Desktop code bypasses DiagnosticOutput: $($locations -join ', ')"
+        }
+    }
     Invoke-Checked 'UI lint' {
         Push-Location ui
         try { npm run lint }
