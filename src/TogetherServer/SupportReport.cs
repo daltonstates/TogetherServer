@@ -19,12 +19,16 @@ internal static class SupportReportRedactor
     private static readonly Regex ExtendedWindowsPath = new(
         "(?i)(?:[A-Z]:\\\\|\\\\\\\\)[^,\\r\\n;|]+",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+    private static readonly Regex ProcessId = new(
+        "(?i)\\b(?:recorded\\s+)?pid\\s+\\d+\\b",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
 
     public static string Redact(string? value, int maximum = 400, string fallback = "Unavailable")
     {
         var clean = ServerLogSanitizer.Clean(value ?? "");
         clean = Endpoint.Replace(clean, "[redacted-endpoint]");
         clean = ExtendedWindowsPath.Replace(clean, "[redacted-path]");
+        clean = ProcessId.Replace(clean, "[redacted-process-id]");
         clean = ServerLogSanitizer.ProtectSupportValue(clean);
         if (clean.Length == 0) clean = fallback;
         return clean.Length <= maximum ? clean : clean[..Math.Max(1, maximum - 14)] + "… [truncated]";

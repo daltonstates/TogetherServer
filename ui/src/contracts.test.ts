@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -170,6 +170,20 @@ describe('runtime contracts', () => {
       .toThrow(/too many entries/)
   })
 
+  it('requires support-export byte metadata to match its UTF-8 content', () => {
+    const content = '{"snowman":"☃"}\n'
+    const report = {
+      fileName: 'TogetherServer-support-report.json',
+      contentType: 'application/json; charset=utf-8',
+      content,
+      sizeBytes: new TextEncoder().encode(content).byteLength
+    }
+
+    expect(parseSupportReportExport(report).sizeBytes).toBeGreaterThan(content.length)
+    expect(() => parseSupportReportExport({ ...report, sizeBytes: content.length }))
+      .toThrow(/does not match its UTF-8 content/)
+  })
+
   it('strictly decodes bounded exact-run session summaries and honest legacy gaps', () => {
     const profileId = '11111111-1111-4111-8111-111111111111'
     const complete = {
@@ -212,6 +226,10 @@ describe('runtime contracts', () => {
     expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, outcome: 'Succeeded' }] }))
       .toThrow(ContractError)
     expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, endReason: 'ProcessExited' }] }))
+      .toThrow(/incomplete summary contract/)
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, durationSeconds: 3688 }] }))
+      .toThrow(/incomplete summary contract/)
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, durationSeconds: null }] }))
       .toThrow(/incomplete summary contract/)
     expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...legacy, endedUtc: complete.endedUtc }] }))
       .toThrow(/incomplete summary contract/)

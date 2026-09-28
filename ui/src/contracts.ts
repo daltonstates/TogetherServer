@@ -792,9 +792,10 @@ export const parseRecentServerSessions: Decoder<RecentServerSessionsResult> = (v
     const legacy = outcome === null
     const incompleteLegacy = legacy && (startedUtc !== null || endedUtc !== null ||
       durationSeconds !== null || lastTrustedOnlinePlayers !== null)
-    const incompleteCurrent = !legacy && endedUtc === null
+    const incompleteCurrent = !legacy && (startedUtc === null || endedUtc === null || durationSeconds === null)
     const invalidDuration = durationSeconds !== null && (startedUtc === null || endedUtc === null ||
-      Date.parse(endedUtc) < Date.parse(startedUtc))
+      Date.parse(endedUtc) < Date.parse(startedUtc) ||
+      Math.abs(durationSeconds - Math.floor((Date.parse(endedUtc) - Date.parse(startedUtc)) / 1000)) > 1)
     const expectedReason: Record<ServerSessionOutcome, ServerSessionEndReason> = {
       GracefulStop: 'GracefulStop',
       UnexpectedExit: 'ProcessExited',
@@ -943,6 +944,8 @@ export const parseSupportReportExport: Decoder<SupportReportExport> = (value, co
   const sizeBytes = numeric(source.sizeBytes, `${context}.sizeBytes`)
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 1 || sizeBytes > 128 * 1024)
     throw new ContractError(`${context}.sizeBytes is outside its supported bounds.`)
+  if (new TextEncoder().encode(content).byteLength !== sizeBytes)
+    throw new ContractError(`${context}.sizeBytes does not match its UTF-8 content.`)
   return { fileName: source.fileName, contentType: source.contentType, content, sizeBytes }
 }
 

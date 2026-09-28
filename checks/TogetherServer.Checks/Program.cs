@@ -1418,6 +1418,33 @@ await Check("legacy archives load as incomplete and recent-session retention and
         legacy.ReadyEverObserved is null && legacy.Outcome is null && legacy.BackupResult is null,
         "a legacy archive failed to load or fabricated unavailable summary fields");
 
+    var endedUtc = clock.GetUtcNow().AddMinutes(-1);
+    var startedUtc = endedUtc.AddHours(-1);
+    data.SaveRunArchive([
+        new ManagedRunArchive(profile.Id, Guid.NewGuid(), GameKinds.Fixture, profile.WorldId,
+            null, null, true, "GracefulStop", clock.GetUtcNow(), false,
+            HostManager.CurrentSessionSummaryVersion, endedUtc.AddMinutes(1), endedUtc, 60,
+            ServerSessionEndReason.GracefulStop, ServerSessionOutcome.GracefulStop,
+            0, 1, ServerSessionBackupResult.NotConfigured),
+        new ManagedRunArchive(profile.Id, Guid.NewGuid(), GameKinds.Fixture, profile.WorldId,
+            null, null, true, "GracefulStop", clock.GetUtcNow(), false,
+            HostManager.CurrentSessionSummaryVersion, startedUtc, endedUtc, 3600,
+            ServerSessionEndReason.GracefulStop, ServerSessionOutcome.GracefulStop,
+            0, 1_000_001, ServerSessionBackupResult.NotConfigured),
+        new ManagedRunArchive(profile.Id, Guid.NewGuid(), GameKinds.Fixture, profile.WorldId,
+            null, null, true, "ProcessExited", clock.GetUtcNow(), false,
+            HostManager.CurrentSessionSummaryVersion, startedUtc, endedUtc, 3600,
+            ServerSessionEndReason.ProcessExited, ServerSessionOutcome.UnexpectedExit,
+            0, 1, ServerSessionBackupResult.Completed)
+    ]);
+    var malformed = (await manager.RecentSessionsAsync(profile.Id, 8)).Sessions;
+    Require(malformed.Count == 3 && malformed.All(item => item.StartedUtc is null &&
+            item.EndedUtc is null && item.DurationSeconds is null && item.ReadyEverObserved is null &&
+            item.EndReason is null && item.Outcome is null && item.CrashRecoveryScheduled is null &&
+            item.LastTrustedOnlinePlayers is null && item.MaximumTrustedOnlinePlayers is null &&
+            item.BackupResult is null),
+        "malformed versioned summaries escaped as current evidence instead of honest unavailable gaps");
+
     var seeded = Enumerable.Range(0, 505).Select(index => new ManagedRunArchive(profile.Id,
         Guid.NewGuid(), GameKinds.Fixture, profile.WorldId, null, null, false, "Legacy",
         clock.GetUtcNow().AddMinutes(-(index + 1)), false)).ToList();

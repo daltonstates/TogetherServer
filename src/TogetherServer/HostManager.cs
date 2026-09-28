@@ -34,6 +34,8 @@ public sealed class HostManager
 {
     public const int MaximumRecentSessionLimit = 20;
     internal const int CurrentSessionSummaryVersion = 1;
+    private const int MaximumSessionPlayerCount = 1_000_000;
+    private const long MaximumSessionDurationSeconds = 3_155_760_000;
     private static readonly TimeSpan CrashRecoveryReadinessTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan[] PlayerCountRetryDelays =
     [
@@ -1706,14 +1708,27 @@ public sealed class HostManager
     {
         var trustedCountsAreConsistent = item.LastTrustedOnlinePlayers is null &&
                 item.MaximumTrustedOnlinePlayers is null ||
-            item.LastTrustedOnlinePlayers is >= 0 &&
-                item.MaximumTrustedOnlinePlayers >= item.LastTrustedOnlinePlayers;
+            item.LastTrustedOnlinePlayers is >= 0 and <= MaximumSessionPlayerCount &&
+                item.MaximumTrustedOnlinePlayers >= item.LastTrustedOnlinePlayers &&
+                item.MaximumTrustedOnlinePlayers <= MaximumSessionPlayerCount;
+        var timingIsConsistent = item.StartedUtc is { } started && started != default &&
+            item.EndedUtc is { } ended && ended != default && started <= ended &&
+            ended <= item.ArchivedUtc &&
+            item.DurationSeconds is { } duration and >= 0 and <= MaximumSessionDurationSeconds &&
+            duration == (long)Math.Floor((ended - started).TotalSeconds);
+        var backupIsConsistent = item.Outcome == ServerSessionOutcome.GracefulStop
+            ? item.BackupResult is ServerSessionBackupResult.Completed or ServerSessionBackupResult.Failed or
+                ServerSessionBackupResult.NotConfigured or ServerSessionBackupResult.Unsupported
+            : item.BackupResult == ServerSessionBackupResult.NotAttempted;
         var complete = item.SummaryVersion == CurrentSessionSummaryVersion &&
-            item.EndedUtc is { } ended && ended != default &&
+            timingIsConsistent &&
+            Enum.IsDefined(item.EndReason) && Enum.IsDefined(item.Outcome) &&
+            Enum.IsDefined(item.BackupResult) &&
             item.EndReason != ServerSessionEndReason.Unavailable &&
             item.Outcome != ServerSessionOutcome.Unavailable &&
             item.BackupResult != ServerSessionBackupResult.Unavailable &&
             SessionReasonMatchesOutcome(item.EndReason, item.Outcome) &&
+            backupIsConsistent &&
             trustedCountsAreConsistent;
         var gameKind = item.Kind is GameKinds.Fixture or GameKinds.Valheim or
             GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Custom

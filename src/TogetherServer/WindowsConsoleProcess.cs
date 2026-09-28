@@ -70,13 +70,10 @@ internal static class WindowsConsoleProcess
                 workingDirectory: Path.GetDirectoryName(hostExecutable));
             run.ConsoleCaptureProcessId = captureId;
             using var capture = Process.GetProcessById(captureId);
-            var captureStartTimeUtcTicks = capture.StartTime.ToUniversalTime().Ticks;
-            var captureExecutablePath = Path.GetFullPath(capture.MainModule!.FileName);
+            var (captureStartTimeUtcTicks, captureExecutablePath) =
+                ReadNewProcessIdentity(capture, hostExecutable);
             run.ConsoleCaptureStartTimeUtcTicks = captureStartTimeUtcTicks;
             run.ConsoleCaptureExecutablePath = captureExecutablePath;
-            if (!captureExecutablePath.Equals(Path.GetFullPath(hostExecutable),
-                    StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Minecraft capture host identity could not be verified.");
 
             var connection = Task.Run(pipe.WaitForConnection);
             if (Task.WhenAny(connection, Task.Delay(TimeSpan.FromSeconds(15)))
@@ -124,6 +121,49 @@ internal static class WindowsConsoleProcess
         {
             try { if (File.Exists(requestPath)) File.Delete(requestPath); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    private static (long StartTimeUtcTicks, string ExecutablePath) ReadNewProcessIdentity(
+        Process process, string expectedExecutablePath)
+    {
+        // CreateProcess has returned the exact PID, but Windows can briefly
+        // expose a null MainModule while the image is still initializing.
+        // Retry only that PID and require its expected executable; never fall
+        // back to a process name or a different process.
+        var expected = Path.GetFullPath(expectedExecutablePath);
+        var wait = Stopwatch.StartNew();
+        Exception? lastFailure = null;
+        while (true)
+        {
+            try
+            {
+                process.Refresh();
+                if (process.HasExited)
+                    throw new InvalidDataException(
+                        "Minecraft capture host exited before its exact identity could be recorded.");
+                var started = process.StartTime.ToUniversalTime().Ticks;
+                var module = process.MainModule?.FileName;
+                if (!string.IsNullOrWhiteSpace(module))
+                {
+                    var executable = Path.GetFullPath(module);
+                    if (!executable.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException(
+                            "Minecraft capture host identity could not be verified.");
+                    return (started, executable);
+                }
+            }
+            catch (Exception ex) when (ex is not InvalidDataException &&
+                                       ex is InvalidOperationException or Win32Exception or
+                                           NotSupportedException or IOException)
+            {
+                lastFailure = ex;
+            }
+
+            if (wait.Elapsed >= TimeSpan.FromSeconds(2))
+                throw new InvalidDataException(
+                    "Minecraft capture host identity was not available in time.", lastFailure);
+            Thread.Sleep(50);
         }
     }
 

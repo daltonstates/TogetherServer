@@ -547,6 +547,10 @@ try
         supportExport.SizeBytes == Encoding.UTF8.GetByteCount(supportExport.Content) &&
         supportExport.SizeBytes <= SupportReportExporter.MaximumReportBytes,
         "support endpoint returned an unsafe filename or an unbounded UTF-8 payload");
+    Require(!SupportReportRedactor.Redact("Process running. Recorded PID 50628.")
+            .Contains("50628", StringComparison.Ordinal) &&
+        !supportExport.Content.Contains("Recorded PID", StringComparison.OrdinalIgnoreCase),
+        "support redaction retained a managed process identifier");
     Require(!supportExport.Content.Contains(endpoint, StringComparison.OrdinalIgnoreCase) &&
         !supportExport.Content.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase) &&
         !supportExport.Content.Contains(world, StringComparison.OrdinalIgnoreCase) &&
