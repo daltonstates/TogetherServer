@@ -850,6 +850,24 @@ app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Approve(id)); }
     finally { modeGate.Release(); }
 });
+app.MapPut("/api/local/devices/{id:guid}/access-expiry", async (Guid id, DeviceAccessExpiryRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode)
+            return Results.Conflict(new DeviceAccessExpiryResult(false, "FriendMode",
+                "Switch to Host mode first."));
+        var result = pairing.SetAccessExpiry(id, request);
+        return result.Ok ? Results.Json(result) : result.Code switch
+        {
+            "UnknownDevice" => Results.NotFound(result),
+            "Revoked" => Results.Conflict(result),
+            _ => Results.BadRequest(result)
+        };
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePermissionRequest request) =>
 {
     await modeGate.WaitAsync();

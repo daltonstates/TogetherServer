@@ -174,7 +174,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     {
         static int AuthenticationStatus(PairingDecision decision) =>
             decision.Code == "RateLimited" ? StatusCodes.Status429TooManyRequests :
-            decision.Code is "Revoked" or "ApprovalPending" ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
+            decision.Code is "Revoked" or "ApprovalPending" or "AccessExpired"
+                ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
 
         bool Authenticate(HttpContext context, out PairedDevice? device, out PairingDecision decision)
             => AuthenticateDetailed(context, out device, out decision, out _);
@@ -197,6 +198,13 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             device = null;
             decision = new(false, "RateLimited", "This PC is sending too many requests. Wait a moment and try again.");
             return false;
+        }
+
+        bool Reauthorize(PairedDevice loadedDevice, out PairedDevice? currentDevice,
+            out PairingDecision decision)
+        {
+            decision = pairing.AuthorizeActiveDevice(loadedDevice.Id, out currentDevice);
+            return decision.Ok;
         }
 
         async Task<CompanionStatus> PublicStatus(Guid deviceId)
@@ -259,29 +267,49 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id) return Results.BadRequest(new { code = "DeviceMismatch" });
             decision = pairing.RecordHeartbeat(device, request);
-            return decision.Ok ? Results.Json(await PublicStatus(device.Id)) :
-                Results.Json(decision, statusCode: decision.Code is "Revoked" or "ApprovalPending" ? 403 : 409);
+            if (!decision.Ok)
+                return Results.Json(decision, statusCode: decision.Code is "Revoked" or "ApprovalPending" or "AccessExpired"
+                    ? StatusCodes.Status403Forbidden : StatusCodes.Status409Conflict);
+            var status = await PublicStatus(device.Id);
+            if (!Reauthorize(device, out _, out decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            return Results.Json(status);
         });
         companion.MapGet("/status", async (HttpContext context) =>
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            return Results.Json(await PublicStatus(device!.Id));
+            var status = await PublicStatus(device!.Id);
+            if (!Reauthorize(device, out _, out decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            return Results.Json(status);
         });
         companion.MapGet("/servers/{profileId:guid}/logs", async (HttpContext context, Guid profileId) =>
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId))
+            if (!Reauthorize(device!, out var currentDevice, out decision) || currentDevice is null)
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(currentDevice, profileId))
+            {
+                if (!Reauthorize(currentDevice, out _, out decision))
+                    return Results.Json(decision, statusCode: AuthenticationStatus(decision));
                 return Results.Json(new PairingDecision(false, "PermissionDenied",
                     "The Host has not assigned this server to this PC."), statusCode: StatusCodes.Status403Forbidden);
-            if (!pairing.CanViewLogs(device!, profileId))
+            }
+            if (!pairing.CanViewLogs(currentDevice, profileId))
+            {
+                if (!Reauthorize(currentDevice, out _, out decision))
+                    return Results.Json(decision, statusCode: AuthenticationStatus(decision));
                 return Results.Json(new PairingDecision(false, "PermissionDenied",
                     "The Host has not granted View logs permission for this server to this PC."),
                     statusCode: StatusCodes.Status403Forbidden);
+            }
             if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
                 return Results.BadRequest(error);
             var result = await serverLogs.ReadAsync(profileId, query, ServerLogAudience.Friend);
+            if (!Reauthorize(currentDevice, out _, out decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return result.Code == "CustomRemoteLogsUnavailable"
                 ? Results.Json(result, statusCode: StatusCodes.Status403Forbidden)
                 : Results.Json(result);
@@ -307,14 +335,25 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         ? CompanionProtocol.CompatibilityMessage(reportedProtocol)
                         : "Update required: this Friend app did not identify a supported companion protocol.", null),
                     statusCode: StatusCodes.Status409Conflict);
-            if (!pairing.CanAccess(device, request.ProfileId))
+            if (!Reauthorize(device, out var currentDevice, out decision) || currentDevice is null)
+                return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                    statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(currentDevice, request.ProfileId))
+            {
+                if (!Reauthorize(currentDevice, out _, out decision))
+                    return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                        statusCode: AuthenticationStatus(decision));
                 return Results.Json(new FriendActionResult(false, "PermissionDenied",
                     "The Host has not assigned this server to this PC.", null), statusCode: 403);
+            }
 
             var result = await manager.RefreshPlayerCountAsync(request.ProfileId);
             data.TryAudit($"remote-player-count-refresh {device.Id} {request.ProfileId} {result.Code} {DateTimeOffset.UtcNow:O}");
-            return Results.Json(new FriendActionResult(result.Ok, result.Code, result.Message,
-                await PublicStatus(device.Id)));
+            var status = await PublicStatus(device.Id);
+            if (!Reauthorize(currentDevice, out _, out decision))
+                return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                    statusCode: AuthenticationStatus(decision));
+            return Results.Json(new FriendActionResult(result.Ok, result.Code, result.Message, status));
         });
         companion.MapPost("/credential/renew", (HttpContext context, CredentialRenewalRequest request) =>
         {
@@ -322,7 +361,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id)
                 return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
-            var renewed = pairing.Renew(device, request, usedPreviousCredential);
+            if (!Reauthorize(device, out var currentDevice, out decision) || currentDevice is null)
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            var renewed = pairing.Renew(currentDevice, request, usedPreviousCredential);
+            if (renewed is null && !Reauthorize(currentDevice, out _, out decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return renewed is null
                 ? Results.Json(new PairingDecision(false, "RenewalRejected", "The credential could not be renewed."), statusCode: 409)
                 : Results.Json(renewed);
@@ -333,7 +376,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (request.DeviceId != device!.Id)
                 return Results.BadRequest(new PairingDecision(false, "DeviceMismatch", "Device ID did not match the authenticated PC."));
-            return Results.Json(pairing.Revoke(device.Id));
+            if (!Reauthorize(device, out var currentDevice, out decision) || currentDevice is null)
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            return Results.Json(pairing.Revoke(currentDevice.Id));
         });
         companion.MapPost("/endpoint/recover", async (HttpContext context, EndpointRecoveryProofRequest request) =>
         {
@@ -345,6 +390,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var certificates = identity.State();
             if (certificates is null)
                 return Results.Json(new PairingDecision(false, "IdentityUnavailable", "The Host identity is unavailable."), statusCode: 503);
+            if (!Reauthorize(device, out _, out decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(new EndpointRecoveryProof(certificates.HostId,
                 snapshot.Settings.CompanionEndpoint, certificates,
                 ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute)));
@@ -362,8 +409,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     return new(false, "UpdatePending", "The Host is restarting for an update.");
                 if (isShuttingDown?.Invoke() == true)
                     return new(false, "HostShuttingDown", "The Host is closing and did not run this request.");
-                if (!pairing.TryGetActiveDevice(deviceId, out var device) || device is null)
-                    return new(false, "PermissionDenied", "This Friend PC is no longer authorized.");
+                var authorization = pairing.AuthorizeActiveDevice(deviceId, out var device);
+                if (!authorization.Ok || device is null)
+                    return new(false, authorization.Code, authorization.Message);
                 var snapshot = await manager.SnapshotAsync();
                 if (snapshot.Recovery?.LifecycleBlocked == true)
                     return new(false, "DataRecoveryRequired",
@@ -380,7 +428,12 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     action == "stop" && !pairing.CanStop(device, profileId) ||
                     action == "restart" && (!pairing.CanStart(device, profileId) || !pairing.CanStop(device, profileId)) ||
                     action == "extend" && !pairing.CanExtendTimer(device, profileId))
+                {
+                    authorization = pairing.AuthorizeActiveDevice(deviceId, out _);
+                    if (!authorization.Ok)
+                        return new(false, authorization.Code, authorization.Message);
                     return new(false, "PermissionDenied", "The Host has not granted this action for this server to this PC.");
+                }
 
                 ActionResult result;
                 if (action is "stop" or "restart")
@@ -424,14 +477,26 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         ? CompanionProtocol.CompatibilityMessage(reportedProtocol)
                         : "Update required: this Friend app did not identify a supported companion protocol.", null),
                     statusCode: StatusCodes.Status409Conflict);
+            if (!Reauthorize(device, out var currentDevice, out decision) || currentDevice is null)
+                return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                    statusCode: AuthenticationStatus(decision));
+            device = currentDevice;
             if (!pairing.CanAccess(device, request.ProfileId))
+            {
+                if (!Reauthorize(device, out _, out decision))
+                    return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                        statusCode: AuthenticationStatus(decision));
                 return Results.Json(new FriendActionResult(false, "PermissionDenied", "The Host has not assigned this server to this PC.", null),
                     statusCode: 403);
+            }
             if (!Guid.TryParse(context.Request.Headers["Idempotency-Key"], out var key) || key == Guid.Empty)
                 return Results.BadRequest(new FriendActionResult(false, "IdempotencyKeyRequired", "A request ID is required.", null));
             var prior = operations.Lookup(device.Id, key, request.ProfileId, action);
             if (prior is not null)
             {
+                if (!Reauthorize(device, out _, out decision))
+                    return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                        statusCode: AuthenticationStatus(decision));
                 if (!prior.Accepted)
                     return Results.Conflict(new FriendActionResult(false, prior.Code, prior.Message, null));
                 var existing = prior.Operation!;
@@ -453,8 +518,13 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 action == "stop" && !pairing.CanStop(device, request.ProfileId) ||
                 action == "restart" && (!pairing.CanStart(device, request.ProfileId) || !pairing.CanStop(device, request.ProfileId)) ||
                 action == "extend" && !pairing.CanExtendTimer(device, request.ProfileId))
+            {
+                if (!Reauthorize(device, out _, out decision))
+                    return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
+                        statusCode: AuthenticationStatus(decision));
                 return Results.Json(new FriendActionResult(false, "PermissionDenied",
                     "The Host has not granted this action for this server to this PC.", null), statusCode: 403);
+            }
             var submission = operations.Submit(device.Id, key, request.ProfileId, action,
                 () => ExecuteRemoteAction(device.Id, request.ProfileId, action, clientProtocol));
             if (!submission.Accepted)
@@ -470,7 +540,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            var operation = operations.Find(device!.Id, id);
+            if (!Reauthorize(device!, out var currentDevice, out decision) || currentDevice is null)
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            var operation = operations.Find(currentDevice.Id, id);
+            if (!Reauthorize(currentDevice, out _, out decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return operation is null ? Results.NotFound(new { code = "UnknownOperation" }) : Results.Json(operation);
         });
         companion.MapPost("/start", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "start"));

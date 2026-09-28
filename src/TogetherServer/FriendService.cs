@@ -230,13 +230,17 @@ internal sealed class FriendLink : IDisposable
                     catch (JsonException) { /* A generic 403 is not evidence of revocation. */ }
                     var revoked = denial?.Code == "Revoked";
                     var approvalPending = denial?.Code == "ApprovalPending";
+                    var accessExpired = denial?.Code == "AccessExpired";
                     view = view with
                     {
-                        State = revoked ? "Revoked" : approvalPending ? "Awaiting approval" : "Disconnected/Unknown",
+                        State = revoked ? "Revoked" : approvalPending ? "Awaiting approval" :
+                            accessExpired ? "Access expired" : "Disconnected/Unknown",
                         Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code."
                             : approvalPending ? "The Host owner must approve this PC locally before it can connect."
+                            : accessExpired ? "The Host owner's access deadline for this PC has expired."
                             : "Host access is unavailable or denied.",
-                        ConnectionCode = revoked ? "Revoked" : approvalPending ? "ApprovalPending" : "HostAccessDenied",
+                        ConnectionCode = revoked ? "Revoked" : approvalPending ? "ApprovalPending" :
+                            accessExpired ? "AccessExpired" : "HostAccessDenied",
                         RemoteControlsEnabled = false,
                         CanStart = false,
                         CanStop = false,
@@ -541,6 +545,18 @@ internal sealed class FriendLink : IDisposable
 
             using var response = await HostClient().GetAsync("api/companion/operations/" + pending.OperationId);
             reachedHost = true;
+            if (response.StatusCode == HttpStatusCode.Forbidden)
+            {
+                PairingDecision? denial = null;
+                try { denial = await response.Content.ReadFromJsonAsync<PairingDecision>(Json); }
+                catch (JsonException) { /* A generic denial is not an owner access-expiry signal. */ }
+                if (denial?.Code == "AccessExpired")
+                {
+                    ApplyAccessExpired();
+                    SaveConfig();
+                    return true;
+                }
+            }
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
                 ApplyOperation(new RemoteOperationView(pending.OperationId!.Value, pending.ProfileId, pending.Action,
@@ -617,7 +633,9 @@ internal sealed class FriendLink : IDisposable
 
     private void ApplyActionConnectionState(HttpStatusCode statusCode, FriendActionResult result)
     {
-        if (statusCode == HttpStatusCode.Forbidden && result.Code == "Revoked")
+        if (statusCode == HttpStatusCode.Forbidden && result.Code == "AccessExpired")
+            ApplyAccessExpired();
+        else if (statusCode == HttpStatusCode.Forbidden && result.Code == "Revoked")
             view = view with
             {
                 State = "Revoked",
@@ -661,6 +679,20 @@ internal sealed class FriendLink : IDisposable
                 CanStop = false,
                 Profiles = ProfilesWithPendingOperations()
             };
+    }
+
+    private void ApplyAccessExpired()
+    {
+        view = view with
+        {
+            State = "Access expired",
+            Detail = "The Host owner's access deadline for this PC has expired.",
+            ConnectionCode = "AccessExpired",
+            RemoteControlsEnabled = false,
+            CanStart = false,
+            CanStop = false,
+            Profiles = []
+        };
     }
 
     private void ApplyStatus(CompanionStatus status)

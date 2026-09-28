@@ -3,6 +3,8 @@ using System.Drawing;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Win32;
 using TogetherServer;
 
@@ -214,6 +216,118 @@ await Check("staging refuses overlapping or pre-populated data roots", () =>
         Path.Combine(root, "other-local"));
     RequireThrows<InvalidDataException>(production.PrepareDataRoot,
         "production opened a staging-marked folder");
+    return Task.CompletedTask;
+});
+
+await Check("storage v1 migrates pairing to v2 and rejects downgrade or newer schemas", () =>
+{
+    var migrationRoot = Path.Combine(root, "storage-v1-to-v2");
+    Directory.CreateDirectory(migrationRoot);
+    var json = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
+    var profileId = Guid.NewGuid();
+    var deviceId = Guid.NewGuid();
+    var generation = Guid.NewGuid();
+    var v1 = new PairingPersistentState
+    {
+        SchemaVersion = 1,
+        Devices =
+        [
+            new PairedDevice
+            {
+                Id = deviceId,
+                ProfileId = profileId,
+                InviteGeneration = generation,
+                AssignedProfileIds = [profileId],
+                Name = "Migrated Friend PC",
+                CanStart = true,
+                CanStop = false,
+                CredentialHash = new string('A', 64),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30)
+            }
+        ],
+        ServerInvites =
+        [
+            new ServerInviteState
+            {
+                ProfileId = profileId,
+                Generation = generation,
+                Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                Endpoint = "https://127.0.0.1:5131",
+                Fingerprint = new string('B', 64),
+                PairingOpenedUtc = DateTimeOffset.UtcNow,
+                PairingExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+                DurationMinutes = 30,
+                DeviceLimit = 2
+            }
+        ],
+        CredentialRenewals =
+        [
+            new CredentialRenewalReceipt
+            {
+                DeviceId = deviceId,
+                RequestId = Guid.NewGuid(),
+                Credential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                ExpiresUtc = DateTimeOffset.UtcNow.AddDays(30),
+                PreviousAcceptedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(10)
+            }
+        ]
+    };
+    var protectedBytes = ProtectedData.Protect(JsonSerializer.SerializeToUtf8Bytes(v1, json), null,
+        DataProtectionScope.CurrentUser);
+    var protectedPayload = JsonSerializer.Serialize(Convert.ToBase64String(protectedBytes), json);
+    File.WriteAllText(Path.Combine(migrationRoot, "pairing-state.protected"),
+        protectedPayload);
+    File.WriteAllText(Path.Combine(migrationRoot, "storage-schema.json"), "{\"version\":1}");
+
+    using (var migratedData = new LocalData(migrationRoot))
+    {
+        var migrated = migratedData.LoadPairingState();
+        Require(migrated.SchemaVersion == 2 && migrated.Devices.Count == 1 &&
+            migrated.Devices[0].Id == deviceId && migrated.Devices[0].Name == "Migrated Friend PC" &&
+            migrated.Devices[0].AssignedProfileIds!.SequenceEqual([profileId]) &&
+            migrated.Devices[0].CanStart && !migrated.Devices[0].CanStop &&
+            migrated.Devices[0].AccessExpiresUtc is null && migrated.ServerInvites.Count == 1 &&
+            migrated.ServerInvites[0].Generation == generation && migrated.CredentialRenewals.Count == 1,
+            "v1 pairing devices, assignment, permissions, invite lineage, or renewal receipt were lost");
+        using var marker = JsonDocument.Parse(File.ReadAllText(Path.Combine(migrationRoot, "storage-schema.json")));
+        Require(marker.RootElement.GetProperty("version").GetInt32() == 2,
+            "the directory schema marker did not advance to v2");
+        var migratedBytes = migratedData.LoadProtected("pairing-state.protected")!;
+        var migratedSnapshot = JsonSerializer.Deserialize<PairingPersistentState>(migratedBytes, json);
+        Require(migratedSnapshot?.SchemaVersion == 2,
+            "the protected pairing snapshot did not migrate to schema v2");
+    }
+
+    var pairingBeforeDowngrade = File.ReadAllBytes(Path.Combine(migrationRoot, "pairing-state.protected"));
+    RequireThrows<InvalidDataException>(() =>
+    {
+        using var _ = new LocalData(migrationRoot, 5131, supportedStorageSchemaVersion: 1);
+    }, "a simulated v1 binary opened a v2 access-expiry data root");
+    Require(File.ReadAllBytes(Path.Combine(migrationRoot, "pairing-state.protected"))
+            .SequenceEqual(pairingBeforeDowngrade),
+        "the rejected downgrade modified protected pairing data");
+
+    var interruptedRoot = Path.Combine(root, "storage-v2-interrupted-pairing-v1");
+    Directory.CreateDirectory(interruptedRoot);
+    File.WriteAllText(Path.Combine(interruptedRoot, "pairing-state.protected"), protectedPayload);
+    File.WriteAllText(Path.Combine(interruptedRoot, "storage-schema.json"), "{\"version\":2}");
+    using (var resumedData = new LocalData(interruptedRoot))
+    {
+        var resumed = resumedData.LoadPairingState();
+        Require(resumed.SchemaVersion == 2 && resumed.Devices.Single().Id == deviceId &&
+            resumed.ServerInvites.Single().Generation == generation && resumed.CredentialRenewals.Count == 1,
+            "a marker-first interrupted migration did not preserve and upgrade its v1 pairing snapshot");
+    }
+
+    var newerRoot = Path.Combine(root, "storage-newer-schema");
+    Directory.CreateDirectory(newerRoot);
+    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":3}");
+    RequireThrows<InvalidDataException>(() =>
+    {
+        using var _ = new LocalData(newerRoot);
+    }, "the current binary opened an unknown newer storage schema");
+    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("3", StringComparison.Ordinal),
+        "newer-schema rejection rewrote the unsupported marker");
     return Task.CompletedTask;
 });
 

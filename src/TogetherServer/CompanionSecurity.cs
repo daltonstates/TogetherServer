@@ -35,6 +35,10 @@ public sealed class PairedDevice
     public string? PreviousCredentialHash { get; set; }
     public DateTimeOffset? PreviousCredentialExpiresUtc { get; set; }
     public DateTimeOffset? CredentialExpiryNotifiedForUtc { get; set; }
+    // Owner access is a separate authorization deadline. It never rotates,
+    // revokes, or deletes the renewable device credential.
+    public DateTimeOffset? AccessExpiresUtc { get; set; }
+    public DateTimeOffset? AccessExpiryNotifiedForUtc { get; set; }
 
     public bool CanStartProfile(Guid profileId) => ServerPermissionOverrides?
         .FirstOrDefault(item => item.ProfileId == profileId)?.CanStart ?? CanStart;
@@ -80,7 +84,8 @@ public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> Ass
     bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc,
     IReadOnlyList<ServerPermissionView>? ServerPermissions = null,
     string? AppVersion = null, int? ProtocolVersion = null,
-    bool ApprovalPending = false, bool CanExtendTimer = false, bool CanViewLogs = false);
+    bool ApprovalPending = false, bool CanExtendTimer = false, bool CanViewLogs = false,
+    DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop,
     bool CanExtendTimer = false, bool CanViewLogs = false);
 
@@ -108,6 +113,36 @@ public sealed record DeviceServerPermissionRequest(Guid ProfileId, bool CanStart
 public sealed record DeviceServerAccessRequest(IReadOnlyList<Guid>? ProfileIds,
     IReadOnlyList<DeviceServerPermissionRequest>? Permissions = null);
 public sealed record DeviceNameRequest(string? Name);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DeviceAccessExpiryRequest(bool Clear = false,
+    DateTimeOffset? AccessExpiresUtc = null, string? Duration = null);
+public sealed record DeviceAccessExpiryResult(bool Ok, string Code, string Message,
+    DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false);
+
+public static class DeviceAccessDurations
+{
+    public const string OneHour = "OneHour";
+    public const string EightHours = "EightHours";
+    public const string OneDay = "OneDay";
+    public const string SevenDays = "SevenDays";
+    public const string ThirtyDays = "ThirtyDays";
+    public const string NinetyDays = "NinetyDays";
+
+    internal static bool TryGet(string? value, out TimeSpan duration)
+    {
+        duration = value switch
+        {
+            OneHour => TimeSpan.FromHours(1),
+            EightHours => TimeSpan.FromHours(8),
+            OneDay => TimeSpan.FromDays(1),
+            SevenDays => TimeSpan.FromDays(7),
+            ThirtyDays => TimeSpan.FromDays(30),
+            NinetyDays => TimeSpan.FromDays(90),
+            _ => default
+        };
+        return duration > TimeSpan.Zero;
+    }
+}
 public sealed record FriendPairRequest(string Invitation, string? HostAddress = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record RemoteActionRequest(Guid DeviceId, Guid ProfileId);
@@ -357,25 +392,30 @@ public sealed class HostIdentity(LocalData data)
 
 public sealed class PairingService
 {
+    private static readonly TimeSpan MaximumOwnerAccess = TimeSpan.FromDays(365);
     private readonly LocalData data;
+    private readonly TimeProvider clock;
     private readonly object sync = new();
     private readonly List<PairedDevice> devices;
     private readonly List<ServerInviteState> serverInvites;
     private readonly List<CredentialRenewalReceipt> renewalReceipts;
     private readonly ConcurrentDictionary<Guid, HeartbeatReceipt> heartbeats = new();
 
-    public PairingService(LocalData data)
+    public PairingService(LocalData data, TimeProvider? clock = null)
     {
         this.data = data;
+        this.clock = clock ?? TimeProvider.System;
         var persisted = data.LoadPairingState();
         devices = persisted.Devices;
         serverInvites = persisted.ServerInvites;
         renewalReceipts = persisted.CredentialRenewals;
         var normalized = NormalizeAssignments() | NormalizePairingWindows();
-        normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= DateTimeOffset.UtcNow ||
+        normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
             devices.All(device => device.Id != receipt.DeviceId)) > 0;
         if (normalized) SaveState();
     }
+
+    private DateTimeOffset UtcNow => clock.GetUtcNow();
 
     private void SaveState()
     {
@@ -394,7 +434,7 @@ public sealed class PairingService
             foreach (var invite in serverInvites)
             {
                 invite.Closed = true;
-                invite.PairingExpiresUtc = DateTimeOffset.UtcNow;
+                invite.PairingExpiresUtc = UtcNow;
                 invite.Generation = Guid.NewGuid();
             }
             foreach (var device in devices)
@@ -418,14 +458,14 @@ public sealed class PairingService
         try { data.DeleteProtected($"credential-renewal-{deviceId:N}.protected"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            data.TryAudit($"legacy-renewal-cleanup-failed {deviceId} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"legacy-renewal-cleanup-failed {deviceId} {ex.GetType().Name} {UtcNow:O}");
         }
     }
 
     private bool NormalizePairingWindows()
     {
         var changed = false;
-        var migrationExpiry = DateTimeOffset.UtcNow.AddMinutes(30);
+        var migrationExpiry = UtcNow.AddMinutes(30);
         foreach (var invite in serverInvites)
         {
             if (invite.DurationMinutes is < 5 or > 1440)
@@ -442,7 +482,7 @@ public sealed class PairingService
             {
                 // Pre-window TS3 codes get one bounded migration window. They
                 // remain decodable, but never regain indefinite pairing.
-                invite.PairingOpenedUtc = DateTimeOffset.UtcNow;
+                invite.PairingOpenedUtc = UtcNow;
                 invite.PairingExpiresUtc = migrationExpiry;
                 invite.ActivatedDevices = 0;
                 invite.Closed = false;
@@ -518,6 +558,31 @@ public sealed class PairingService
             ? serverInvites.Any(invite => invite.Rotated)
             : serverInvites.SingleOrDefault(invite => invite.ProfileId == device.ProfileId)?.Generation != device.InviteGeneration);
 
+    private static bool IsAccessExpired(PairedDevice device, DateTimeOffset now) =>
+        device.AccessExpiresUtc is { } accessExpiresUtc && accessExpiresUtc <= now;
+
+    private PairingDecision AuthorizationDecision(PairedDevice device, DateTimeOffset now)
+    {
+        if (IsRevoked(device))
+            return new(false, "Revoked", "This server's invite was refreshed or this device was revoked.");
+        if (device.ApprovalPending)
+            return new(false, "ApprovalPending", "The Host must approve this PC locally before it can connect.");
+        if (device.CredentialExpiresUtc <= now)
+            return new(false, "Expired", "This device credential has expired.");
+        if (!IsAccessExpired(device, now))
+            return new(true, "Authorized", "Device access is active.");
+
+        if (device.AccessExpiryNotifiedForUtc != device.AccessExpiresUtc)
+        {
+            device.AccessExpiryNotifiedForUtc = device.AccessExpiresUtc;
+            SaveState();
+            data.TryAudit($"device-access-expired {device.Id} {device.AccessExpiresUtc:O} observed={now:O}");
+            Activity("Access", "AccessExpired", "Owner-defined access expired for a paired PC.",
+                ActivitySeverity.Warning, deviceId: device.Id);
+        }
+        return new(false, "AccessExpired", "The Host owner's access deadline for this PC has expired.");
+    }
+
     public ServerInviteView? CurrentServerInvite(Guid profileId, string? endpoint = null, string? fingerprint = null)
     {
         lock (sync)
@@ -535,8 +600,8 @@ public sealed class PairingService
                 state.Fingerprint = fingerprint;
                 SaveState();
             }
-            var expires = state.PairingExpiresUtc ?? DateTimeOffset.UtcNow;
-            var open = !state.Closed && expires > DateTimeOffset.UtcNow &&
+            var expires = state.PairingExpiresUtc ?? UtcNow;
+            var open = !state.Closed && expires > UtcNow &&
                 state.ActivatedDevices < state.DeviceLimit;
             return new(new PairingInvite(state.Endpoint, state.Fingerprint, profileId,
                 state.Code, expires, true), state.CanStart, open, state.DeviceLimit,
@@ -584,7 +649,7 @@ public sealed class PairingService
         lock (sync)
         {
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
-            var now = DateTimeOffset.UtcNow;
+            var now = UtcNow;
             if (state is not null && !refresh)
             {
                 var currentWindow = !state.Closed && state.PairingExpiresUtc > now &&
@@ -675,10 +740,10 @@ public sealed class PairingService
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             if (state is null) return new(false, "UnknownPairingWindow", "This server has no pairing window.");
             state.Closed = true;
-            state.PairingExpiresUtc = DateTimeOffset.UtcNow;
+            state.PairingExpiresUtc = UtcNow;
             state.Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             SaveState();
-            data.TryAudit($"pairing-window-close {profileId} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"pairing-window-close {profileId} {UtcNow:O}");
             Activity("Pairing", "WindowClosed", "Pairing closed; already paired PCs kept their access.",
                 ActivitySeverity.Important, profileId);
             return new(true, "PairingClosed", "Pairing is closed. Already paired PCs keep their current access.");
@@ -695,7 +760,7 @@ public sealed class PairingService
             state.Generation = Guid.NewGuid();
             state.Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             state.Closed = true;
-            state.PairingExpiresUtc = DateTimeOffset.UtcNow;
+            state.PairingExpiresUtc = UtcNow;
             state.ActivatedDevices = 0;
             state.Rotated = true;
             var revoked = 0;
@@ -712,7 +777,7 @@ public sealed class PairingService
                 revoked++;
             }
             SaveState();
-            data.TryAudit($"pairing-emergency-revoke {profileId} devices={revoked} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"pairing-emergency-revoke {profileId} devices={revoked} {UtcNow:O}");
             Activity("Pairing", "EmergencyRevoke",
                 $"Pairing closed and {revoked} issued PC credential{(revoked == 1 ? " was" : "s were")} revoked.",
                 ActivitySeverity.Warning, profileId);
@@ -725,9 +790,10 @@ public sealed class PairingService
     {
         lock (sync)
         {
+            var now = UtcNow;
             var expiryNoticesChanged = false;
             foreach (var device in devices.Where(item => !IsRevoked(item) && item.CredentialExpiresUtc is { } expiry &&
-                expiry > DateTimeOffset.UtcNow && expiry - DateTimeOffset.UtcNow <= TimeSpan.FromDays(14) &&
+                expiry > now && expiry - now <= TimeSpan.FromDays(14) &&
                 item.CredentialExpiryNotifiedForUtc != expiry))
             {
                 device.CredentialExpiryNotifiedForUtc = device.CredentialExpiresUtc;
@@ -738,11 +804,20 @@ public sealed class PairingService
                     ActivitySeverity.Warning, device.ProfileId == Guid.Empty ? null : device.ProfileId,
                     device.Id, ActivityVisibility.Device);
             }
+            foreach (var device in devices.Where(item => !IsRevoked(item) && IsAccessExpired(item, now) &&
+                item.AccessExpiryNotifiedForUtc != item.AccessExpiresUtc))
+            {
+                device.AccessExpiryNotifiedForUtc = device.AccessExpiresUtc;
+                expiryNoticesChanged = true;
+                data.TryAudit($"device-access-expired {device.Id} {device.AccessExpiresUtc:O} observed={now:O}");
+                Activity("Access", "AccessExpired", "Owner-defined access expired for a paired PC.",
+                    ActivitySeverity.Warning, deviceId: device.Id);
+            }
             if (expiryNoticesChanged) SaveState();
             return devices.Select(device =>
             {
                 heartbeats.TryGetValue(device.Id, out var heartbeat);
-                var fresh = heartbeat is not null && DateTimeOffset.UtcNow - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
+                var fresh = heartbeat is not null && now - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
                 return new DeviceView(device.Id, device.ProfileId, device.AssignedProfileIds!.ToArray(),
                     device.Name, device.CanStart, device.CanStop, IsRevoked(device),
                     device.CredentialHash is not null, device.CredentialExpiresUtc,
@@ -751,7 +826,8 @@ public sealed class PairingService
                         device.CanStartProfile(profileId), device.CanStopProfile(profileId),
                         device.CanExtendTimerForProfile(profileId), device.CanViewLogsForProfile(profileId))).ToList(),
                     fresh ? heartbeat!.AppVersion : null, fresh ? heartbeat!.ProtocolVersion : null,
-                    device.ApprovalPending, device.CanExtendTimer, device.CanViewLogs);
+                    device.ApprovalPending, device.CanExtendTimer, device.CanViewLogs,
+                    device.AccessExpiresUtc, IsAccessExpired(device, now));
             }).ToList();
         }
     }
@@ -759,7 +835,7 @@ public sealed class PairingService
     public bool HasInviteOrCredential()
     {
         lock (sync) return serverInvites.Any(invite => !invite.Closed &&
-                invite.PairingExpiresUtc > DateTimeOffset.UtcNow && invite.ActivatedDevices < invite.DeviceLimit) ||
+                invite.PairingExpiresUtc > UtcNow && invite.ActivatedDevices < invite.DeviceLimit) ||
             devices.Any(d => !IsRevoked(d) && (d.InviteHash is not null || d.CredentialHash is not null));
     }
 
@@ -767,7 +843,7 @@ public sealed class PairingService
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > 80) throw new ArgumentException("Enter a device name up to 80 characters.");
         var code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        var expires = DateTimeOffset.UtcNow.AddMinutes(30);
+        var expires = UtcNow.AddMinutes(30);
         lock (sync)
         {
             PairedDevice device;
@@ -796,7 +872,7 @@ public sealed class PairingService
             device.InviteHash = Hash(code);
             device.InviteExpiresUtc = expires;
             SaveState();
-            data.TryAudit($"invite {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"invite {device.Id} {UtcNow:O}");
             return new PairingInvite(endpoint, fingerprint, device.Id, code, expires);
         }
     }
@@ -809,12 +885,12 @@ public sealed class PairingService
             if (request.ServerScope)
             {
                 var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == request.DeviceId);
-                if (state is null || state.Closed || state.PairingExpiresUtc <= DateTimeOffset.UtcNow ||
+                if (state is null || state.Closed || state.PairingExpiresUtc <= UtcNow ||
                     state.DeviceLimit < 1 || state.ActivatedDevices >= state.DeviceLimit ||
                     !Matches(request.Code, Hash(state.Code))) return null;
                 var id = Guid.NewGuid();
                 var serverToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-                var expires = DateTimeOffset.UtcNow.AddDays(90);
+                var expires = UtcNow.AddDays(90);
                 devices.Add(new PairedDevice
                 {
                     Id = id,
@@ -833,7 +909,7 @@ public sealed class PairingService
                 state.ActivatedDevices++;
                 if (state.ActivatedDevices >= state.DeviceLimit) state.Closed = true;
                 SaveState();
-                data.TryAudit($"activate {id} {state.ProfileId} approval-pending={state.RequireApproval} {DateTimeOffset.UtcNow:O}");
+                data.TryAudit($"activate {id} {state.ProfileId} approval-pending={state.RequireApproval} {UtcNow:O}");
                 Activity("Pairing", state.RequireApproval ? "DeviceAwaitingApproval" : "DevicePaired",
                     state.RequireApproval ? "A new PC paired and is waiting for local approval." : "A new PC paired successfully.",
                     ActivitySeverity.Important, state.ProfileId, id);
@@ -844,10 +920,10 @@ public sealed class PairingService
             }
             var device = devices.SingleOrDefault(d => d.Id == request.DeviceId);
             if (device is null || IsRevoked(device) || device.InviteHash is null ||
-                device.InviteExpiresUtc <= DateTimeOffset.UtcNow || !Matches(request.Code, device.InviteHash)) return null;
+                device.InviteExpiresUtc <= UtcNow || !Matches(request.Code, device.InviteHash)) return null;
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             device.CredentialHash = Hash(token);
-            device.CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90);
+            device.CredentialExpiresUtc = UtcNow.AddDays(90);
             device.CredentialExpiryNotifiedForUtc = null;
             device.PreviousCredentialHash = null;
             device.PreviousCredentialExpiresUtc = null;
@@ -856,7 +932,7 @@ public sealed class PairingService
             device.InviteExpiresUtc = null;
             heartbeats.TryRemove(device.Id, out _);
             SaveState();
-            data.TryAudit($"activate {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"activate {device.Id} {UtcNow:O}");
             return new PairingCredential(device.Id, token, device.CredentialExpiresUtc.Value);
         }
     }
@@ -874,19 +950,27 @@ public sealed class PairingService
             var current = device?.CredentialHash is not null && bearer is not null && bearer.Length <= 128 &&
                 Matches(bearer, device.CredentialHash);
             var previous = device?.PreviousCredentialHash is not null && bearer is not null && bearer.Length <= 128 &&
-                device.PreviousCredentialExpiresUtc > DateTimeOffset.UtcNow && Matches(bearer, device.PreviousCredentialHash);
+                device.PreviousCredentialExpiresUtc > UtcNow && Matches(bearer, device.PreviousCredentialHash);
             if (device is null || !current && !previous)
             {
                 device = null;
                 return new PairingDecision(false, "Unauthorized", "Device credential was not accepted.");
             }
-            if (IsRevoked(device)) return new PairingDecision(false, "Revoked", "This server's invite was refreshed or this device was revoked.");
-            if (device.ApprovalPending)
-                return new PairingDecision(false, "ApprovalPending", "The Host must approve this PC locally before it can connect.");
-            if (device.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
-                return new PairingDecision(false, "Expired", "This device credential has expired.");
+            var authorization = AuthorizationDecision(device, UtcNow);
+            if (!authorization.Ok) return authorization;
             usedPreviousCredential = !current && previous;
             return new PairingDecision(true, "Authenticated", "Device authenticated.");
+        }
+    }
+
+    public PairingDecision AuthorizeActiveDevice(Guid id, out PairedDevice? device)
+    {
+        lock (sync)
+        {
+            device = devices.SingleOrDefault(item => item.Id == id && item.CredentialHash is not null);
+            return device is null
+                ? new PairingDecision(false, "Unauthorized", "Device credential was not accepted.")
+                : AuthorizationDecision(device, UtcNow);
         }
     }
 
@@ -897,10 +981,10 @@ public sealed class PairingService
         lock (sync)
         {
             var device = devices.SingleOrDefault(item => item.Id == authenticatedDevice.Id);
-            if (device is null || IsRevoked(device) || device.CredentialHash is null ||
-                device.CredentialExpiresUtc <= DateTimeOffset.UtcNow) return null;
+            if (device is null || device.CredentialHash is null ||
+                !AuthorizationDecision(device, UtcNow).Ok) return null;
             var existing = renewalReceipts.SingleOrDefault(receipt => receipt.DeviceId == device.Id);
-            if (existing is not null && existing.PreviousAcceptedUntilUtc > DateTimeOffset.UtcNow)
+            if (existing is not null && existing.PreviousAcceptedUntilUtc > UtcNow)
             {
                 if (existing.RequestId == request.RequestId)
                     return new(existing.DeviceId, existing.RequestId, existing.Credential,
@@ -913,11 +997,11 @@ public sealed class PairingService
             if (authenticatedWithPreviousCredential) return null;
 
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            var overlap = DateTimeOffset.UtcNow.AddMinutes(10);
+            var overlap = UtcNow.AddMinutes(10);
             device.PreviousCredentialHash = device.CredentialHash;
             device.PreviousCredentialExpiresUtc = overlap;
             device.CredentialHash = Hash(token);
-            device.CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90);
+            device.CredentialExpiresUtc = UtcNow.AddDays(90);
             var receipt = new CredentialRenewalReceipt
             {
                 DeviceId = device.Id,
@@ -929,7 +1013,7 @@ public sealed class PairingService
             renewalReceipts.RemoveAll(item => item.DeviceId == device.Id);
             renewalReceipts.Add(receipt);
             SaveState();
-            data.TryAudit($"credential-renew {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"credential-renew {device.Id} {UtcNow:O}");
             Activity("Access", "CredentialRenewed", "This PC's Host credential was renewed for 90 days.",
                 ActivitySeverity.Info, device.ProfileId == Guid.Empty ? null : device.ProfileId,
                 device.Id, ActivityVisibility.Device);
@@ -944,13 +1028,75 @@ public sealed class PairingService
             return new PairingDecision(false, "InvalidHeartbeat", "Heartbeat fields are invalid.");
         lock (sync)
         {
-            if (IsRevoked(device)) return new PairingDecision(false, "Revoked", "This server's invite was refreshed or this device was revoked.");
+            var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            if (current is null)
+                return new PairingDecision(false, "Unauthorized", "Device credential was not accepted.");
+            var authorization = AuthorizationDecision(current, UtcNow);
+            if (!authorization.Ok) return authorization;
             if (heartbeats.TryGetValue(device.Id, out var prior) && prior.InstanceId == request.InstanceId &&
                 request.Sequence <= prior.Sequence)
                 return new PairingDecision(false, "Replay", "Heartbeat sequence did not advance.");
             heartbeats[device.Id] = new HeartbeatReceipt(request.InstanceId, request.Sequence,
-                DateTimeOffset.UtcNow, request.Version, request.ProtocolVersion);
+                UtcNow, request.Version, request.ProtocolVersion);
             return new PairingDecision(true, "Received", "Heartbeat recorded.");
+        }
+    }
+
+    public DeviceAccessExpiryResult SetAccessExpiry(Guid id, DeviceAccessExpiryRequest request)
+    {
+        var selections = (request.Clear ? 1 : 0) + (request.AccessExpiresUtc.HasValue ? 1 : 0) +
+            (request.Duration is null ? 0 : 1);
+        if (selections != 1)
+            return new(false, "InvalidAccessExpiry",
+                "Choose exactly one access deadline, reviewed duration, or Clear.");
+
+        var now = UtcNow;
+        DateTimeOffset? deadline = null;
+        if (!request.Clear)
+        {
+            if (request.AccessExpiresUtc is { } requestedDeadline)
+            {
+                if (requestedDeadline.Offset != TimeSpan.Zero)
+                    return new(false, "InvalidAccessExpiry", "AccessExpiresUtc must be an explicit UTC timestamp ending in Z.");
+                deadline = requestedDeadline;
+            }
+            else if (DeviceAccessDurations.TryGet(request.Duration, out var duration))
+                deadline = now.Add(duration);
+            else
+                return new(false, "InvalidAccessDuration",
+                    "Choose OneHour, EightHours, OneDay, SevenDays, ThirtyDays, or NinetyDays.");
+
+            if (deadline is not { } resolvedDeadline)
+                return new(false, "InvalidAccessExpiry", "Choose an access deadline.");
+            if (resolvedDeadline <= now)
+                return new(false, "AccessExpiryInPast", "Choose an access deadline in the future.");
+            if (resolvedDeadline > now.Add(MaximumOwnerAccess))
+                return new(false, "AccessExpiryTooDistant", "Choose an access deadline no more than 365 days away.");
+        }
+
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == id && item.CredentialHash is not null);
+            if (device is null)
+                return new(false, "UnknownDevice", "Pair this Friend PC first.");
+            if (IsRevoked(device))
+                return new(false, "Revoked", "A revoked Friend PC cannot receive an access deadline.");
+
+            device.AccessExpiresUtc = deadline;
+            device.AccessExpiryNotifiedForUtc = null;
+            SaveState();
+            if (deadline is null)
+            {
+                data.TryAudit($"device-access-expiry-cleared {device.Id} {now:O}");
+                Activity("Access", "AccessExpiryCleared", "Owner-defined access no longer has a deadline for a paired PC.",
+                    ActivitySeverity.Important, deviceId: device.Id);
+                return new(true, "AccessExpiryCleared", "This Friend PC no longer has an owner access deadline.");
+            }
+
+            data.TryAudit($"device-access-expiry-set {device.Id} {deadline:O} changed={now:O}");
+            Activity("Access", "AccessExpirySet", "Owner-defined access now has a deadline for a paired PC.",
+                ActivitySeverity.Important, deviceId: device.Id);
+            return new(true, "AccessExpirySet", "This Friend PC's owner access deadline was saved.", deadline, false);
         }
     }
 
@@ -968,7 +1114,7 @@ public sealed class PairingService
             ForgetRenewalReceipt(device.Id);
             heartbeats.TryRemove(id, out _);
             SaveState();
-            data.TryAudit($"revoke {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"revoke {device.Id} {UtcNow:O}");
             Activity("Access", "DeviceRevoked", "A paired PC was revoked.", ActivitySeverity.Warning,
                 device.ProfileId == Guid.Empty ? null : device.ProfileId, device.Id);
             return new PairingDecision(true, "Revoked", "Device revoked.");
@@ -984,7 +1130,7 @@ public sealed class PairingService
             if (!device.ApprovalPending) return new(true, "AlreadyApproved", "This PC is already approved.");
             device.ApprovalPending = false;
             SaveState();
-            data.TryAudit($"device-approve {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"device-approve {device.Id} {UtcNow:O}");
             Activity("Pairing", "DeviceApproved", "A waiting PC was approved locally.",
                 ActivitySeverity.Important, device.ProfileId == Guid.Empty ? null : device.ProfileId, device.Id);
             Activity("Pairing", "DeviceApproved", "The Host owner approved this PC.",
@@ -1025,7 +1171,7 @@ public sealed class PairingService
             }).Where(permission => permission.CanStart != device.CanStart || permission.CanStop != device.CanStop ||
                 permission.CanExtendTimer != device.CanExtendTimer || permission.CanViewLogs != device.CanViewLogs).ToList();
             SaveState();
-            data.TryAudit($"permissions-change {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"permissions-change {device.Id} {UtcNow:O}");
             Activity("Access", "PermissionsChanged", "Permissions changed for a paired PC.",
                 ActivitySeverity.Important, device.ProfileId == Guid.Empty ? null : device.ProfileId, device.Id);
             Activity("Access", "PermissionsChanged", "The Host changed this PC's permissions.",
@@ -1074,7 +1220,7 @@ public sealed class PairingService
                     }).ToList();
             }
             SaveState();
-            data.TryAudit($"server-access-change {device.Id} {device.AssignedProfileIds.Count} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"server-access-change {device.Id} {device.AssignedProfileIds.Count} {UtcNow:O}");
             Activity("Access", "ServerAssignmentsChanged", "Server assignments changed for a paired PC.",
                 ActivitySeverity.Important, deviceId: device.Id);
             Activity("Access", "ServerAssignmentsChanged", "The Host changed which servers this PC can access.",
@@ -1087,41 +1233,57 @@ public sealed class PairingService
 
     public bool CanAccess(PairedDevice device, Guid profileId)
     {
-        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId);
+        lock (sync)
+        {
+            var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
+                current.AssignedProfileIds!.Contains(profileId);
+        }
     }
 
     public bool TryGetActiveDevice(Guid id, out PairedDevice? device)
     {
-        lock (sync)
-        {
-            device = devices.SingleOrDefault(item => item.Id == id && item.CredentialHash is not null &&
-                !item.ApprovalPending && !IsRevoked(item) && item.CredentialExpiresUtc > DateTimeOffset.UtcNow);
-            return device is not null;
-        }
+        return AuthorizeActiveDevice(id, out device).Ok;
     }
 
     public bool CanStart(PairedDevice device, Guid profileId)
     {
-        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
-            device.CanStartProfile(profileId);
+        lock (sync)
+        {
+            var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
+                current.AssignedProfileIds!.Contains(profileId) && current.CanStartProfile(profileId);
+        }
     }
 
     public bool CanStop(PairedDevice device, Guid profileId)
     {
-        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
-            device.CanStopProfile(profileId);
+        lock (sync)
+        {
+            var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
+                current.AssignedProfileIds!.Contains(profileId) && current.CanStopProfile(profileId);
+        }
     }
 
     public bool CanExtendTimer(PairedDevice device, Guid profileId)
     {
-        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
-            device.CanExtendTimerForProfile(profileId);
+        lock (sync)
+        {
+            var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
+                current.AssignedProfileIds!.Contains(profileId) && current.CanExtendTimerForProfile(profileId);
+        }
     }
 
     public bool CanViewLogs(PairedDevice device, Guid profileId)
     {
-        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
-            device.CanViewLogsForProfile(profileId);
+        lock (sync)
+        {
+            var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
+                current.AssignedProfileIds!.Contains(profileId) && current.CanViewLogsForProfile(profileId);
+        }
     }
 
     public PairingDecision SetName(Guid id, string? name)
@@ -1135,7 +1297,7 @@ public sealed class PairingService
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Friend PC was not found.");
             device.Name = value;
             SaveState();
-            data.TryAudit($"device-name-change {device.Id} {DateTimeOffset.UtcNow:O}");
+            data.TryAudit($"device-name-change {device.Id} {UtcNow:O}");
             Activity("Access", "DeviceRenamed", "A paired PC was renamed locally.", deviceId: device.Id);
             return new PairingDecision(true, "DeviceNameSaved", "Friend PC name saved locally.");
         }
@@ -1149,7 +1311,7 @@ public sealed class PairingService
         try { data.RecordActivity(category, action, message, severity, profileId, deviceId, visibility); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
             System.Security.SecurityException or ArgumentException or JsonException or NotSupportedException)
-        { data.TryAudit($"activity-write-failed {category} {action} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
+        { data.TryAudit($"activity-write-failed {category} {action} {ex.GetType().Name} {UtcNow:O}"); }
     }
     private static bool Matches(string candidate, string expectedHash)
     {

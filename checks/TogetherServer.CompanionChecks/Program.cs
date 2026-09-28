@@ -227,6 +227,135 @@ try
     }
     Console.WriteLine("PASS bounded pairing windows separate approval, close, per-PC credentials, and emergency revoke"); passes++;
 
+    var accessRoot = Path.Combine(root, "owner-access-expiry");
+    var accessProfile = Guid.NewGuid();
+    var accessClock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 28, 12, 0, 0, TimeSpan.Zero));
+    PairingCredential accessCredential;
+    DateTimeOffset extendedAccessDeadline;
+    using (var accessData = new LocalData(accessRoot))
+    {
+        var accessService = new PairingService(accessData, accessClock);
+        var accessInvite = accessService.IssueServer(accessProfile, true, false,
+            "https://127.0.0.1:5131", new string('C', 64), false,
+            durationMinutes: 30, deviceLimit: 2);
+        accessCredential = accessService.Activate(new(accessProfile, accessInvite.Code, true))
+            ?? throw new Exception("access-expiry test device did not activate");
+        Require(accessService.SetPermissions(accessCredential.DeviceId, true, true,
+                canExtendTimer: true, canViewLogs: true).Ok,
+            "access-expiry test permissions were not saved");
+        var authenticated = accessService.Authenticate(accessCredential.DeviceId,
+            accessCredential.Credential, out var loadedDevice);
+        Require(authenticated.Ok && loadedDevice is not null, "access-expiry test credential did not authenticate");
+
+        var now = accessClock.GetUtcNow();
+        Require(accessService.SetAccessExpiry(accessCredential.DeviceId,
+                new(Clear: true, Duration: DeviceAccessDurations.OneHour)).Code == "InvalidAccessExpiry" &&
+            accessService.SetAccessExpiry(accessCredential.DeviceId,
+                new(AccessExpiresUtc: now)).Code == "AccessExpiryInPast" &&
+            accessService.SetAccessExpiry(accessCredential.DeviceId,
+                new(AccessExpiresUtc: now.AddDays(366))).Code == "AccessExpiryTooDistant" &&
+            accessService.SetAccessExpiry(accessCredential.DeviceId,
+                new(AccessExpiresUtc: now.ToOffset(TimeSpan.FromHours(2)).AddHours(1))).Code == "InvalidAccessExpiry" &&
+            accessService.SetAccessExpiry(accessCredential.DeviceId,
+                new(Duration: "Forever")).Code == "InvalidAccessDuration",
+            "owner access-expiry validation accepted ambiguous, past, distant, non-UTC, or unknown input");
+
+        var exactDeadline = now.AddMinutes(10);
+        var set = accessService.SetAccessExpiry(accessCredential.DeviceId,
+            new(AccessExpiresUtc: exactDeadline));
+        var beforeView = accessService.Views().Single(item => item.Id == accessCredential.DeviceId);
+        Require(set is { Ok: true, Code: "AccessExpirySet" } && set.AccessExpiresUtc == exactDeadline &&
+            beforeView.AccessExpiresUtc == exactDeadline && !beforeView.AccessExpired,
+            "the owner access deadline was not exposed as active in DeviceView");
+        accessClock.SetUtcNow(exactDeadline.AddTicks(-1));
+        Require(accessService.Authenticate(accessCredential.DeviceId, accessCredential.Credential, out _).Ok,
+            "owner access expired before the exact UTC boundary");
+        accessClock.SetUtcNow(exactDeadline);
+        var exactDenial = accessService.Authenticate(accessCredential.DeviceId,
+            accessCredential.Credential, out _);
+        var staleHeartbeat = accessService.RecordHeartbeat(loadedDevice!,
+            new(accessCredential.DeviceId, Guid.NewGuid(), 1, "check", CompanionProtocol.Current));
+        var staleRenewal = accessService.Renew(loadedDevice!,
+            new(accessCredential.DeviceId, Guid.NewGuid()), false);
+        var expiredView = accessService.Views().Single(item => item.Id == accessCredential.DeviceId);
+        var persistedExpiredDevice = accessData.LoadDevices().Single(item => item.Id == accessCredential.DeviceId);
+        Require(exactDenial.Code == "AccessExpired" && staleHeartbeat.Code == "AccessExpired" &&
+            staleRenewal is null && !accessService.CanAccess(loadedDevice!, accessProfile) &&
+            expiredView.AccessExpired && !expiredView.Revoked && expiredView.AssignedProfileIds.SequenceEqual([accessProfile]) &&
+            expiredView.CanStart && expiredView.CanStop && expiredView.CanExtendTimer && expiredView.CanViewLogs &&
+            !persistedExpiredDevice.Revoked && persistedExpiredDevice.CredentialHash is not null &&
+            persistedExpiredDevice.AssignedProfileIds!.SequenceEqual([accessProfile]),
+            "exact expiry failed open, trusted a stale loaded object, or changed credential, assignment, or permissions");
+
+        var extended = accessService.SetAccessExpiry(accessCredential.DeviceId,
+            new(Duration: DeviceAccessDurations.OneHour));
+        extendedAccessDeadline = accessClock.GetUtcNow().AddHours(1);
+        Require(extended is { Ok: true, AccessExpired: false } &&
+            extended.AccessExpiresUtc == extendedAccessDeadline &&
+            accessService.Authenticate(accessCredential.DeviceId, accessCredential.Credential, out _).Ok,
+            "extending expired owner access did not immediately restore the same credential");
+        var activity = accessData.LoadActivity();
+        var audit = File.ReadAllText(Path.Combine(accessRoot, "audit.log"));
+        Require(activity.Any(item => item.Action == "AccessExpirySet") &&
+            activity.Any(item => item.Action == "AccessExpired") &&
+            activity.All(item => !item.Message.Contains(accessCredential.Credential, StringComparison.Ordinal)) &&
+            !audit.Contains(accessCredential.Credential, StringComparison.Ordinal),
+            "local access-expiry activity/audit was incomplete or exposed a credential");
+    }
+    using (var reopenedAccessData = new LocalData(accessRoot))
+    {
+        var reopenedAccess = new PairingService(reopenedAccessData, accessClock);
+        var restartedView = reopenedAccess.Views().Single(item => item.Id == accessCredential.DeviceId);
+        Require(restartedView.AccessExpiresUtc == extendedAccessDeadline && !restartedView.AccessExpired &&
+            reopenedAccess.Authenticate(accessCredential.DeviceId, accessCredential.Credential, out _).Ok,
+            "the owner access extension did not persist across restart");
+
+        var pendingInvite = reopenedAccess.IssueServer(accessProfile, true, false,
+            "https://127.0.0.1:5131", new string('C', 64), false,
+            durationMinutes: 30, deviceLimit: 2, requireApproval: true);
+        var pendingCredential = reopenedAccess.Activate(new(accessProfile, pendingInvite.Code, true))
+            ?? throw new Exception("approval-pending access-expiry device did not activate");
+        var pendingDeadline = accessClock.GetUtcNow().AddMinutes(5);
+        Require(reopenedAccess.SetAccessExpiry(pendingCredential.DeviceId,
+            new(AccessExpiresUtc: pendingDeadline)).Ok, "pending-device access deadline was not saved");
+
+        var clearDeadline = accessClock.GetUtcNow().AddMinutes(2);
+        Require(reopenedAccess.SetAccessExpiry(accessCredential.DeviceId,
+            new(AccessExpiresUtc: clearDeadline)).Ok, "clear test deadline was not saved");
+        accessClock.SetUtcNow(clearDeadline);
+        Require(reopenedAccess.Authenticate(accessCredential.DeviceId,
+                accessCredential.Credential, out _).Code == "AccessExpired" &&
+            reopenedAccess.SetAccessExpiry(accessCredential.DeviceId, new(Clear: true)).Code == "AccessExpiryCleared" &&
+            reopenedAccess.Authenticate(accessCredential.DeviceId, accessCredential.Credential, out _).Ok &&
+            reopenedAccess.Views().Single(item => item.Id == accessCredential.DeviceId) is
+            { AccessExpiresUtc: null, AccessExpired: false },
+            "clearing an expired owner deadline did not immediately restore the same credential");
+
+        accessClock.SetUtcNow(pendingDeadline);
+        Require(reopenedAccess.Authenticate(pendingCredential.DeviceId,
+                pendingCredential.Credential, out _).Code == "ApprovalPending" &&
+            reopenedAccess.Approve(pendingCredential.DeviceId).Ok &&
+            reopenedAccess.Authenticate(pendingCredential.DeviceId,
+                pendingCredential.Credential, out _).Code == "AccessExpired",
+            "approval-pending and owner-expired states were not independently fail closed");
+        Require(reopenedAccess.SetAccessExpiry(pendingCredential.DeviceId,
+            new(Duration: DeviceAccessDurations.ThirtyDays)).Ok,
+            "credential-expiry independence deadline was not saved");
+        accessClock.SetUtcNow(pendingCredential.ExpiresUtc);
+        Require(reopenedAccess.Authenticate(pendingCredential.DeviceId,
+                pendingCredential.Credential, out _).Code == "Expired",
+            "renewable credential expiry was conflated with owner access expiry");
+
+        Require(reopenedAccess.SetAccessExpiry(Guid.NewGuid(), new(Clear: true)).Code == "UnknownDevice" &&
+            reopenedAccess.Revoke(accessCredential.DeviceId).Ok &&
+            reopenedAccess.SetAccessExpiry(accessCredential.DeviceId,
+                new(Duration: DeviceAccessDurations.OneDay)).Code == "Revoked" &&
+            reopenedAccess.Authenticate(accessCredential.DeviceId,
+                accessCredential.Credential, out _).Code == "Revoked",
+            "unknown or revoked devices accepted an owner deadline, or revocation lost precedence");
+    }
+    Console.WriteLine("PASS owner access expiry is exact, persistent, reversible, and independent of credential state"); passes++;
+
     host = StartApp(appPath, "--host", hostPort, hostData, drainDiagnostics: false);
     DisconnectDiagnosticPipes(host);
     await WaitLocal(hostPort);
@@ -515,6 +644,160 @@ try
         $"oldCompatible={priorCredentialStatus.Protocol?.Compatible}, newCompatible={currentCredentialStatus.Protocol?.Compatible}, " +
         $"secondRenewal={(int)oldTokenNewRenewal.Status}");
     Console.WriteLine("PASS credential renewal is idempotent and the overlap token cannot renew itself"); passes++;
+
+    var accessActivation = await publicClient.PostAsJsonAsync("/api/companion/pair",
+        new PairingActivation(inviteA.DeviceId, inviteA.Code, true), webJson);
+    Require(accessActivation.IsSuccessStatusCode, "HTTP access-expiry device activation failed");
+    var accessHttpCredential = await accessActivation.Content.ReadFromJsonAsync<PairingCredential>(webJson)
+        ?? throw new Exception("empty HTTP access-expiry activation");
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/permissions",
+        new(true, true, CanExtendTimer: true, CanViewLogs: true))).Ok,
+        "HTTP access-expiry device permissions were not saved");
+    var accessBefore = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion"))
+        .GetProperty("devices").EnumerateArray()
+        .Single(device => device.GetProperty("id").GetGuid() == accessHttpCredential.DeviceId);
+    var accessAssignments = accessBefore.GetProperty("assignedProfileIds").EnumerateArray()
+        .Select(item => item.GetGuid()).ToArray();
+    var friendModeExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(bLocal,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry", new(Clear: true));
+    var unknownExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{Guid.NewGuid()}/access-expiry", new(Clear: true));
+    var pastExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(AccessExpiresUtc: DateTimeOffset.UtcNow.AddSeconds(-1)));
+    var distantExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(AccessExpiresUtc: DateTimeOffset.UtcNow.AddDays(366)));
+    var nonUtcExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(AccessExpiresUtc: DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(2)).AddHours(1)));
+    var unknownDuration = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry", new(Duration: "Forever"));
+    using (var malformedRequest = new HttpRequestMessage(HttpMethod.Put,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry"))
+    {
+        malformedRequest.Content = new StringContent("{\"accessExpiresUtc\":\"not-a-timestamp\"}",
+            Encoding.UTF8, "application/json");
+        malformedRequest.Headers.Add("Origin", owner.BaseAddress!.ToString().TrimEnd('/'));
+        malformedRequest.Headers.Add("X-TogetherServer-Local", "1");
+        using var malformedResponse = await owner.SendAsync(malformedRequest);
+        Require(malformedResponse.StatusCode == HttpStatusCode.BadRequest,
+            "a malformed owner access timestamp was accepted");
+    }
+    Require(friendModeExpiry.Code == "FriendMode" && unknownExpiry.Code == "UnknownDevice" &&
+        pastExpiry.Code == "AccessExpiryInPast" && distantExpiry.Code == "AccessExpiryTooDistant" &&
+        nonUtcExpiry.Code == "InvalidAccessExpiry" && unknownDuration.Code == "InvalidAccessDuration",
+        "the local owner access endpoint did not reject Friend mode, unknown device, or invalid values");
+
+    var httpDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+    var operationCountBeforeAccessExpiry =
+        (await owner.GetFromJsonAsync<List<RemoteOperationView>>("/api/local/operations"))!.Count;
+    var setHttpExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(AccessExpiresUtc: httpDeadline));
+    Require(setHttpExpiry.Ok && setHttpExpiry.AccessExpiresUtc == httpDeadline,
+        "the local owner endpoint did not return the saved UTC deadline");
+    var expiryDelay = httpDeadline - DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(100);
+    if (expiryDelay > TimeSpan.Zero) await Task.Delay(expiryDelay);
+
+    async Task<(HttpStatusCode Status, string Code, string Body)> ExpiredCompanionRequest(
+        HttpMethod method, string path, object? body = null)
+    {
+        using var request = new HttpRequestMessage(method, path);
+        if (body is not null)
+            request.Content = new StringContent(JsonSerializer.Serialize(body, body.GetType(), webJson),
+                Encoding.UTF8, "application/json");
+        request.Headers.Add("X-Device-Id", accessHttpCredential.DeviceId.ToString());
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        request.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessHttpCredential.Credential);
+        using var response = await publicClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        using var document = JsonDocument.Parse(responseBody);
+        return (response.StatusCode, document.RootElement.GetProperty("code").GetString() ?? "", responseBody);
+    }
+
+    var expiredDenials = new List<(HttpStatusCode Status, string Code, string Body)>
+    {
+        await ExpiredCompanionRequest(HttpMethod.Get, "/api/companion/status"),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/heartbeat",
+            new HeartbeatRequest(accessHttpCredential.DeviceId, Guid.NewGuid(), 1, "expiry-check",
+                CompanionProtocol.Current, CompanionProtocol.Capabilities)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/start",
+            new RemoteActionRequest(accessHttpCredential.DeviceId, profile.Id)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/stop",
+            new RemoteActionRequest(accessHttpCredential.DeviceId, profile.Id)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/restart",
+            new RemoteActionRequest(accessHttpCredential.DeviceId, profile.Id)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/replace",
+            new RemoteActionRequest(accessHttpCredential.DeviceId, profile.Id)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/extend",
+            new RemoteActionRequest(accessHttpCredential.DeviceId, profile.Id)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/refresh",
+            new RemoteActionRequest(accessHttpCredential.DeviceId, profile.Id)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/credential/renew",
+            new CredentialRenewalRequest(accessHttpCredential.DeviceId, Guid.NewGuid())),
+        await ExpiredCompanionRequest(HttpMethod.Get, $"/api/companion/servers/{profile.Id}/logs"),
+        await ExpiredCompanionRequest(HttpMethod.Get, $"/api/companion/operations/{Guid.NewGuid()}"),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/endpoint/recover",
+            new EndpointRecoveryProofRequest(accessHttpCredential.DeviceId)),
+        await ExpiredCompanionRequest(HttpMethod.Post, "/api/companion/credential/revoke",
+            new DeviceSelfRequest(accessHttpCredential.DeviceId))
+    };
+    var accessAfter = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion"))
+        .GetProperty("devices").EnumerateArray()
+        .Single(device => device.GetProperty("id").GetGuid() == accessHttpCredential.DeviceId);
+    var operationCountAfterExpiry =
+        (await owner.GetFromJsonAsync<List<RemoteOperationView>>("/api/local/operations"))!.Count;
+    Require(expiredDenials.All(item => item.Status == HttpStatusCode.Forbidden && item.Code == "AccessExpired" &&
+            !item.Body.Contains(accessHttpCredential.Credential, StringComparison.Ordinal)) &&
+        accessAfter.GetProperty("accessExpired").GetBoolean() &&
+        accessAfter.GetProperty("accessExpiresUtc").GetDateTimeOffset() == httpDeadline &&
+        !accessAfter.GetProperty("revoked").GetBoolean() && accessAfter.GetProperty("paired").GetBoolean() &&
+        accessAfter.GetProperty("assignedProfileIds").EnumerateArray().Select(item => item.GetGuid())
+            .SequenceEqual(accessAssignments) && accessAfter.GetProperty("canStart").GetBoolean() &&
+        accessAfter.GetProperty("canStop").GetBoolean() && accessAfter.GetProperty("canExtendTimer").GetBoolean() &&
+        accessAfter.GetProperty("canViewLogs").GetBoolean() && operationCountAfterExpiry == operationCountBeforeAccessExpiry,
+        "expired owner access leaked a secret, allowed a companion path, journaled lifecycle work, or changed device authority");
+    var accessActivity = (await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Activity!;
+    Require(accessActivity.Any(item => item.DeviceId == accessHttpCredential.DeviceId && item.Action == "AccessExpirySet") &&
+        accessActivity.Any(item => item.DeviceId == accessHttpCredential.DeviceId && item.Action == "AccessExpired") &&
+        !File.ReadAllText(Path.Combine(hostData, "audit.log"))
+            .Contains(accessHttpCredential.Credential, StringComparison.Ordinal),
+        "Host activity/audit omitted access expiry or exposed the device credential");
+
+    var extendedHttpAccess = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(Duration: DeviceAccessDurations.OneHour));
+    Require(extendedHttpAccess.Ok && !extendedHttpAccess.AccessExpired &&
+        (await PublicStatus(publicClient, accessHttpCredential)).Profiles.Single().Id == profile.Id,
+        "reviewed-duration extension did not immediately restore companion status");
+    var clearHttpDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+    Require((await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(AccessExpiresUtc: clearHttpDeadline))).Ok, "clear-path deadline was not saved");
+    var clearDelay = clearHttpDeadline - DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(100);
+    if (clearDelay > TimeSpan.Zero) await Task.Delay(clearDelay);
+    var clearedHttpAccess = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry", new(Clear: true));
+    var clearedHttpView = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion"))
+        .GetProperty("devices").EnumerateArray()
+        .Single(device => device.GetProperty("id").GetGuid() == accessHttpCredential.DeviceId);
+    Require(clearedHttpAccess.Code == "AccessExpiryCleared" &&
+        clearedHttpView.GetProperty("accessExpiresUtc").ValueKind == JsonValueKind.Null &&
+        !clearedHttpView.GetProperty("accessExpired").GetBoolean() &&
+        (await PublicStatus(publicClient, accessHttpCredential)).Profiles.Single().Id == profile.Id,
+        "clearing expired owner access did not restore the unchanged companion credential");
+    Require((await OwnerPost<object, PairingDecision>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/revoke", new { })).Ok,
+        "HTTP access-expiry test device could not be revoked");
+    var revokedExpiry = await OwnerPut<DeviceAccessExpiryRequest, DeviceAccessExpiryResult>(owner,
+        $"/api/local/devices/{accessHttpCredential.DeviceId}/access-expiry",
+        new(Duration: DeviceAccessDurations.OneDay));
+    Require(revokedExpiry.Code == "Revoked", "the local owner endpoint changed a revoked device deadline");
+    Console.WriteLine("PASS owner access expiry denies every authenticated companion path and restores only by local extension or clear"); passes++;
+
     var joinActivation = await publicClient.PostAsJsonAsync("/api/companion/pair",
         new PairingActivation(inviteB.DeviceId, inviteB.Code, true), webJson);
     Require(joinActivation.IsSuccessStatusCode, "second server code activation failed");
@@ -1608,4 +1891,17 @@ sealed class ProbeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken) => Task.FromResult(respond(request));
+}
+
+sealed class ManualTimeProvider(DateTimeOffset initialUtcNow) : TimeProvider
+{
+    private DateTimeOffset utcNow = initialUtcNow;
+
+    public override DateTimeOffset GetUtcNow() => utcNow;
+
+    public void SetUtcNow(DateTimeOffset value)
+    {
+        if (value.Offset != TimeSpan.Zero) throw new ArgumentException("Manual test time must be UTC.", nameof(value));
+        utcNow = value;
+    }
 }

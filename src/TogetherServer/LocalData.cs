@@ -118,7 +118,7 @@ public sealed record NewWorldOwnership(Guid ProfileId, string WorldId, string Wo
 
 internal sealed class PairingPersistentState
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = LocalData.CurrentPairingSchemaVersion;
     public List<PairedDevice> Devices { get; set; } = [];
     public List<ServerInviteState> ServerInvites { get; set; } = [];
     public List<CredentialRenewalReceipt> CredentialRenewals { get; set; } = [];
@@ -127,7 +127,8 @@ internal sealed class PairingPersistentState
 public sealed class LocalData : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    internal const int CurrentStorageSchemaVersion = 1;
+    internal const int CurrentStorageSchemaVersion = 2;
+    internal const int CurrentPairingSchemaVersion = 2;
     private const string PairingStateFile = "pairing-state.protected";
     private const string StorageSchemaFile = "storage-schema.json";
     private const string RecoveryMarkerFile = "data-recovery.json";
@@ -137,6 +138,7 @@ public sealed class LocalData : IDisposable
     private readonly FileStream gate;
     private readonly string root;
     private readonly int defaultCompanionPort;
+    private readonly int supportedStorageSchemaVersion;
     private readonly object auditSync = new();
     private readonly object activitySync = new();
     private readonly object stateSync = new();
@@ -162,9 +164,17 @@ public sealed class LocalData : IDisposable
     }
 
     public LocalData(string root, int defaultCompanionPort = 5131)
+        : this(root, defaultCompanionPort, CurrentStorageSchemaVersion)
     {
+    }
+
+    internal LocalData(string root, int defaultCompanionPort, int supportedStorageSchemaVersion)
+    {
+        if (supportedStorageSchemaVersion is < 1 or > CurrentStorageSchemaVersion)
+            throw new ArgumentOutOfRangeException(nameof(supportedStorageSchemaVersion));
         this.root = Path.GetFullPath(root);
         this.defaultCompanionPort = defaultCompanionPort;
+        this.supportedStorageSchemaVersion = supportedStorageSchemaVersion;
         Directory.CreateDirectory(this.root);
         gate = new FileStream(Path.Combine(this.root, "host.lock"), FileMode.OpenOrCreate,
             FileAccess.ReadWrite, FileShare.None);
@@ -287,9 +297,15 @@ public sealed class LocalData : IDisposable
             {
                 var state = JsonSerializer.Deserialize<PairingPersistentState>(bytes, Json)
                     ?? throw new InvalidDataException("Invalid protected pairing state");
-                if (state.SchemaVersion != 1 || state.Devices is null || state.ServerInvites is null ||
+                if (state.SchemaVersion is not (1 or CurrentPairingSchemaVersion) ||
+                    state.Devices is null || state.ServerInvites is null ||
                     state.CredentialRenewals is null)
                     throw new InvalidDataException("Unsupported protected pairing state");
+                if (state.SchemaVersion == 1)
+                {
+                    state.SchemaVersion = CurrentPairingSchemaVersion;
+                    SavePairingState(state);
+                }
                 CleanupLegacyPairingFiles(state.Devices.Select(device => device.Id));
                 return state;
             }
@@ -323,8 +339,11 @@ public sealed class LocalData : IDisposable
         CleanupLegacyPairingFiles(migrated.Devices.Select(device => device.Id));
         return migrated;
     }
-    internal void SavePairingState(PairingPersistentState state) =>
+    internal void SavePairingState(PairingPersistentState state)
+    {
+        state.SchemaVersion = CurrentPairingSchemaVersion;
         SaveProtected(PairingStateFile, JsonSerializer.SerializeToUtf8Bytes(state, Json));
+    }
     internal CredentialRenewalReceipt? LoadCredentialRenewalReceipt(Guid deviceId)
     {
         return LoadPairingState().CredentialRenewals.SingleOrDefault(item => item.DeviceId == deviceId);
@@ -567,16 +586,52 @@ public sealed class LocalData : IDisposable
 
     private void EnsureStorageSchema()
     {
-        var schema = Load(StorageSchemaFile, new StorageSchema());
-        if (schema.Version > CurrentStorageSchemaVersion)
+        var schema = Load(StorageSchemaFile, new StorageSchema { Version = supportedStorageSchemaVersion });
+        if (schema.Version > supportedStorageSchemaVersion)
             throw new InvalidDataException(
-                $"This data directory uses storage schema {schema.Version}, but this TogetherServer build supports only schema {CurrentStorageSchemaVersion}.");
+                $"This data directory uses storage schema {schema.Version}, but this TogetherServer build supports only schema {supportedStorageSchemaVersion}.");
         if (schema.Version < 1)
         {
             Quarantine(StorageSchemaFile, "The storage schema version was invalid.", true);
-            schema = new StorageSchema();
+            schema = new StorageSchema { Version = supportedStorageSchemaVersion };
+        }
+        while (schema.Version < supportedStorageSchemaVersion)
+        {
+            if (schema.Version != 1 || supportedStorageSchemaVersion < 2)
+                throw new InvalidDataException(
+                    $"Storage schema {schema.Version} cannot be migrated safely by this TogetherServer build.");
+
+            // Advance the directory marker first. From this point onward an
+            // older v1 binary rejects the data root before it can ignore the
+            // owner access deadline. If migration is interrupted, this build
+            // still accepts and completes a v1 protected pairing snapshot.
+            schema.Version = 2;
+            Save(StorageSchemaFile, schema);
+            MigratePairingStateToV2();
         }
         Save(StorageSchemaFile, schema);
+    }
+
+    private void MigratePairingStateToV2()
+    {
+        if (!HasProtected(PairingStateFile)) return;
+        var bytes = LoadProtected(PairingStateFile);
+        if (bytes is null) return;
+        try
+        {
+            var state = JsonSerializer.Deserialize<PairingPersistentState>(bytes, Json)
+                ?? throw new InvalidDataException("Invalid protected pairing state");
+            if (state.SchemaVersion is not (1 or CurrentPairingSchemaVersion) ||
+                state.Devices is null || state.ServerInvites is null || state.CredentialRenewals is null)
+                throw new InvalidDataException("Unsupported protected pairing state");
+            if (state.SchemaVersion == 1) SavePairingState(state);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or NotSupportedException)
+        {
+            Quarantine(PairingStateFile,
+                "TogetherServer could not migrate the protected pairing snapshot; all affected credentials were revoked locally.",
+                false);
+        }
     }
 
     private void Quarantine(string name, string reason, bool blocksLifecycle)
