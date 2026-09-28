@@ -54,6 +54,7 @@ public sealed record FriendView(string Mode, string State, string Detail, string
     Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
     string? ConnectionCode = null, string? HostVersion = null,
     string FriendVersion = "", int? HostProtocolVersion = null, bool ProtocolCompatible = true,
+    IReadOnlyList<string>? HostCapabilities = null,
     DateTimeOffset? CredentialExpiresUtc = null, DateTimeOffset? CertificateExpiresUtc = null,
     string? ExpiryWarning = null, string RouteMode = ConnectionRouteModes.DirectInternet,
     string? RouteAddress = null, Guid HostId = default, string? ConnectionName = null,
@@ -112,6 +113,73 @@ internal sealed class FriendLink : IDisposable
         return profile is null
             ? new(false, "UnknownProfile", "This server is not available from the selected Host connection.", DateTimeOffset.UtcNow)
             : GameEndpointProbe.Check(profile);
+    }
+
+    public async Task<ServerLogResult> ReadLogsAsync(Guid profileId, ServerLogQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryRetain()) return LogFailure("ConnectionClosed", "This saved Host connection is closing.");
+        var entered = false;
+        try
+        {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            if (config is null) return LogFailure("NotPaired", "Pair with a Host first.");
+            var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null)
+                return new(false, "UnknownProfile",
+                    "This server is not available from the selected Host connection.",
+                    ServerLogSourceStates.Missing, null, [], null, false);
+            if (!profile.CanViewLogs)
+                return LogFailure("PermissionDenied",
+                    "The Host has not granted View logs permission for this server to this PC.");
+            if (view.HostCapabilities?.Contains(CompanionProtocol.ServerLogsCapability,
+                    StringComparer.Ordinal) != true)
+                return new(false, "ServerLogsUpdateRequired",
+                    "Update the Host app before viewing server logs from this PC.",
+                    ServerLogSourceStates.Unsupported, null, [], null, false);
+            if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
+                return LogFailure("CredentialExpired",
+                    "This PC's Host credential expired. Pair again with the current server code.");
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get,
+                    $"api/companion/servers/{profileId}/logs?{ServerLogService.QueryString(query)}");
+                using var response = await HostClient().SendAsync(request,
+                    HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+                try
+                {
+                    var result = JsonSerializer.Deserialize<ServerLogResult>(payload, Json);
+                    if (ValidLogResult(result)) return result!;
+                }
+                catch (JsonException) { /* Parse a bounded denial below. */ }
+
+                try
+                {
+                    var denial = JsonSerializer.Deserialize<PairingDecision>(payload, Json);
+                    if (denial is { Code.Length: > 0, Message.Length: > 0 })
+                        return LogFailure(denial.Code, denial.Message);
+                }
+                catch (JsonException) { /* Converted to a typed invalid response below. */ }
+                return LogFailure("InvalidResponse", "The Host returned an unreadable server-log response.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
+            {
+                var issue = ConnectionFailure(ex);
+                return LogFailure(issue.Code, issue.Message);
+            }
+        }
+        finally
+        {
+            if (entered) gate.Release();
+            ReleaseRetained();
+        }
     }
 
     public async Task<FriendActionResult> PairAsync(string invitation, string? hostAddress = null)
@@ -710,12 +778,31 @@ internal sealed class FriendLink : IDisposable
             compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
             HostVersion: status.Protocol?.AppVersion, FriendVersion: CompanionProtocol.AppVersion,
             HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible,
+            HostCapabilities: status.Protocol?.Capabilities ?? [],
             CredentialExpiresUtc: config.CredentialExpiresUtc,
             CertificateExpiresUtc: config.CertificateExpiresUtc, ExpiryWarning: warning,
             RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
             RouteAddress: config.Route?.Address, HostId: config.HostId,
             ConnectionName: config.DisplayName, Activity: status.Activity);
     }
+
+    private static bool ValidLogResult(ServerLogResult? result)
+    {
+        if (result is null || string.IsNullOrWhiteSpace(result.Code) || result.Code.Length > 80 ||
+            string.IsNullOrWhiteSpace(result.Message) || result.Message.Length > 600 ||
+            result.SourceState is not (ServerLogSourceStates.Active or ServerLogSourceStates.Ended or
+                ServerLogSourceStates.Missing or ServerLogSourceStates.Unsupported or ServerLogSourceStates.Unavailable) ||
+            result.RunId is { Length: > 32 } || result.Cursor is { Length: > 160 } ||
+            result.Records is null || result.Records.Count > ServerLogService.MaximumLimit)
+            return false;
+        return result.Records.All(record => record is not null && record.Message is not null &&
+            record.Message.Length <= 2048 && record.Severity is not null && record.Severity.Length <= 16 &&
+            record.Category is not null && record.Category.Length <= 32 &&
+            record.Stream is not null && record.Stream.Length <= 16);
+    }
+
+    private static ServerLogResult LogFailure(string code, string message) =>
+        new(false, code, message, ServerLogSourceStates.Unavailable, null, [], null, false);
 
     private HttpClient HostClient()
     {

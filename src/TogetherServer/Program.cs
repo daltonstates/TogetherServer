@@ -125,6 +125,9 @@ app.Use(async (context, next) =>
     await next();
 });
 
+static bool HasSensitiveLocalGetHeader(HttpContext context) =>
+    context.Request.Headers["X-TogetherServer-Local"] == "1";
+
 app.MapGet("/api/local/snapshot", async () => friendMode
     ? Results.Json(friend.View())
     : Results.Json(await manager.SnapshotAsync()));
@@ -413,6 +416,7 @@ app.MapPost("/api/local/profiles/{id:guid}/players/refresh", (Guid id) =>
     HostOnly(() => manager.RefreshPlayerCountAsync(id)));
 app.MapGet("/api/local/profiles/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (friendMode)
         return Results.Conflict(new ServerLogResult(false, "FriendMode",
             "Switch to Host mode to read local server logs.", ServerLogSourceStates.Unavailable,
@@ -921,6 +925,17 @@ app.MapPost("/api/local/friend/poll", async () =>
     friendMode ? Results.Json(await friend.PollAsync()) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/probe-game", async (Guid id) =>
     friendMode ? Results.Json(await friend.ProbeGameEndpointAsync(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!friendMode)
+        return Results.Conflict(new ServerLogResult(false, "HostMode",
+            "Switch to Join to read logs shared by a Host.", ServerLogSourceStates.Unavailable,
+            null, [], null, false));
+    if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
+        return Results.BadRequest(error);
+    return Results.Json(await friend.ReadLogsAsync(id, query, context.RequestAborted));
+});
 app.MapPost("/api/local/friend/{id:guid}/{action}", async (Guid id, string action) =>
     friendMode ? Results.Json(await friend.RequestAsync(id, action)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 

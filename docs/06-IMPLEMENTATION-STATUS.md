@@ -1084,3 +1084,23 @@ The explicit display-log registry now contains Valheim, Minecraft Java, and Mine
 | External Minecraft acceptance | Not run. No owner-installed Java or Bedrock server, real game client/Friend join, real zero/one/disconnect transition, public game route, saved-world change, or save/restart integrity was exercised. Fixture console output and stop markers do not prove those outcomes. |
 
 No version was changed and no installer, tag, release, production process, production data, real world, network configuration, or terms-gated game binary was touched.
+
+## 2026-09-28 - Host and Friend server-log workspace
+
+Starting Git HEAD: `2bcb922`, isolated branch `codex/logs-ui`. The selected Host server now has a compact **Logs** workspace tab, and an assigned Friend receives **View logs** only when that server's independent permission is enabled. The shared viewer tails a bounded recent page, advances by run-scoped cursor, caps client-held history, resets on run or stale-cursor changes, supports pause/resume, manual refresh, and severity/category/contains filters, and polls only while visible. Active, ended, missing, unsupported/update-required, unavailable, and request-error states remain explicit. Display records are labeled diagnostic-only and never enter readiness, occupancy, timer, Stop, replacement, or recovery decisions.
+
+The Host permission editors now expose View logs globally and per assigned server with mixed exceptions; the default remains false and Start, Stop, Extend, maintenance, and the remote-lifecycle toggle remain independent. `server-logs-v1` is advertised in companion capabilities. Friend React code calls only a loopback Friend-service proxy, while the service adds the protected pinned credential and rejects a Host without the capability. Both sensitive local log GET routes require `X-TogetherServer-Local: 1`. Public requests still authenticate and consume their verified-device rate limit before assignment, exact-profile permission, protocol, query, and owned-source checks.
+
+Friend log access is restricted to the exact active run, including after restart, so retained ended-run history remains Host-only. Host may still inspect the latest retained owned run. Thirty-day run-log retention now executes on app startup and each read as well as new-log creation, preserves every recorded active log, and keeps possible evidence when lifecycle-authoritative state is quarantined. The request contract accepts only bounded cursor, limit, severity, category, stream, and contains fields; Custom remote logs remain unsupported, and no Minecraft log adapter was added.
+
+| Check | Result |
+| --- | --- |
+| UI tests, lint, and build | Pass: Vitest 12 files / 45 tests; ESLint with zero warnings; TypeScript and Vite production build with 35 modules. |
+| Locked .NET restore and Release solution build | Pass: locked restore completed; final build completed with 0 warnings and 0 errors. |
+| Focused bundled staging smoke | Pass: the embedded JS/CSS contained the log viewer, `server-logs-v1`, and compact console styles; both sensitive local log GETs rejected a missing header, then reached their typed Host/unknown-profile routes with the header. The marked disposable staging root was removed. |
+| Focused core checks | Pass: 34 groups, 0 failures, including exact-run display isolation, Host-only ended history, startup/read retention, active-log preservation, and quarantine evidence preservation. |
+| Companion checks | Pass: 38 groups, 0 failures, including default-false permission wiring, assignment/grant/revoke checks, capability/update refusal, Host and Friend local-header rejection, protected-credential local proxying, maintenance/remote-controls independence, redaction, cursor bounds, and retained-history denial after restart. |
+| In-app browser visual review | Skipped: the browser runtime reported no available browser. Component rendering and production bundling passed, but no attended screenshot or viewport click-through is claimed. |
+| External acceptance | Not run: no installed production app/data, real game binary, real world, actual Friend PC, public/private route, game join, player transition, or save/restart was used. Fixture and loopback results do not satisfy those gates. |
+
+No version was changed, no package or release was prepared, and no installed or running production process, production world, firewall, router, or DNS setting was touched.

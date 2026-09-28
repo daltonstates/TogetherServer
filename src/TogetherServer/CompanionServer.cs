@@ -305,6 +305,12 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     "The Host has not granted View logs permission for this server to this PC."),
                     statusCode: StatusCodes.Status403Forbidden);
             }
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName].ToString(), out var clientProtocol) ||
+                !CompanionProtocol.IsCompatible(clientProtocol))
+                return Results.Json(new ServerLogResult(false, "ServerLogsUpdateRequired",
+                    "Update the Friend app before viewing server logs from this Host.",
+                    ServerLogSourceStates.Unsupported, null, [], null, false),
+                    statusCode: StatusCodes.Status409Conflict);
             if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
                 return Results.BadRequest(error);
             var result = await serverLogs.ReadAsync(profileId, query, ServerLogAudience.Friend);

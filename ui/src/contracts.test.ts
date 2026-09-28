@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseServerLogResult, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -117,6 +117,24 @@ describe('runtime contracts', () => {
 
     expect(invite.listenerWarning).toBeNull()
     expect(canceledBrowse.path).toBeNull()
+  })
+
+  it('strictly decodes bounded server-log records and states', () => {
+    const logs = parseServerLogResult({
+      ok: true,
+      code: 'LogAvailable',
+      message: 'Showing records from the exact active managed run.',
+      sourceState: 'Active',
+      runId: 'a'.repeat(32),
+      records: [{ timestampUtc: '2026-09-28T12:00:00Z', severity: 'Warning', category: 'Lifecycle',
+        stream: 'Server', message: 'Server started.' }],
+      cursor: 'cursor',
+      hasMore: false
+    })
+
+    expect(logs.records[0].severity).toBe('Warning')
+    expect(() => parseServerLogResult({ ...logs, sourceState: 'Ready' })).toThrow(ContractError)
+    expect(() => parseServerLogResult({ ...logs, records: [{ ...logs.records[0], message: 'x'.repeat(2049) }] })).toThrow(ContractError)
   })
 
   it('removes an invalid local setup draft', () => {

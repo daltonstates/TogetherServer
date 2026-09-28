@@ -806,7 +806,8 @@ try
     Require(joinStatus.Profiles.Count == 1 && joinStatus.Profiles.Single().Id == joinProfile.Id &&
         joinStatus.Profiles.Single().JoinAddress == $"1.2.3.4:{joinProfile.GamePort}" &&
         joinStatus.Protocol is { ProtocolVersion: CompanionProtocol.Current, Compatible: true } &&
-        joinStatus.Protocol.Capabilities.Contains("durable-operations"),
+        joinStatus.Protocol.Capabilities.Contains("durable-operations") &&
+        joinStatus.Protocol.Capabilities.Contains(CompanionProtocol.ServerLogsCapability),
         "a credential did not remain scoped to its server and current join address: " +
         JsonSerializer.Serialize(joinStatus, webJson));
     var heartbeatC = new HeartbeatRequest(credentialC.DeviceId, Guid.NewGuid(), 1, "check",
@@ -1306,15 +1307,21 @@ try
         "View logs permission could not be granted independently per server");
     var permittedLogStatus = await PublicStatus(directLogClient, directLogCredential);
     var missingManagedLog = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id);
+    var oldPeerLogs = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id,
+        includeProtocol: false);
     var customRemoteLogs = await PublicLogs(directLogClient, directLogCredential, customLogProfile.Id);
     Require(permittedLogStatus.Profiles.Single(item => item.Id == stopProfile.Id).CanViewLogs &&
         permittedLogStatus.Profiles.Single(item => item.Id == customLogProfile.Id).CanViewLogs &&
+        permittedLogStatus.Protocol?.Capabilities.Contains(CompanionProtocol.ServerLogsCapability) == true &&
         missingManagedLog.Status == HttpStatusCode.OK &&
         missingManagedLog.Body.GetProperty("sourceState").GetString() == ServerLogSourceStates.Missing &&
+        oldPeerLogs.Status == HttpStatusCode.Conflict &&
+        oldPeerLogs.Body.GetProperty("code").GetString() == "ServerLogsUpdateRequired" &&
+        oldPeerLogs.Body.GetProperty("sourceState").GetString() == ServerLogSourceStates.Unsupported &&
         customRemoteLogs.Status == HttpStatusCode.Forbidden &&
         customRemoteLogs.Body.GetProperty("code").GetString() == "CustomRemoteLogsUnavailable" &&
         customRemoteLogs.Body.GetProperty("records").GetArrayLength() == 0,
-        "public/local permission views, missing source state, or Custom remote log denial was incorrect");
+        "capability advertisement, old-peer gating, missing source state, or Custom remote log denial was incorrect");
     Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
         $"/api/local/devices/{directLogCredential.DeviceId}/permissions",
         new(true, false, "logs", CanViewLogs: false))).Ok,
@@ -1329,7 +1336,8 @@ try
         "View logs permission could not be restored for read checks");
     Console.WriteLine("PASS View logs defaults false and enforces assignment, per-server grant, revocation, and no Custom remote logs"); passes++;
     Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
-        $"/api/local/devices/{stopDeviceId}/permissions", new(true, true, CanExtendTimer: true))).Ok,
+        $"/api/local/devices/{stopDeviceId}/permissions",
+        new(true, true, CanExtendTimer: true, CanViewLogs: true))).Ok,
         "restricted Friend Stop permission was not saved");
     var pairedStopSnapshot = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!;
     stopSettings = pairedStopSnapshot.Settings;
@@ -1340,14 +1348,31 @@ try
         "maintenance mode could not be enabled while Offline");
     var maintenanceView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     var maintenanceStart = await FriendAction(stopFriendLocal, stopProfile.Id, "start");
+    var maintenanceLogs = await OwnerGetJson<ServerLogResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/logs?limit=1");
     Require(maintenanceView.Profiles.Single().MaintenanceEnabled &&
         maintenanceView.Profiles.Single().MaintenanceMessage == "Owner maintenance check" &&
+        maintenanceView.Profiles.Single().CanViewLogs &&
+        maintenanceView.HostCapabilities?.Contains(CompanionProtocol.ServerLogsCapability) == true &&
         maintenanceView.Activity?.Any(item => item.Category == "Maintenance" && item.ProfileId == stopProfile.Id) == true &&
+        maintenanceLogs.Code == "NoManagedRunLog" &&
+        maintenanceLogs.SourceState == ServerLogSourceStates.Missing &&
         !maintenanceStart.Ok && maintenanceStart.Code == "MaintenanceMode",
-        "maintenance did not remain visible while denying remote lifecycle actions");
+        "maintenance denied remote lifecycle actions or incorrectly denied independent read-only logs");
     stopProfile.Maintenance = new MaintenanceOptions();
+    stopSettings.RemoteControlsEnabled = false;
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
-        "maintenance mode could not be ended");
+        "maintenance mode could not be ended while pausing remote controls");
+    var controlsPausedView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    var controlsPausedLogs = await OwnerGetJson<ServerLogResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/logs?limit=1");
+    Require(!controlsPausedView.RemoteControlsEnabled && controlsPausedView.Profiles.Single().CanViewLogs &&
+        controlsPausedLogs.Code == "NoManagedRunLog" &&
+        controlsPausedLogs.SourceState == ServerLogSourceStates.Missing,
+        "pausing remote controls incorrectly revoked independent read-only log access");
+    stopSettings.RemoteControlsEnabled = true;
+    Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
+        "remote controls could not be restored after the log-permission independence check");
     var stopPreparing = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     Require(stopPreparing.CanStop && !stopPreparing.Profiles.Single().CanStopNow &&
         !string.IsNullOrWhiteSpace(stopPreparing.Profiles.Single().StopReason),
@@ -1373,18 +1398,30 @@ try
         "09/28/2026 12:00:02: Chat player Alice SteamID 123456789 \u001b[31mwarn\rspoof\n");
     var arbitraryPath = Path.Combine(stopHostData, "owner-secret.txt");
     File.WriteAllText(arbitraryPath, "arbitrary-file-secret");
-    using var unknownLogField = await stopOwner.GetAsync(
-        $"/api/local/profiles/{stopProfile.Id}/logs?path={Uri.EscapeDataString(arbitraryPath)}");
-    using var invalidLimit = await stopOwner.GetAsync($"/api/local/profiles/{stopProfile.Id}/logs?limit=201");
-    var localLogs = await stopOwner.GetFromJsonAsync<ServerLogResult>(
+    using var hostWithoutLocalHeader = await stopOwner.GetAsync(
         $"/api/local/profiles/{stopProfile.Id}/logs?limit=1");
+    using var friendWithoutLocalHeader = await stopFriendLocal.GetAsync(
+        $"/api/local/friend/{stopProfile.Id}/logs?limit=1");
+    using var unknownLogField = await OwnerGet(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/logs?path={Uri.EscapeDataString(arbitraryPath)}");
+    using var invalidLimit = await OwnerGet(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/logs?limit=201");
+    var localLogs = await OwnerGetJson<ServerLogResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/logs?limit=1");
+    var friendProxyLogs = await OwnerGetJson<ServerLogResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/logs?limit=200");
     var remoteLogs = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id, "limit=200");
     var remoteLogResult = remoteLogs.Body.Deserialize<ServerLogResult>(webJson)
         ?? throw new Exception("remote log response was empty");
     var remoteText = string.Join(" ", remoteLogResult.Records.Select(item => item.Message));
-    Require(unknownLogField.StatusCode == HttpStatusCode.BadRequest &&
+    var proxyText = string.Join(" ", friendProxyLogs.Records.Select(item => item.Message));
+    Require(hostWithoutLocalHeader.StatusCode == HttpStatusCode.Forbidden &&
+        friendWithoutLocalHeader.StatusCode == HttpStatusCode.Forbidden &&
+        unknownLogField.StatusCode == HttpStatusCode.BadRequest &&
         invalidLimit.StatusCode == HttpStatusCode.BadRequest && localLogs is { Ok: true } &&
         localLogs.Records.Count == 1 && localLogs.HasMore && !string.IsNullOrWhiteSpace(localLogs.Cursor) &&
+        friendProxyLogs is { Ok: true, SourceState: ServerLogSourceStates.Active } &&
+        friendProxyLogs.Records.Count >= 3 && !proxyText.Contains("friend-secret", StringComparison.Ordinal) &&
         remoteLogs.Status == HttpStatusCode.OK && remoteLogResult.Records.Count >= 3 &&
         !remoteText.Contains("friend-secret", StringComparison.Ordinal) &&
         !remoteText.Contains("token-secret", StringComparison.Ordinal) &&
@@ -1394,7 +1431,7 @@ try
         !remoteText.Contains("123456789", StringComparison.Ordinal) &&
         !remoteText.Contains("arbitrary-file-secret", StringComparison.Ordinal) &&
         remoteLogResult.Records.All(record => record.Message.All(character => !char.IsControl(character))),
-        "log query bounds, exact owned path, redaction, or CR/LF/ANSI sanitization failed");
+        "local GET protection, Friend proxying, query bounds, exact owned path, or log sanitization failed");
     var invalidCursor = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id, "cursor=invalid");
     Require(invalidCursor.Status == HttpStatusCode.OK &&
         invalidCursor.Body.GetProperty("code").GetString() == "InvalidLogCursor",
@@ -1461,7 +1498,8 @@ try
         "a positive-player cancellation did not reset the Friend extension allowance for the next zero-player countdown");
     Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(stopOwner,
         $"/api/local/devices/{stopDeviceId}/servers", new([stopProfile.Id, replacementProfile.Id],
-        [new DeviceServerPermissionRequest(stopProfile.Id, true, true, true),
+        [new DeviceServerPermissionRequest(stopProfile.Id, true, true,
+                CanExtendTimer: true, CanViewLogs: true),
             new DeviceServerPermissionRequest(replacementProfile.Id, true, false)]))).Ok,
         "could not assign the queued-start profile for shutdown-race coverage");
     var stopSubmitted = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
@@ -1522,6 +1560,25 @@ try
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
     Console.WriteLine("PASS long remote Stop survives Friend restart and queued Start cannot race Host shutdown"); passes++;
+
+    var retainedHostLogs = await OwnerGetJson<ServerLogResult>(stopOwner,
+        $"/api/local/profiles/{stopProfile.Id}/logs?limit=200");
+    var retainedPublicLogs = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id,
+        "limit=200");
+    var retainedFriendLogs = await OwnerGetJson<ServerLogResult>(stopFriendLocal,
+        $"/api/local/friend/{stopProfile.Id}/logs?limit=200");
+    var retainedPublicResult = retainedPublicLogs.Body.Deserialize<ServerLogResult>(webJson)
+        ?? throw new Exception("retained Friend log response was empty");
+    Require(retainedHostLogs.Ok && retainedHostLogs.SourceState == ServerLogSourceStates.Ended &&
+        retainedHostLogs.Records.Count > 0 && retainedHostLogs.RunId is not null &&
+        retainedPublicLogs.Status == HttpStatusCode.OK &&
+        !retainedPublicResult.Ok && retainedPublicResult.Code == "FriendRetainedLogsUnavailable" &&
+        retainedPublicResult.SourceState == ServerLogSourceStates.Ended &&
+        retainedPublicResult.RunId is null && retainedPublicResult.Records.Count == 0 &&
+        !retainedFriendLogs.Ok && retainedFriendLogs.Code == "FriendRetainedLogsUnavailable" &&
+        retainedFriendLogs.RunId is null && retainedFriendLogs.Records.Count == 0,
+        "Host retained-run access or active-exact-run-only Friend access was not enforced after restart");
+    Console.WriteLine("PASS retained ended-run logs remain Host-only across restart"); passes++;
 
     var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");
     File.Delete(stopMarker);
@@ -1765,6 +1822,20 @@ async Task<TResponse> OwnerPut<TRequest, TResponse>(HttpClient client, string pa
     return await response.Content.ReadFromJsonAsync<TResponse>(webJson) ?? throw new Exception($"Empty local PUT {path}: {(int)response.StatusCode}");
 }
 
+async Task<HttpResponseMessage> OwnerGet(HttpClient client, string path)
+{
+    using var request = new HttpRequestMessage(HttpMethod.Get, path);
+    request.Headers.Add("X-TogetherServer-Local", "1");
+    return await client.SendAsync(request);
+}
+
+async Task<TResponse> OwnerGetJson<TResponse>(HttpClient client, string path)
+{
+    using var response = await OwnerGet(client, path);
+    return await response.Content.ReadFromJsonAsync<TResponse>(webJson) ??
+        throw new Exception($"Empty local GET {path}: {(int)response.StatusCode}");
+}
+
 async Task<PairingInvite> ServerInvite(HttpClient owner, Guid profileId, bool start, bool refresh = false,
     bool enableConnections = false)
 {
@@ -1789,12 +1860,14 @@ async Task<CompanionStatus> PublicStatus(HttpClient client, PairingCredential cr
 }
 
 async Task<(HttpStatusCode Status, JsonElement Body)> PublicLogs(HttpClient client,
-    PairingCredential credential, Guid profileId, string? query = null)
+    PairingCredential credential, Guid profileId, string? query = null, bool includeProtocol = true)
 {
     var path = $"/api/companion/servers/{profileId}/logs" +
         (string.IsNullOrWhiteSpace(query) ? "" : "?" + query);
     using var request = new HttpRequestMessage(HttpMethod.Get, path);
     request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
+    if (includeProtocol)
+        request.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
     using var response = await client.SendAsync(request);
     using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());

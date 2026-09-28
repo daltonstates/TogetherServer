@@ -97,6 +97,10 @@ public sealed class ServerLogService(LocalData data, HostManager manager)
             return new(false, "InvalidLogQuery", validation, ServerLogSourceStates.Unavailable,
                 null, [], null, false);
 
+        // Retention is enforced on every read as well as app startup and new
+        // log creation. It is display-only cleanup and never changes run
+        // identity or lifecycle authority.
+        data.PruneRunLogs();
         var source = await manager.ResolveServerLogSourceAsync(profileId);
         if (source is null)
             return new(false, "UnknownProfile", "Saved server was not found.",
@@ -113,6 +117,10 @@ public sealed class ServerLogService(LocalData data, HostManager manager)
             return new(false, "UnsupportedLogSource",
                 $"{source.Kind} logs are not supported in this version.",
                 ServerLogSourceStates.Unsupported, source.OperationId?.ToString("N"), [], null, false);
+        if (audience == ServerLogAudience.Friend && source.State == ServerLogSourceStates.Ended)
+            return new(false, "FriendRetainedLogsUnavailable",
+                "Friends can view only the exact active managed run. Retained ended-run logs remain Host-only.",
+                ServerLogSourceStates.Ended, null, [], null, false);
         if (source.OperationId is null || source.LogPath is null)
             return new(false, "NoManagedRunLog", "This server has no active or retained managed-run log.",
                 ServerLogSourceStates.Missing, null, [], null, false);
@@ -188,6 +196,21 @@ public sealed class ServerLogService(LocalData data, HostManager manager)
         {
             return false;
         }
+    }
+
+    internal static string QueryString(ServerLogQuery query)
+    {
+        var fields = new List<string> { "limit=" + query.Limit.ToString(CultureInfo.InvariantCulture) };
+        static void Add(List<string> target, string name, string? value)
+        {
+            if (value is not null) target.Add(name + "=" + Uri.EscapeDataString(value));
+        }
+        Add(fields, "cursor", query.Cursor);
+        Add(fields, "severity", query.Severity);
+        Add(fields, "category", query.Category);
+        Add(fields, "stream", query.Stream);
+        Add(fields, "contains", query.Contains);
+        return string.Join('&', fields);
     }
 }
 

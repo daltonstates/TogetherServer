@@ -22,8 +22,10 @@ import {
 } from './contracts'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
+import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
+import { devicePermission, globalPermissionRequest, permissionMix, type PermissionAction } from './permissionState'
 import {
   activityAfterMarker,
   readActivityClearMarkersFrom,
@@ -39,9 +41,9 @@ import './style.css'
 import './companion.css'
 
 type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'advanced'
-type HostServerTab = 'overview' | 'players' | 'backups' | 'setup'
+type HostServerTab = 'overview' | 'players' | 'logs' | 'backups' | 'setup'
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
-type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean }>
+type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
 
 function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
   const ref = useRef<HTMLInputElement | null>(null)
@@ -158,17 +160,6 @@ function serverAssignmentPreview(device: Device, profiles: Profile[]) {
   return `${names.slice(0, 2).join(', ')} + ${names.length - 2} more`
 }
 
-function devicePermission(device: Device, profileId: string) {
-  return device.serverPermissions?.find(permission => permission.profileId === profileId) ??
-    { profileId, canStart: device.canStart, canStop: device.canStop, canExtendTimer: device.canExtendTimer }
-}
-
-function permissionMix(device: Device, action: 'canStart' | 'canStop' | 'canExtendTimer') {
-  const values = device.assignedProfileIds.map(profileId => devicePermission(device, profileId)[action])
-  const global = device[action]
-  return { mixed: values.some(value => value !== global), all: global }
-}
-
 function hostAddress(endpoint: string): string {
   try {
     const url = new URL(endpoint)
@@ -217,6 +208,7 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [selectedHostProfileId, setSelectedHostProfileId] = useState('')
   const [hostServerTab, setHostServerTab] = useState<HostServerTab>('overview')
+  const [friendLogProfileId, setFriendLogProfileId] = useState('')
   const [hostMobileDetail, setHostMobileDetail] = useState(false)
   const [activityClearMarkers, setActivityClearMarkers] = useState<Record<string, string>>(() =>
     readActivityClearMarkersFrom(() => window.localStorage))
@@ -483,6 +475,8 @@ function App() {
       setFriendConnectionName(currentFriendConnectionName ?? hostAddress(currentFriendEndpoint))
   }, [currentMode, currentFriendConnectionId, currentFriendConnectionName, currentFriendEndpoint])
 
+  useEffect(() => setFriendLogProfileId(''), [currentFriendConnectionId])
+
   const copyText = async (value: string, label: string, fallback = 'Select and copy it instead.') => {
     try {
       await navigator.clipboard.writeText(value)
@@ -687,12 +681,11 @@ function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const setDevicePermissions = async (device: Device, canStart: boolean, canStop: boolean,
-    canExtendTimer: boolean, scope: 'start' | 'stop' | 'extend') => {
+  const setDevicePermissions = async (device: Device, action: PermissionAction, value: boolean) => {
     setPending(device.id)
     try {
       const result = await change(`/api/local/devices/${device.id}/permissions`, 'PUT',
-        { canStart, canStop, canExtendTimer, scope })
+        globalPermissionRequest(device, action, value))
       setNotice({ good: result.ok, text: result.message })
       await refreshCompanion()
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
@@ -913,7 +906,7 @@ function App() {
     setServerPermissionDraft(Object.fromEntries([...savedIds].map(profileId => {
       const permission = devicePermission(device, profileId)
       return [profileId, { canStart: permission.canStart, canStop: permission.canStop,
-        canExtendTimer: permission.canExtendTimer }]
+        canExtendTimer: permission.canExtendTimer, canViewLogs: permission.canViewLogs }]
     })))
     setServerAccessDeviceId(device.id)
   }
@@ -934,7 +927,8 @@ function App() {
           profileId,
           canStart: serverPermissionDraft[profileId]?.canStart ?? serverAccessDevice?.canStart ?? false,
           canStop: serverPermissionDraft[profileId]?.canStop ?? serverAccessDevice?.canStop ?? false,
-          canExtendTimer: serverPermissionDraft[profileId]?.canExtendTimer ?? serverAccessDevice?.canExtendTimer ?? false
+          canExtendTimer: serverPermissionDraft[profileId]?.canExtendTimer ?? serverAccessDevice?.canExtendTimer ?? false,
+          canViewLogs: serverPermissionDraft[profileId]?.canViewLogs ?? serverAccessDevice?.canViewLogs ?? false
         })) })
       setNotice({ good: result.ok, text: result.message })
       await refreshCompanion()
@@ -1244,6 +1238,7 @@ function App() {
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
           {snapshot.profiles.map(profile => {
             const connectionKey = `friend-${snapshot.connectionId}-${profile.id}`
+            const logAvailability = friendLogAvailability(profile.canViewLogs, snapshot.hostCapabilities)
             const addressKey = `${connectionKey}-address`
             const addressActivity = connectionActivity[addressKey] ?? null
             const operationBusy = profile.operation?.state === 'Pending' || profile.operation?.state === 'Running'
@@ -1269,6 +1264,16 @@ function App() {
                 {profile.autoShutdownAtUtc && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game endpoint...' : 'Check game endpoint from this PC'}</Button>}
               </div>
+              {logAvailability.visible && <div className="friend-log-surface">
+                <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
+                  onClick={() => setFriendLogProfileId(current => current === profile.id ? '' : profile.id)}>
+                  <Icon name="server" />{friendLogProfileId === profile.id ? 'Hide logs' : 'View logs'}
+                </Button>
+                {friendLogProfileId === profile.id && <ServerLogViewer
+                  endpoint={`/api/local/friend/${profile.id}/logs`}
+                  visible={workspacePage === 'join' && friendLogProfileId === profile.id}
+                  unsupported={logAvailability.unsupported} />}
+              </div>}
               {gameEndpointResults[profile.id] && <p className={gameEndpointResults[profile.id].answered ? 'helper-text' : 'warning-text'}>{gameEndpointResults[profile.id].message}</p>}
               {operationConflict && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{operationConflict.message}</p>
                 {operationConflict.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending || operationBusy} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
@@ -1300,7 +1305,7 @@ function App() {
             <section className="server-detail" data-server-tab={hostServerTab} aria-label={selectedHostProfile ? `${selectedHostProfile.name} workspace` : 'Server workspace'}>
               <Button className="mobile-back secondary" onClick={() => setHostMobileDetail(false)}>Back to all servers</Button>
               <nav className="server-tabs" aria-label="Selected server sections">
-                {(['overview', 'players', 'backups', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => setHostServerTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</Button>)}
+                {(['overview', 'players', 'logs', 'backups', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => setHostServerTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</Button>)}
               </nav>
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
@@ -1330,6 +1335,8 @@ function App() {
                 refreshing={pending === `players-${profile.id}`} refreshDisabled={!!pending || dirty}
                 onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
+                {hostServerTab === 'logs' && <ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
+                  visible={workspacePage === 'host' && hostServerTab === 'logs'} />}
                 <div hidden={hostServerTab !== 'overview'}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></div>
                 {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote lifecycle actions are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
@@ -1469,9 +1476,10 @@ function App() {
                   <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
                     <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Credential expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
                   <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, permissionMix(device, 'canStart').mixed ? true : event.target.checked, device.canStop, device.canExtendTimer, 'start')} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, device.canStart, permissionMix(device, 'canStop').mixed ? true : event.target.checked, device.canExtendTimer, 'stop')} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, device.canStart, device.canStop, permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked, 'extend')} /><span><strong>Extend empty-server timer</strong><small>Off by default. Friends get only the fixed increment and maximum configured by the Host.</small></span></label></div>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStart', permissionMix(device, 'canStart').mixed ? true : event.target.checked)} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canExtendTimer', permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked)} /><span><strong>Extend empty-server timer</strong><small>Off by default. Friends get only the fixed increment and maximum configured by the Host.</small></span></label>
+                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canViewLogs').mixed} checked={permissionMix(device, 'canViewLogs').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canViewLogs', permissionMix(device, 'canViewLogs').mixed ? true : event.target.checked)} /><span><strong>View logs</strong><small>{permissionMix(device, 'canViewLogs').mixed ? device.canViewLogs ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canViewLogs').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}. Read-only and independent of remote controls.</small></span></label></div>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
@@ -1557,15 +1565,15 @@ function App() {
             </div>
         </section>}
         {savedProfiles.length > 0 && serverAccessDevice && <dialog ref={serverAccessRef} className="panel modal-dialog server-access-dialog" aria-labelledby="server-access-title" onCancel={event => { event.preventDefault(); closeDeviceServerAccess() }}>
-          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>Selected servers expose their connection details. Start and Stop can be allowed separately for each one.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
+          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>Selected servers expose their connection details. Start, Stop, timer extension, and View logs stay independent.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
           {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
           <label className="server-picker-search">Search servers<Input value={serverAccessSearch} autoFocus placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
           <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!!pending || visibleServerAccessProfiles.length === 0} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!!pending || serverAccessDraft.length === 0} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
           <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
             const assigned = serverAccessDraft.includes(profile.id)
-            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer }
+            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer, canViewLogs: serverAccessDevice.canViewLogs }
             return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
-              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label><label><Input type="checkbox" checked={permission.canExtendTimer} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canExtendTimer: event.target.checked } }))} /> Extend timer</label></div></div>
+              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label><label><Input type="checkbox" checked={permission.canExtendTimer} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canExtendTimer: event.target.checked } }))} /> Extend timer</label><label><Input type="checkbox" checked={permission.canViewLogs} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canViewLogs: event.target.checked } }))} /> View logs</label></div></div>
           })}
             {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>
           <div className="server-picker-footer"><span>Changes apply when you save.</span><div className="actions"><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button><Button disabled={!!pending} onClick={() => void saveDeviceServerAccess()}>{pending === serverAccessDevice.id ? 'Saving…' : 'Save access'}</Button></div></div>

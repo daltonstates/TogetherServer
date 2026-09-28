@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react'
 
 export function useSingleFlightPolling(task: (signal: AbortSignal) => Promise<void>, intervalMs: number,
-  onError?: (error: unknown) => void) {
+  onError?: (error: unknown) => void, enabled = true, restartKey: unknown = undefined) {
   const taskRef = useRef(task)
   const errorRef = useRef(onError)
   useEffect(() => { taskRef.current = task }, [task])
   useEffect(() => { errorRef.current = onError }, [onError])
 
   useEffect(() => {
+    if (!enabled) return
     let active = true
     let timer: number | undefined
     const controller = new AbortController()
@@ -28,5 +29,5 @@ export function useSingleFlightPolling(task: (signal: AbortSignal) => Promise<vo
       if (timer !== undefined) window.clearTimeout(timer)
       controller.abort()
     }
-  }, [intervalMs])
+  }, [enabled, intervalMs, restartKey])
 }

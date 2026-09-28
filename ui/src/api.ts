@@ -1,6 +1,7 @@
 import { ContractError, type Decoder } from './contracts'
 
 export const localHeaders = { 'Content-Type': 'application/json', 'X-TogetherServer-Local': '1' }
+export const localGetHeaders = { 'X-TogetherServer-Local': '1' }
 
 export class ApiError extends Error {
   readonly status: number
@@ -58,6 +59,10 @@ export async function requestJson<T>(path: string, decoder: Decoder<T>, init: Re
 
 export function getJson<T>(path: string, decoder: Decoder<T>, signal?: AbortSignal): Promise<T> {
   return requestJson(path, decoder, { cache: 'no-store', signal })
+}
+
+export function getLocalJson<T>(path: string, decoder: Decoder<T>, signal?: AbortSignal): Promise<T> {
+  return requestJson(path, decoder, { cache: 'no-store', headers: localGetHeaders, signal })
 }
 
 export function changeJson<T>(path: string, method: 'POST' | 'PUT', decoder: Decoder<T>, body?: unknown,

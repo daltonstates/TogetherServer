@@ -186,6 +186,7 @@ public sealed class LocalData : IDisposable
             LoadRecoveryMarker();
             RecoverOrphanedLifecycleQuarantines();
             EnsureStorageSchema();
+            PruneRunLogs();
         }
         catch
         {
@@ -245,6 +246,12 @@ public sealed class LocalData : IDisposable
         Directory.CreateDirectory(directory);
         PruneRunLogs(directory);
         return RunLogPath(operationId);
+    }
+    internal void PruneRunLogs()
+    {
+        if (Recovery.LifecycleBlocked) return;
+        var directory = Path.Combine(root, "logs");
+        if (Directory.Exists(directory)) PruneRunLogs(directory);
     }
     internal string RunLogPath(Guid operationId) =>
         Path.Combine(root, "logs", operationId.ToString("N") + ".log");
@@ -730,7 +737,9 @@ public sealed class LocalData : IDisposable
     {
         try
         {
-            var active = LoadRuns().Where(run => !string.IsNullOrWhiteSpace(run.LogPath))
+            var runs = LoadRuns();
+            if (Recovery.LifecycleBlocked) return;
+            var active = runs.Where(run => !string.IsNullOrWhiteSpace(run.LogPath))
                 .Select(run => Path.GetFullPath(run.LogPath))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var cutoff = DateTime.UtcNow.AddDays(-30);

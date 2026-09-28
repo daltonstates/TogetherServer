@@ -138,9 +138,10 @@ export type PublicProfile = {
   canExtendTimer: boolean
   timerExtensionMinutes: number
   timerExtensionRemainingMinutes: number
+  canViewLogs: boolean
 }
 
-export type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean }
+export type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }
 
 export type Device = {
   id: string
@@ -150,6 +151,7 @@ export type Device = {
   canStart: boolean
   canStop: boolean
   canExtendTimer: boolean
+  canViewLogs: boolean
   revoked: boolean
   paired: boolean
   approvalPending: boolean
@@ -196,6 +198,7 @@ export type FriendSnapshot = {
   hostVersion?: string | null
   friendVersion?: string
   hostProtocolVersion?: number | null
+  hostCapabilities?: string[]
   protocolCompatible?: boolean
   credentialExpiresUtc?: string | null
   certificateExpiresUtc?: string | null
@@ -256,6 +259,25 @@ export type InviteState = { exists: boolean; open: boolean; canStart: boolean; d
 export type InviteResult = BasicResult & { password?: string; expiresUtc?: string | null; listenerActive?: boolean; listenerWarning?: string | null }
 export type PasswordResult = BasicResult & { password?: string }
 
+export type ServerLogSourceState = 'Active' | 'Ended' | 'Missing' | 'Unsupported' | 'Unavailable'
+export type ServerLogRecord = {
+  timestampUtc: string | null
+  severity: 'Info' | 'Warning' | 'Error'
+  category: string
+  stream: string
+  message: string
+}
+export type ServerLogResult = {
+  ok: boolean
+  code: string
+  message: string
+  sourceState: ServerLogSourceState
+  runId: string | null
+  records: ServerLogRecord[]
+  cursor: string | null
+  hasMore: boolean
+}
+
 export type Decoder<T> = (value: unknown, context?: string) => T
 
 export class ContractError extends Error {
@@ -275,6 +297,13 @@ function object(value: unknown, context: string): JsonRecord {
 function text(value: unknown, context = 'value'): string {
   if (typeof value !== 'string') throw new ContractError(`${context} must be text.`)
   return value
+}
+
+function boundedText(value: unknown, context: string, maximum: number, allowEmpty = false): string {
+  const parsed = text(value, context)
+  if ((!allowEmpty && parsed.length === 0) || parsed.length > maximum || [...parsed].some(character => character < ' ' && character !== '\t'))
+    throw new ContractError(`${context} is outside its supported bounds.`)
+  return parsed
 }
 
 function flag(value: unknown, context = 'value'): boolean {
@@ -528,7 +557,8 @@ const parsePublicProfile: Decoder<PublicProfile> = (value, context = 'public pro
     maintenanceMessage: nullableText(source.maintenanceMessage, `${context}.maintenanceMessage`),
     canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`),
     timerExtensionMinutes: numeric(source.timerExtensionMinutes, `${context}.timerExtensionMinutes`),
-    timerExtensionRemainingMinutes: numeric(source.timerExtensionRemainingMinutes, `${context}.timerExtensionRemainingMinutes`)
+    timerExtensionRemainingMinutes: numeric(source.timerExtensionRemainingMinutes, `${context}.timerExtensionRemainingMinutes`),
+    canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`)
   }
 }
 
@@ -545,6 +575,7 @@ const parseFriendSnapshotInternal = (value: unknown, context: string, depth: num
     connections: source.connections === null ? null : list(source.connections, `${context}.connections`, (item, itemContext) => parseFriendSnapshotInternal(item, itemContext ?? `${context}.connections`, depth + 1)),
     connectionCode: optionalNullableText(source.connectionCode, `${context}.connectionCode`), hostVersion: optionalNullableText(source.hostVersion, `${context}.hostVersion`),
     friendVersion: optionalText(source.friendVersion, `${context}.friendVersion`), hostProtocolVersion: optionalNullableNumber(source.hostProtocolVersion, `${context}.hostProtocolVersion`),
+    hostCapabilities: source.hostCapabilities === undefined ? undefined : textList(source.hostCapabilities, `${context}.hostCapabilities`),
     protocolCompatible: source.protocolCompatible === undefined ? undefined : flag(source.protocolCompatible, `${context}.protocolCompatible`),
     credentialExpiresUtc: optionalNullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),
     certificateExpiresUtc: optionalNullableText(source.certificateExpiresUtc, `${context}.certificateExpiresUtc`),
@@ -589,6 +620,38 @@ export const parseBasicResult: Decoder<BasicResult> = (value, context = 'result'
     operationId: optionalNullableText(source.operationId, `${context}.operationId`),
     operationState: source.operationState === undefined || source.operationState === null ? source.operationState :
       literal(source.operationState, ['Pending', 'Running', 'Succeeded', 'Failed', 'Interrupted'] as const, `${context}.operationState`)
+  }
+}
+
+export const parseServerLogResult: Decoder<ServerLogResult> = (value, context = 'server log result') => {
+  const source = object(value, context)
+  const records = list(source.records, `${context}.records`, (item, itemContext = `${context}.records`) => {
+    const record = object(item, itemContext)
+    const timestampUtc = nullableText(record.timestampUtc, `${itemContext}.timestampUtc`)
+    if (timestampUtc !== null && !Number.isFinite(Date.parse(timestampUtc)))
+      throw new ContractError(`${itemContext}.timestampUtc must be a timestamp or null.`)
+    return {
+      timestampUtc,
+      severity: literal(record.severity, ['Info', 'Warning', 'Error'] as const, `${itemContext}.severity`),
+      category: boundedText(record.category, `${itemContext}.category`, 32),
+      stream: boundedText(record.stream, `${itemContext}.stream`, 16),
+      message: boundedText(record.message, `${itemContext}.message`, 2048, true)
+    }
+  })
+  if (records.length > 200) throw new ContractError(`${context}.records has too many entries.`)
+  const runId = nullableText(source.runId, `${context}.runId`)
+  if (runId !== null && !/^[0-9a-f]{32}$/i.test(runId)) throw new ContractError(`${context}.runId is invalid.`)
+  const cursor = nullableText(source.cursor, `${context}.cursor`)
+  if (cursor !== null && (cursor.length === 0 || cursor.length > 160)) throw new ContractError(`${context}.cursor is invalid.`)
+  return {
+    ok: flag(source.ok, `${context}.ok`),
+    code: boundedText(source.code, `${context}.code`, 80),
+    message: boundedText(source.message, `${context}.message`, 600),
+    sourceState: literal(source.sourceState, ['Active', 'Ended', 'Missing', 'Unsupported', 'Unavailable'] as const, `${context}.sourceState`),
+    runId,
+    records,
+    cursor,
+    hasMore: flag(source.hasMore, `${context}.hasMore`)
   }
 }
 
@@ -735,7 +798,8 @@ export const parseInternetRouteCheck: Decoder<InternetRouteCheck> = (value, cont
 const parseServerPermission: Decoder<ServerPermission> = (value, context = 'server permission') => {
   const source = object(value, context)
   return { profileId: text(source.profileId, `${context}.profileId`), canStart: flag(source.canStart, `${context}.canStart`),
-    canStop: flag(source.canStop, `${context}.canStop`), canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`) }
+    canStop: flag(source.canStop, `${context}.canStop`), canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`),
+    canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`) }
 }
 
 const parseDevice: Decoder<Device> = (value, context = 'device') => {
@@ -743,7 +807,8 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
   return { id: text(source.id, `${context}.id`), profileId: text(source.profileId, `${context}.profileId`),
     assignedProfileIds: textList(source.assignedProfileIds, `${context}.assignedProfileIds`), name: text(source.name, `${context}.name`),
     canStart: flag(source.canStart, `${context}.canStart`), canStop: flag(source.canStop, `${context}.canStop`),
-    canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`), revoked: flag(source.revoked, `${context}.revoked`),
+    canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`), canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
+    revoked: flag(source.revoked, `${context}.revoked`),
     paired: flag(source.paired, `${context}.paired`), approvalPending: flag(source.approvalPending, `${context}.approvalPending`),
     credentialExpiresUtc: nullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),
     lastHeartbeatUtc: nullableText(source.lastHeartbeatUtc, `${context}.lastHeartbeatUtc`),

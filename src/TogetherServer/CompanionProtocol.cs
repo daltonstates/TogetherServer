@@ -7,6 +7,7 @@ public sealed record CompanionProtocolInfo(string AppVersion, int ProtocolVersio
 public static class CompanionProtocol
 {
     public const string HeaderName = "X-TogetherServer-Protocol";
+    public const string ServerLogsCapability = "server-logs-v1";
     public const int Current = 3;
     public const int Minimum = 3;
     public static readonly IReadOnlyList<string> Capabilities =
@@ -20,7 +21,8 @@ public static class CompanionProtocol
         "timer-extension",
         "player-count-refresh",
         "pairing-windows",
-        "action-protocol-header"
+        "action-protocol-header",
+        ServerLogsCapability
     ];
 
     public static string AppVersion => typeof(CompanionProtocol).Assembly.GetName().Version?.ToString(3) ?? "unknown";

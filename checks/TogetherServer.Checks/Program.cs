@@ -724,11 +724,67 @@ await Check("managed server logs are exact-run bounded and sanitized independent
     File.WriteAllText(endedData.NewRunLogPath(endedOperation), "09/28/2026 12:05:00: shutdown complete\n");
     endedData.SaveRunArchive([new ManagedRunArchive(profile.Id, endedOperation, GameKinds.Valheim,
         profile.WorldId, null, null, true, "Stopped", DateTimeOffset.UtcNow, false)]);
-    var ended = await new ServerLogService(endedData, Manager(endedData))
-        .ReadAsync(profile.Id, new(), ServerLogAudience.Host);
+    var endedLogs = new ServerLogService(endedData, Manager(endedData));
+    var ended = await endedLogs.ReadAsync(profile.Id, new(), ServerLogAudience.Host);
+    var friendEnded = await endedLogs.ReadAsync(profile.Id, new(), ServerLogAudience.Friend);
     Require(ended.Ok && ended.SourceState == ServerLogSourceStates.Ended &&
-        ended.RunId == endedOperation.ToString("N") && ended.Records.Count == 1,
-        "the exact recent ended run was not identified honestly");
+        ended.RunId == endedOperation.ToString("N") && ended.Records.Count == 1 &&
+        !friendEnded.Ok && friendEnded.Code == "FriendRetainedLogsUnavailable" &&
+        friendEnded.SourceState == ServerLogSourceStates.Ended && friendEnded.RunId is null &&
+        friendEnded.Records.Count == 0,
+        "Host retained logs or active-run-only Friend isolation was not enforced");
+});
+
+await Check("managed server log retention runs at startup and before reads", async () =>
+{
+    var retentionRoot = Path.Combine(root, "server-log-retention");
+    var directory = Path.Combine(retentionRoot, "logs");
+    Directory.CreateDirectory(directory);
+    var startupExpired = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".log");
+    var startupRecent = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".log");
+    File.WriteAllText(startupExpired, "expired before startup\n");
+    File.WriteAllText(startupRecent, "recent before startup\n");
+    File.SetLastWriteTimeUtc(startupExpired, DateTime.UtcNow.AddDays(-31));
+    File.SetLastWriteTimeUtc(startupRecent, DateTime.UtcNow.AddDays(-29));
+
+    using var data = new LocalData(retentionRoot);
+    Require(!File.Exists(startupExpired) && File.Exists(startupRecent),
+        "startup did not enforce the documented 30-day owned-log retention boundary");
+
+    var profile = Profile("log-retention-profile", "log-retention-world", FreePort());
+    profile.Kind = GameKinds.Valheim;
+    data.SaveSettings(Settings(profile));
+    var operationId = Guid.NewGuid();
+    var activePath = data.NewRunLogPath(operationId);
+    File.WriteAllText(activePath, "09/28/2026 12:00:00: active owned run\n");
+    data.SaveRuns([new ManagedRun
+    {
+        ProfileId = profile.Id,
+        OperationId = operationId,
+        Kind = GameKinds.Valheim,
+        WorldId = profile.WorldId,
+        LogPath = activePath
+    }]);
+    File.SetLastWriteTimeUtc(activePath, DateTime.UtcNow.AddDays(-31));
+    var expiredBeforeRead = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".log");
+    File.WriteAllText(expiredBeforeRead, "expired before read\n");
+    File.SetLastWriteTimeUtc(expiredBeforeRead, DateTime.UtcNow.AddDays(-31));
+
+    _ = await new ServerLogService(data, Manager(data))
+        .ReadAsync(profile.Id, new(), ServerLogAudience.Host);
+    Require(!File.Exists(expiredBeforeRead) && File.Exists(activePath),
+        "read-time retention did not remove an expired unowned log or preserve the recorded active run");
+
+    var blockedRoot = Path.Combine(root, "server-log-retention-blocked");
+    var blockedLogs = Path.Combine(blockedRoot, "logs");
+    Directory.CreateDirectory(blockedLogs);
+    var blockedEvidence = Path.Combine(blockedLogs, Guid.NewGuid().ToString("N") + ".log");
+    File.WriteAllText(blockedEvidence, "retained while run identity needs recovery\n");
+    File.SetLastWriteTimeUtc(blockedEvidence, DateTime.UtcNow.AddDays(-31));
+    File.WriteAllText(Path.Combine(blockedRoot, "runs.json"), "{not-json");
+    using var blockedData = new LocalData(blockedRoot);
+    Require(blockedData.Recovery.LifecycleBlocked && File.Exists(blockedEvidence),
+        "retention deleted possible run evidence while authoritative lifecycle state was quarantined");
 });
 
 await Check("port diagnostics show local game and Friend listeners honestly", async () =>

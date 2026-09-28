@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { errorMessage, requestJson } from './api'
+import { errorMessage, getLocalJson, requestJson } from './api'
 import { parseBasicResult } from './contracts'
 
 function jsonResponse(status: number, payload: unknown): Response {
@@ -38,5 +38,17 @@ describe('requestJson', () => {
     const error = await requestJson('/api/test', parseBasicResult).catch(reason => reason as unknown)
 
     expect(errorMessage(error)).toBe('FriendMode: Switch to My server first.')
+  })
+
+  it('sends the local-only header from the sensitive GET helper', async () => {
+    const fetch = vi.fn(async () => jsonResponse(200, { ok: true, code: 'Ok', message: 'Done' }))
+    vi.stubGlobal('fetch', fetch)
+
+    await getLocalJson('/api/local/profiles/test/logs', parseBasicResult)
+
+    expect(fetch).toHaveBeenCalledWith('/api/local/profiles/test/logs', expect.objectContaining({
+      cache: 'no-store',
+      headers: { 'X-TogetherServer-Local': '1' }
+    }))
   })
 })

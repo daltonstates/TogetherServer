@@ -159,6 +159,28 @@ public sealed class FriendService : IDisposable
             : link.ProbeGameEndpoint(profileId));
     }
 
+    public Task<ServerLogResult> ReadLogsAsync(Guid profileId, ServerLogQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        FriendLink? link;
+        lock (sync)
+        {
+            if (disposed)
+                return Task.FromResult(new ServerLogResult(false, "ConnectionClosed",
+                    "Saved Host connections are closing.", ServerLogSourceStates.Unavailable,
+                    null, [], null, false));
+            link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            if (link?.View().Profiles.Any(profile =>
+                    profile.Id == profileId && profile.CanViewLogs) != true)
+                link = null;
+        }
+        return link is null
+            ? Task.FromResult(new ServerLogResult(false, "PermissionDenied",
+                "This server is not available with View logs permission from a saved Host connection.",
+                ServerLogSourceStates.Unavailable, null, [], null, false))
+            : link.ReadLogsAsync(profileId, query, cancellationToken);
+    }
+
     public Task<FriendActionResult> RequestAsync(Guid profileId, string action)
     {
         lock (sync)
