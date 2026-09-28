@@ -42,7 +42,7 @@ public sealed class FriendService : IDisposable
                 ?? connections.FirstOrDefault();
             return selected is null
                 ? new FriendView("Friend", "Not paired", "Paste the server invite code from the Host PC.",
-                    "", null, false, false, false, [], Connections: connections)
+                    "", null, false, false, false, [], [], Connections: connections)
                 : selected with { Connections = connections };
         }
     }

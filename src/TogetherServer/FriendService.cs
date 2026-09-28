@@ -51,10 +51,10 @@ public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice,
     IReadOnlyList<ActivityEvent>? Activity = null);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
+    IReadOnlyList<string> HostCapabilities,
     Guid ConnectionId = default, IReadOnlyList<FriendView>? Connections = null,
     string? ConnectionCode = null, string? HostVersion = null,
     string FriendVersion = "", int? HostProtocolVersion = null, bool ProtocolCompatible = true,
-    IReadOnlyList<string>? HostCapabilities = null,
     DateTimeOffset? CredentialExpiresUtc = null, DateTimeOffset? CertificateExpiresUtc = null,
     string? ExpiryWarning = null, string RouteMode = ConnectionRouteModes.DirectInternet,
     string? RouteAddress = null, Guid HostId = default, string? ConnectionName = null,
@@ -100,9 +100,9 @@ internal sealed class FriendLink : IDisposable
             config.CachedProfiles ??= [];
         }
         view = config is null
-            ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, false, false, false, [])
+            ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, false, false, false, [], [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
-                null, false, false, false, [], ConnectionName: config.DisplayName);
+                null, false, false, false, [], [], ConnectionName: config.DisplayName);
     }
 
     public FriendView View() => view;
@@ -249,7 +249,7 @@ internal sealed class FriendLink : IDisposable
                 view = new FriendView("Friend", credential.ApprovalPending ? "Awaiting approval" : "Disconnected/Unknown",
                     credential.ApprovalPending ? "Paired securely; waiting for the Host owner to approve this PC locally."
                         : "Paired; waiting for an authenticated heartbeat.",
-                    config.Endpoint, null, false, false, false, [], ConnectionName: config.DisplayName);
+                    config.Endpoint, null, false, false, false, [], [], ConnectionName: config.DisplayName);
                 return new(true, credential.ApprovalPending ? "ApprovalPending" : "Paired",
                     credential.ApprovalPending
                         ? "Credential saved securely. The Host owner must approve this PC before it can connect."
@@ -460,7 +460,7 @@ internal sealed class FriendLink : IDisposable
             data.DeleteProtected(configFile);
             config = null;
             view = new("Friend", "Not paired", "This saved Host connection was forgotten.", "",
-                null, false, false, false, []);
+                null, false, false, false, [], []);
             return new(true, revoked ? "ConnectionForgottenAndRevoked" : "ConnectionForgottenLocally",
                 revoked
                     ? "This PC's Host credential was revoked, then the saved connection was removed locally."
@@ -781,9 +781,9 @@ internal sealed class FriendLink : IDisposable
                 status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
             config.Endpoint, DateTimeOffset.UtcNow, compatible && status.RemoteControlsEnabled,
             compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
+            status.Protocol?.Capabilities ?? [],
             HostVersion: status.Protocol?.AppVersion, FriendVersion: CompanionProtocol.AppVersion,
             HostProtocolVersion: status.Protocol?.ProtocolVersion, ProtocolCompatible: compatible,
-            HostCapabilities: status.Protocol?.Capabilities ?? [],
             CredentialExpiresUtc: config.CredentialExpiresUtc,
             CertificateExpiresUtc: config.CertificateExpiresUtc, ExpiryWarning: warning,
             RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,

@@ -40,6 +40,75 @@ describe('runtime contracts', () => {
     expect(parseDataRecoveryView(recovery).lifecycleBlocked).toBe(true)
   })
 
+  it('accepts the exact not-paired Friend snapshot with unavailable Host capabilities', () => {
+    const snapshot = parseSnapshot({
+      mode: 'Friend',
+      state: 'Not paired',
+      detail: 'Paste the server invite code from the Host PC.',
+      endpoint: '',
+      lastConnectedUtc: null,
+      remoteControlsEnabled: false,
+      canStart: false,
+      canStop: false,
+      profiles: [],
+      connectionId: '00000000-0000-0000-0000-000000000000',
+      connections: [],
+      connectionCode: null,
+      hostVersion: null,
+      friendVersion: '',
+      hostProtocolVersion: null,
+      protocolCompatible: true,
+      hostCapabilities: null,
+      credentialExpiresUtc: null,
+      certificateExpiresUtc: null,
+      expiryWarning: null,
+      routeMode: 'DirectInternet',
+      routeAddress: null,
+      hostId: '00000000-0000-0000-0000-000000000000',
+      connectionName: null,
+      activity: null
+    })
+
+    expect(snapshot.mode).toBe('Friend')
+    if (snapshot.mode === 'Friend') expect(snapshot.hostCapabilities).toEqual([])
+  })
+
+  it('normalizes unavailable capabilities recursively without accepting malformed lists', () => {
+    const savedConnection = {
+      mode: 'Friend',
+      state: 'Disconnected/Unknown',
+      detail: 'Waiting for a verified Host response.',
+      endpoint: 'https://192.0.2.10:5131',
+      lastConnectedUtc: null,
+      remoteControlsEnabled: false,
+      canStart: false,
+      canStop: false,
+      profiles: [],
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      connections: null,
+      hostCapabilities: null
+    }
+    const aggregate = {
+      ...savedConnection,
+      state: 'Not paired',
+      detail: 'Paste the server invite code from the Host PC.',
+      endpoint: '',
+      connectionId: '00000000-0000-0000-0000-000000000000',
+      connections: [savedConnection],
+      hostCapabilities: undefined
+    }
+
+    const snapshot = parseSnapshot(aggregate)
+    expect(snapshot.mode).toBe('Friend')
+    if (snapshot.mode === 'Friend') {
+      expect(snapshot.hostCapabilities).toEqual([])
+      expect(snapshot.connections?.[0].hostCapabilities).toEqual([])
+    }
+    expect(() => parseSnapshot({ ...aggregate, hostCapabilities: 'server-logs-v1' })).toThrow(/must be a list/)
+    expect(() => parseSnapshot({ ...aggregate, connections: [{ ...savedConnection, hostCapabilities: ['server-logs-v1', 1] }] }))
+      .toThrow(/must be text/)
+  })
+
   it('rejects invalid settings instead of trusting persisted JSON', () => {
     expect(() => parseSettings({ ...settings, companionPort: '5131' })).toThrow(ContractError)
   })

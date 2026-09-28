@@ -573,6 +573,11 @@ try
     await WaitLocal(friendAPort); await WaitLocal(friendBPort);
     using var aLocal = LocalClient(friendAPort);
     using var bLocal = LocalClient(friendBPort);
+    var unpairedFriendSnapshot = await aLocal.GetFromJsonAsync<JsonElement>("/api/local/snapshot");
+    Require(unpairedFriendSnapshot.TryGetProperty("hostCapabilities", out var unpairedCapabilities) &&
+        unpairedCapabilities.ValueKind == JsonValueKind.Array && unpairedCapabilities.GetArrayLength() == 0,
+        "an unpaired Friend snapshot did not emit an empty Host capability list");
+    Console.WriteLine("PASS unpaired Friend snapshots emit a canonical empty Host capability list"); passes++;
     var tampered = inviteA with { Fingerprint = new string('0', 64) };
     Require(HostIdentity.TryAddress("127.0.0.1", out var defaultAddress) &&
         defaultAddress == "https://127.0.0.1:5131" &&
@@ -592,6 +597,16 @@ try
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(passwordA));
     Require(pairedA.Ok, "a current invite did not pair without a separate Host IP");
+    var newlyPairedSnapshot = await aLocal.GetFromJsonAsync<JsonElement>("/api/local/snapshot");
+    var newlyPairedConnections = newlyPairedSnapshot.GetProperty("connections");
+    Require(newlyPairedSnapshot.TryGetProperty("hostCapabilities", out var newlyPairedCapabilities) &&
+        newlyPairedCapabilities.ValueKind == JsonValueKind.Array && newlyPairedCapabilities.GetArrayLength() == 0 &&
+        newlyPairedConnections.ValueKind == JsonValueKind.Array && newlyPairedConnections.GetArrayLength() == 1 &&
+        newlyPairedConnections.EnumerateArray().All(connection =>
+            connection.TryGetProperty("hostCapabilities", out var nestedCapabilities) &&
+            nestedCapabilities.ValueKind == JsonValueKind.Array && nestedCapabilities.GetArrayLength() == 0),
+        "a newly paired Friend snapshot did not emit empty Host capability lists at every projection level");
+    Console.WriteLine("PASS newly paired Friend snapshots emit canonical capability lists for selected and nested connections"); passes++;
     var wrongPasswordPin = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(tampered), $"127.0.0.1:{companionPort}"));
     Require(!wrongPasswordPin.Ok && wrongPasswordPin.Code == "HostIdentityMismatch", "password pairing accepted the wrong Host TLS pin");

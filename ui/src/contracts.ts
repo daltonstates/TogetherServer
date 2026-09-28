@@ -242,7 +242,7 @@ export type FriendSnapshot = {
   hostVersion?: string | null
   friendVersion?: string
   hostProtocolVersion?: number | null
-  hostCapabilities?: string[]
+  hostCapabilities: string[]
   protocolCompatible?: boolean
   credentialExpiresUtc?: string | null
   certificateExpiresUtc?: string | null
@@ -661,7 +661,8 @@ const parseFriendSnapshotInternal = (value: unknown, context: string, depth: num
     connections: source.connections === null ? null : list(source.connections, `${context}.connections`, (item, itemContext) => parseFriendSnapshotInternal(item, itemContext ?? `${context}.connections`, depth + 1)),
     connectionCode: optionalNullableText(source.connectionCode, `${context}.connectionCode`), hostVersion: optionalNullableText(source.hostVersion, `${context}.hostVersion`),
     friendVersion: optionalText(source.friendVersion, `${context}.friendVersion`), hostProtocolVersion: optionalNullableNumber(source.hostProtocolVersion, `${context}.hostProtocolVersion`),
-    hostCapabilities: source.hostCapabilities === undefined ? undefined : textList(source.hostCapabilities, `${context}.hostCapabilities`),
+    hostCapabilities: source.hostCapabilities === undefined || source.hostCapabilities === null
+      ? [] : textList(source.hostCapabilities, `${context}.hostCapabilities`),
     protocolCompatible: source.protocolCompatible === undefined ? undefined : flag(source.protocolCompatible, `${context}.protocolCompatible`),
     credentialExpiresUtc: optionalNullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),
     certificateExpiresUtc: optionalNullableText(source.certificateExpiresUtc, `${context}.certificateExpiresUtc`),

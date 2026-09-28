@@ -438,8 +438,13 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     Write-Host 'PASS published EXE starts and gracefully stops synthetic Valheim'
 
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
-    $friend = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot"
+    $friendResponse = Invoke-WebRequest -Uri "$baseUrl/api/local/snapshot" -UseBasicParsing
+    $friend = $friendResponse.Content | ConvertFrom-Json
     if (!$mode.ok -or $friend.mode -ne 'Friend' -or $friend.state -ne 'Not paired') { throw 'Friend mode switch failed.' }
+    if ($friend.hostCapabilities -isnot [System.Array] -or $friend.connections -isnot [System.Array] -or
+        @($friend.connections | Where-Object { $_.hostCapabilities -isnot [System.Array] }).Count -ne 0) {
+        throw 'Friend mode snapshot did not expose Host capabilities as JSON arrays for the selected and saved connections.'
+    }
     $friendReadGamePassword = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$valheimId/game-password/reveal" -Method Post -Headers $headers -UseBasicParsing | Out-Null }
     catch { $friendReadGamePassword = [int]$_.Exception.Response.StatusCode -eq 409 }
