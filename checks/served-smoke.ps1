@@ -85,13 +85,14 @@ try {
         'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
         'Start server', 'Invite friends',
         'Paste your server code', 'Saved servers',
-        'Friend access and settings', 'PC name', 'Server access', 'Choose servers', 'Search servers',
+        'App preferences, Friend access, timers, and advanced Host controls.', 'PC name', 'Server access', 'Choose servers', 'Search servers',
         'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop', 'On with server exceptions',
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Game server', 'Friend app', 'Outside connection', 'Reachable outside network', 'Recommended next step',
         'Connection details', 'Hidden for stream safety', 'Server IP', 'Game password',
         'Use an eye to show only that value', 'Copy keeps it hidden', 'Notifications', 'Recent app and connection activity',
+        'Attention Center', 'Search commands', 'Ctrl+K from anywhere', 'Overview', 'Players', 'Backups', 'Setup',
         'Clear activity', 'Update TogetherServer', 'Not now', 'is available',
         'Refreshing connection details', 'Connection details updated.',
         'Maximum servers running at once', 'Duplicate saved game port', 'Stop empty server and start this one',
@@ -127,6 +128,11 @@ try {
         !$css.Content.Contains('.update-banner{') -or !$css.Content.Contains('.update-dialog{') -or
         !$css.Content.Contains('@keyframes icon-spin')) {
         throw 'The private connection card, notification/update UI, or loading spinner styles were not bundled.'
+    }
+    if (!$css.Content.Contains('.app-body{') -or !$css.Content.Contains('.host-master-detail{') -or
+        !$css.Content.Contains('.command-palette{') -or !$css.Content.Contains('.status-strip{') -or
+        !$css.Content.Contains('@media (prefers-reduced-motion:reduce)')) {
+        throw 'The desktop workspace shell, command palette, status strip, or reduced-motion styles were not bundled.'
     }
     if ($css.Content -notmatch '\.join-row\{[^}]*align-items:flex-end' -or
         $css.Content -notmatch '\.friend-panel \.join-row \.invite-input\{[^}]*margin-bottom:0' -or
