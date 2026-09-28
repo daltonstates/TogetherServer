@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TogetherServer;
 
@@ -24,9 +25,58 @@ public sealed class CrashRecoveryState
     public string? LastFailure { get; set; }
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ServerSessionEndReason
+{
+    Unavailable,
+    GracefulStop,
+    ProcessExited,
+    RecoveryProcessExitedBeforeReady,
+    OwnerArchivedExitedRun,
+    ProcessExitedBeforeRestore
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ServerSessionOutcome
+{
+    Unavailable,
+    GracefulStop,
+    UnexpectedExit,
+    FailedBeforeReady,
+    RecoveryFailedBeforeReady,
+    OwnerArchivedExited,
+    ExitedBeforeRestore,
+    StopUnconfirmed
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ServerSessionBackupResult
+{
+    Unavailable,
+    Completed,
+    Failed,
+    NotConfigured,
+    Unsupported,
+    NotAttempted
+}
+
 public sealed record ManagedRunArchive(Guid ProfileId, Guid OperationId, string Kind, string WorldId,
     int? ProcessId, long? StartTimeUtcTicks, bool WasReady, string Reason,
-    DateTimeOffset ArchivedUtc, bool CrashRecoveryScheduled);
+    DateTimeOffset ArchivedUtc, bool CrashRecoveryScheduled,
+    int SummaryVersion = 0, DateTimeOffset? StartedUtc = null, DateTimeOffset? EndedUtc = null,
+    long? DurationSeconds = null, ServerSessionEndReason EndReason = ServerSessionEndReason.Unavailable,
+    ServerSessionOutcome Outcome = ServerSessionOutcome.Unavailable,
+    int? LastTrustedOnlinePlayers = null, int? MaximumTrustedOnlinePlayers = null,
+    ServerSessionBackupResult BackupResult = ServerSessionBackupResult.Unavailable);
+
+public sealed record RecentServerSession(Guid ProfileId, Guid OperationId, string GameKind,
+    DateTimeOffset? StartedUtc, DateTimeOffset? EndedUtc, long? DurationSeconds,
+    bool? ReadyEverObserved, ServerSessionEndReason? EndReason, ServerSessionOutcome? Outcome,
+    bool? CrashRecoveryScheduled, int? LastTrustedOnlinePlayers,
+    int? MaximumTrustedOnlinePlayers, ServerSessionBackupResult? BackupResult);
+
+public sealed record RecentServerSessionsResult(bool Ok, string Code, string Message, Guid ProfileId,
+    IReadOnlyList<RecentServerSession> Sessions);
 
 public static class BackupKinds
 {

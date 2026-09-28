@@ -39,6 +39,12 @@ Optional rolling backup runs only after confirmed graceful process exit. The bui
 
 Restore is local-owner-only and requires Offline with no uncertain run identity. The chosen completed manifest is verified first, a pre-restore snapshot must succeed, and a same-volume staged directory replaces the live save. No Friend endpoint exposes backup listing, restore, delete, or arbitrary file access.
 
+### Archived session summaries
+
+Archiving a definitively ended exact managed run writes one immutable structured summary keyed by its `OperationId`. A confirmed graceful Stop records its known backup result; a failed or unconfirmed Stop keeps the active run record and cannot be archived as successful. Unexpected exit after Ready, failure before Ready, recovery exit before Ready, owner archival of an exited record, exit confirmed before restore, and an exit following persisted but unconfirmed Stop intent remain distinct typed outcomes. Start and end are stored only when known, and duration exists only when both are ordered.
+
+The canonical observation supervisor maintains only the last and maximum trusted non-negative server-reported count for that exact run. It persists only material changes with managed-run state, survives Host restart, and never lets Unknown or untrusted evidence overwrite a trusted value with zero. The compact Host-only Sessions view labels these as observations rather than proof of a particular player or join. Display logs are never mined for an outcome, player evidence, readiness, save claims, or backup claims. Legacy archive entries remain loadable but show fields their old schema did not capture as Unavailable. The archive retains its existing newest-500/30-day bound.
+
 ## Companion heartbeat
 
 - Friend mode sends an authenticated outbound heartbeat and status request about every five seconds with device ID, version, and monotonic sequence. The Host uses **its receipt time** for freshness, not the Friend PC's clock. It does not send a local game-process indicator, and Friend presence does not participate in automatic shutdown.

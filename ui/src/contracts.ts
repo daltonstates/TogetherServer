@@ -78,6 +78,35 @@ export type WorldBackupRecord = {
 
 export type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
 
+export type ServerSessionEndReason = 'GracefulStop' | 'ProcessExited' |
+  'RecoveryProcessExitedBeforeReady' | 'OwnerArchivedExitedRun' | 'ProcessExitedBeforeRestore'
+export type ServerSessionOutcome = 'GracefulStop' | 'UnexpectedExit' | 'FailedBeforeReady' |
+  'RecoveryFailedBeforeReady' | 'OwnerArchivedExited' | 'ExitedBeforeRestore' | 'StopUnconfirmed'
+export type ServerSessionBackupResult = 'Completed' | 'Failed' | 'NotConfigured' |
+  'Unsupported' | 'NotAttempted'
+export type RecentServerSession = {
+  profileId: string
+  operationId: string
+  gameKind: 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Custom' | 'Unavailable'
+  startedUtc: string | null
+  endedUtc: string | null
+  durationSeconds: number | null
+  readyEverObserved: boolean | null
+  endReason: ServerSessionEndReason | null
+  outcome: ServerSessionOutcome | null
+  crashRecoveryScheduled: boolean | null
+  lastTrustedOnlinePlayers: number | null
+  maximumTrustedOnlinePlayers: number | null
+  backupResult: ServerSessionBackupResult | null
+}
+export type RecentServerSessionsResult = {
+  ok: boolean
+  code: string
+  message: string
+  profileId: string
+  sessions: RecentServerSession[]
+}
+
 export type ActivityEvent = {
   id: string
   occurredUtc: string
@@ -713,6 +742,97 @@ export const parseServerLogResult: Decoder<ServerLogResult> = (value, context = 
     records,
     cursor,
     hasMore: flag(source.hasMore, `${context}.hasMore`)
+  }
+}
+
+export const parseRecentServerSessions: Decoder<RecentServerSessionsResult> = (value, context = 'recent sessions') => {
+  const source = object(value, context)
+  const profileId = boundedText(source.profileId, `${context}.profileId`, 36)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(profileId))
+    throw new ContractError(`${context}.profileId is invalid.`)
+  if (!Array.isArray(source.sessions) || source.sessions.length > 20)
+    throw new ContractError(`${context}.sessions is outside its supported bounds.`)
+
+  const boundedInteger = (entry: unknown, entryContext: string, maximum: number): number | null => {
+    if (entry === null) return null
+    const parsed = numeric(entry, entryContext)
+    if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maximum)
+      throw new ContractError(`${entryContext} is outside its supported bounds.`)
+    return parsed
+  }
+  const nullableFlag = (entry: unknown, entryContext: string): boolean | null =>
+    entry === null ? null : flag(entry, entryContext)
+
+  const sessions = list(source.sessions, `${context}.sessions`, (value, itemContext = `${context}.sessions`) => {
+    const item = object(value, itemContext)
+    const itemProfileId = boundedText(item.profileId, `${itemContext}.profileId`, 36)
+    const operationId = boundedText(item.operationId, `${itemContext}.operationId`, 36)
+    if (itemProfileId !== profileId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId))
+      throw new ContractError(`${itemContext} has an invalid run identity.`)
+    const startedUtc = nullableUtcTimestamp(item.startedUtc, `${itemContext}.startedUtc`)
+    const endedUtc = nullableUtcTimestamp(item.endedUtc, `${itemContext}.endedUtc`)
+    const durationSeconds = boundedInteger(item.durationSeconds, `${itemContext}.durationSeconds`, 3_155_760_000)
+    const readyEverObserved = nullableFlag(item.readyEverObserved, `${itemContext}.readyEverObserved`)
+    const crashRecoveryScheduled = nullableFlag(item.crashRecoveryScheduled, `${itemContext}.crashRecoveryScheduled`)
+    const lastTrustedOnlinePlayers = boundedInteger(item.lastTrustedOnlinePlayers, `${itemContext}.lastTrustedOnlinePlayers`, 1_000_000)
+    const maximumTrustedOnlinePlayers = boundedInteger(item.maximumTrustedOnlinePlayers, `${itemContext}.maximumTrustedOnlinePlayers`, 1_000_000)
+    if ((lastTrustedOnlinePlayers === null) !== (maximumTrustedOnlinePlayers === null) ||
+        (lastTrustedOnlinePlayers !== null && maximumTrustedOnlinePlayers! < lastTrustedOnlinePlayers))
+      throw new ContractError(`${itemContext} has inconsistent trusted player observations.`)
+    const endReason = item.endReason === null ? null : literal(item.endReason,
+      ['GracefulStop', 'ProcessExited', 'RecoveryProcessExitedBeforeReady', 'OwnerArchivedExitedRun', 'ProcessExitedBeforeRestore'] as const,
+      `${itemContext}.endReason`)
+    const outcome = item.outcome === null ? null : literal(item.outcome,
+      ['GracefulStop', 'UnexpectedExit', 'FailedBeforeReady', 'RecoveryFailedBeforeReady', 'OwnerArchivedExited', 'ExitedBeforeRestore', 'StopUnconfirmed'] as const,
+      `${itemContext}.outcome`)
+    const backupResult = item.backupResult === null ? null : literal(item.backupResult,
+      ['Completed', 'Failed', 'NotConfigured', 'Unsupported', 'NotAttempted'] as const,
+      `${itemContext}.backupResult`)
+    const legacy = outcome === null
+    const incompleteLegacy = legacy && (startedUtc !== null || endedUtc !== null ||
+      durationSeconds !== null || lastTrustedOnlinePlayers !== null)
+    const incompleteCurrent = !legacy && endedUtc === null
+    const invalidDuration = durationSeconds !== null && (startedUtc === null || endedUtc === null ||
+      Date.parse(endedUtc) < Date.parse(startedUtc))
+    const expectedReason: Record<ServerSessionOutcome, ServerSessionEndReason> = {
+      GracefulStop: 'GracefulStop',
+      UnexpectedExit: 'ProcessExited',
+      FailedBeforeReady: 'ProcessExited',
+      RecoveryFailedBeforeReady: 'RecoveryProcessExitedBeforeReady',
+      OwnerArchivedExited: 'OwnerArchivedExitedRun',
+      ExitedBeforeRestore: 'ProcessExitedBeforeRestore',
+      StopUnconfirmed: 'ProcessExited'
+    }
+    if ((endReason === null) !== legacy || (backupResult === null) !== legacy ||
+        (readyEverObserved === null) !== legacy || (crashRecoveryScheduled === null) !== legacy ||
+        incompleteLegacy || incompleteCurrent || invalidDuration ||
+        outcome !== null && endReason !== expectedReason[outcome])
+      throw new ContractError(`${itemContext} has an incomplete summary contract.`)
+    return {
+      profileId: itemProfileId,
+      operationId,
+      gameKind: literal(item.gameKind,
+        ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Custom', 'Unavailable'] as const,
+        `${itemContext}.gameKind`),
+      startedUtc,
+      endedUtc,
+      durationSeconds,
+      readyEverObserved,
+      endReason,
+      outcome,
+      crashRecoveryScheduled,
+      lastTrustedOnlinePlayers,
+      maximumTrustedOnlinePlayers,
+      backupResult
+    }
+  })
+  return {
+    ok: flag(source.ok, `${context}.ok`),
+    code: boundedText(source.code, `${context}.code`, 80),
+    message: boundedText(source.message, `${context}.message`, 600),
+    profileId,
+    sessions
   }
 }
 

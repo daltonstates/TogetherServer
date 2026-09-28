@@ -7,6 +7,7 @@ import { Button, Input, Select } from './Controls'
 import { ConnectionDetails } from './ConnectionDetails'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
+import { RecentSessions } from './RecentSessions'
 import {
   HostSetupDialog
 } from './features/setup/HostSetupDialog'
@@ -44,7 +45,7 @@ import './style.css'
 import './companion.css'
 
 type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
-type HostServerTab = 'overview' | 'players' | 'logs' | 'backups' | 'setup'
+type HostServerTab = 'overview' | 'players' | 'logs' | 'sessions' | 'backups' | 'setup'
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
 
@@ -1320,7 +1321,7 @@ function App() {
             <section className="server-detail" data-server-tab={hostServerTab} aria-label={selectedHostProfile ? `${selectedHostProfile.name} workspace` : 'Server workspace'}>
               <Button className="mobile-back secondary" onClick={() => setHostMobileDetail(false)}>Back to all servers</Button>
               <nav className="server-tabs" aria-label="Selected server sections">
-                {(['overview', 'players', 'logs', 'backups', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => setHostServerTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</Button>)}
+                {(['overview', 'players', 'logs', 'sessions', 'backups', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => setHostServerTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</Button>)}
               </nav>
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
@@ -1352,6 +1353,8 @@ function App() {
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 {hostServerTab === 'logs' && <ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   visible={workspacePage === 'host' && hostServerTab === 'logs'} />}
+                <RecentSessions profileId={profile.id}
+                  visible={workspacePage === 'host' && hostServerTab === 'sessions'} />
                 <div hidden={hostServerTab !== 'overview'}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></div>
                 {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote lifecycle actions are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}

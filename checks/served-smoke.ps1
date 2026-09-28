@@ -98,6 +98,7 @@ try {
         'Connection details', 'Hidden for stream safety', 'Server IP', 'Game password',
         'Use an eye to show only that value', 'Copy keeps it hidden', 'Notifications', 'Recent app and connection activity',
         'Attention Center', 'Search commands', 'Ctrl+K from anywhere', 'Overview', 'Players', 'Backups', 'Setup',
+        'Recent sessions', 'They do not prove who joined, a successful game join, or world/save integrity.',
         'Clear activity', 'Update TogetherServer', 'Not now', 'is available',
         'Refreshing connection details', 'Connection details updated.',
         'Maximum servers running at once', 'Duplicate saved game port', 'Stop empty server and start this one',
@@ -417,6 +418,22 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     if (!$valheimStop.ok -or !(Test-Path -LiteralPath (Join-Path $imported.worldDirectory 'synthetic-stop.marker'))) {
         throw "Published EXE did not stop the synthetic Valheim process with Ctrl+C: $($valheimStop.message)"
     }
+    $sessionsWithoutHeader = $false
+    try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$valheimId/sessions?limit=8" -UseBasicParsing | Out-Null }
+    catch { $sessionsWithoutHeader = [int]$_.Exception.Response.StatusCode -eq 403 }
+    if (!$sessionsWithoutHeader) { throw 'Recent Host sessions were readable without the sensitive local header.' }
+    $sessions = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/sessions?limit=8" -Headers $headers
+    $session = @($sessions.sessions)[0]
+    $sessionJson = $sessions | ConvertTo-Json -Depth 8 -Compress
+    if (!$sessions.ok -or @($sessions.sessions).Count -ne 1 -or $session.outcome -ne 'GracefulStop' -or
+        $session.backupResult -ne 'NotConfigured' -or !$session.readyEverObserved -or
+        $session.lastTrustedOnlinePlayers -ne 0 -or $session.maximumTrustedOnlinePlayers -ne 0 -or
+        $null -eq $session.startedUtc -or $null -eq $session.durationSeconds -or
+        $sessionJson.Contains('worldDirectory') -or $sessionJson.Contains('executablePath') -or
+        $sessionJson.Contains('processId') -or $sessionJson.Contains($imported.worldDirectory)) {
+        throw 'Recent Host session summary was incomplete, unbounded, or exposed sensitive process/world fields.'
+    }
+    Write-Host 'PASS owner-only recent session preserves exact-run observed evidence without sensitive fields'
     $valheimStarted = $false
     Write-Host 'PASS published EXE starts and gracefully stops synthetic Valheim'
 

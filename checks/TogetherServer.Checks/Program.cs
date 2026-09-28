@@ -1267,6 +1267,175 @@ await Check("authenticated request limiting is isolated per verified device", as
     await Task.CompletedTask;
 });
 
+await Check("exact-run session evidence accumulates trusted player observations across Host restart", async () =>
+{
+    using var data = Data("session-player-evidence");
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow.AddMinutes(1));
+    var profile = Profile("session-player-evidence", "session-private-world", FreePort());
+    var driver = new ObservationFixtureDriver
+    {
+        HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+            OnlinePlayers: 2, MaxPlayers: 10, PlayerCountTrusted: true)
+    };
+    var manager = new HostManager(data, new GameServerRegistry([driver]), clock);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
+    await manager.RefreshObservationsAsync();
+    var recorded = data.LoadRuns().Single();
+    Require(recorded.WasReady && recorded.LastTrustedOnlinePlayers == 2 &&
+        recorded.MaximumTrustedOnlinePlayers == 2,
+        "the canonical supervisor did not persist the first trusted exact-run count");
+
+    driver.HealthResult = new(false, "PlayerCountUnknown", "Unknown", "No trusted count.",
+        OnlinePlayers: 0, MaxPlayers: 10, PlayerCountTrusted: false);
+    await manager.RefreshObservationsAsync();
+    recorded = data.LoadRuns().Single();
+    Require(recorded.LastTrustedOnlinePlayers == 2 && recorded.MaximumTrustedOnlinePlayers == 2,
+        "an Unknown or untrusted observation overwrote trusted evidence with zero");
+
+    var restarted = new HostManager(data, new GameServerRegistry([driver]), clock);
+    driver.HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+        OnlinePlayers: 5, MaxPlayers: 10, PlayerCountTrusted: true);
+    await restarted.RefreshObservationsAsync();
+    driver.HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+        OnlinePlayers: 0, MaxPlayers: 10, PlayerCountTrusted: true);
+    await restarted.RefreshObservationsAsync();
+    recorded = data.LoadRuns().Single();
+    Require(recorded.LastTrustedOnlinePlayers == 0 && recorded.MaximumTrustedOnlinePlayers == 5,
+        "the exact-run last/maximum accumulator did not survive restart or retain its maximum");
+
+    Require((await restarted.StopAsync(profile.Id)).Ok, "cleanup stop failed");
+    var summary = data.LoadRunArchive().Single();
+    Require(summary.SummaryVersion == HostManager.CurrentSessionSummaryVersion &&
+        summary.Outcome == ServerSessionOutcome.GracefulStop &&
+        summary.BackupResult == ServerSessionBackupResult.NotConfigured &&
+        summary.WasReady && summary.StartedUtc is not null && summary.EndedUtc is not null &&
+        summary.DurationSeconds is >= 0 && summary.LastTrustedOnlinePlayers == 0 &&
+        summary.MaximumTrustedOnlinePlayers == 5,
+        "the immutable graceful-stop summary lost authoritative run evidence");
+    var recent = await restarted.RecentSessionsAsync(profile.Id, 8);
+    var serialized = JsonSerializer.Serialize(recent, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    Require(recent.Ok && recent.Sessions.Single().OperationId == summary.OperationId &&
+        !serialized.Contains(profile.WorldDirectory, StringComparison.OrdinalIgnoreCase) &&
+        !serialized.Contains(profile.ExecutablePath, StringComparison.OrdinalIgnoreCase) &&
+        !serialized.Contains(profile.WorldId, StringComparison.Ordinal),
+        "the recent-session projection exposed a private path/world identifier or lost run identity");
+});
+
+await Check("failed and unconfirmed Stop never archive a successful session", async () =>
+{
+    using var data = Data("session-stop-failure");
+    var profile = Profile("session-stop-failure", "session-stop-failure", FreePort());
+    var driver = new ObservationFixtureDriver();
+    var manager = new HostManager(data, new GameServerRegistry([driver]));
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
+
+    driver.StopBehavior = FixtureStopBehavior.Failed;
+    var failed = await manager.StopAsync(profile.Id);
+    Require(!failed.Ok && data.LoadRuns().Count == 1 && data.LoadRunArchive().Count == 0,
+        "a failed Stop archived a successful session");
+    driver.StopBehavior = FixtureStopBehavior.Unconfirmed;
+    var unconfirmed = await manager.StopAsync(profile.Id);
+    Require(!unconfirmed.Ok && unconfirmed.Code == "StopUnconfirmed" &&
+        data.LoadRuns().Count == 1 && data.LoadRunArchive().Count == 0,
+        "an unconfirmed Stop archived a successful session");
+
+    driver.StopBehavior = FixtureStopBehavior.Normal;
+    Require((await manager.StopAsync(profile.Id)).Ok &&
+        data.LoadRunArchive().Single().Outcome == ServerSessionOutcome.GracefulStop,
+        "normal fixture cleanup did not archive the later confirmed graceful Stop");
+
+    Require((await manager.StartAsync(profile.Id)).Ok, "interrupted-stop fixture start failed");
+    var interrupted = data.LoadRuns().Single();
+    interrupted.StopRequestedUtc = DateTimeOffset.UtcNow;
+    data.SaveRuns([interrupted]);
+    await KillFixture(interrupted);
+    var restarted = new HostManager(data, new GameServerRegistry([driver]));
+    await restarted.RefreshObservationsAsync();
+    var interruptedSummary = data.LoadRunArchive().Single(item => item.OperationId == interrupted.OperationId);
+    Require(interruptedSummary.EndReason == ServerSessionEndReason.ProcessExited &&
+        interruptedSummary.Outcome == ServerSessionOutcome.StopUnconfirmed &&
+        interruptedSummary.BackupResult == ServerSessionBackupResult.NotAttempted,
+        "persisted but unconfirmed Stop intent was archived as a successful session");
+});
+
+await Check("failed-before-Ready and owner-archived exits have distinct typed outcomes", async () =>
+{
+    using var data = Data("session-exit-outcomes");
+    var failedProfile = Profile("session-failed-before-ready", "session-failed-before-ready", FreePort());
+    var ownerProfile = Profile("session-owner-archive", "session-owner-archive", FreePort());
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(failedProfile, ownerProfile))).Ok, "settings failed");
+
+    Require((await manager.StartAsync(failedProfile.Id)).Ok, "failed-before-Ready start failed");
+    var failedRun = data.LoadRuns().Single(item => item.ProfileId == failedProfile.Id);
+    await KillFixture(failedRun);
+    await manager.RefreshObservationsAsync();
+    Require(data.LoadRunArchive().Single(item => item.ProfileId == failedProfile.Id).Outcome ==
+        ServerSessionOutcome.FailedBeforeReady,
+        "a pre-Ready exit was not recorded distinctly");
+
+    Require((await manager.StartAsync(ownerProfile.Id)).Ok, "owner-archive start failed");
+    var ownerRun = data.LoadRuns().Single(item => item.ProfileId == ownerProfile.Id);
+    await KillFixture(ownerRun);
+    Require((await manager.ForgetAsync(ownerProfile.Id)).Ok &&
+        data.LoadRunArchive().Single(item => item.ProfileId == ownerProfile.Id).Outcome ==
+            ServerSessionOutcome.OwnerArchivedExited,
+        "the owner-archived exited record did not retain its distinct typed outcome");
+});
+
+await Check("legacy archives load as incomplete and recent-session retention and limits stay bounded", async () =>
+{
+    var legacyRoot = Path.Combine(root, "session-legacy-bounds");
+    var profile = Profile("session-legacy-bounds", "session-legacy-bounds", FreePort());
+    using (var seed = new LocalData(legacyRoot)) seed.SaveSettings(Settings(profile));
+    var legacyOperation = Guid.NewGuid();
+    var legacyArchivedUtc = DateTimeOffset.UtcNow.AddHours(-1);
+    File.WriteAllText(Path.Combine(legacyRoot, "run-archive.json"), JsonSerializer.Serialize(new[]
+    {
+        new
+        {
+            profileId = profile.Id,
+            operationId = legacyOperation,
+            kind = GameKinds.Fixture,
+            worldId = profile.WorldId,
+            processId = (int?)null,
+            startTimeUtcTicks = (long?)null,
+            wasReady = true,
+            reason = "LegacyReason",
+            archivedUtc = legacyArchivedUtc,
+            crashRecoveryScheduled = false
+        }
+    }, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+
+    using var data = new LocalData(legacyRoot);
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow.AddMinutes(1));
+    var manager = new HostManager(data, Games(data), clock);
+    var legacy = (await manager.RecentSessionsAsync(profile.Id, 8)).Sessions.Single();
+    Require(legacy.OperationId == legacyOperation && legacy.EndedUtc is null &&
+        legacy.StartedUtc is null && legacy.DurationSeconds is null &&
+        legacy.ReadyEverObserved is null && legacy.Outcome is null && legacy.BackupResult is null,
+        "a legacy archive failed to load or fabricated unavailable summary fields");
+
+    var seeded = Enumerable.Range(0, 505).Select(index => new ManagedRunArchive(profile.Id,
+        Guid.NewGuid(), GameKinds.Fixture, profile.WorldId, null, null, false, "Legacy",
+        clock.GetUtcNow().AddMinutes(-(index + 1)), false)).ToList();
+    seeded.Add(new ManagedRunArchive(profile.Id, Guid.NewGuid(), GameKinds.Fixture, profile.WorldId,
+        null, null, false, "Expired", clock.GetUtcNow().AddDays(-31), false));
+    data.SaveRunArchive(seeded);
+    Require((await manager.StartAsync(profile.Id)).Ok, "retention fixture start failed");
+    var newestOperation = data.LoadRuns().Single().OperationId;
+    Require((await manager.StopAsync(profile.Id)).Ok, "retention fixture stop failed");
+    var retained = data.LoadRunArchive();
+    var recent = await manager.RecentSessionsAsync(profile.Id, 1000);
+    Require(retained.Count == 500 && retained.Select(item => item.OperationId).Distinct().Count() == 500 &&
+        retained.Any(item => item.OperationId == newestOperation) &&
+        retained.All(item => item.ArchivedUtc >= clock.GetUtcNow().AddDays(-30)) &&
+        recent.Sessions.Count == HostManager.MaximumRecentSessionLimit,
+        "run archive retention, exact-run uniqueness, or recent-session response bounds changed");
+});
+
 await Check("definitive exits archive and crash recovery is bounded", async () =>
 {
     using var data = Data("crash-recovery");
@@ -1284,7 +1453,10 @@ await Check("definitive exits archive and crash recovery is bounded", async () =
     var manager = new HostManager(data, Games(data), clock);
     await manager.RefreshObservationsAsync();
     Require(data.LoadRuns().Count == 0, "definitively absent process was not archived");
-    Require(data.LoadRunArchive().Single().CrashRecoveryScheduled, "eligible Ready crash did not schedule recovery");
+    var initialSummary = data.LoadRunArchive().Single();
+    Require(initialSummary.CrashRecoveryScheduled &&
+        initialSummary.Outcome == ServerSessionOutcome.UnexpectedExit,
+        "eligible Ready crash did not retain its unexpected-exit outcome or schedule recovery");
     var state = data.LoadCrashRecoveryStates().Single();
     Require(state.State == CrashRecoveryStates.Pending && state.Attempts == 0 &&
         state.NextAttemptUtc == clock.GetUtcNow().AddMinutes(1), "first recovery delay was not one minute");
@@ -1301,7 +1473,10 @@ await Check("definitive exits archive and crash recovery is bounded", async () =
     state = data.LoadCrashRecoveryStates().Single();
     Require(state.State == CrashRecoveryStates.Suspended && state.Attempts == 3 && state.NextAttemptUtc is null,
         "recovery did not suspend after exactly three failed launches");
-    Require(data.LoadRunArchive().Count == 4, "each definitively absent exact fixture run was not archived");
+    var summaries = data.LoadRunArchive();
+    Require(summaries.Count == 4 &&
+        summaries.Count(item => item.Outcome == ServerSessionOutcome.RecoveryFailedBeforeReady) == 3,
+        "each definitively absent exact fixture run or failed-before-Ready recovery outcome was not archived");
 });
 
 await Check("crash recovery suspends a live process that never becomes Ready", async () =>
@@ -1351,6 +1526,12 @@ await Check("graceful stop backup and offline restore protect the world", async 
     var stopped = await manager.StopAsync(profile.Id);
     Require(stopped.Ok && stopped.Message.Contains("rolling backup", StringComparison.OrdinalIgnoreCase),
         "confirmed graceful stop did not complete its rolling backup");
+    Require(data.LoadRunArchive().Single() is
+    {
+        Outcome: ServerSessionOutcome.GracefulStop,
+        BackupResult: ServerSessionBackupResult.Completed
+    },
+        "the graceful-stop summary did not record its completed rolling backup");
     var backup = (await manager.BackupsAsync(profile.Id)).Backups.Single();
     File.WriteAllText(marker, "after backup");
     Require((await manager.StartAsync(profile.Id)).Ok, "second start failed");
@@ -1360,11 +1541,31 @@ await Check("graceful stop backup and offline restore protect the world", async 
     var settings = Settings(profile);
     Require((await manager.UpdateSettingsAsync(settings)).Ok, "could not disable the next rolling backup");
     Require((await manager.StopAsync(profile.Id)).Ok, "second stop failed");
+    Require(data.LoadRunArchive().OrderBy(item => item.ArchivedUtc).Last().BackupResult ==
+        ServerSessionBackupResult.NotConfigured,
+        "the backup-off graceful Stop fabricated a backup attempt");
     var restored = await manager.RestoreBackupAsync(profile.Id, backup.Id);
     Require(restored.Ok && File.ReadAllText(marker) == "before stop", "offline restore did not recover the selected contents");
     var list = await manager.BackupsAsync(profile.Id);
     Require(list.Backups.Any(item => item.BackupKind == BackupKinds.PreRestore),
         "restore did not retain a pre-restore snapshot");
+});
+
+await Check("graceful Stop keeps a failed rolling-backup result distinct from session outcome", async () =>
+{
+    using var data = Data("backup-session-failure-data");
+    var profile = Profile("backup-session-failure-world", "backup-session-failure", FreePort());
+    profile.Backups = new BackupOptions { Enabled = true, RetentionCount = 3, MinimumFreeSpaceMb = 0 };
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
+    Directory.Delete(profile.WorldDirectory, recursive: true);
+    var stopped = await manager.StopAsync(profile.Id);
+    var summary = data.LoadRunArchive().Single();
+    Require(stopped.Ok && stopped.Code == "StoppedBackupFailed" &&
+        summary.Outcome == ServerSessionOutcome.GracefulStop &&
+        summary.BackupResult == ServerSessionBackupResult.Failed,
+        "backup failure changed the confirmed Stop outcome or was omitted from the session summary");
 });
 
 await Check("backup staging, integrity, retention, and free-space checks fail closed", async () =>
@@ -1542,6 +1743,43 @@ static void ValidateStringBounds(JsonElement element, int maximum)
         foreach (var item in element.EnumerateArray()) ValidateStringBounds(item, maximum);
     if (element.ValueKind == JsonValueKind.Object)
         foreach (var property in element.EnumerateObject()) ValidateStringBounds(property.Value, maximum);
+}
+
+enum FixtureStopBehavior
+{
+    Normal,
+    Failed,
+    Unconfirmed
+}
+
+sealed class ObservationFixtureDriver : IGameServerDriver
+{
+    private readonly FixtureServerDriver inner = new();
+
+    public GameHealthResult HealthResult { get; set; } =
+        new(true, "FixtureProcessRunning", "Process running", "Synthetic fixture only; no readiness evidence.");
+    public FixtureStopBehavior StopBehavior { get; set; }
+    public string Kind => inner.Kind;
+    public string DisplayName => inner.DisplayName;
+    public bool ShowPortDiagnostics => inner.ShowPortDiagnostics;
+    public bool SupportsCrashRecovery => inner.SupportsCrashRecovery;
+    public bool SupportsBackups => inner.SupportsBackups;
+    public string? ManagedSaveDirectory(ServerProfile profile) => inner.ManagedSaveDirectory(profile);
+    public string ManagedExecutablePath(ServerProfile profile) => inner.ManagedExecutablePath(profile);
+    public IReadOnlyList<GamePort> Ports(ServerProfile profile) => inner.Ports(profile);
+    public string? JoinAddress(ServerProfile profile, string? publicIp) => inner.JoinAddress(profile, publicIp);
+    public GameValidation? ValidateForStart(ServerProfile profile) => inner.ValidateForStart(profile);
+    public void PrepareStart(ServerProfile profile, ManagedRun run) => inner.PrepareStart(profile, run);
+    public GameLaunchResult Start(ServerProfile profile, ManagedRun run) => inner.Start(profile, run);
+    public GameHealthResult Health(ManagedRun run) => HealthResult;
+    public Task<GameStopResult> StopAsync(Process process, ManagedRun run) => StopBehavior switch
+    {
+        FixtureStopBehavior.Failed => Task.FromResult(new GameStopResult("StopFailed",
+            "Synthetic Stop failed without signaling the process.", 1)),
+        FixtureStopBehavior.Unconfirmed => Task.FromResult(new GameStopResult("FixtureStopReturned",
+            "Synthetic Stop returned without an observed exit.", 0)),
+        _ => inner.StopAsync(process, run)
+    };
 }
 
 sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider

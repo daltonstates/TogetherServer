@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseServerLogResult, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -168,6 +168,57 @@ describe('runtime contracts', () => {
     expect(() => parseServerLogResult({ ...logs, records: [{ ...logs.records[0], timestampUtc: 'x'.repeat(41) }] })).toThrow(ContractError)
     expect(() => parseServerLogResult({ ...logs, records: Array.from({ length: 201 }, () => null) }))
       .toThrow(/too many entries/)
+  })
+
+  it('strictly decodes bounded exact-run session summaries and honest legacy gaps', () => {
+    const profileId = '11111111-1111-4111-8111-111111111111'
+    const complete = {
+      profileId,
+      operationId: '22222222-2222-4222-8222-222222222222',
+      gameKind: 'Valheim',
+      startedUtc: '2026-09-28T12:00:00Z',
+      endedUtc: '2026-09-28T13:01:30Z',
+      durationSeconds: 3690,
+      readyEverObserved: true,
+      endReason: 'GracefulStop',
+      outcome: 'GracefulStop',
+      crashRecoveryScheduled: false,
+      lastTrustedOnlinePlayers: 0,
+      maximumTrustedOnlinePlayers: 4,
+      backupResult: 'Completed'
+    }
+    const legacy = {
+      ...complete,
+      operationId: '33333333-3333-4333-8333-333333333333',
+      startedUtc: null,
+      endedUtc: null,
+      durationSeconds: null,
+      readyEverObserved: null,
+      endReason: null,
+      outcome: null,
+      crashRecoveryScheduled: null,
+      lastTrustedOnlinePlayers: null,
+      maximumTrustedOnlinePlayers: null,
+      backupResult: null
+    }
+    const parsed = parseRecentServerSessions({
+      ok: true, code: 'RecentSessions', message: 'Showing 2 recent archived sessions.',
+      profileId, sessions: [complete, legacy]
+    })
+
+    expect(parsed.sessions[0].maximumTrustedOnlinePlayers).toBe(4)
+    expect(parsed.sessions[1].outcome).toBeNull()
+    expect(parsed.sessions[1].endedUtc).toBeNull()
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, outcome: 'Succeeded' }] }))
+      .toThrow(ContractError)
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, endReason: 'ProcessExited' }] }))
+      .toThrow(/incomplete summary contract/)
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...legacy, endedUtc: complete.endedUtc }] }))
+      .toThrow(/incomplete summary contract/)
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: [{ ...complete, lastTrustedOnlinePlayers: 5, maximumTrustedOnlinePlayers: 4 }] }))
+      .toThrow(/inconsistent trusted player observations/)
+    expect(() => parseRecentServerSessions({ ...parsed, sessions: Array.from({ length: 21 }, () => complete) }))
+      .toThrow(/outside its supported bounds/)
   })
 
   it('removes an invalid local setup draft', () => {

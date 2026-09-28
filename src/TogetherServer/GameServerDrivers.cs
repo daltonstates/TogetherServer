@@ -66,6 +66,11 @@ public sealed class GameServerRegistry
         drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
     }
 
+    internal GameServerRegistry(IEnumerable<IGameServerDriver> registered)
+    {
+        drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
+    }
+
     public IReadOnlyList<IGameServerDriver> All => drivers.Values.OrderBy(driver => driver.DisplayName).ToList();
     public bool TryGet(string? kind, out IGameServerDriver driver) => drivers.TryGetValue(kind ?? "", out driver!);
 

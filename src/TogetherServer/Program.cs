@@ -143,6 +143,29 @@ static IResult? FixedOwnerGetRejection(HttpContext context)
     return null;
 }
 
+static IResult? RecentSessionsGetRejection(HttpContext context, out int limit)
+{
+    limit = 8;
+    if (!HasSensitiveLocalGetHeader(context))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true ||
+        context.Request.Query.Keys.Any(key => !key.Equals("limit", StringComparison.OrdinalIgnoreCase)))
+        return Results.BadRequest(new
+        {
+            code = "InvalidRecentSessionsRequest",
+            message = "Recent sessions accept only a saved profile ID and one bounded limit."
+        });
+    if (!context.Request.Query.TryGetValue("limit", out var values)) return null;
+    if (values.Count != 1 || !int.TryParse(values[0], out limit) ||
+        limit is < 1 or > HostManager.MaximumRecentSessionLimit)
+        return Results.BadRequest(new
+        {
+            code = "InvalidRecentSessionsRequest",
+            message = $"Recent session limit must be between 1 and {HostManager.MaximumRecentSessionLimit}."
+        });
+    return null;
+}
+
 app.MapGet("/api/local/snapshot", async () => friendMode
     ? Results.Json(friend.View())
     : Results.Json(await manager.SnapshotAsync()));
@@ -511,6 +534,18 @@ app.MapGet("/api/local/profiles/{id:guid}/logs", async (HttpContext context, Gui
         return Results.BadRequest(error);
     var result = await serverLogs.ReadAsync(id, query, ServerLogAudience.Host);
     return result.Code == "UnknownProfile" ? Results.NotFound(result) : Results.Json(result);
+});
+app.MapGet("/api/local/profiles/{id:guid}/sessions", async (HttpContext context, Guid id) =>
+{
+    if (RecentSessionsGetRejection(context, out var limit) is { } rejection) return rejection;
+    if (friendMode)
+        return Results.Conflict(new
+        {
+            code = "FriendMode",
+            message = "Recent session summaries are available only to the local Host owner."
+        });
+    var result = await manager.RecentSessionsAsync(id, limit);
+    return result.Ok ? Results.Json(result) : Results.NotFound(result);
 });
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode

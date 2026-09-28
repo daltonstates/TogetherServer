@@ -114,6 +114,8 @@ public sealed class ManagedRun
     public int? ProcessId { get; set; }
     public long? StartTimeUtcTicks { get; set; }
     public bool WasReady { get; set; }
+    public int? LastTrustedOnlinePlayers { get; set; }
+    public int? MaximumTrustedOnlinePlayers { get; set; }
     public DateTimeOffset? StopRequestedUtc { get; set; }
 }
 

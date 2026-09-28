@@ -488,6 +488,10 @@ try
     using (var missingReportHeader = await owner.GetAsync("/api/local/support-report"))
         Require(missingReportHeader.StatusCode == HttpStatusCode.Forbidden,
             "support export accepted a GET without the sensitive local header");
+    using (var missingSessionsHeader = await owner.GetAsync(
+        $"/api/local/profiles/{profile.Id}/sessions?limit=8"))
+        Require(missingSessionsHeader.StatusCode == HttpStatusCode.Forbidden,
+            "recent sessions accepted a GET without the sensitive local header");
     using (var arbitraryDiagnosticsInput = await OwnerGet(owner,
         "/api/local/diagnostics?host=example.test&port=1&path=C:%5Cprivate"))
         Require(arbitraryDiagnosticsInput.StatusCode == HttpStatusCode.BadRequest,
@@ -496,6 +500,18 @@ try
         "/api/local/support-report?output=C:%5Cprivate%5Creport.json"))
         Require(arbitraryReportInput.StatusCode == HttpStatusCode.BadRequest,
             "support export accepted a caller-supplied output path");
+    using (var arbitrarySessionsInput = await OwnerGet(owner,
+        $"/api/local/profiles/{profile.Id}/sessions?path=C:%5Cprivate&source=logs"))
+        Require(arbitrarySessionsInput.StatusCode == HttpStatusCode.BadRequest,
+            "recent sessions accepted a caller-controlled path or source");
+    using (var unboundedSessionsInput = await OwnerGet(owner,
+        $"/api/local/profiles/{profile.Id}/sessions?limit={HostManager.MaximumRecentSessionLimit + 1}"))
+        Require(unboundedSessionsInput.StatusCode == HttpStatusCode.BadRequest,
+            "recent sessions accepted an unbounded limit");
+    var emptySessions = await OwnerGetJson<RecentServerSessionsResult>(owner,
+        $"/api/local/profiles/{profile.Id}/sessions?limit=8");
+    Require(emptySessions.Ok && emptySessions.ProfileId == profile.Id && emptySessions.Sessions.Count == 0,
+        "the owner-only recent-session endpoint did not return its bounded empty state");
     using (var reportBody = new HttpRequestMessage(HttpMethod.Get, "/api/local/support-report")
     { Content = JsonContent.Create(new { output = "C:\\private\\report.json" }) })
     {
@@ -1094,6 +1110,10 @@ try
     using (var reportFromFriendPage = await OwnerGet(owner, "/api/local/support-report"))
         Require(reportFromFriendPage.StatusCode == HttpStatusCode.Conflict,
             "owner support export was exposed through the Friend-mode page");
+    using (var sessionsFromFriendPage = await OwnerGet(owner,
+        $"/api/local/profiles/{profile.Id}/sessions?limit=8"))
+        Require(sessionsFromFriendPage.StatusCode == HttpStatusCode.Conflict,
+            "owner session history was exposed through the Friend-mode page");
     var ownFriendLink = await OwnerPost<FriendPairRequest, FriendActionResult>(owner, "/api/local/friend/pair",
         new(PairingPassword.Encode(peerInvite), $"127.0.0.1:{peerCompanionPort}"));
     var joinedPeer = await OwnerPost<object, FriendView>(owner, "/api/local/friend/poll", new { });
@@ -1113,6 +1133,25 @@ try
         "owner could not return to Host view with a managed server running");
     var localStop = await OwnerPost<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { });
     Require(localStop.Ok, "local fixture stop failed");
+    using (var sessionResponse = await OwnerGet(owner,
+        $"/api/local/profiles/{profile.Id}/sessions?limit=8"))
+    {
+        var sessionJson = await sessionResponse.Content.ReadAsStringAsync();
+        var sessions = JsonSerializer.Deserialize<RecentServerSessionsResult>(sessionJson, webJson) ??
+            throw new Exception("empty recent-session response after graceful Stop");
+        var session = sessions.Sessions.Single();
+        Require(sessionResponse.IsSuccessStatusCode && session.ProfileId == profile.Id &&
+            session.OperationId != Guid.Empty && session.Outcome == ServerSessionOutcome.GracefulStop &&
+            session.BackupResult == ServerSessionBackupResult.NotConfigured &&
+            session.ReadyEverObserved == false && session.StartedUtc is not null && session.EndedUtc != default &&
+            session.DurationSeconds is >= 0 && session.LastTrustedOnlinePlayers is null &&
+            !sessionJson.Contains("worldDirectory", StringComparison.OrdinalIgnoreCase) &&
+            !sessionJson.Contains("executablePath", StringComparison.OrdinalIgnoreCase) &&
+            !sessionJson.Contains("processId", StringComparison.OrdinalIgnoreCase) &&
+            !sessionJson.Contains(world, StringComparison.OrdinalIgnoreCase) &&
+            !sessionJson.Contains(fixturePath, StringComparison.OrdinalIgnoreCase),
+            "recent-session API lost authoritative fields or exposed process/path/world data");
+    }
     Console.WriteLine("PASS isolated revocation and concurrent Host/Friend operation"); passes++;
 
     var friendViewAfterStop = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/friend", new { });

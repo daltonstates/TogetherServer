@@ -32,6 +32,8 @@ public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string 
 
 public sealed class HostManager
 {
+    public const int MaximumRecentSessionLimit = 20;
+    internal const int CurrentSessionSummaryVersion = 1;
     private static readonly TimeSpan CrashRecoveryReadinessTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan[] PlayerCountRetryDelays =
     [
@@ -120,6 +122,30 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<RecentServerSessionsResult> RecentSessionsAsync(Guid profileId, int limit)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (!settings.Profiles.Any(profile => profile.Id == profileId))
+                return new(false, "UnknownProfile", "Choose a saved Host server.", profileId, []);
+
+            var boundedLimit = Math.Clamp(limit, 1, MaximumRecentSessionLimit);
+            var sessions = data.LoadRunArchive()
+                .Where(item => item.ProfileId == profileId && item.OperationId != Guid.Empty &&
+                    item.ArchivedUtc != default)
+                .OrderByDescending(item => item.EndedUtc ?? item.ArchivedUtc)
+                .Take(boundedLimit)
+                .Select(ToRecentServerSession)
+                .ToList();
+            return new(true, "RecentSessions", sessions.Count == 0
+                ? "No archived sessions are available for this server."
+                : $"Showing {sessions.Count} recent archived session{(sessions.Count == 1 ? "" : "s")}.",
+                profileId, sessions);
+        }
+        finally { gate.Release(); }
+    }
+
     public Task RefreshObservationsAsync() => RefreshObservationsAsync(null, false);
 
     private async Task RefreshObservationsAsync(Guid? profileId, bool waitForRefresh)
@@ -141,7 +167,7 @@ public sealed class HostManager
                     var identity = Identity(run);
                     if (identity == "Missing")
                     {
-                        ArchiveDefinitivelyExitedRun(run, "ProcessExited");
+                        ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.ProcessExited);
                         continue;
                     }
                     if (identity == "Matched" && games.TryGet(run.Kind, out var driver))
@@ -172,6 +198,8 @@ public sealed class HostManager
                         ? previousObservation.State : null;
                     observations[result.ProfileId] = ToObservation(result.ProfileId, result.OperationId,
                         result.Health, clock.GetUtcNow());
+                    if (RecordTrustedPlayerObservation(run, result.Health))
+                        runsChanged = true;
                     if (previousState is not null && !string.Equals(previousState, result.Health.State, StringComparison.Ordinal))
                     {
                         var profileName = settings.Profiles.SingleOrDefault(item => item.Id == result.ProfileId)?.Name ?? "Server";
@@ -1089,7 +1117,7 @@ public sealed class HostManager
                 var identity = Identity(run);
                 if (identity == "Missing")
                 {
-                    ArchiveDefinitivelyExitedRun(run, "RecoveryProcessExitedBeforeReady");
+                    ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.RecoveryProcessExitedBeforeReady);
                     results.Add(Result(false, "RecoveryProcessExited",
                         "The crash-recovery process exited before reaching Ready."));
                     continue;
@@ -1169,7 +1197,8 @@ public sealed class HostManager
             if (run is not null)
             {
                 var identity = Identity(run);
-                if (identity == "Missing") ArchiveDefinitivelyExitedRun(run, "ProcessExitedBeforeRestore");
+                if (identity == "Missing")
+                    ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.ProcessExitedBeforeRestore);
                 else return Result(false, identity == "Matched" ? "ServerRunning" : "IdentityUnknown",
                     identity == "Matched"
                         ? "Stop the server gracefully before restoring a backup."
@@ -1302,13 +1331,29 @@ public sealed class HostManager
                 data.SaveRuns(runs);
                 return Result(false, "StopUnconfirmed", "The game driver returned before the exact managed process exited.");
             }
+            var endedUtc = clock.GetUtcNow();
 
             WorldBackupResult? backup = null;
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             var saveDirectory = profile is null ? null : driver.ManagedSaveDirectory(profile);
-            if (profile is not null && profile.Backups.Enabled && driver.SupportsBackups && saveDirectory is not null)
-                backup = backups.Create(profile, BackupKinds.Rolling, saveDirectory);
-            ArchiveCompletedRun(run, "GracefulStop", false);
+            var backupResult = profile is null
+                ? ServerSessionBackupResult.NotAttempted
+                : profile.Backups?.Enabled != true
+                    ? ServerSessionBackupResult.NotConfigured
+                    : !driver.SupportsBackups
+                        ? ServerSessionBackupResult.Unsupported
+                        : saveDirectory is null
+                            ? ServerSessionBackupResult.NotAttempted
+                            : ServerSessionBackupResult.Completed;
+            if (backupResult == ServerSessionBackupResult.Completed)
+            {
+                backup = backups.Create(profile!, BackupKinds.Rolling, saveDirectory!);
+                backupResult = backup.Ok
+                    ? ServerSessionBackupResult.Completed
+                    : ServerSessionBackupResult.Failed;
+            }
+            ArchiveCompletedRun(run, ServerSessionEndReason.GracefulStop,
+                ServerSessionOutcome.GracefulStop, backupResult, false, endedUtc: endedUtc);
             Activity("Lifecycle", "Stopped", $"{profile?.Name ?? "Server"} stopped gracefully.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             if (backup is { Ok: false })
@@ -1413,7 +1458,7 @@ public sealed class HostManager
             if (identity != "Missing")
                 return Result(false, "IdentityUnknown",
                     "PID reuse, executable mismatch, or access failure prevents proof that the managed process is gone. The world remains blocked.");
-            ArchiveDefinitivelyExitedRun(run, "OwnerArchivedExitedRun");
+            ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.OwnerArchivedExitedRun);
             return Result(true, "RecordArchived", "The exact recorded process was proven absent and its run record was archived.");
         }
         finally { gate.Release(); }
@@ -1637,6 +1682,69 @@ public sealed class HostManager
         new(profileId, operationId, health.State, health.Detail, health.Code, observedUtc,
             health.Ok, health.OnlinePlayers, health.MaxPlayers, health.PlayerNames,
             health.PlayerCountTrusted);
+
+    private static bool RecordTrustedPlayerObservation(ManagedRun run, GameHealthResult health)
+    {
+        if (!health.Ok || !health.PlayerCountTrusted || health.OnlinePlayers is not { } online || online < 0)
+            return false;
+
+        var changed = false;
+        if (run.LastTrustedOnlinePlayers != online)
+        {
+            run.LastTrustedOnlinePlayers = online;
+            changed = true;
+        }
+        if (run.MaximumTrustedOnlinePlayers is null || online > run.MaximumTrustedOnlinePlayers)
+        {
+            run.MaximumTrustedOnlinePlayers = online;
+            changed = true;
+        }
+        return changed;
+    }
+
+    private static RecentServerSession ToRecentServerSession(ManagedRunArchive item)
+    {
+        var trustedCountsAreConsistent = item.LastTrustedOnlinePlayers is null &&
+                item.MaximumTrustedOnlinePlayers is null ||
+            item.LastTrustedOnlinePlayers is >= 0 &&
+                item.MaximumTrustedOnlinePlayers >= item.LastTrustedOnlinePlayers;
+        var complete = item.SummaryVersion == CurrentSessionSummaryVersion &&
+            item.EndedUtc is { } ended && ended != default &&
+            item.EndReason != ServerSessionEndReason.Unavailable &&
+            item.Outcome != ServerSessionOutcome.Unavailable &&
+            item.BackupResult != ServerSessionBackupResult.Unavailable &&
+            SessionReasonMatchesOutcome(item.EndReason, item.Outcome) &&
+            trustedCountsAreConsistent;
+        var gameKind = item.Kind is GameKinds.Fixture or GameKinds.Valheim or
+            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Custom
+                ? item.Kind : "Unavailable";
+        return new(item.ProfileId, item.OperationId, gameKind,
+            complete ? item.StartedUtc : null,
+            complete ? item.EndedUtc : null,
+            complete ? item.DurationSeconds : null,
+            complete ? item.WasReady : null,
+            complete ? item.EndReason : null,
+            complete ? item.Outcome : null,
+            complete ? item.CrashRecoveryScheduled : null,
+            complete ? item.LastTrustedOnlinePlayers : null,
+            complete ? item.MaximumTrustedOnlinePlayers : null,
+            complete ? item.BackupResult : null);
+    }
+
+    private static bool SessionReasonMatchesOutcome(ServerSessionEndReason reason,
+        ServerSessionOutcome outcome) => outcome switch
+        {
+            ServerSessionOutcome.GracefulStop => reason == ServerSessionEndReason.GracefulStop,
+            ServerSessionOutcome.UnexpectedExit or ServerSessionOutcome.FailedBeforeReady or
+                ServerSessionOutcome.StopUnconfirmed => reason == ServerSessionEndReason.ProcessExited,
+            ServerSessionOutcome.RecoveryFailedBeforeReady =>
+                reason == ServerSessionEndReason.RecoveryProcessExitedBeforeReady,
+            ServerSessionOutcome.OwnerArchivedExited =>
+                reason == ServerSessionEndReason.OwnerArchivedExitedRun,
+            ServerSessionOutcome.ExitedBeforeRestore =>
+                reason == ServerSessionEndReason.ProcessExitedBeforeRestore,
+            _ => false
+        };
 
     private CustomCertificationResult CertificationResult(bool ok, string code, string message,
         CustomCertificationState certification) =>
@@ -1895,7 +2003,7 @@ public sealed class HostManager
         return profile is not null && games.TryGet(run.Kind, out var driver) ? driver.Ports(profile) : null;
     }
 
-    private void ArchiveDefinitivelyExitedRun(ManagedRun run, string reason)
+    private void ArchiveDefinitivelyExitedRun(ManagedRun run, ServerSessionEndReason endReason)
     {
         var preserveRecoveryState = false;
         var recoveryScheduled = false;
@@ -1907,6 +2015,7 @@ public sealed class HostManager
         else if (existing?.State == CrashRecoveryStates.Starting)
         {
             FailCrashRecoveryAttempt(existing, "The recovery process exited before reaching Ready.");
+            endReason = ServerSessionEndReason.RecoveryProcessExitedBeforeReady;
             preserveRecoveryState = true;
             recoveryScheduled = existing.State == CrashRecoveryStates.Pending;
         }
@@ -1939,7 +2048,24 @@ public sealed class HostManager
                 crashRecovery.Remove(existing);
             }
         }
-        ArchiveCompletedRun(run, reason, preserveRecoveryState, recoveryScheduled);
+        var outcome = endReason switch
+        {
+            ServerSessionEndReason.RecoveryProcessExitedBeforeReady =>
+                ServerSessionOutcome.RecoveryFailedBeforeReady,
+            ServerSessionEndReason.OwnerArchivedExitedRun =>
+                ServerSessionOutcome.OwnerArchivedExited,
+            ServerSessionEndReason.ProcessExitedBeforeRestore =>
+                ServerSessionOutcome.ExitedBeforeRestore,
+            ServerSessionEndReason.ProcessExited when run.StopRequestedUtc is not null =>
+                ServerSessionOutcome.StopUnconfirmed,
+            ServerSessionEndReason.ProcessExited when run.WasReady =>
+                ServerSessionOutcome.UnexpectedExit,
+            ServerSessionEndReason.ProcessExited =>
+                ServerSessionOutcome.FailedBeforeReady,
+            _ => ServerSessionOutcome.Unavailable
+        };
+        ArchiveCompletedRun(run, endReason, outcome, ServerSessionBackupResult.NotAttempted,
+            preserveRecoveryState, recoveryScheduled);
     }
 
     private void FailCrashRecoveryAttempt(CrashRecoveryState recovery, string failure)
@@ -1967,13 +2093,25 @@ public sealed class HostManager
         data.SaveCrashRecoveryStates(crashRecovery);
     }
 
-    private void ArchiveCompletedRun(ManagedRun run, string reason, bool preserveRecoveryState,
-        bool recoveryScheduled = false)
+    private void ArchiveCompletedRun(ManagedRun run, ServerSessionEndReason endReason,
+        ServerSessionOutcome outcome, ServerSessionBackupResult backupResult,
+        bool preserveRecoveryState, bool recoveryScheduled = false, DateTimeOffset? endedUtc = null)
     {
         var now = clock.GetUtcNow();
+        var knownEnd = endedUtc ?? now;
+        var startedUtc = RunStartUtc(run.StartTimeUtcTicks);
+        long? durationSeconds = startedUtc is { } started && started <= knownEnd
+            ? (long)Math.Floor((knownEnd - started).TotalSeconds)
+            : null;
         var archive = data.LoadRunArchive();
-        archive.Add(new ManagedRunArchive(run.ProfileId, run.OperationId, run.Kind, run.WorldId,
-            run.ProcessId, run.StartTimeUtcTicks, run.WasReady, reason, now, recoveryScheduled));
+        if (!archive.Any(item => item.OperationId == run.OperationId))
+        {
+            archive.Add(new ManagedRunArchive(run.ProfileId, run.OperationId, run.Kind, run.WorldId,
+                run.ProcessId, run.StartTimeUtcTicks, run.WasReady, endReason.ToString(), now,
+                recoveryScheduled, CurrentSessionSummaryVersion, startedUtc, knownEnd, durationSeconds,
+                endReason, outcome, run.LastTrustedOnlinePlayers,
+                run.MaximumTrustedOnlinePlayers, backupResult));
+        }
         var cutoff = now.AddDays(-30);
         archive = archive.Where(item => item.ArchivedUtc >= cutoff)
             .OrderByDescending(item => item.ArchivedUtc).Take(500)
@@ -1988,7 +2126,14 @@ public sealed class HostManager
             crashRecovery.RemoveAll(item => item.ProfileId == run.ProfileId);
         data.SaveRuns(runs);
         data.SaveCrashRecoveryStates(crashRecovery);
-        data.TryAudit($"run-archived {run.ProfileId} operation={run.OperationId} reason={reason} recovery={recoveryScheduled} {now:O}");
+        data.TryAudit($"run-archived {run.ProfileId} operation={run.OperationId} reason={endReason} outcome={outcome} recovery={recoveryScheduled} {now:O}");
+    }
+
+    private static DateTimeOffset? RunStartUtc(long? utcTicks)
+    {
+        if (utcTicks is not { } ticks) return null;
+        try { return new DateTimeOffset(ticks, TimeSpan.Zero); }
+        catch (ArgumentOutOfRangeException) { return null; }
     }
 
     private static bool PortOverlap(GamePort left, GamePort right) =>
