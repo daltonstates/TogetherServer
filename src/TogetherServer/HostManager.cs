@@ -74,6 +74,32 @@ public sealed class HostManager
         backups = new WorldBackupService(data, this.clock);
     }
 
+    internal async Task<ManagedServerLogSource?> ResolveServerLogSourceAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return null;
+            var active = runs.SingleOrDefault(item => item.ProfileId == profileId);
+            if (active is not null)
+            {
+                if (active.Kind != profile.Kind)
+                    return new(profileId, profile.Kind, active.OperationId, null,
+                        ServerLogSourceStates.Unavailable);
+                return new(profileId, profile.Kind, active.OperationId, active.LogPath,
+                    ServerLogSourceStates.Active);
+            }
+            var recent = data.LoadRunArchive().Where(item => item.ProfileId == profileId && item.Kind == profile.Kind)
+                .OrderByDescending(item => item.ArchivedUtc).FirstOrDefault();
+            return recent is null
+                ? new(profileId, profile.Kind, null, null, ServerLogSourceStates.Missing)
+                : new(profileId, recent.Kind, recent.OperationId, data.RunLogPath(recent.OperationId),
+                    ServerLogSourceStates.Ended, recent.ArchivedUtc);
+        }
+        finally { gate.Release(); }
+    }
+
     public bool CompanionListeningEnabled => Volatile.Read(ref settings).CompanionListeningEnabled;
     public bool RemoteControlsEnabled => Volatile.Read(ref settings).RemoteControlsEnabled;
     public bool LifecycleBlocked => data.Recovery.LifecycleBlocked;

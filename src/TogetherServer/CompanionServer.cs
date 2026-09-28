@@ -17,7 +17,7 @@ public static class CompanionListenerStates
 // It starts only after the owner enables Friend connections and pairing/TLS
 // material is ready; the local GUI remains bound to loopback.
 public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
-    GameServerRegistry games, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
+    GameServerRegistry games, ServerLogService serverLogs, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
     Func<bool>? isShuttingDown = null)
 {
     private readonly HostIdentity identity = new(data);
@@ -213,6 +213,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var canStart = permission?.CanStart ?? own?.CanStart == true;
                 var canStop = permission?.CanStop ?? own?.CanStop == true;
                 var canExtendTimer = permission?.CanExtendTimer ?? own?.CanExtendTimer == true;
+                var canViewLogs = permission?.CanViewLogs ?? own?.CanViewLogs == true;
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
                 return new PublicProfile(profile.Id, profile.Name,
                     run.State,
@@ -229,7 +230,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     string.IsNullOrWhiteSpace(profile.Maintenance?.Message) ? null : profile.Maintenance.Message,
                     canExtendTimer,
                     snapshot.Settings.FriendTimerExtensionMinutes,
-                    Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes));
+                    Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes),
+                    canViewLogs);
             }).ToList();
             var protocol = CompanionProtocol.Describe(own?.ProtocolVersion);
             var assigned = own?.AssignedProfileIds.ToHashSet() ?? [];
@@ -265,6 +267,24 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(await PublicStatus(device!.Id));
+        });
+        companion.MapGet("/servers/{profileId:guid}/logs", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(device!, profileId))
+                return Results.Json(new PairingDecision(false, "PermissionDenied",
+                    "The Host has not assigned this server to this PC."), statusCode: StatusCodes.Status403Forbidden);
+            if (!pairing.CanViewLogs(device!, profileId))
+                return Results.Json(new PairingDecision(false, "PermissionDenied",
+                    "The Host has not granted View logs permission for this server to this PC."),
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
+                return Results.BadRequest(error);
+            var result = await serverLogs.ReadAsync(profileId, query, ServerLogAudience.Friend);
+            return result.Code == "CustomRemoteLogsUnavailable"
+                ? Results.Json(result, statusCode: StatusCodes.Status403Forbidden)
+                : Results.Json(result);
         });
         companion.MapPost("/refresh", async (HttpContext context, RemoteActionRequest request) =>
         {

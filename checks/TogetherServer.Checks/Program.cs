@@ -537,6 +537,86 @@ await Check("Valheim startup connection sequences survive the ready boundary", (
     return Task.CompletedTask;
 });
 
+await Check("managed server logs are exact-run bounded and sanitized independently of lifecycle", async () =>
+{
+    using var data = Data("server-logs");
+    var profile = Profile("log-valheim", "log-world", FreePort());
+    profile.Kind = GameKinds.Valheim;
+    var custom = Profile("log-custom", "custom-world", FreePort());
+    custom.Kind = GameKinds.Custom;
+    custom.Custom = new CustomGameOptions();
+    data.SaveSettings(Settings(profile, custom));
+    var operationId = Guid.NewGuid();
+    var path = data.NewRunLogPath(operationId);
+    var run = new ManagedRun
+    {
+        ProfileId = profile.Id,
+        OperationId = operationId,
+        Kind = GameKinds.Valheim,
+        WorldId = profile.WorldId,
+        LogPath = path
+    };
+    data.SaveRuns([run]);
+    File.WriteAllText(path,
+        "09/28/2026 12:00:00: Game server connected\n" +
+        "09/28/2026 12:00:01: password=host-secret bearer token-secret TS3-code-secret\n" +
+        "09/28/2026 12:00:02: Chat player Alice SteamID 123456789 192.168.1.4 C:\\Users\\Alice\\private\\world.db \u001b[31mwarning\rspoof\n" +
+        "09/28/2026 12:00:03: " + string.Join(' ', Enumerable.Repeat("diagnostic", 2500)) + "\n");
+    var decoySecret = "must-not-read-decoy";
+    File.WriteAllText(data.RunLogPath(Guid.NewGuid()), decoySecret + "\n");
+    var manager = Manager(data);
+    var logs = new ServerLogService(data, manager);
+
+    var first = await logs.ReadAsync(profile.Id, new(Limit: 1), ServerLogAudience.Friend);
+    Require(first.Ok && first.SourceState == ServerLogSourceStates.Active &&
+        first.RunId == operationId.ToString("N") && first.Records.Count == 1 && first.HasMore &&
+        !string.IsNullOrWhiteSpace(first.Cursor), "initial bounded exact-run page was not returned");
+    var remainder = await logs.ReadAsync(profile.Id, new(first.Cursor, 10), ServerLogAudience.Friend);
+    var friendText = string.Join(" ", remainder.Records.Select(item => item.Message));
+    Require(remainder.Ok && remainder.Records.Count == 3 && remainder.Records.All(item => item.Message.Length <= 2048) &&
+        !friendText.Contains("host-secret", StringComparison.Ordinal) &&
+        !friendText.Contains("token-secret", StringComparison.Ordinal) &&
+        !friendText.Contains("code-secret", StringComparison.Ordinal) &&
+        !friendText.Contains("Alice", StringComparison.Ordinal) &&
+        !friendText.Contains("123456789", StringComparison.Ordinal) &&
+        !friendText.Contains("192.168.1.4", StringComparison.Ordinal) &&
+        !friendText.Contains("C:\\Users", StringComparison.OrdinalIgnoreCase) &&
+        !friendText.Contains(decoySecret, StringComparison.Ordinal) &&
+        remainder.Records.All(item => item.Message.All(character => !char.IsControl(character))),
+        "Friend log output leaked a secret, identity, address, path, decoy run, or injected control character");
+    var host = await logs.ReadAsync(profile.Id, new(Limit: 10), ServerLogAudience.Host);
+    var hostText = string.Join(" ", host.Records.Select(item => item.Message));
+    Require(!hostText.Contains("host-secret", StringComparison.Ordinal) &&
+        !hostText.Contains("token-secret", StringComparison.Ordinal) &&
+        !hostText.Contains("code-secret", StringComparison.Ordinal),
+        "Host diagnostic output exposed protected app secrets");
+    Require((await logs.ReadAsync(profile.Id, new(Limit: 0), ServerLogAudience.Host)).Code == "InvalidLogQuery" &&
+        (await logs.ReadAsync(profile.Id, new(Contains: "bad\nfilter"), ServerLogAudience.Host)).Code == "InvalidLogQuery" &&
+        (await logs.ReadAsync(profile.Id, new("not-a-cursor", 10), ServerLogAudience.Host)).Code == "InvalidLogCursor" &&
+        (await logs.ReadAsync(custom.Id, new(), ServerLogAudience.Friend)).Code == "CustomRemoteLogsUnavailable",
+        "limit, cursor, or Custom remote source failed open");
+
+    run.LogPath = Path.Combine(root, "unrelated-sensitive.txt");
+    File.WriteAllText(run.LogPath, "arbitrary-owner-file");
+    data.SaveRuns([run]);
+    var tampered = new ServerLogService(data, Manager(data));
+    var denied = await tampered.ReadAsync(profile.Id, new(), ServerLogAudience.Host);
+    Require(denied.Code == "LogSourceIdentityMismatch" && denied.Records.Count == 0,
+        "a tampered run path enabled an arbitrary file read");
+
+    using var endedData = Data("server-logs-ended");
+    endedData.SaveSettings(Settings(profile));
+    var endedOperation = Guid.NewGuid();
+    File.WriteAllText(endedData.NewRunLogPath(endedOperation), "09/28/2026 12:05:00: shutdown complete\n");
+    endedData.SaveRunArchive([new ManagedRunArchive(profile.Id, endedOperation, GameKinds.Valheim,
+        profile.WorldId, null, null, true, "Stopped", DateTimeOffset.UtcNow, false)]);
+    var ended = await new ServerLogService(endedData, Manager(endedData))
+        .ReadAsync(profile.Id, new(), ServerLogAudience.Host);
+    Require(ended.Ok && ended.SourceState == ServerLogSourceStates.Ended &&
+        ended.RunId == endedOperation.ToString("N") && ended.Records.Count == 1,
+        "the exact recent ended run was not identified honestly");
+});
+
 await Check("port diagnostics show local game and Friend listeners honestly", async () =>
 {
     using var data = Data("port-diagnostics");

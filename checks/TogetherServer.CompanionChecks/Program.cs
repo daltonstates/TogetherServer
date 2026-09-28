@@ -123,6 +123,7 @@ try
         Require(migrated.Single(device => device.Id == existingScopedDevice).AssignedProfileIds!
                 .SequenceEqual([existingScopedProfile]) &&
             migrated.Single(device => device.Id == existingLegacyDevice).AssignedProfileIds!.Count == 0 &&
+            migrated.All(device => !device.CanViewLogs && !device.CanViewLogsForProfile(existingScopedProfile)) &&
             migratedService.CurrentServerInvite(existingScopedProfile) is not null &&
             migrationData.HasProtected("pairing-state.protected"),
             "legacy devices/invites did not migrate atomically with fail-closed explicit server access");
@@ -946,6 +947,16 @@ try
         ExecutablePath = valheimFixturePath,
         GamePort = stopProfile.GamePort
     };
+    var customLogProfile = new ServerProfile
+    {
+        Kind = GameKinds.Custom,
+        Name = "Local custom logs",
+        WorldId = "custom-log-world",
+        WorldDirectory = Path.Combine(stopHostData, "custom-log-world"),
+        GamePort = gamePort + 30,
+        Custom = new CustomGameOptions { GameName = "Local custom logs" }
+    };
+    Directory.CreateDirectory(customLogProfile.WorldDirectory);
     stopProfileId = stopProfile.Id;
     replacementProfileId = replacementProfile.Id;
     stopProfile.WorldDirectory = Path.Combine(stopHostData, "worlds", stopProfile.Id.ToString("N"));
@@ -957,7 +968,7 @@ try
     using var stopFriendLocal = LocalClient(stopFriendPort);
     var stopSettings = new HostSettings
     {
-        Profiles = [stopProfile, replacementProfile],
+        Profiles = [stopProfile, replacementProfile, customLogProfile],
         CompanionEndpoint = stopEndpoint,
         CompanionBindAddress = "127.0.0.1",
         CompanionPort = stopPublicPort,
@@ -984,6 +995,56 @@ try
         "new Friend did not receive distinct Stop permission and safety state");
     var stopDeviceId = (await stopOwner.GetFromJsonAsync<JsonElement>("/api/local/companion")).GetProperty("devices").EnumerateArray()
         .Single(device => device.GetProperty("profileId").GetGuid() == stopProfile.Id).GetProperty("id").GetGuid();
+    using var directLogClient = PinnedClient(stopEndpoint, stopInvite.Fingerprint);
+    using var directLogPairResponse = await directLogClient.PostAsJsonAsync("/api/companion/pair",
+        new PairingActivation(stopProfile.Id, stopInvite.Code, true), webJson);
+    var directLogCredential = await directLogPairResponse.Content.ReadFromJsonAsync<PairingCredential>(webJson)
+        ?? throw new Exception("direct log credential was empty");
+    var defaultLogStatus = await PublicStatus(directLogClient, directLogCredential);
+    var deniedWithoutLogPermission = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id);
+    var unassignedLogDenied = await PublicLogs(directLogClient, directLogCredential, replacementProfile.Id);
+    var directDeviceBeforeGrant = (await stopOwner.GetFromJsonAsync<JsonElement>("/api/local/companion"))
+        .GetProperty("devices").EnumerateArray().Single(device => device.GetProperty("id").GetGuid() == directLogCredential.DeviceId);
+    Require(!defaultLogStatus.Profiles.Single().CanViewLogs &&
+        !directDeviceBeforeGrant.GetProperty("canViewLogs").GetBoolean() &&
+        deniedWithoutLogPermission.Status == HttpStatusCode.Forbidden &&
+        deniedWithoutLogPermission.Body.GetProperty("code").GetString() == "PermissionDenied" &&
+        unassignedLogDenied.Status == HttpStatusCode.Forbidden &&
+        unassignedLogDenied.Body.GetProperty("code").GetString() == "PermissionDenied",
+        "Start permission granted logs or an unassigned profile bypassed log authorization");
+    var logPermissions = new[]
+    {
+        new DeviceServerPermissionRequest(stopProfile.Id, true, false, CanViewLogs: true),
+        new DeviceServerPermissionRequest(customLogProfile.Id, false, false, CanViewLogs: true)
+    };
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{directLogCredential.DeviceId}/servers",
+        new([stopProfile.Id, customLogProfile.Id], logPermissions))).Ok,
+        "View logs permission could not be granted independently per server");
+    var permittedLogStatus = await PublicStatus(directLogClient, directLogCredential);
+    var missingManagedLog = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id);
+    var customRemoteLogs = await PublicLogs(directLogClient, directLogCredential, customLogProfile.Id);
+    Require(permittedLogStatus.Profiles.Single(item => item.Id == stopProfile.Id).CanViewLogs &&
+        permittedLogStatus.Profiles.Single(item => item.Id == customLogProfile.Id).CanViewLogs &&
+        missingManagedLog.Status == HttpStatusCode.OK &&
+        missingManagedLog.Body.GetProperty("sourceState").GetString() == ServerLogSourceStates.Missing &&
+        customRemoteLogs.Status == HttpStatusCode.Forbidden &&
+        customRemoteLogs.Body.GetProperty("code").GetString() == "CustomRemoteLogsUnavailable" &&
+        customRemoteLogs.Body.GetProperty("records").GetArrayLength() == 0,
+        "public/local permission views, missing source state, or Custom remote log denial was incorrect");
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{directLogCredential.DeviceId}/permissions",
+        new(true, false, "logs", CanViewLogs: false))).Ok,
+        "View logs permission could not be revoked");
+    var revokedLogRead = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id);
+    Require(revokedLogRead.Status == HttpStatusCode.Forbidden &&
+        revokedLogRead.Body.GetProperty("code").GetString() == "PermissionDenied",
+        "View logs revocation did not take effect on the next request");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(stopOwner,
+        $"/api/local/devices/{directLogCredential.DeviceId}/servers",
+        new([stopProfile.Id, customLogProfile.Id], logPermissions))).Ok,
+        "View logs permission could not be restored for read checks");
+    Console.WriteLine("PASS View logs defaults false and enforces assignment, per-server grant, revocation, and no Custom remote logs"); passes++;
     Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(stopOwner,
         $"/api/local/devices/{stopDeviceId}/permissions", new(true, true, CanExtendTimer: true))).Ok,
         "restricted Friend Stop permission was not saved");
@@ -1023,6 +1084,39 @@ try
         await Task.Delay(100);
     }
     Require(ready, "restricted synthetic server never reached Ready");
+    var ownedLogPath = Directory.GetFiles(Path.Combine(stopHostData, "logs"), "*.log").Single();
+    File.AppendAllText(ownedLogPath,
+        "09/28/2026 12:00:01: password=friend-secret bearer token-secret 10.20.30.40 C:\\Users\\Private\\world.db\n" +
+        "09/28/2026 12:00:02: Chat player Alice SteamID 123456789 \u001b[31mwarn\rspoof\n");
+    var arbitraryPath = Path.Combine(stopHostData, "owner-secret.txt");
+    File.WriteAllText(arbitraryPath, "arbitrary-file-secret");
+    using var unknownLogField = await stopOwner.GetAsync(
+        $"/api/local/profiles/{stopProfile.Id}/logs?path={Uri.EscapeDataString(arbitraryPath)}");
+    using var invalidLimit = await stopOwner.GetAsync($"/api/local/profiles/{stopProfile.Id}/logs?limit=201");
+    var localLogs = await stopOwner.GetFromJsonAsync<ServerLogResult>(
+        $"/api/local/profiles/{stopProfile.Id}/logs?limit=1");
+    var remoteLogs = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id, "limit=200");
+    var remoteLogResult = remoteLogs.Body.Deserialize<ServerLogResult>(webJson)
+        ?? throw new Exception("remote log response was empty");
+    var remoteText = string.Join(" ", remoteLogResult.Records.Select(item => item.Message));
+    Require(unknownLogField.StatusCode == HttpStatusCode.BadRequest &&
+        invalidLimit.StatusCode == HttpStatusCode.BadRequest && localLogs is { Ok: true } &&
+        localLogs.Records.Count == 1 && localLogs.HasMore && !string.IsNullOrWhiteSpace(localLogs.Cursor) &&
+        remoteLogs.Status == HttpStatusCode.OK && remoteLogResult.Records.Count >= 3 &&
+        !remoteText.Contains("friend-secret", StringComparison.Ordinal) &&
+        !remoteText.Contains("token-secret", StringComparison.Ordinal) &&
+        !remoteText.Contains("10.20.30.40", StringComparison.Ordinal) &&
+        !remoteText.Contains("C:\\Users", StringComparison.OrdinalIgnoreCase) &&
+        !remoteText.Contains("Alice", StringComparison.Ordinal) &&
+        !remoteText.Contains("123456789", StringComparison.Ordinal) &&
+        !remoteText.Contains("arbitrary-file-secret", StringComparison.Ordinal) &&
+        remoteLogResult.Records.All(record => record.Message.All(character => !char.IsControl(character))),
+        "log query bounds, exact owned path, redaction, or CR/LF/ANSI sanitization failed");
+    var invalidCursor = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id, "cursor=invalid");
+    Require(invalidCursor.Status == HttpStatusCode.OK &&
+        invalidCursor.Body.GetProperty("code").GetString() == "InvalidLogCursor",
+        "an invalid cursor was accepted or did not return a typed failure");
+    Console.WriteLine("PASS Host and Friend Valheim log reads are bounded, exact-run, sanitized, and cursor scoped"); passes++;
     var gameEndpointAnswer = GameEndpointProbe.Check(new PublicProfile(stopProfile.Id, stopProfile.Name, "Ready",
         $"127.0.0.1:{stopProfile.GamePort}", Kind: GameKinds.Valheim));
     var unsupportedEndpointAnswer = GameEndpointProbe.Check(new PublicProfile(profile.Id, profile.Name, "Ready",
@@ -1409,6 +1503,19 @@ async Task<CompanionStatus> PublicStatus(HttpClient client, PairingCredential cr
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
     using var response = await client.SendAsync(request);
     return await response.Content.ReadFromJsonAsync<CompanionStatus>(webJson) ?? throw new Exception("Empty public status response.");
+}
+
+async Task<(HttpStatusCode Status, JsonElement Body)> PublicLogs(HttpClient client,
+    PairingCredential credential, Guid profileId, string? query = null)
+{
+    var path = $"/api/companion/servers/{profileId}/logs" +
+        (string.IsNullOrWhiteSpace(query) ? "" : "?" + query);
+    using var request = new HttpRequestMessage(HttpMethod.Get, path);
+    request.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
+    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);
+    using var response = await client.SendAsync(request);
+    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+    return (response.StatusCode, document.RootElement.Clone());
 }
 
 static HttpClient PinnedClient(string endpoint, string fingerprint)

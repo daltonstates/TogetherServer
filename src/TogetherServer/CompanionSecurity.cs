@@ -21,6 +21,7 @@ public sealed class PairedDevice
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
     public bool CanExtendTimer { get; set; }
+    public bool CanViewLogs { get; set; }
     // Global permissions remain the default. Entries are stored only when an
     // assigned server differs from that default, so the owner can see and edit
     // explicit per-server exceptions without duplicating the access list.
@@ -41,6 +42,8 @@ public sealed class PairedDevice
         .FirstOrDefault(item => item.ProfileId == profileId)?.CanStop ?? CanStop;
     public bool CanExtendTimerForProfile(Guid profileId) => ServerPermissionOverrides?
         .FirstOrDefault(item => item.ProfileId == profileId)?.CanExtendTimer ?? CanExtendTimer;
+    public bool CanViewLogsForProfile(Guid profileId) => ServerPermissionOverrides?
+        .FirstOrDefault(item => item.ProfileId == profileId)?.CanViewLogs ?? CanViewLogs;
 }
 
 public sealed class ServerPermissionOverride
@@ -49,6 +52,7 @@ public sealed class ServerPermissionOverride
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
     public bool CanExtendTimer { get; set; }
+    public bool CanViewLogs { get; set; }
 }
 
 public sealed class ServerInviteState
@@ -60,6 +64,7 @@ public sealed class ServerInviteState
     public string Fingerprint { get; set; } = "";
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
+    public bool CanViewLogs { get; set; }
     public bool Rotated { get; set; }
     public DateTimeOffset? PairingOpenedUtc { get; set; }
     public DateTimeOffset? PairingExpiresUtc { get; set; }
@@ -75,16 +80,16 @@ public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> Ass
     bool Paired, DateTimeOffset? CredentialExpiresUtc, DateTimeOffset? LastHeartbeatUtc,
     IReadOnlyList<ServerPermissionView>? ServerPermissions = null,
     string? AppVersion = null, int? ProtocolVersion = null,
-    bool ApprovalPending = false, bool CanExtendTimer = false);
+    bool ApprovalPending = false, bool CanExtendTimer = false, bool CanViewLogs = false);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop,
-    bool CanExtendTimer = false);
+    bool CanExtendTimer = false, bool CanViewLogs = false);
 
 public sealed record PairingInvite(string Endpoint, string Fingerprint, Guid DeviceId, string Code, DateTimeOffset ExpiresUtc,
     bool ServerScope = false);
 public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart,
     bool Open = true, int DeviceLimit = 1, int ActivatedDevices = 0,
     bool RequireApproval = false, DateTimeOffset? OpenedUtc = null,
-    int DurationMinutes = 30);
+    int DurationMinutes = 30, bool CanViewLogs = false);
 public sealed record PairingActivation(Guid DeviceId, string Code, bool ServerScope = false);
 public sealed record PairingCredential(Guid DeviceId, string Credential, DateTimeOffset ExpiresUtc,
     bool ApprovalPending = false);
@@ -94,11 +99,12 @@ public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOf
     string AppVersion = "", int ProtocolVersion = 1);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
 public sealed record ServerInviteRequest(bool Refresh, bool CanStart, bool EnableConnections = false,
-    int DurationMinutes = 30, int DeviceLimit = 1, bool RequireApproval = false);
+    int DurationMinutes = 30, int DeviceLimit = 1, bool RequireApproval = false,
+    bool CanViewLogs = false);
 public sealed record DevicePermissionRequest(bool CanStart, bool CanStop, string? Scope = null,
-    bool CanExtendTimer = false);
+    bool CanExtendTimer = false, bool CanViewLogs = false);
 public sealed record DeviceServerPermissionRequest(Guid ProfileId, bool CanStart, bool CanStop,
-    bool CanExtendTimer = false);
+    bool CanExtendTimer = false, bool CanViewLogs = false);
 public sealed record DeviceServerAccessRequest(IReadOnlyList<Guid>? ProfileIds,
     IReadOnlyList<DeviceServerPermissionRequest>? Permissions = null);
 public sealed record DeviceNameRequest(string? Name);
@@ -475,20 +481,21 @@ public sealed class PairingService
                 device.ServerPermissionOverrides = [];
                 changed = true;
             }
+            // Corrupt duplicate entries collapse to the most restrictive
+            // effective permission so normalization never expands access.
             var normalizedPermissions = device.ServerPermissionOverrides
                 .Where(item => item.ProfileId != Guid.Empty && normalized.Contains(item.ProfileId))
                 .GroupBy(item => item.ProfileId)
-                // Corrupt duplicate entries collapse to the most restrictive
-                // effective permission so normalization never expands access.
                 .Select(group => new ServerPermissionOverride
                 {
                     ProfileId = group.Key,
                     CanStart = group.All(item => item.CanStart),
                     CanStop = group.All(item => item.CanStop),
-                    CanExtendTimer = group.All(item => item.CanExtendTimer)
+                    CanExtendTimer = group.All(item => item.CanExtendTimer),
+                    CanViewLogs = group.All(item => item.CanViewLogs)
                 })
                 .Where(item => item.CanStart != device.CanStart || item.CanStop != device.CanStop ||
-                    item.CanExtendTimer != device.CanExtendTimer)
+                    item.CanExtendTimer != device.CanExtendTimer || item.CanViewLogs != device.CanViewLogs)
                 .ToList();
             if (normalizedPermissions.Count != device.ServerPermissionOverrides.Count ||
                 normalizedPermissions.Where((item, index) =>
@@ -496,7 +503,8 @@ public sealed class PairingService
                     item.ProfileId != device.ServerPermissionOverrides[index].ProfileId ||
                     item.CanStart != device.ServerPermissionOverrides[index].CanStart ||
                     item.CanStop != device.ServerPermissionOverrides[index].CanStop ||
-                    item.CanExtendTimer != device.ServerPermissionOverrides[index].CanExtendTimer).Any())
+                    item.CanExtendTimer != device.ServerPermissionOverrides[index].CanExtendTimer ||
+                    item.CanViewLogs != device.ServerPermissionOverrides[index].CanViewLogs).Any())
             {
                 device.ServerPermissionOverrides = normalizedPermissions;
                 changed = true;
@@ -533,7 +541,7 @@ public sealed class PairingService
             return new(new PairingInvite(state.Endpoint, state.Fingerprint, profileId,
                 state.Code, expires, true), state.CanStart, open, state.DeviceLimit,
                 state.ActivatedDevices, state.RequireApproval, state.PairingOpenedUtc,
-                state.DurationMinutes);
+                state.DurationMinutes, state.CanViewLogs);
         }
     }
 
@@ -566,7 +574,7 @@ public sealed class PairingService
 
     public PairingInvite IssueServer(Guid profileId, bool canStart, bool canStop, string endpoint,
         string fingerprint, bool refresh, int durationMinutes = 30, int deviceLimit = 1,
-        bool requireApproval = false)
+        bool requireApproval = false, bool canViewLogs = false)
     {
         if (profileId == Guid.Empty) throw new ArgumentException("Choose a saved server.");
         if (durationMinutes is < 5 or > 1440)
@@ -582,7 +590,8 @@ public sealed class PairingService
                 var currentWindow = !state.Closed && state.PairingExpiresUtc > now &&
                     state.ActivatedDevices < state.DeviceLimit && state.DeviceLimit == deviceLimit &&
                     state.DurationMinutes == durationMinutes &&
-                    state.RequireApproval == requireApproval && state.CanStart == canStart && state.CanStop == canStop;
+                    state.RequireApproval == requireApproval && state.CanStart == canStart && state.CanStop == canStop &&
+                    state.CanViewLogs == canViewLogs;
                 if (currentWindow)
                 {
                     if (!string.Equals(state.Endpoint, endpoint, StringComparison.OrdinalIgnoreCase) ||
@@ -600,6 +609,7 @@ public sealed class PairingService
                 state.Fingerprint = fingerprint;
                 state.CanStart = canStart;
                 state.CanStop = canStop;
+                state.CanViewLogs = canViewLogs;
                 state.PairingOpenedUtc = now;
                 state.PairingExpiresUtc = now.AddMinutes(durationMinutes);
                 state.DurationMinutes = durationMinutes;
@@ -623,6 +633,7 @@ public sealed class PairingService
                 Fingerprint = fingerprint,
                 CanStart = canStart,
                 CanStop = canStop,
+                CanViewLogs = canViewLogs,
                 Rotated = refresh,
                 PairingOpenedUtc = now,
                 PairingExpiresUtc = now.AddMinutes(durationMinutes),
@@ -738,9 +749,9 @@ public sealed class PairingService
                     fresh ? heartbeat!.ReceivedUtc : null,
                     device.AssignedProfileIds.Select(profileId => new ServerPermissionView(profileId,
                         device.CanStartProfile(profileId), device.CanStopProfile(profileId),
-                        device.CanExtendTimerForProfile(profileId))).ToList(),
+                        device.CanExtendTimerForProfile(profileId), device.CanViewLogsForProfile(profileId))).ToList(),
                     fresh ? heartbeat!.AppVersion : null, fresh ? heartbeat!.ProtocolVersion : null,
-                    device.ApprovalPending, device.CanExtendTimer);
+                    device.ApprovalPending, device.CanExtendTimer, device.CanViewLogs);
             }).ToList();
         }
     }
@@ -814,6 +825,7 @@ public sealed class PairingService
                     Name = $"Friend PC {id.ToString("N")[..6]}",
                     CanStart = state.CanStart,
                     CanStop = state.CanStop,
+                    CanViewLogs = state.CanViewLogs,
                     CredentialHash = Hash(serverToken),
                     CredentialExpiresUtc = expires,
                     ApprovalPending = state.RequireApproval
@@ -983,20 +995,22 @@ public sealed class PairingService
     }
 
     public PairingDecision SetPermissions(Guid id, bool canStart, bool canStop, string? scope = null,
-        bool canExtendTimer = false)
+        bool canExtendTimer = false, bool canViewLogs = false)
     {
-        if (scope is not (null or "start" or "stop" or "extend"))
-            return new PairingDecision(false, "InvalidPermissionScope", "Choose Start, Stop, or Extend timer permissions.");
+        if (scope is not (null or "start" or "stop" or "extend" or "logs"))
+            return new PairingDecision(false, "InvalidPermissionScope", "Choose Start, Stop, Extend timer, or View logs permissions.");
         lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Pair this Friend PC first.");
             var effective = device.AssignedProfileIds!.ToDictionary(profileId => profileId, profileId =>
                 (CanStart: device.CanStartProfile(profileId), CanStop: device.CanStopProfile(profileId),
-                    CanExtendTimer: device.CanExtendTimerForProfile(profileId)));
+                    CanExtendTimer: device.CanExtendTimerForProfile(profileId),
+                    CanViewLogs: device.CanViewLogsForProfile(profileId)));
             if (scope is null or "start") device.CanStart = canStart;
             if (scope is null or "stop") device.CanStop = canStop;
             if (scope is null or "extend") device.CanExtendTimer = canExtendTimer;
+            if (scope is null or "logs") device.CanViewLogs = canViewLogs;
             device.ServerPermissionOverrides = device.AssignedProfileIds!.Select(profileId =>
             {
                 var previous = effective[profileId];
@@ -1005,10 +1019,11 @@ public sealed class PairingService
                     ProfileId = profileId,
                     CanStart = scope is null or "start" ? device.CanStart : previous.CanStart,
                     CanStop = scope is null or "stop" ? device.CanStop : previous.CanStop,
-                    CanExtendTimer = scope is "start" or "stop" ? previous.CanExtendTimer : device.CanExtendTimer
+                    CanExtendTimer = scope is null or "extend" ? device.CanExtendTimer : previous.CanExtendTimer,
+                    CanViewLogs = scope is null or "logs" ? device.CanViewLogs : previous.CanViewLogs
                 };
             }).Where(permission => permission.CanStart != device.CanStart || permission.CanStop != device.CanStop ||
-                permission.CanExtendTimer != device.CanExtendTimer).ToList();
+                permission.CanExtendTimer != device.CanExtendTimer || permission.CanViewLogs != device.CanViewLogs).ToList();
             SaveState();
             data.TryAudit($"permissions-change {device.Id} {DateTimeOffset.UtcNow:O}");
             Activity("Access", "PermissionsChanged", "Permissions changed for a paired PC.",
@@ -1048,13 +1063,14 @@ public sealed class PairingService
             {
                 device.ServerPermissionOverrides = permissions
                     .Where(permission => permission.CanStart != device.CanStart || permission.CanStop != device.CanStop ||
-                        permission.CanExtendTimer != device.CanExtendTimer)
+                        permission.CanExtendTimer != device.CanExtendTimer || permission.CanViewLogs != device.CanViewLogs)
                     .Select(permission => new ServerPermissionOverride
                     {
                         ProfileId = permission.ProfileId,
                         CanStart = permission.CanStart,
                         CanStop = permission.CanStop,
-                        CanExtendTimer = permission.CanExtendTimer
+                        CanExtendTimer = permission.CanExtendTimer,
+                        CanViewLogs = permission.CanViewLogs
                     }).ToList();
             }
             SaveState();
@@ -1100,6 +1116,12 @@ public sealed class PairingService
     {
         lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
             device.CanExtendTimerForProfile(profileId);
+    }
+
+    public bool CanViewLogs(PairedDevice device, Guid profileId)
+    {
+        lock (sync) return !IsRevoked(device) && device.AssignedProfileIds!.Contains(profileId) &&
+            device.CanViewLogsForProfile(profileId);
     }
 
     public PairingDecision SetName(Guid id, string? name)

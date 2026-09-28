@@ -55,3 +55,7 @@ Auto shutdown is off by default. When the owner enables it, a Ready server's fir
 When the deadline expires, Host serializes the action with every other Start/Stop, rechecks exact process identity, and queries the same game driver again. It invokes only the existing graceful Stop when the fresh result is still Ready with exactly zero players. A changed or Unknown result sends no signal. A failed or timed-out graceful Stop remains recorded for review and is not force-killed.
 
 Process presence alone does not prove a player joined, and a fixture reply or synthetic log does not certify a real game's count. Before relying on the feature for a valued world, verify real zero/one/disconnect transitions, the idle window, graceful exit, and a recognizable saved-world change after restart. Query silence by itself is never a zero-player pass; the Valheim fallback requires a complete event history from the exact managed run log.
+
+## Display logs
+
+Host log reads and explicitly permitted Friend log reads are a separate diagnostic projection over the exact active or most recent managed run. They never update readiness, observations, online-player counts, countdowns, Stop permits, replacement permits, or crash recovery. Valheim's existing owned-log occupancy fallback continues to parse its own complete sequence independently; sanitized display records are not fed back into it. An ended, missing, unsupported, unreadable, cursor-mismatched, or run-identity-mismatched display source returns a typed state and never becomes lifecycle evidence.

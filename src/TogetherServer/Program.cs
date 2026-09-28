@@ -70,6 +70,7 @@ var games = new GameServerRegistry(data);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 var manager = new HostManager(data, games);
+var serverLogs = new ServerLogService(data, manager);
 var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
@@ -86,7 +87,7 @@ var minecraftInstaller = new MinecraftInstaller(minecraftClient, data, instance.
 using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var shutdownPending = false;
-var companionServer = new CompanionServer(data, manager, pairing, games, modeGate, port,
+var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
     () => updatePending, () => shutdownPending);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
@@ -404,6 +405,17 @@ app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, Countdow
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/players/refresh", (Guid id) =>
     HostOnly(() => manager.RefreshPlayerCountAsync(id)));
+app.MapGet("/api/local/profiles/{id:guid}/logs", async (HttpContext context, Guid id) =>
+{
+    if (friendMode)
+        return Results.Conflict(new ServerLogResult(false, "FriendMode",
+            "Switch to Host mode to read local server logs.", ServerLogSourceStates.Unavailable,
+            null, [], null, false));
+    if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
+        return Results.BadRequest(error);
+    var result = await serverLogs.ReadAsync(id, query, ServerLogAudience.Host);
+    return result.Code == "UnknownProfile" ? Results.NotFound(result) : Results.Json(result);
+});
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
     ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })
@@ -729,6 +741,7 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
         open = current?.Open ?? false,
         password = current?.Open == true ? PairingPassword.Encode(current.Invitation) : null,
         canStart = current?.CanStart ?? true,
+        canViewLogs = current?.CanViewLogs ?? false,
         expiresUtc = current?.Invitation.ExpiresUtc,
         durationMinutes = current?.DurationMinutes ?? 30,
         deviceLimit = current?.DeviceLimit ?? 1,
@@ -775,7 +788,7 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
             var firstHostInvite = !pairing.HasInviteOrCredential();
             var invite = pairing.IssueServer(profileId, request.CanStart, false,
                 settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh,
-                request.DurationMinutes, request.DeviceLimit, request.RequireApproval);
+                request.DurationMinutes, request.DeviceLimit, request.RequireApproval, request.CanViewLogs);
             password = PairingPassword.Encode(invite);
             pairingExpiresUtc = invite.ExpiresUtc;
             if (request.EnableConnections)
@@ -844,7 +857,7 @@ app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePer
     {
         return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
         Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop, request.Scope,
-            request.CanExtendTimer));
+            request.CanExtendTimer, request.CanViewLogs));
     }
     finally { modeGate.Release(); }
 });

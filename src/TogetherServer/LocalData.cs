@@ -231,8 +231,10 @@ public sealed class LocalData : IDisposable
         var directory = Path.Combine(root, "logs");
         Directory.CreateDirectory(directory);
         PruneRunLogs(directory);
-        return Path.Combine(directory, operationId.ToString("N") + ".log");
+        return RunLogPath(operationId);
     }
+    internal string RunLogPath(Guid operationId) =>
+        Path.Combine(root, "logs", operationId.ToString("N") + ".log");
     public bool HasValheimPassword(Guid profileId) => HasProtected($"valheim-password-{profileId:N}.protected");
     public void SaveValheimPassword(Guid profileId, string password) =>
         SaveProtected($"valheim-password-{profileId:N}.protected", System.Text.Encoding.UTF8.GetBytes(password));
