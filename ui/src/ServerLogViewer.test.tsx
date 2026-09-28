@@ -86,6 +86,27 @@ describe('ServerLogViewer', () => {
     expect(screen.getByText('replacement run')).toBeInTheDocument()
   })
 
+  it('preserves the last good cursor and records across a transient same-run failure', async () => {
+    vi.useFakeTimers()
+    const runId = 'a'.repeat(32)
+    const loader = vi.fn<ServerLogLoader>()
+      .mockResolvedValueOnce(result(runId, [record('first record')], 'cursor-a'))
+      .mockResolvedValueOnce(result(runId, [], null, 'Unavailable', 'LogReadUnavailable', false))
+      .mockResolvedValueOnce(result(runId, [record('second record')], 'cursor-b'))
+
+    render(<ServerLogViewer endpoint="/logs" visible loader={loader} pollIntervalMs={1000} />)
+    await flush()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+
+    expect(screen.getByText('first record')).toBeInTheDocument()
+    expect(loader.mock.calls[1][1].cursor).toBe('cursor-a')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(loader.mock.calls[2][1].cursor).toBe('cursor-a')
+    expect(screen.getAllByText('first record')).toHaveLength(1)
+    expect(screen.getByText('second record')).toBeInTheDocument()
+  })
+
   it('resets and sends bounded severity, category, and contains filters', async () => {
     const loader = vi.fn<ServerLogLoader>().mockResolvedValue(result('a'.repeat(32), [], 'cursor'))
     render(<ServerLogViewer endpoint="/logs" visible loader={loader} />)

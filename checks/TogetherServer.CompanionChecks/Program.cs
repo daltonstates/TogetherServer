@@ -93,6 +93,38 @@ try
         "a checker service failure was interpreted as a closed Host port");
     Console.WriteLine("PASS outside TCP probe fails closed on wrong IP, private target, and checker error"); passes++;
 
+    using (var declaredOversize = new ByteArrayContent([1]))
+    using (var streamedOversize = new StreamContent(new MemoryStream(
+        new byte[FriendLink.MaximumServerLogResponseBytes + 1])))
+    using (var boundedPayload = new ByteArrayContent(Encoding.UTF8.GetBytes("{\"ok\":true}")))
+    {
+        declaredOversize.Headers.ContentLength = FriendLink.MaximumServerLogResponseBytes + 1;
+        streamedOversize.Headers.ContentLength = null;
+        var declaredRejected = await FriendLink.ReadBoundedLogPayloadAsync(declaredOversize,
+            CancellationToken.None);
+        var streamedRejected = await FriendLink.ReadBoundedLogPayloadAsync(streamedOversize,
+            CancellationToken.None);
+        var accepted = await FriendLink.ReadBoundedLogPayloadAsync(boundedPayload,
+            CancellationToken.None);
+        using var cancellationContent = new StreamContent(new MemoryStream(new byte[32]));
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        var cancellationObserved = false;
+        try
+        {
+            _ = await FriendLink.ReadBoundedLogPayloadAsync(cancellationContent, canceled.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            cancellationObserved = true;
+        }
+        Require(declaredRejected is null && streamedRejected is null &&
+            accepted is not null && Encoding.UTF8.GetString(accepted) == "{\"ok\":true}" &&
+            cancellationObserved,
+            "Friend server-log response buffering did not enforce declared/streamed caps or cancellation");
+    }
+    Console.WriteLine("PASS Friend server-log response buffering is byte-bounded before JSON decoding"); passes++;
+
     var migrationRoot = Path.Combine(root, "assignment-migration");
     var existingScopedProfile = Guid.NewGuid();
     var existingScopedDevice = Guid.NewGuid();
@@ -212,6 +244,15 @@ try
         Require(!pending.Ok && pending.Code == "ApprovalPending" && pairingService.Approve(policyFirst.DeviceId).Ok &&
             pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Ok,
             "a waiting PC authenticated before local approval or remained blocked afterward");
+        Require(pairingService.SetPermissions(policyFirst.DeviceId, true, false, "logs",
+            canViewLogs: true).Ok &&
+            pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential,
+                out var loadedLogDevice).Ok && loadedLogDevice is not null &&
+            pairingService.AuthorizeViewLogs(loadedLogDevice, pairingProfile, out _).Ok &&
+            pairingService.SetPermissions(policyFirst.DeviceId, true, false, "logs",
+                canViewLogs: false).Ok &&
+            pairingService.AuthorizeViewLogs(loadedLogDevice, pairingProfile, out _).Code == "PermissionDenied",
+            "a loaded device object retained View logs after the owner revoked it");
         var reopened = pairingService.IssueServer(pairingProfile, true, false,
             window.Endpoint, window.Fingerprint, false, durationMinutes: 60, deviceLimit: 1);
         Require(reopened.Code != window.Code && reopened.ExpiresUtc > DateTimeOffset.UtcNow.AddMinutes(59),

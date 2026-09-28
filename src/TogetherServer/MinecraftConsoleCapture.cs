@@ -72,6 +72,7 @@ internal static class MinecraftCapturedLogFrame
 internal static class MinecraftConsoleCapture
 {
     internal const string Command = "--internal-minecraft-console-capture";
+    internal const string NoGameFailurePrefix = "ERROR:NO_GAME:";
     private const int MaximumCapturedLineCharacters = 4 * 1024;
     internal const int MaximumCapturedLineBytes = 16 * 1024;
     internal const int MaximumFrameBytes = 32 * 1024;
@@ -105,9 +106,7 @@ internal static class MinecraftConsoleCapture
         catch (Exception ex)
         {
             TryDelete(args[1]);
-            var failure = Encoding.UTF8.GetBytes("ERROR:" + ex.GetType().Name);
-            try { handshake.Write(failure); handshake.Flush(); }
-            catch { }
+            TryWriteNoGameFailure(handshake, ex);
             return 3;
         }
         TryDelete(args[1]);
@@ -161,6 +160,7 @@ internal static class MinecraftConsoleCapture
         }
         catch (Exception ex)
         {
+            if (process is null) TryWriteNoGameFailure(handshake, ex);
             TryQueue(queue.Writer, drops, new(DateTimeOffset.UtcNow, "Capture",
                 "Console capture became unavailable; lifecycle authority is unchanged (" +
                 ex.GetType().Name + ").", false));
@@ -391,6 +391,17 @@ internal static class MinecraftConsoleCapture
     {
         try { if (File.Exists(path)) File.Delete(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    private static void TryWriteNoGameFailure(Stream handshake, Exception failure)
+    {
+        var payload = Encoding.UTF8.GetBytes(NoGameFailurePrefix + failure.GetType().Name);
+        try
+        {
+            handshake.Write(payload);
+            handshake.Flush();
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
     }
 
     private sealed class CaptureDropCounter

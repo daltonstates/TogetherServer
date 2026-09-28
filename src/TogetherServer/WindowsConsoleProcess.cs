@@ -69,11 +69,14 @@ internal static class WindowsConsoleProcess
             var captureId = Start(hostExecutable, hostArguments,
                 workingDirectory: Path.GetDirectoryName(hostExecutable));
             run.ConsoleCaptureProcessId = captureId;
-            using (var capture = Process.GetProcessById(captureId))
-            {
-                run.ConsoleCaptureStartTimeUtcTicks = capture.StartTime.ToUniversalTime().Ticks;
-                run.ConsoleCaptureExecutablePath = Path.GetFullPath(hostExecutable);
-            }
+            using var capture = Process.GetProcessById(captureId);
+            var captureStartTimeUtcTicks = capture.StartTime.ToUniversalTime().Ticks;
+            var captureExecutablePath = Path.GetFullPath(capture.MainModule!.FileName);
+            run.ConsoleCaptureStartTimeUtcTicks = captureStartTimeUtcTicks;
+            run.ConsoleCaptureExecutablePath = captureExecutablePath;
+            if (!captureExecutablePath.Equals(Path.GetFullPath(hostExecutable),
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Minecraft capture host identity could not be verified.");
 
             var connection = Task.Run(pipe.WaitForConnection);
             if (Task.WhenAny(connection, Task.Delay(TimeSpan.FromSeconds(15)))
@@ -98,6 +101,12 @@ internal static class WindowsConsoleProcess
             }
             var handshakePayload = readHandshake.GetAwaiter().GetResult();
             var handshakeText = Encoding.UTF8.GetString(handshakePayload);
+            if (handshakeText.StartsWith(MinecraftConsoleCapture.NoGameFailurePrefix, StringComparison.Ordinal))
+            {
+                TryClearExitedMinecraftCapture(run, capture, captureStartTimeUtcTicks,
+                    captureExecutablePath);
+                throw new InvalidDataException("Minecraft capture host rejected the fixed launch before starting a game process.");
+            }
             if (handshakeText.StartsWith("ERROR:", StringComparison.Ordinal))
                 throw new InvalidDataException("Minecraft capture host rejected the fixed launch.");
             var handshake = MinecraftConsoleCapture.ParseHandshake(handshakePayload);
@@ -115,6 +124,31 @@ internal static class WindowsConsoleProcess
         {
             try { if (File.Exists(requestPath)) File.Delete(requestPath); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    internal static bool TryClearExitedMinecraftCapture(ManagedRun run, Process capture,
+        long observedStartTimeUtcTicks, string observedExecutablePath, int waitMilliseconds = 5000)
+    {
+        if (run.ProcessId is not null || run.ConsoleCaptureProcessId != capture.Id ||
+            run.ConsoleCaptureStartTimeUtcTicks is null ||
+            string.IsNullOrWhiteSpace(run.ConsoleCaptureExecutablePath)) return false;
+        try
+        {
+            if (observedStartTimeUtcTicks != run.ConsoleCaptureStartTimeUtcTicks ||
+                !Path.GetFullPath(observedExecutablePath).Equals(
+                    Path.GetFullPath(run.ConsoleCaptureExecutablePath),
+                    StringComparison.OrdinalIgnoreCase) ||
+                !capture.WaitForExit(waitMilliseconds)) return false;
+            run.ConsoleCaptureProcessId = null;
+            run.ConsoleCaptureStartTimeUtcTicks = null;
+            run.ConsoleCaptureExecutablePath = "";
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception or
+                                   NotSupportedException or IOException)
+        {
+            return false;
         }
     }
 

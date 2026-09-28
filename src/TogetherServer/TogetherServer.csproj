@@ -17,6 +17,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="TogetherServer.Checks" />
+    <InternalsVisibleTo Include="TogetherServer.CompanionChecks" />
     <InternalsVisibleTo Include="TogetherServer.MinecraftChecks" />
   </ItemGroup>
   <ItemGroup>

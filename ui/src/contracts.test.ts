@@ -135,6 +135,9 @@ describe('runtime contracts', () => {
     expect(logs.records[0].severity).toBe('Warning')
     expect(() => parseServerLogResult({ ...logs, sourceState: 'Ready' })).toThrow(ContractError)
     expect(() => parseServerLogResult({ ...logs, records: [{ ...logs.records[0], message: 'x'.repeat(2049) }] })).toThrow(ContractError)
+    expect(() => parseServerLogResult({ ...logs, records: [{ ...logs.records[0], timestampUtc: 'x'.repeat(41) }] })).toThrow(ContractError)
+    expect(() => parseServerLogResult({ ...logs, records: Array.from({ length: 201 }, () => null) }))
+      .toThrow(/too many entries/)
   })
 
   it('removes an invalid local setup draft', () => {

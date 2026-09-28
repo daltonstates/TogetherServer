@@ -191,6 +191,71 @@ await Check("Java and Bedrock settings fail closed without prepared files", asyn
         "Bedrock LAN visibility lost its default discovery ports");
 });
 
+await Check("known pre-game capture failure clears only its exact run and permits retry", async () =>
+{
+    var profile = Profile(GameKinds.MinecraftJava, "java-pre-game-failure", "world", FreePort());
+    File.WriteAllText(profile.ExecutablePath, "not a Windows executable");
+    using var data = new LocalData(Path.Combine(root, "pre-game-failure-data"));
+    var manager = new HostManager(data);
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "pre-game failure profile was rejected");
+    var failedLaunch = await manager.StartAsync(profile.Id);
+    Require(!failedLaunch.Ok && failedLaunch.Code == "LaunchFailed" && data.LoadRuns().Count == 0,
+        "a capture host that proved no game started left an unresolved managed run");
+
+    File.Copy(fixture, profile.ExecutablePath, true);
+    var retry = await manager.StartAsync(profile.Id);
+    Require(retry.Ok, $"known-safe launch cleanup did not permit retry: {retry.Code} {retry.Message}");
+    try
+    {
+        await Ready(manager, profile.Id);
+        var exactRun = data.LoadRuns().Single();
+        await Stop(manager, profile);
+        await WaitForExit(exactRun.ConsoleCaptureProcessId, exactRun.ConsoleCaptureStartTimeUtcTicks);
+    }
+    finally
+    {
+        foreach (var run in data.LoadRuns())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(run.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
+                        StringComparison.OrdinalIgnoreCase))
+                    process.Kill();
+            }
+            catch (Exception) { }
+        }
+    }
+});
+
+await Check("ambiguous or live capture identity keeps the unresolved run", () =>
+{
+    using var liveCapture = Process.GetCurrentProcess();
+    var captureStarted = liveCapture.StartTime.ToUniversalTime().Ticks;
+    var capturePath = Path.GetFullPath(liveCapture.MainModule!.FileName);
+    var unresolved = new ManagedRun
+    {
+        OperationId = Guid.NewGuid(),
+        ConsoleCaptureProcessId = liveCapture.Id,
+        ConsoleCaptureStartTimeUtcTicks = captureStarted,
+        ConsoleCaptureExecutablePath = capturePath
+    };
+    var liveCleared = WindowsConsoleProcess.TryClearExitedMinecraftCapture(unresolved,
+        liveCapture, captureStarted, capturePath, waitMilliseconds: 0);
+    Require(!liveCleared && unresolved.ConsoleCaptureProcessId == liveCapture.Id,
+        "a still-running capture identity was cleared as a known-safe launch failure");
+
+    unresolved.ProcessId = Environment.ProcessId;
+    var gameIdentityCleared = WindowsConsoleProcess.TryClearExitedMinecraftCapture(unresolved,
+        liveCapture, captureStarted, capturePath, waitMilliseconds: 0);
+    Require(!gameIdentityCleared && unresolved.ProcessId == Environment.ProcessId &&
+        unresolved.ConsoleCaptureProcessId == liveCapture.Id,
+        "a run with a possible game identity was cleared after launch failure");
+    return Task.CompletedTask;
+});
+
 await Check("Java and Bedrock logs are exact-run bounded, typed, and sanitized", async () =>
 {
     foreach (var kind in new[] { GameKinds.MinecraftJava, GameKinds.MinecraftBedrock })
@@ -332,8 +397,9 @@ await Check("chatty capture cannot block graceful Stop or kill an unrelated proc
         Require(log.Exists && log.Length <= 8L * 1024 * 1024,
             "rapid console capture exceeded its per-run storage bound");
         var response = await new ServerLogService(data, manager)
-            .ReadAsync(profile.Id, new(Limit: 25), ServerLogAudience.Friend);
-        Require(response.Ok && response.Records.Count <= 25 &&
+            .ReadAsync(profile.Id, new(Limit: 25), ServerLogAudience.Host);
+        Require(response.Ok && response.SourceState == ServerLogSourceStates.Ended &&
+            response.Records.Count <= 25 &&
             response.Records.All(record => record.Message.Length <= 2048),
             "rapid log response exceeded its record or message bounds");
     }

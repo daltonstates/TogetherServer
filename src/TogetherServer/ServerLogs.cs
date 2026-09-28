@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
@@ -76,16 +78,25 @@ internal static class ServerLogQueryParser
         ServerLogSourceStates.Unavailable, null, [], null, false);
 }
 
-public sealed class ServerLogService(LocalData data, HostManager manager)
+public sealed class ServerLogService
 {
     public const int MaximumLimit = 200;
-    private readonly IReadOnlyDictionary<string, IServerLogAdapter> adapters =
-        new Dictionary<string, IServerLogAdapter>(StringComparer.Ordinal)
+    private readonly LocalData data;
+    private readonly HostManager manager;
+    private readonly IReadOnlyDictionary<string, IServerLogAdapter> adapters;
+
+    public ServerLogService(LocalData data, HostManager manager)
+    {
+        this.data = data;
+        this.manager = manager;
+        var cursors = new ServerLogCursorProtector();
+        adapters = new Dictionary<string, IServerLogAdapter>(StringComparer.Ordinal)
         {
-            [GameKinds.Valheim] = new ValheimServerLogAdapter(),
-            [GameKinds.MinecraftJava] = new MinecraftServerLogAdapter(GameKinds.MinecraftJava),
-            [GameKinds.MinecraftBedrock] = new MinecraftServerLogAdapter(GameKinds.MinecraftBedrock)
+            [GameKinds.Valheim] = new ValheimServerLogAdapter(cursors),
+            [GameKinds.MinecraftJava] = new MinecraftServerLogAdapter(GameKinds.MinecraftJava, cursors),
+            [GameKinds.MinecraftBedrock] = new MinecraftServerLogAdapter(GameKinds.MinecraftBedrock, cursors)
         };
+    }
 
     public async Task<ServerLogResult> ReadAsync(Guid profileId, ServerLogQuery query,
         ServerLogAudience audience)
@@ -220,7 +231,50 @@ internal interface IServerLogAdapter
         ServerLogAudience audience);
 }
 
-internal abstract class OwnedRunLogAdapter : IServerLogAdapter
+internal sealed class ServerLogCursorProtector
+{
+    private const byte Version = 1;
+    private const int PayloadBytes = 1 + 16 + sizeof(long);
+    private const int SignatureBytes = 32;
+    private const int CursorBytes = PayloadBytes + SignatureBytes;
+    private readonly byte[] key = RandomNumberGenerator.GetBytes(32);
+
+    public string Encode(Guid operationId, long offset)
+    {
+        Span<byte> cursor = stackalloc byte[CursorBytes];
+        cursor[0] = Version;
+        operationId.TryWriteBytes(cursor[1..17]);
+        BinaryPrimitives.WriteInt64BigEndian(cursor[17..PayloadBytes], offset);
+        HMACSHA256.HashData(key, cursor[..PayloadBytes]).CopyTo(cursor[PayloadBytes..]);
+        return Convert.ToBase64String(cursor).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    public bool TryDecode(string cursor, Guid operationId, long length, out long offset)
+    {
+        offset = 0;
+        byte[] bytes;
+        try
+        {
+            var encoded = cursor.Replace('-', '+').Replace('_', '/');
+            bytes = Convert.FromBase64String(encoded.PadRight((encoded.Length + 3) / 4 * 4, '='));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        if (bytes.Length != CursorBytes) return false;
+
+        var expected = HMACSHA256.HashData(key, bytes.AsSpan(0, PayloadBytes));
+        if (!CryptographicOperations.FixedTimeEquals(expected, bytes.AsSpan(PayloadBytes, SignatureBytes)))
+            return false;
+        if (bytes[0] != Version || new Guid(bytes.AsSpan(1, 16)) != operationId)
+            return false;
+        offset = BinaryPrimitives.ReadInt64BigEndian(bytes.AsSpan(17, sizeof(long)));
+        return offset >= 0 && offset <= length;
+    }
+}
+
+internal abstract class OwnedRunLogAdapter(ServerLogCursorProtector cursors) : IServerLogAdapter
 {
     private const int TailBytes = 512 * 1024;
     private const int MaximumScanBytes = 1024 * 1024;
@@ -287,7 +341,7 @@ internal abstract class OwnedRunLogAdapter : IServerLogAdapter
                 committedOffset = stream.Position;
                 AddRecord(line, true, query, audience, records);
             }
-            var cursor = EncodeCursor(operationId, committedOffset);
+            var cursor = cursors.Encode(operationId, committedOffset);
             var hasMore = committedOffset < stream.Length;
             return new(true, source.State == ServerLogSourceStates.Ended ? "EndedLog" : "LogAvailable",
                 source.State == ServerLogSourceStates.Ended
@@ -335,40 +389,22 @@ internal abstract class OwnedRunLogAdapter : IServerLogAdapter
     protected abstract ServerLogRecord Parse(ReadOnlySpan<byte> line, bool truncated,
         ServerLogAudience audience);
 
-    private static bool TryOffset(string? cursor, Guid operationId, long length, out long offset)
+    private bool TryOffset(string? cursor, Guid operationId, long length, out long offset)
     {
         offset = 0;
         if (cursor is null) return true;
-        try
-        {
-            var encoded = cursor.Replace('-', '+').Replace('_', '/');
-            var text = Encoding.ASCII.GetString(Convert.FromBase64String(
-                encoded.PadRight((encoded.Length + 3) / 4 * 4, '=')));
-            var pieces = text.Split(':');
-            return pieces.Length == 3 && pieces[0] == "1" &&
-                Guid.TryParseExact(pieces[1], "N", out var cursorRun) && cursorRun == operationId &&
-                long.TryParse(pieces[2], NumberStyles.None, CultureInfo.InvariantCulture, out offset) &&
-                offset >= 0 && offset <= length;
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
+        return cursors.TryDecode(cursor, operationId, length, out offset);
     }
-
-    private static string EncodeCursor(Guid operationId, long offset) =>
-        Convert.ToBase64String(Encoding.ASCII.GetBytes($"1:{operationId:N}:{offset}"))
-            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
 
-internal sealed class ValheimServerLogAdapter : OwnedRunLogAdapter
+internal sealed class ValheimServerLogAdapter(ServerLogCursorProtector cursors) : OwnedRunLogAdapter(cursors)
 {
     protected override ServerLogRecord Parse(ReadOnlySpan<byte> line, bool truncated,
         ServerLogAudience audience) =>
         ServerLogSanitizer.ParseValheim(Encoding.UTF8.GetString(line), truncated, audience);
 }
 
-internal sealed class MinecraftServerLogAdapter(string kind) : OwnedRunLogAdapter
+internal sealed class MinecraftServerLogAdapter(string kind, ServerLogCursorProtector cursors) : OwnedRunLogAdapter(cursors)
 {
     protected override ServerLogRecord Parse(ReadOnlySpan<byte> line, bool truncated,
         ServerLogAudience audience)

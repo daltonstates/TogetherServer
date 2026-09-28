@@ -288,23 +288,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!Reauthorize(device!, out var currentDevice, out decision) || currentDevice is null)
-                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(currentDevice, profileId))
-            {
-                if (!Reauthorize(currentDevice, out _, out decision))
-                    return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-                return Results.Json(new PairingDecision(false, "PermissionDenied",
-                    "The Host has not assigned this server to this PC."), statusCode: StatusCodes.Status403Forbidden);
-            }
-            if (!pairing.CanViewLogs(currentDevice, profileId))
-            {
-                if (!Reauthorize(currentDevice, out _, out decision))
-                    return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-                return Results.Json(new PairingDecision(false, "PermissionDenied",
-                    "The Host has not granted View logs permission for this server to this PC."),
-                    statusCode: StatusCodes.Status403Forbidden);
-            }
+            decision = pairing.AuthorizeViewLogs(device!, profileId, out var currentDevice);
+            if (!decision.Ok || currentDevice is null)
+                return Results.Json(decision, statusCode: decision.Code == "PermissionDenied"
+                    ? StatusCodes.Status403Forbidden : AuthenticationStatus(decision));
             if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName].ToString(), out var clientProtocol) ||
                 !CompanionProtocol.IsCompatible(clientProtocol))
                 return Results.Json(new ServerLogResult(false, "ServerLogsUpdateRequired",
@@ -314,8 +301,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
                 return Results.BadRequest(error);
             var result = await serverLogs.ReadAsync(profileId, query, ServerLogAudience.Friend);
-            if (!Reauthorize(currentDevice, out _, out decision))
-                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            decision = pairing.AuthorizeViewLogs(currentDevice, profileId, out _);
+            if (!decision.Ok)
+                return Results.Json(decision, statusCode: decision.Code == "PermissionDenied"
+                    ? StatusCodes.Status403Forbidden : AuthenticationStatus(decision));
             return result.Code == "CustomRemoteLogsUnavailable"
                 ? Results.Json(result, statusCode: StatusCodes.Status403Forbidden)
                 : Results.Json(result);

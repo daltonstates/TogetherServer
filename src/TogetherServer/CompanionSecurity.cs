@@ -1286,6 +1286,23 @@ public sealed class PairingService
         }
     }
 
+    public PairingDecision AuthorizeViewLogs(PairedDevice device, Guid profileId,
+        out PairedDevice? current)
+    {
+        lock (sync)
+        {
+            current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            if (current is null)
+                return new(false, "Unauthorized", "Device credential was not accepted.");
+            var authorization = AuthorizationDecision(current, UtcNow);
+            if (!authorization.Ok) return authorization;
+            return current.AssignedProfileIds!.Contains(profileId) && current.CanViewLogsForProfile(profileId)
+                ? new(true, "ViewLogsAllowed", "Server-log access is allowed.")
+                : new(false, "PermissionDenied",
+                    "The Host has not assigned this server with View logs permission to this PC.");
+        }
+    }
+
     public PairingDecision SetName(Guid id, string? name)
     {
         var value = name?.Trim() ?? "";

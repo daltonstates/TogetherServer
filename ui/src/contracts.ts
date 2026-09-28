@@ -625,9 +625,13 @@ export const parseBasicResult: Decoder<BasicResult> = (value, context = 'result'
 
 export const parseServerLogResult: Decoder<ServerLogResult> = (value, context = 'server log result') => {
   const source = object(value, context)
+  if (!Array.isArray(source.records)) throw new ContractError(`${context}.records must be a list.`)
+  if (source.records.length > 200) throw new ContractError(`${context}.records has too many entries.`)
   const records = list(source.records, `${context}.records`, (item, itemContext = `${context}.records`) => {
     const record = object(item, itemContext)
-    const timestampUtc = nullableText(record.timestampUtc, `${itemContext}.timestampUtc`)
+    const rawTimestamp = nullableText(record.timestampUtc, `${itemContext}.timestampUtc`)
+    const timestampUtc = rawTimestamp === null ? null :
+      boundedText(rawTimestamp, `${itemContext}.timestampUtc`, 40)
     if (timestampUtc !== null && !Number.isFinite(Date.parse(timestampUtc)))
       throw new ContractError(`${itemContext}.timestampUtc must be a timestamp or null.`)
     return {
@@ -638,9 +642,9 @@ export const parseServerLogResult: Decoder<ServerLogResult> = (value, context = 
       message: boundedText(record.message, `${itemContext}.message`, 2048, true)
     }
   })
-  if (records.length > 200) throw new ContractError(`${context}.records has too many entries.`)
   const runId = nullableText(source.runId, `${context}.runId`)
-  if (runId !== null && !/^[0-9a-f]{32}$/i.test(runId)) throw new ContractError(`${context}.runId is invalid.`)
+  if (runId !== null && (runId.length !== 32 || !/^[0-9a-f]{32}$/i.test(runId)))
+    throw new ContractError(`${context}.runId is invalid.`)
   const cursor = nullableText(source.cursor, `${context}.cursor`)
   if (cursor !== null && (cursor.length === 0 || cursor.length > 160)) throw new ContractError(`${context}.cursor is invalid.`)
   return {

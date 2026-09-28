@@ -65,6 +65,7 @@ public sealed record FriendActionResult(bool Ok, string Code, string Message, Co
 
 internal sealed class FriendLink : IDisposable
 {
+    internal const int MaximumServerLogResponseBytes = 3 * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly object lifetimeSync = new();
@@ -148,7 +149,10 @@ internal sealed class FriendLink : IDisposable
                     $"api/companion/servers/{profileId}/logs?{ServerLogService.QueryString(query)}");
                 using var response = await HostClient().SendAsync(request,
                     HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+                var payload = await ReadBoundedLogPayloadAsync(response.Content, cancellationToken);
+                if (payload is null)
+                    return LogFailure("LogResponseTooLarge",
+                        "The Host returned an oversized server-log response, so it was not read.");
                 try
                 {
                     var result = JsonSerializer.Deserialize<ServerLogResult>(payload, Json);
@@ -159,7 +163,8 @@ internal sealed class FriendLink : IDisposable
                 try
                 {
                     var denial = JsonSerializer.Deserialize<PairingDecision>(payload, Json);
-                    if (denial is { Code.Length: > 0, Message.Length: > 0 })
+                    if (denial is { Code.Length: > 0 and <= 80, Message.Length: > 0 and <= 600 } &&
+                        !denial.Code.Any(char.IsControl) && !denial.Message.Any(char.IsControl))
                         return LogFailure(denial.Code, denial.Message);
                 }
                 catch (JsonException) { /* Converted to a typed invalid response below. */ }
@@ -799,6 +804,25 @@ internal sealed class FriendLink : IDisposable
             record.Message.Length <= 2048 && record.Severity is not null && record.Severity.Length <= 16 &&
             record.Category is not null && record.Category.Length <= 32 &&
             record.Stream is not null && record.Stream.Length <= 16);
+    }
+
+    internal static async Task<byte[]?> ReadBoundedLogPayloadAsync(HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is > MaximumServerLogResponseBytes) return null;
+        await using var source = await content.ReadAsStreamAsync(cancellationToken);
+        using var payload = new MemoryStream(content.Headers.ContentLength is > 0
+            ? (int)content.Headers.ContentLength.Value : 0);
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var remaining = MaximumServerLogResponseBytes - (int)payload.Length;
+            var read = await source.ReadAsync(buffer.AsMemory(0,
+                Math.Min(buffer.Length, remaining + 1)), cancellationToken);
+            if (read == 0) return payload.ToArray();
+            if (read > remaining) return null;
+            payload.Write(buffer, 0, read);
+        }
     }
 
     private static ServerLogResult LogFailure(string code, string message) =>

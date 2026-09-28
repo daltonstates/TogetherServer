@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO.Pipes;
@@ -659,7 +660,9 @@ await Check("managed server logs are exact-run bounded and sanitized independent
     var custom = Profile("log-custom", "custom-world", FreePort());
     custom.Kind = GameKinds.Custom;
     custom.Custom = new CustomGameOptions();
-    data.SaveSettings(Settings(profile, custom));
+    var other = Profile("log-valheim-other", "log-world-other", FreePort());
+    other.Kind = GameKinds.Valheim;
+    data.SaveSettings(Settings(profile, custom, other));
     var operationId = Guid.NewGuid();
     var path = data.NewRunLogPath(operationId);
     var run = new ManagedRun
@@ -670,7 +673,18 @@ await Check("managed server logs are exact-run bounded and sanitized independent
         WorldId = profile.WorldId,
         LogPath = path
     };
-    data.SaveRuns([run]);
+    var otherOperationId = Guid.NewGuid();
+    var otherPath = data.NewRunLogPath(otherOperationId);
+    File.WriteAllText(otherPath, "09/28/2026 12:10:00: another managed run\n");
+    var otherRun = new ManagedRun
+    {
+        ProfileId = other.Id,
+        OperationId = otherOperationId,
+        Kind = GameKinds.Valheim,
+        WorldId = other.WorldId,
+        LogPath = otherPath
+    };
+    data.SaveRuns([run, otherRun]);
     File.WriteAllText(path,
         "09/28/2026 12:00:00: Game server connected\n" +
         "09/28/2026 12:00:01: password=host-secret bearer token-secret TS3-code-secret\n" +
@@ -684,7 +698,32 @@ await Check("managed server logs are exact-run bounded and sanitized independent
     var first = await logs.ReadAsync(profile.Id, new(Limit: 1), ServerLogAudience.Friend);
     Require(first.Ok && first.SourceState == ServerLogSourceStates.Active &&
         first.RunId == operationId.ToString("N") && first.Records.Count == 1 && first.HasMore &&
-        !string.IsNullOrWhiteSpace(first.Cursor), "initial bounded exact-run page was not returned");
+        !string.IsNullOrWhiteSpace(first.Cursor) && first.Cursor.Length <= 160,
+        "initial bounded exact-run page was not returned");
+    static byte[] DecodeCursor(string cursor)
+    {
+        var encoded = cursor.Replace('-', '+').Replace('_', '/');
+        return Convert.FromBase64String(encoded.PadRight((encoded.Length + 3) / 4 * 4, '='));
+    }
+    static string EncodeCursor(byte[] cursor) => Convert.ToBase64String(cursor)
+        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    var tamperedBytes = DecodeCursor(first.Cursor!);
+    tamperedBytes[^1] ^= 1;
+    var tamperedCursor = await logs.ReadAsync(profile.Id,
+        new(EncodeCursor(tamperedBytes), 10), ServerLogAudience.Host);
+    var fabricatedBytes = DecodeCursor(first.Cursor!);
+    BinaryPrimitives.WriteInt64BigEndian(fabricatedBytes.AsSpan(17, sizeof(long)), 0);
+    var fabricatedCursor = await logs.ReadAsync(profile.Id,
+        new(EncodeCursor(fabricatedBytes), 10), ServerLogAudience.Host);
+    var crossRunCursor = await logs.ReadAsync(other.Id,
+        new(first.Cursor, 10), ServerLogAudience.Host);
+    var restartedServiceCursor = await new ServerLogService(data, manager).ReadAsync(profile.Id,
+        new(first.Cursor, 10), ServerLogAudience.Host);
+    Require(tamperedCursor.Code == "InvalidLogCursor" &&
+        fabricatedCursor.Code == "InvalidLogCursor" &&
+        crossRunCursor.Code == "InvalidLogCursor" &&
+        restartedServiceCursor.Code == "InvalidLogCursor",
+        "tampered, fabricated-offset, cross-run, or previous-service cursor was accepted");
     var remainder = await logs.ReadAsync(profile.Id, new(first.Cursor, 10), ServerLogAudience.Friend);
     var friendText = string.Join(" ", remainder.Records.Select(item => item.Message));
     Require(remainder.Ok && remainder.Records.Count == 3 && remainder.Records.All(item => item.Message.Length <= 2048) &&
