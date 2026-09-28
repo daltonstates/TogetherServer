@@ -56,8 +56,8 @@ public sealed class GameServerRegistry
         var registered = new List<IGameServerDriver>
         {
             new ValheimServerDriver(data),
-            new MinecraftJavaServerDriver(),
-            new MinecraftBedrockServerDriver(),
+            new MinecraftJavaServerDriver(data),
+            new MinecraftBedrockServerDriver(data),
             new CustomGameServerDriver(data)
         };
         includeFixture |= string.Equals(Environment.GetEnvironmentVariable(FixtureOptInEnvironmentVariable), "1",

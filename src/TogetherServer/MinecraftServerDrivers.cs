@@ -9,11 +9,8 @@ namespace TogetherServer;
 
 public sealed record MinecraftBrowseRequest(string Kind, string Target);
 
-internal abstract class MinecraftServerDriver : IGameServerDriver
+internal abstract class MinecraftServerDriver(LocalData data, bool java) : IGameServerDriver
 {
-    private readonly bool java;
-
-    protected MinecraftServerDriver(bool java) => this.java = java;
     public string Kind => java ? GameKinds.MinecraftJava : GameKinds.MinecraftBedrock;
     public string DisplayName => java ? "Minecraft Java Edition" : "Minecraft Bedrock Edition";
     public bool ShowPortDiagnostics => true;
@@ -90,13 +87,13 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
         return null;
     }
 
-    public void PrepareStart(ServerProfile profile, ManagedRun run) { }
+    public void PrepareStart(ServerProfile profile, ManagedRun run) =>
+        run.LogPath = data.NewRunLogPath(run.OperationId);
 
     public GameLaunchResult Start(ServerProfile profile, ManagedRun run)
     {
         var arguments = java ? new[] { "-jar", run.ServerArtifactPath, "nogui" } : [];
-        var processId = WindowsConsoleProcess.Start(run.ExecutablePath, arguments,
-            workingDirectory: run.WorldDirectory);
+        var processId = WindowsConsoleProcess.StartMinecraftCaptured(run, arguments);
         return new("MinecraftStarting", "Minecraft process launched. Waiting for a local game status reply; Friend join and save are unverified.", processId);
     }
 
@@ -117,7 +114,7 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
     public Task<GameStopResult> StopAsync(Process process, ManagedRun run)
     {
         var nativeHandle = process.Handle;
-        WindowsConsoleProcess.RequestStopCommand(process);
+        WindowsConsoleProcess.RequestStopCommand(process, run);
         var exitCode = WindowsConsoleProcess.ExitCode(nativeHandle);
         return Task.FromResult(exitCode == 0
             ? new GameStopResult("MinecraftStopped", "Minecraft exited after its stop command. Save integrity still needs a real join and restart check.", exitCode)
@@ -144,8 +141,8 @@ internal abstract class MinecraftServerDriver : IGameServerDriver
     }
 }
 
-internal sealed class MinecraftJavaServerDriver() : MinecraftServerDriver(true);
-internal sealed class MinecraftBedrockServerDriver() : MinecraftServerDriver(false);
+internal sealed class MinecraftJavaServerDriver(LocalData data) : MinecraftServerDriver(data, true);
+internal sealed class MinecraftBedrockServerDriver(LocalData data) : MinecraftServerDriver(data, false);
 
 internal sealed record MinecraftStatusResult(GamePlayerCount? Players);
 

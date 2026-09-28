@@ -82,7 +82,9 @@ public sealed class ServerLogService(LocalData data, HostManager manager)
     private readonly IReadOnlyDictionary<string, IServerLogAdapter> adapters =
         new Dictionary<string, IServerLogAdapter>(StringComparer.Ordinal)
         {
-            [GameKinds.Valheim] = new ValheimServerLogAdapter()
+            [GameKinds.Valheim] = new ValheimServerLogAdapter(),
+            [GameKinds.MinecraftJava] = new MinecraftServerLogAdapter(GameKinds.MinecraftJava),
+            [GameKinds.MinecraftBedrock] = new MinecraftServerLogAdapter(GameKinds.MinecraftBedrock)
         };
 
     public async Task<ServerLogResult> ReadAsync(Guid profileId, ServerLogQuery query,
@@ -195,11 +197,11 @@ internal interface IServerLogAdapter
         ServerLogAudience audience);
 }
 
-internal sealed class ValheimServerLogAdapter : IServerLogAdapter
+internal abstract class OwnedRunLogAdapter : IServerLogAdapter
 {
     private const int TailBytes = 512 * 1024;
     private const int MaximumScanBytes = 1024 * 1024;
-    private const int MaximumRawLineBytes = 16 * 1024;
+    private const int MaximumRawLineBytes = 64 * 1024;
 
     public ServerLogResult Read(ManagedServerLogSource source, ServerLogQuery query,
         ServerLogAudience audience)
@@ -294,12 +296,11 @@ internal sealed class ValheimServerLogAdapter : IServerLogAdapter
         return stream.Position;
     }
 
-    private static void AddRecord(List<byte> line, bool truncated, ServerLogQuery query,
+    private void AddRecord(List<byte> line, bool truncated, ServerLogQuery query,
         ServerLogAudience audience, List<ServerLogRecord> records)
     {
         if (line.Count > 0 && line[^1] == (byte)'\r') line.RemoveAt(line.Count - 1);
-        var raw = Encoding.UTF8.GetString(line.ToArray());
-        var parsed = ValheimLogPresentation.Parse(raw, truncated, audience);
+        var parsed = Parse(line.ToArray(), truncated, audience);
         if (query.Severity is not null && !parsed.Severity.Equals(query.Severity, StringComparison.OrdinalIgnoreCase) ||
             query.Category is not null && !parsed.Category.Equals(query.Category, StringComparison.OrdinalIgnoreCase) ||
             query.Stream is not null && !parsed.Stream.Equals(query.Stream, StringComparison.OrdinalIgnoreCase) ||
@@ -307,6 +308,9 @@ internal sealed class ValheimServerLogAdapter : IServerLogAdapter
             return;
         records.Add(parsed);
     }
+
+    protected abstract ServerLogRecord Parse(ReadOnlySpan<byte> line, bool truncated,
+        ServerLogAudience audience);
 
     private static bool TryOffset(string? cursor, Guid operationId, long length, out long offset)
     {
@@ -334,11 +338,29 @@ internal sealed class ValheimServerLogAdapter : IServerLogAdapter
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
 
-internal static class ValheimLogPresentation
+internal sealed class ValheimServerLogAdapter : OwnedRunLogAdapter
+{
+    protected override ServerLogRecord Parse(ReadOnlySpan<byte> line, bool truncated,
+        ServerLogAudience audience) =>
+        ServerLogSanitizer.ParseValheim(Encoding.UTF8.GetString(line), truncated, audience);
+}
+
+internal sealed class MinecraftServerLogAdapter(string kind) : OwnedRunLogAdapter
+{
+    protected override ServerLogRecord Parse(ReadOnlySpan<byte> line, bool truncated,
+        ServerLogAudience audience)
+    {
+        if (!MinecraftCapturedLogFrame.TryDecode(line, out var captured) || captured is null)
+            return MinecraftLogPresentation.Invalid(truncated, audience);
+        return MinecraftLogPresentation.Parse(captured, kind, truncated, audience);
+    }
+}
+
+internal static class ServerLogSanitizer
 {
     private const int MaximumMessageCharacters = 2048;
     private const string TruncatedSuffix = " ... [truncated]";
-    private static readonly Regex Ansi = new("\\x1B(?:[@-_]|\\[[0-?]*[ -/]*[@-~])",
+    private static readonly Regex Ansi = new("\\x1B(?:\\][^\\x07]*(?:\\x07|\\x1B\\\\)|[@-_]|\\[[0-?]*[ -/]*[@-~])",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
     private static readonly Regex Secret = new(
         "(?i)\\b(password|passwd|token|bearer|authorization|credential|invite|pairing(?:\\s+code)?|secret)\\b\\s*[:=]?\\s*(?:bearer\\s+\\S+|\\\"[^\\\"]*\\\"|'[^']*'|\\S+)",
@@ -359,13 +381,20 @@ internal static class ValheimLogPresentation
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
     private static readonly Regex LongIdentifier = new("(?<![0-9])(?:[0-9]{6,20}|[0-9A-Fa-f]{16,64})(?![0-9A-Fa-f])",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+    private static readonly Regex Uuid = new("(?i)\\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\b",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+    private static readonly Regex Email = new("(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,63}\\b",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+    private static readonly Regex HostAddress = new(
+        "(?i)(?<![A-Z0-9._-])(?:localhost|(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\\.)+[A-Z]{2,63})(?::[0-9]{1,5})?(?![A-Z0-9._-])",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
     private static readonly Regex PlayerLine = new(
         "(?i)\\b(chat|player(?:\\s+name)?|character|peer|username|SteamID|PlayFab|XUID|Got connection|Closing socket|RPC_Disconnect)\\b",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
 
-    public static ServerLogRecord Parse(string raw, bool truncated, ServerLogAudience audience)
+    public static ServerLogRecord ParseValheim(string raw, bool truncated, ServerLogAudience audience)
     {
-        var clean = StripControls(Ansi.Replace(raw, ""));
+        var clean = Clean(raw);
         DateTimeOffset? timestamp = null;
         if (clean.Length >= 21 && clean[19] == ':' &&
             DateTime.TryParseExact(clean.AsSpan(0, 19), "MM/dd/yyyy HH:mm:ss", CultureInfo.InvariantCulture,
@@ -383,20 +412,53 @@ internal static class ValheimLogPresentation
             clean.Contains("Game server connected", StringComparison.OrdinalIgnoreCase) ? "Lifecycle" :
             clean.Contains("Connections ", StringComparison.Ordinal) ? "Connections" : "Server";
 
+        return new(timestamp, severity, category, "Server",
+            Protect(clean, category, audience, truncated));
+    }
+
+    internal static string Clean(string value)
+    {
+        value = Ansi.Replace(value, "");
+        var builder = new StringBuilder(Math.Min(value.Length, MaximumMessageCharacters + 256));
+        var lastWasSpace = false;
+        foreach (var character in value)
+        {
+            var category = char.GetUnicodeCategory(character);
+            var next = char.IsControl(character) || category is UnicodeCategory.Format or
+                UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator ? ' ' : character;
+            if (next == ' ' && lastWasSpace) continue;
+            builder.Append(next);
+            lastWasSpace = next == ' ';
+        }
+        return builder.ToString().Trim();
+    }
+
+    internal static string Protect(string clean, string category, ServerLogAudience audience,
+        bool truncated)
+    {
         var protectedMessage = RedactSecrets(clean);
         if (audience == ServerLogAudience.Friend)
         {
-            protectedMessage = Ipv4.Replace(protectedMessage, "[redacted-ip]");
-            protectedMessage = Ipv6.Replace(protectedMessage, "[redacted-ip]");
-            protectedMessage = WindowsPath.Replace(protectedMessage, "[redacted-path]");
-            protectedMessage = UnixPath.Replace(protectedMessage, "[redacted-path]");
-            protectedMessage = LongIdentifier.Replace(protectedMessage, "[redacted-id]");
-            if (category == "Player") protectedMessage = "Player activity redacted.";
+            if (category is "Player" or "Chat")
+            {
+                protectedMessage = "Player activity redacted.";
+            }
+            else
+            {
+                protectedMessage = Ipv4.Replace(protectedMessage, "[redacted-address]");
+                protectedMessage = Ipv6.Replace(protectedMessage, "[redacted-address]");
+                protectedMessage = HostAddress.Replace(protectedMessage, "[redacted-address]");
+                protectedMessage = WindowsPath.Replace(protectedMessage, "[redacted-path]");
+                protectedMessage = UnixPath.Replace(protectedMessage, "[redacted-path]");
+                protectedMessage = Uuid.Replace(protectedMessage, "[redacted-id]");
+                protectedMessage = Email.Replace(protectedMessage, "[redacted-id]");
+                protectedMessage = LongIdentifier.Replace(protectedMessage, "[redacted-id]");
+            }
         }
         if (truncated) protectedMessage += TruncatedSuffix;
         if (protectedMessage.Length > MaximumMessageCharacters)
             protectedMessage = protectedMessage[..(MaximumMessageCharacters - TruncatedSuffix.Length)] + TruncatedSuffix;
-        return new(timestamp, severity, category, "Server", protectedMessage);
+        return protectedMessage;
     }
 
     private static string RedactSecrets(string value)
@@ -408,17 +470,41 @@ internal static class ValheimLogPresentation
         return value;
     }
 
-    private static string StripControls(string value)
+}
+
+internal static class MinecraftLogPresentation
+{
+    private static readonly Regex Chat = new(
+        "(?i)(?:^|\\s)(?:<[^>]{1,64}>|\\[chat\\]|chat(?:ted)?\\b)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+    private static readonly Regex Player = new(
+        "(?i)\\b(?:player|username|xuid|uuid|joined the game|left the game|connected:|disconnected:)\\b",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+
+    public static ServerLogRecord Parse(MinecraftCapturedLine captured, string kind,
+        bool rawTruncated, ServerLogAudience audience)
     {
-        var builder = new StringBuilder(Math.Min(value.Length, MaximumMessageCharacters + 64));
-        var lastWasSpace = false;
-        foreach (var character in value)
-        {
-            var next = char.IsControl(character) ? ' ' : character;
-            if (next == ' ' && lastWasSpace) continue;
-            builder.Append(next);
-            lastWasSpace = next == ' ';
-        }
-        return builder.ToString().Trim();
+        var clean = ServerLogSanitizer.Clean(captured.Message);
+        var severity = clean.Contains("fatal", StringComparison.OrdinalIgnoreCase) ||
+            clean.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+            clean.Contains("exception", StringComparison.OrdinalIgnoreCase) ||
+            clean.Contains("failed", StringComparison.OrdinalIgnoreCase) ? "Error" :
+            clean.Contains("warn", StringComparison.OrdinalIgnoreCase) || captured.Stream == "Stderr"
+                ? "Warning" : "Info";
+        var category = captured.Stream == "Capture" ? "Capture" :
+            Chat.IsMatch(clean) ? "Chat" :
+            Player.IsMatch(clean) ? "Player" :
+            clean.Contains("Done (", StringComparison.OrdinalIgnoreCase) ||
+            clean.Contains("server started", StringComparison.OrdinalIgnoreCase) ||
+            clean.Contains("starting minecraft", StringComparison.OrdinalIgnoreCase) ||
+            clean.Contains("shutdown", StringComparison.OrdinalIgnoreCase) ? "Lifecycle" :
+            kind == GameKinds.MinecraftJava ? "Java" : "Bedrock";
+        return new(captured.CapturedUtc, severity, category, captured.Stream,
+            ServerLogSanitizer.Protect(clean, category, audience,
+                rawTruncated || captured.Truncated));
     }
+
+    public static ServerLogRecord Invalid(bool truncated, ServerLogAudience audience) =>
+        new(null, "Warning", "Capture", "Capture", ServerLogSanitizer.Protect(
+            "A captured console record was incomplete or invalid.", "Capture", audience, truncated));
 }

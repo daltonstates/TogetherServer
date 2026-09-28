@@ -108,6 +108,9 @@ public sealed class ManagedRun
     public string ServerArtifactPath { get; set; } = "";
     public string StopPipeName { get; set; } = "";
     public string LogPath { get; set; } = "";
+    public int? ConsoleCaptureProcessId { get; set; }
+    public long? ConsoleCaptureStartTimeUtcTicks { get; set; }
+    public string ConsoleCaptureExecutablePath { get; set; } = "";
     public int? ProcessId { get; set; }
     public long? StartTimeUtcTicks { get; set; }
     public bool WasReady { get; set; }

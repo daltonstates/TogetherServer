@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -47,6 +48,76 @@ internal static class WindowsConsoleProcess
         finally { if (environment != IntPtr.Zero) Marshal.FreeHGlobal(environment); }
     }
 
+    public static int StartMinecraftCaptured(ManagedRun run, IReadOnlyList<string> arguments)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console launch is required.");
+        if (run.OperationId == Guid.Empty || string.IsNullOrWhiteSpace(run.LogPath))
+            throw new InvalidOperationException("Minecraft capture requires an owned managed-run log.");
+        var logDirectory = Path.GetDirectoryName(Path.GetFullPath(run.LogPath))!;
+        var requestPath = Path.Combine(logDirectory, run.OperationId.ToString("N") + ".capture.json");
+        var pipeName = "TogetherServer.MinecraftCapture." + Guid.NewGuid().ToString("N");
+        using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.In, 1,
+            PipeTransmissionMode.Byte, PipeOptions.None);
+        MinecraftConsoleCapture.WriteRequest(requestPath,
+            MinecraftConsoleCapture.CreateRequest(run, arguments));
+        try
+        {
+            var (hostExecutable, hostArguments) = CaptureHostCommand();
+            hostArguments.Add(MinecraftConsoleCapture.Command);
+            hostArguments.Add(requestPath);
+            hostArguments.Add(pipeName);
+            var captureId = Start(hostExecutable, hostArguments,
+                workingDirectory: Path.GetDirectoryName(hostExecutable));
+            run.ConsoleCaptureProcessId = captureId;
+            using (var capture = Process.GetProcessById(captureId))
+            {
+                run.ConsoleCaptureStartTimeUtcTicks = capture.StartTime.ToUniversalTime().Ticks;
+                run.ConsoleCaptureExecutablePath = Path.GetFullPath(hostExecutable);
+            }
+
+            var connection = Task.Run(pipe.WaitForConnection);
+            if (Task.WhenAny(connection, Task.Delay(TimeSpan.FromSeconds(15)))
+                    .GetAwaiter().GetResult() != connection)
+            {
+                pipe.Dispose();
+                _ = connection.ContinueWith(task => _ = task.Exception,
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default);
+                throw new TimeoutException("Minecraft capture host did not connect in time.");
+            }
+            connection.GetAwaiter().GetResult();
+            var readHandshake = Task.Run(() => ReadCaptureHandshake(pipe));
+            if (Task.WhenAny(readHandshake, Task.Delay(TimeSpan.FromSeconds(15)))
+                    .GetAwaiter().GetResult() != readHandshake)
+            {
+                pipe.Dispose();
+                _ = readHandshake.ContinueWith(task => _ = task.Exception,
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default);
+                throw new TimeoutException("Minecraft capture host did not acknowledge the game process in time.");
+            }
+            var handshakePayload = readHandshake.GetAwaiter().GetResult();
+            var handshakeText = Encoding.UTF8.GetString(handshakePayload);
+            if (handshakeText.StartsWith("ERROR:", StringComparison.Ordinal))
+                throw new InvalidDataException("Minecraft capture host rejected the fixed launch.");
+            var handshake = MinecraftConsoleCapture.ParseHandshake(handshakePayload);
+            run.ProcessId = handshake.ProcessId;
+            using var process = Process.GetProcessById(handshake.ProcessId);
+            if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != handshake.StartTimeUtcTicks ||
+                !Path.GetFullPath(process.MainModule!.FileName)
+                    .Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFullPath(handshake.ExecutablePath)
+                    .Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Minecraft capture returned an unexpected managed process identity.");
+            return handshake.ProcessId;
+        }
+        finally
+        {
+            try { if (File.Exists(requestPath)) File.Delete(requestPath); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
     // Ctrl+C is sent only to the new console created for this exact managed process.
     public static void RequestCtrlC(Process process)
     {
@@ -86,7 +157,7 @@ internal static class WindowsConsoleProcess
 
     // Minecraft servers expose a fixed `stop` console action. Send only that
     // literal to the console containing the exact managed process.
-    public static void RequestStopCommand(Process process)
+    public static void RequestStopCommand(Process process, ManagedRun run)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console stop is required.");
         var previous = ConsoleMembers().FirstOrDefault(id => id != Environment.ProcessId);
@@ -97,7 +168,9 @@ internal static class WindowsConsoleProcess
             try
             {
                 var members = ConsoleMembers();
-                if (members.Length != 2 || !members.Contains(process.Id) || !members.Contains(Environment.ProcessId))
+                var allowed = new HashSet<int> { process.Id, Environment.ProcessId };
+                if (CaptureIdentityMatches(run)) allowed.Add(run.ConsoleCaptureProcessId!.Value);
+                if (members.Length != allowed.Count || members.Any(member => !allowed.Contains(member)))
                     throw new InvalidOperationException("Server console contains another process; no stop command was sent.");
                 var input = CreateFileW("CONIN$", 0x40000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
                 if (input == new IntPtr(-1))
@@ -122,6 +195,57 @@ internal static class WindowsConsoleProcess
             finally { FreeConsole(); }
         }
         finally { if (previous != 0) AttachConsole((uint)previous); }
+    }
+
+    private static bool CaptureIdentityMatches(ManagedRun run)
+    {
+        if (run.ConsoleCaptureProcessId is null || run.ConsoleCaptureStartTimeUtcTicks is null ||
+            string.IsNullOrWhiteSpace(run.ConsoleCaptureExecutablePath)) return false;
+        try
+        {
+            using var capture = Process.GetProcessById(run.ConsoleCaptureProcessId.Value);
+            return !capture.HasExited &&
+                capture.StartTime.ToUniversalTime().Ticks == run.ConsoleCaptureStartTimeUtcTicks &&
+                Path.GetFullPath(capture.MainModule!.FileName).Equals(
+                    Path.GetFullPath(run.ConsoleCaptureExecutablePath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception or
+                                   NotSupportedException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static byte[] ReadCaptureHandshake(Stream pipe)
+    {
+        using var payload = new MemoryStream();
+        var buffer = new byte[1024];
+        while (true)
+        {
+            var read = pipe.Read(buffer, 0, buffer.Length);
+            if (read == 0) return payload.ToArray();
+            if (payload.Length + read > 4096)
+                throw new InvalidDataException("Minecraft capture handshake is too large.");
+            payload.Write(buffer, 0, read);
+        }
+    }
+
+    private static (string Executable, List<string> Arguments) CaptureHostCommand()
+    {
+        var command = Environment.GetCommandLineArgs()[0];
+        if (Path.GetExtension(command).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            var host = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(host))
+                throw new InvalidOperationException("The .NET host path is unavailable for Minecraft capture.");
+            return Path.GetFileName(host).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase)
+                ? (Path.GetFullPath(host), [Path.GetFullPath(command)])
+                : (Path.GetFullPath(host), []);
+        }
+        var executable = File.Exists(command) ? command : Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+            throw new InvalidOperationException("The TogetherServer executable path is unavailable for Minecraft capture.");
+        return (Path.GetFullPath(executable), []);
     }
 
     private static void AttachManagedConsole(Process process, int processId)

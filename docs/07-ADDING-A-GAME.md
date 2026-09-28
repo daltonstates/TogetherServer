@@ -34,6 +34,8 @@ Add the smallest game-specific setup fields and discovery needed for that game. 
 
 The game driver declares local ports so the shared readiness row can distinguish local listeners from public evidence. It also owns player-count parsing so the shared Host/Friend cards can show one consistent count. A local port or count reply is never proof that a router, firewall, relay, or real client route works.
 
+Display logs are a separate explicit registry, not an automatic side effect of adding a driver. An adapter may read only the app-owned path derived from the exact managed-run operation ID. It must use the shared bounded cursor reader and sanitizer, return typed missing/ended/unsupported/unavailable states, and remain completely outside readiness, player counts, Stop/replacement permits, automatic shutdown, crash recovery, and process identity. Minecraft Java and Bedrock use the reviewed same-executable console host to drain bounded stdout/stderr while leaving stdin on the isolated Windows console for the fixed `stop` action. Do not replace that with an unrestricted command channel or a parent-process pipe that disappears on Host restart. Custom remote logs remain unsupported.
+
 ## Required evidence
 
 For each new game, add isolated checks that prove:
@@ -46,6 +48,7 @@ For each new game, add isolated checks that prove:
 6. graceful Stop preserves a disposable save across restart and never kills an unrelated process;
 7. declared local ports move through Waiting, Opening, Open, Closed, and Unknown honestly;
 8. zero, positive, missing, malformed, and timed-out player-count replies are handled, a Friend Stop is allowed only at zero, and the count is queried again immediately before Stop; and
-9. the Host and Friend UI remains usable at the required desktop, tablet, and touch phone sizes.
+9. any display-log adapter proves exact-run cursor scoping, owned-path enforcement, partial/long/interleaved/rapid output bounds, Host/Friend sanitization, failure isolation from lifecycle authority, and no arbitrary source selection; and
+10. the Host and Friend UI remains usable at the required desktop, tablet, and touch phone sizes.
 
 Real support also needs an owner-approved game-client join, real zero/one/disconnect player-count transitions, and a recognizable save/restart check. Remote Stop stays unavailable when a count is Unknown or positive; local Host Stop remains the owner's override. Automatic shutdown stays unavailable until the game's real idle and safe-stop rules are proven.

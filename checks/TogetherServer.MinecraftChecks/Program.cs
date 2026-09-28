@@ -1,9 +1,16 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using TogetherServer;
+
+if (MinecraftConsoleCapture.IsCommand(args))
+{
+    Environment.ExitCode = await MinecraftConsoleCapture.RunAsync(args);
+    return Environment.ExitCode;
+}
 
 var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/net10.0/TogetherServer.MinecraftFixture.exe");
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the Minecraft console fixture first.", fixture);
@@ -113,9 +120,40 @@ async Task Ready(HostManager manager, Guid id)
 
 async Task Stop(HostManager manager, ServerProfile profile)
 {
+    var marker = Path.Combine(profile.WorldDirectory, "stop.marker");
+    if (File.Exists(marker)) File.Delete(marker);
     var result = await manager.StopAsync(profile.Id);
     Require(result.Ok, $"{profile.Kind} fixture stop failed: {result.Code} {result.Message}");
-    Require(File.Exists(Path.Combine(profile.WorldDirectory, "stop.marker")), "stop command did not reach the synthetic console");
+    Require(File.Exists(marker), "stop command did not reach the synthetic console");
+}
+
+async Task<ServerLogResult> WaitForLogs(ServerLogService logs, Guid profileId,
+    ServerLogAudience audience, Func<ServerLogResult, bool> ready)
+{
+    ServerLogResult? last = null;
+    for (var attempt = 0; attempt < 50; attempt++)
+    {
+        last = await logs.ReadAsync(profileId, new(Limit: 200), audience);
+        if (ready(last)) return last;
+        await Task.Delay(100);
+    }
+    throw new Exception("Managed Minecraft log did not become available: " + last?.Code + " " + last?.Message);
+}
+
+async Task WaitForExit(int? processId, long? startedUtcTicks)
+{
+    if (processId is null || startedUtcTicks is null) return;
+    for (var attempt = 0; attempt < 50; attempt++)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId.Value);
+            if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != startedUtcTicks) return;
+        }
+        catch (ArgumentException) { return; }
+        await Task.Delay(100);
+    }
+    throw new Exception("Minecraft console capture host did not exit after its exact game process.");
 }
 
 await Check("Java and Bedrock settings fail closed without prepared files", async () =>
@@ -151,6 +189,226 @@ await Check("Java and Bedrock settings fail closed without prepared files", asyn
     Require(visiblePorts.Any(item => item.Family == "IPv4" && item.Port == 19132) &&
         visiblePorts.Any(item => item.Family == "IPv6" && item.Port == 19133),
         "Bedrock LAN visibility lost its default discovery ports");
+});
+
+await Check("Java and Bedrock logs are exact-run bounded, typed, and sanitized", async () =>
+{
+    foreach (var kind in new[] { GameKinds.MinecraftJava, GameKinds.MinecraftBedrock })
+    {
+        var name = kind == GameKinds.MinecraftJava ? "java-logs" : "bedrock-logs";
+        var profile = Profile(kind, name, "world", FreePort());
+        using var data = new LocalData(Path.Combine(root, name + "-data"));
+        var manager = new HostManager(data);
+        Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+            kind + " log profile was rejected");
+        var started = await manager.StartAsync(profile.Id);
+        Require(started.Ok, $"{kind} log fixture start failed: {started.Code} {started.Message}");
+        try
+        {
+            await Ready(manager, profile.Id);
+            var exactRun = data.LoadRuns().Single();
+            Require(exactRun.LogPath == data.NewRunLogPath(exactRun.OperationId) &&
+                exactRun.ConsoleCaptureProcessId is not null &&
+                exactRun.ConsoleCaptureStartTimeUtcTicks is not null &&
+                !string.IsNullOrWhiteSpace(exactRun.ConsoleCaptureExecutablePath),
+                kind + " did not record its exact owned log and capture-host identity");
+            var logs = new ServerLogService(data, manager);
+            var host = await WaitForLogs(logs, profile.Id, ServerLogAudience.Host, result =>
+                result.Ok && result.Records.Any(record => record.Message.Contains("capture complete", StringComparison.Ordinal)));
+            Require(host.SourceState == ServerLogSourceStates.Active &&
+                host.RunId == exactRun.OperationId.ToString("N") && host.Records.Count <= 200 &&
+                host.Records.All(record => record.Message.Length <= 2048 &&
+                    record.Message.All(character => !char.IsControl(character) &&
+                        char.GetUnicodeCategory(character) is not (UnicodeCategory.Format or
+                            UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator))) &&
+                host.Records.Any(record => record.Stream == "Stdout") &&
+                host.Records.Any(record => record.Stream == "Stderr" && record.Severity == "Warning") &&
+                host.Records.Any(record => record.Stream == "Stdout" &&
+                    record.Message.Contains("@TS-MINECRAFT-1", StringComparison.Ordinal)) &&
+                host.Records.Any(record => record.Message.Contains("snowman=☃", StringComparison.Ordinal)) &&
+                host.Records.Any(record => record.Message.EndsWith("[truncated]", StringComparison.Ordinal)),
+                kind + " console framing lost UTF-8, streams, severity, bounds, or exact-run identity");
+            var hostText = string.Join(' ', host.Records.Select(record => record.Message));
+            Require(!hostText.Contains("host-secret", StringComparison.Ordinal) &&
+                !hostText.Contains("token-secret", StringComparison.Ordinal) &&
+                !hostText.Contains("last-secret", StringComparison.Ordinal),
+                kind + " Host log DTO exposed a protected secret");
+
+            var friend = await logs.ReadAsync(profile.Id, new(Limit: 200), ServerLogAudience.Friend);
+            var friendText = string.Join(' ', friend.Records.Select(record => record.Message));
+            Require(friend.Ok && friend.RunId == exactRun.OperationId.ToString("N") &&
+                friend.Records.Any(record => (record.Category is "Player" or "Chat") &&
+                    record.Message.StartsWith("Player activity redacted.", StringComparison.Ordinal)) &&
+                !friendText.Contains("Alice", StringComparison.Ordinal) &&
+                !friendText.Contains("203.0.113.7", StringComparison.Ordinal) &&
+                !friendText.Contains("198.51.100.24", StringComparison.Ordinal) &&
+                !friendText.Contains("2533274790395900", StringComparison.Ordinal) &&
+                !friendText.Contains("C:\\Users", StringComparison.OrdinalIgnoreCase) &&
+                !friendText.Contains("abcdefghijklmnopqrstuvwxyzABCDEF0123456789", StringComparison.Ordinal) &&
+                friend.Records.All(record => record.Message.Length <= 2048 &&
+                    record.Message.All(character => !char.IsControl(character))),
+                kind + " Friend log DTO leaked an identity, address, path, token, or injected control");
+
+            var first = await logs.ReadAsync(profile.Id, new(Limit: 1), ServerLogAudience.Host);
+            Require(first.Ok && first.Records.Count == 1 && !string.IsNullOrWhiteSpace(first.Cursor),
+                kind + " did not return a bounded cursor page");
+            var oldCursor = first.Cursor;
+            await Stop(manager, profile);
+            await WaitForExit(exactRun.ConsoleCaptureProcessId, exactRun.ConsoleCaptureStartTimeUtcTicks);
+            var ended = await WaitForLogs(logs, profile.Id, ServerLogAudience.Host,
+                result => result.Ok && result.SourceState == ServerLogSourceStates.Ended);
+            Require(ended.RunId == exactRun.OperationId.ToString("N"),
+                kind + " did not retain the exact ended-run log");
+
+            var restarted = await manager.StartAsync(profile.Id);
+            Require(restarted.Ok, $"{kind} fixture restart failed: {restarted.Code} {restarted.Message}");
+            await Ready(manager, profile.Id);
+            var nextRun = data.LoadRuns().Single();
+            Require(nextRun.OperationId != exactRun.OperationId,
+                kind + " restart reused its managed-run operation ID");
+            var stale = await logs.ReadAsync(profile.Id, new(oldCursor, 10), ServerLogAudience.Host);
+            Require(!stale.Ok && stale.Code == "InvalidLogCursor" && stale.Records.Count == 0,
+                kind + " accepted a cursor from another managed run");
+            await Stop(manager, profile);
+            await WaitForExit(nextRun.ConsoleCaptureProcessId, nextRun.ConsoleCaptureStartTimeUtcTicks);
+        }
+        finally
+        {
+            foreach (var run in data.LoadRuns())
+            {
+                try
+                {
+                    using var process = Process.GetProcessById(run.ProcessId!.Value);
+                    if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                        Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                        process.Kill(); // Exact disposable fixture only, after a failed check.
+                }
+                catch (Exception) { }
+            }
+        }
+    }
+});
+
+await Check("chatty capture cannot block graceful Stop or kill an unrelated process", async () =>
+{
+    var profile = Profile(GameKinds.MinecraftJava, "java-chatty", "world", FreePort());
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "synthetic-chatty-lines.txt"), "100000");
+    var unrelatedRoot = Path.Combine(root, "unrelated-fixture");
+    Directory.CreateDirectory(unrelatedRoot);
+    var unrelatedPort = FreePort();
+    File.WriteAllText(Path.Combine(unrelatedRoot, "server.properties"),
+        $"level-name=unrelated\nserver-port={unrelatedPort}\nserver-portv6={unrelatedPort + 1}\nenable-lan-visibility=false\n");
+    var unrelatedStart = new ProcessStartInfo(fixture)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        WorkingDirectory = unrelatedRoot,
+        RedirectStandardInput = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    };
+    using var unrelated = Process.Start(unrelatedStart) ?? throw new Exception("unrelated fixture did not start");
+    var unrelatedOutput = unrelated.StandardOutput.ReadToEndAsync();
+    var unrelatedError = unrelated.StandardError.ReadToEndAsync();
+    using var data = new LocalData(Path.Combine(root, "chatty-data"));
+    var manager = new HostManager(data);
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "chatty profile was rejected");
+    try
+    {
+        var started = await manager.StartAsync(profile.Id);
+        Require(started.Ok, $"chatty fixture start failed: {started.Code} {started.Message}");
+        await Ready(manager, profile.Id);
+        var exactRun = data.LoadRuns().Single();
+        var timer = Stopwatch.StartNew();
+        await Stop(manager, profile);
+        timer.Stop();
+        await WaitForExit(exactRun.ConsoleCaptureProcessId, exactRun.ConsoleCaptureStartTimeUtcTicks);
+        unrelated.Refresh();
+        Require(!unrelated.HasExited, "graceful Stop terminated an unrelated fixture process");
+        Require(timer.Elapsed < TimeSpan.FromSeconds(30),
+            "chatty stdout/stderr prevented the fixed graceful stop from completing promptly");
+        var log = new FileInfo(exactRun.LogPath);
+        Require(log.Exists && log.Length <= 8L * 1024 * 1024,
+            "rapid console capture exceeded its per-run storage bound");
+        var response = await new ServerLogService(data, manager)
+            .ReadAsync(profile.Id, new(Limit: 25), ServerLogAudience.Friend);
+        Require(response.Ok && response.Records.Count <= 25 &&
+            response.Records.All(record => record.Message.Length <= 2048),
+            "rapid log response exceeded its record or message bounds");
+    }
+    finally
+    {
+        foreach (var run in data.LoadRuns())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(run.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    process.Kill(); // Exact disposable fixture only, after a failed check.
+            }
+            catch (Exception) { }
+        }
+        unrelated.Refresh();
+        if (!unrelated.HasExited)
+        {
+            await unrelated.StandardInput.WriteLineAsync("stop");
+            await unrelated.StandardInput.FlushAsync();
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try { await unrelated.WaitForExitAsync(cleanup.Token); }
+            catch (OperationCanceledException) { unrelated.Kill(); }
+        }
+        await Task.WhenAll(unrelatedOutput, unrelatedError);
+    }
+});
+
+await Check("missing display log cannot change Minecraft lifecycle authority", async () =>
+{
+    var profile = Profile(GameKinds.MinecraftBedrock, "bedrock-log-failure", "world", FreePort());
+    using var data = new LocalData(Path.Combine(root, "log-failure-data"));
+    var manager = new HostManager(data);
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "log-failure profile was rejected");
+    var started = await manager.StartAsync(profile.Id);
+    Require(started.Ok, $"log-failure fixture start failed: {started.Code} {started.Message}");
+    try
+    {
+        await Ready(manager, profile.Id);
+        var exactRun = data.LoadRuns().Single();
+        File.Delete(exactRun.LogPath);
+        var unavailable = await new ServerLogService(data, manager)
+            .ReadAsync(profile.Id, new(), ServerLogAudience.Friend);
+        Require(!unavailable.Ok && unavailable.Code == "LogNotCreated" &&
+            unavailable.SourceState == ServerLogSourceStates.Missing,
+            "a missing active capture did not return an honest typed state");
+        var snapshot = await manager.SnapshotAsync();
+        Require(snapshot.Runs.Single(run => run.ProfileId == profile.Id) is
+        { State: "Ready", OnlinePlayers: 0, PlayerCountTrusted: true },
+            "display-log failure changed Minecraft readiness or player-count authority");
+        using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, new GameServerRegistry(data));
+        Require(permit.Allowed, "display-log failure changed the zero-player Stop permit");
+        var marker = Path.Combine(profile.WorldDirectory, "stop.marker");
+        if (File.Exists(marker)) File.Delete(marker);
+        var stopped = await manager.StopAsync(profile.Id, permit.StillSafe);
+        Require(stopped.Ok && File.Exists(marker),
+            "display-log failure prevented the existing exact graceful Stop path");
+        await WaitForExit(exactRun.ConsoleCaptureProcessId, exactRun.ConsoleCaptureStartTimeUtcTicks);
+    }
+    finally
+    {
+        foreach (var run in data.LoadRuns())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(run.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    process.Kill();
+            }
+            catch (Exception) { }
+        }
+    }
 });
 
 await Check("two games can share a world name and numeric port on different protocols", async () =>

@@ -965,9 +965,16 @@ public sealed class HostManager
         }
         catch (Exception ex)
         {
-            if (run.ProcessId is null)
+            if (run.ProcessId is null && run.ConsoleCaptureProcessId is null)
             {
                 runs.Remove(run);
+                data.SaveRuns(runs);
+            }
+            else
+            {
+                // A capture host or game process may already exist even when
+                // its launch handshake could not be confirmed. Preserve the
+                // unresolved run so another writer cannot start over it.
                 data.SaveRuns(runs);
             }
             return Result(false, "LaunchFailed", "Server launch failed: " + ex.Message);

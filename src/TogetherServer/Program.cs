@@ -3,6 +3,12 @@ using System.Reflection;
 using System.Text.Json;
 using TogetherServer;
 
+if (MinecraftConsoleCapture.IsCommand(args))
+{
+    Environment.ExitCode = await MinecraftConsoleCapture.RunAsync(args);
+    return;
+}
+
 if (InstallerIntegration.IsCommand(args))
 {
     Environment.ExitCode = InstallerIntegration.Run(args, Environment.ProcessPath ?? "");

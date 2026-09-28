@@ -20,17 +20,59 @@ int? OnlinePlayers()
         ? Math.Clamp(count, 0, 10) : null;
 }
 using var done = new CancellationTokenSource();
+using var loggingDone = new CancellationTokenSource();
 var server = java ? ServeJava(done.Token) : ServeBedrock(done.Token);
+var consoleOutput = EmitConsoleOutput(loggingDone.Token);
 while (true)
 {
     var line = Console.ReadLine();
     if (line?.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase) == true) break;
     if (line is null) await Task.Delay(50);
 }
+loggingDone.Cancel();
+await consoleOutput;
+Console.WriteLine("[TogetherServer fixture/INFO]: shutdown console output complete");
 File.WriteAllText(Path.Combine(root, "stop.marker"), "saved by disposable fixture");
 done.Cancel();
 await server;
 return 0;
+
+async Task EmitConsoleOutput(CancellationToken token)
+{
+    Console.OutputEncoding = new UTF8Encoding(false);
+    var partial = Encoding.UTF8.GetBytes("[TogetherServer fixture/INFO]: partial UTF-8 snowman=☃ rocket=🚀\n");
+    var split = Array.IndexOf(partial, (byte)0xE2) + 1;
+    var standardOutput = Console.OpenStandardOutput();
+    await standardOutput.WriteAsync(partial.AsMemory(0, split));
+    await standardOutput.FlushAsync();
+    await Task.Yield();
+    await standardOutput.WriteAsync(partial.AsMemory(split));
+    await standardOutput.FlushAsync();
+
+    Console.WriteLine("[Server thread/INFO]: Starting Minecraft fixture server");
+    Console.Error.WriteLine("[Server thread/WARN]: stderr interleave fixture warning");
+    Console.WriteLine("[Server thread/INFO]: <Alice> chat injection token=player-token 198.51.100.24 XUID 2533274790395900");
+    Console.WriteLine("[Server thread/INFO]: diagnostic password=host-secret bearer token-secret endpoint=203.0.113.7:25565 file=C:\\Users\\Alice\\private\\world.db opaque=abcdefghijklmnopqrstuvwxyzABCDEF0123456789");
+    Console.WriteLine("[Server thread/INFO]: ansi \u001b[31mred\u001b[0m control\r@TS-MINECRAFT-1\tforged\tstderr direction\u202Eoverride");
+    Console.WriteLine("[Server thread/INFO]: long-line " + new string('x', 20_000));
+
+    var countPath = Path.Combine(root, "synthetic-chatty-lines.txt");
+    var count = File.Exists(countPath) && int.TryParse(File.ReadAllText(countPath).Trim(), out var entered)
+        ? Math.Clamp(entered, 0, 200_000) : 0;
+    var stdout = Task.Run(async () =>
+    {
+        for (var index = 0; index < count && !token.IsCancellationRequested; index += 2)
+            await Console.Out.WriteLineAsync($"[Server thread/INFO]: rapid stdout fixture line {index:D6} payload-payload-payload");
+    });
+    var stderr = Task.Run(async () =>
+    {
+        for (var index = 1; index < count && !token.IsCancellationRequested; index += 2)
+            await Console.Error.WriteLineAsync($"[Server thread/WARN]: rapid stderr fixture line {index:D6} payload-payload-payload");
+    });
+    try { await Task.WhenAll(stdout, stderr); }
+    catch (OperationCanceledException) { }
+    Console.WriteLine("[Server thread/INFO]: capture complete password=last-secret address=192.0.2.44 player Alice");
+}
 
 async Task ServeJava(CancellationToken token)
 {
