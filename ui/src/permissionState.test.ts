@@ -6,6 +6,7 @@ const device: Device = {
   id: 'device', profileId: 'one', assignedProfileIds: ['one', 'two'], name: 'Friend PC',
   canStart: true, canStop: false, canExtendTimer: true, canViewLogs: false,
   revoked: false, paired: true, approvalPending: false, credentialExpiresUtc: null,
+  accessExpiresUtc: null, accessExpired: false,
   lastHeartbeatUtc: null,
   serverPermissions: [
     { profileId: 'one', canStart: true, canStop: false, canExtendTimer: true, canViewLogs: false },

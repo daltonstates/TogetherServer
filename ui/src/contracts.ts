@@ -158,6 +158,21 @@ export type Device = {
   credentialExpiresUtc: string | null
   lastHeartbeatUtc: string | null
   serverPermissions: ServerPermission[]
+  accessExpiresUtc: string | null
+  accessExpired: boolean
+}
+
+export type DeviceAccessDuration = 'OneHour' | 'EightHours' | 'OneDay' | 'SevenDays' | 'ThirtyDays' | 'NinetyDays'
+export type DeviceAccessExpiryRequest =
+  | { clear: true; accessExpiresUtc?: never; duration?: never }
+  | { clear?: never; accessExpiresUtc: string; duration?: never }
+  | { clear?: never; accessExpiresUtc?: never; duration: DeviceAccessDuration }
+export type DeviceAccessExpiryResult = {
+  ok: boolean
+  code: string
+  message: string
+  accessExpiresUtc: string | null
+  accessExpired: boolean
 }
 
 export type HostCertificateState = {
@@ -318,6 +333,17 @@ function numeric(value: unknown, context = 'value'): number {
 
 function nullableText(value: unknown, context: string): string | null {
   return value === null ? null : text(value, context)
+}
+
+function utcTimestamp(value: unknown, context: string): string {
+  const parsed = text(value, context)
+  if (!/(?:Z|\+00:00)$/i.test(parsed) || !Number.isFinite(Date.parse(parsed)))
+    throw new ContractError(`${context} must be an explicit UTC timestamp.`)
+  return parsed
+}
+
+function nullableUtcTimestamp(value: unknown, context: string): string | null {
+  return value === null ? null : utcTimestamp(value, context)
 }
 
 function nullableNumber(value: unknown, context: string): number | null {
@@ -808,6 +834,10 @@ const parseServerPermission: Decoder<ServerPermission> = (value, context = 'serv
 
 const parseDevice: Decoder<Device> = (value, context = 'device') => {
   const source = object(value, context)
+  const accessExpiresUtc = nullableUtcTimestamp(source.accessExpiresUtc, `${context}.accessExpiresUtc`)
+  const accessExpired = flag(source.accessExpired, `${context}.accessExpired`)
+  if (accessExpired && accessExpiresUtc === null)
+    throw new ContractError(`${context}.accessExpired requires an access deadline.`)
   return { id: text(source.id, `${context}.id`), profileId: text(source.profileId, `${context}.profileId`),
     assignedProfileIds: textList(source.assignedProfileIds, `${context}.assignedProfileIds`), name: text(source.name, `${context}.name`),
     canStart: flag(source.canStart, `${context}.canStart`), canStop: flag(source.canStop, `${context}.canStop`),
@@ -816,7 +846,23 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
     paired: flag(source.paired, `${context}.paired`), approvalPending: flag(source.approvalPending, `${context}.approvalPending`),
     credentialExpiresUtc: nullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),
     lastHeartbeatUtc: nullableText(source.lastHeartbeatUtc, `${context}.lastHeartbeatUtc`),
-    serverPermissions: list(source.serverPermissions, `${context}.serverPermissions`, parseServerPermission) }
+    serverPermissions: list(source.serverPermissions, `${context}.serverPermissions`, parseServerPermission),
+    accessExpiresUtc, accessExpired }
+}
+
+export const parseDeviceAccessExpiryResult: Decoder<DeviceAccessExpiryResult> = (value, context = 'device access expiry result') => {
+  const source = object(value, context)
+  const accessExpiresUtc = nullableUtcTimestamp(source.accessExpiresUtc, `${context}.accessExpiresUtc`)
+  const accessExpired = flag(source.accessExpired, `${context}.accessExpired`)
+  if (accessExpired && accessExpiresUtc === null)
+    throw new ContractError(`${context}.accessExpired requires an access deadline.`)
+  return {
+    ok: flag(source.ok, `${context}.ok`),
+    code: boundedText(source.code, `${context}.code`, 80),
+    message: boundedText(source.message, `${context}.message`, 600),
+    accessExpiresUtc,
+    accessExpired
+  }
 }
 
 const parseCertificateState: Decoder<HostCertificateState> = (value, context = 'certificate state') => {

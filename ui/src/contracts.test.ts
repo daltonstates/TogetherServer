@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseServerLogResult, parseSettings, parseSnapshot, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseServerLogResult, parseSettings, parseSnapshot, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 
 const settings: Settings = {
@@ -96,6 +96,36 @@ describe('runtime contracts', () => {
 
     expect(companion.listenerState).toBe('Idle')
     expect(companion.listenerWarning).toBeNull()
+  })
+
+  it('strictly decodes owner access state separately from credential state', () => {
+    const companion = parseCompanionInfo({
+      listenerActive: true,
+      listenerState: 'Listening',
+      listenerWarning: null,
+      endpoint: 'https://1.2.3.4:5131',
+      fingerprint: null,
+      certificates: null,
+      route: { mode: 'DirectInternet', address: '' },
+      devices: [{
+        id: 'device', profileId: 'profile', assignedProfileIds: ['profile'], name: 'Friend PC',
+        canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false,
+        revoked: false, paired: true, approvalPending: false,
+        credentialExpiresUtc: '2026-12-01T12:00:00Z', lastHeartbeatUtc: null,
+        serverPermissions: [], accessExpiresUtc: '2026-10-01T12:00:00+00:00', accessExpired: false
+      }],
+      stopSafety: {}
+    })
+    const result = parseDeviceAccessExpiryResult({
+      ok: true, code: 'AccessExpirySet', message: 'Saved.',
+      accessExpiresUtc: '2026-10-01T12:00:00Z', accessExpired: false
+    })
+
+    expect(companion.devices[0].accessExpiresUtc).toBe('2026-10-01T12:00:00+00:00')
+    expect(result.accessExpired).toBe(false)
+    expect(() => parseCompanionInfo({ ...companion, devices: [{ ...companion.devices[0], accessExpired: 'no' }] })).toThrow(ContractError)
+    expect(() => parseDeviceAccessExpiryResult({ ...result, accessExpiresUtc: '2026-10-01T14:00:00+02:00' })).toThrow(ContractError)
+    expect(() => parseDeviceAccessExpiryResult({ ...result, accessExpiresUtc: null, accessExpired: true })).toThrow(ContractError)
   })
 
   it('accepts normal nullable fields from invite and browse responses', () => {

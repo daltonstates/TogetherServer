@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ApiError, changeJson, errorMessage, getJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
+import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
 import { ConnectionDetails } from './ConnectionDetails'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
@@ -17,6 +18,7 @@ import {
   parseSnapshot, parseUpdateView, parseWorldBackupList,
   type ActionResult, type AppInstanceView, type BasicResult, type CompanionInfo,
   type DataRecoveryView, type DesktopPreferences, type Device, type FriendIssue,
+  type DeviceAccessExpiryRequest, type DeviceAccessExpiryResult,
   type FriendSnapshot, type GameEndpointResult, type PublicIpDetection, type PublicProfile, type RouteDiscovery, type Settings,
   type Snapshot, type UpdateView, type WorldBackupList
 } from './contracts'
@@ -110,7 +112,7 @@ function FriendStopBlockers({ snapshot, profile }: { snapshot: FriendSnapshot; p
 function statusTone(state: string) {
   if (['Ready', 'Connected', 'Process running'].includes(state)) return 'running'
   if (['Failed', 'Revoked'].includes(state)) return 'error'
-  if (['Disabled', 'Starting', 'Stopping'].includes(state)) return 'paused'
+  if (['Disabled', 'Starting', 'Stopping', 'Access expired'].includes(state)) return 'paused'
   if (state === 'Offline') return 'offline'
   return 'unknown'
 }
@@ -691,6 +693,14 @@ function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const saveDeviceAccessExpiry = async (deviceId: string, request: DeviceAccessExpiryRequest): Promise<DeviceAccessExpiryResult> => {
+    setPending(`access-expiry-${deviceId}`)
+    try {
+      return await putDeviceAccessExpiry(deviceId, request)
+    } finally {
+      setPending('')
+    }
+  }
   const saveHostFlags = async (patch: Partial<Pick<Settings, 'companionListeningEnabled' | 'remoteControlsEnabled' | 'autoShutdownEnabled'>>) => {
     setPending('host-flags')
     setNotice(null)
@@ -1215,6 +1225,7 @@ function App() {
             <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state}</span>
               <span>{snapshot.lastConnectedUtc ? `Last reached ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'Waiting for a reply from the Host'}</span></div>
             {snapshot.expiryWarning && <div className="notice bad" role="status">{snapshot.expiryWarning}</div>}
+            <FriendAccessExpiredNotice connectionCode={snapshot.connectionCode} />
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>The credential is saved. Ask the Host owner to approve this PC in Friend access; no new code is needed.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
             <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
               <Button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</Button></div>
@@ -1475,6 +1486,8 @@ function App() {
                 {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
                   <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
                     <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Credential expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
+                  <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}
+                    onSave={request => saveDeviceAccessExpiry(device.id, request)} onRefresh={refreshCompanion} />
                   <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStart', permissionMix(device, 'canStart').mixed ? true : event.target.checked)} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>

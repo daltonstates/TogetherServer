@@ -808,6 +808,109 @@ main { padding-top: 22px; }
 .device-main label { margin-top: 0 !important; }
 .device-main small { overflow-wrap: anywhere; }
 .device-card-actions { flex: 0 0 auto; padding-top: 19px; flex-wrap: nowrap; }
+.access-deadline {
+  margin-top: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-raised);
+  overflow: hidden;
+}
+.access-deadline.expired { border-color: var(--color-warning-border); }
+.access-deadline-current { padding: 11px 13px; }
+.access-deadline-current span {
+  display: block;
+  color: var(--color-text-subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .7px;
+  text-transform: uppercase;
+}
+.access-deadline-current strong { display: block; margin-top: 4px; color: var(--color-text); font-size: 13px; }
+.access-deadline-current small { display: block; margin-top: 4px; color: var(--color-text-muted); font-size: 11px; line-height: 1.45; }
+.access-deadline-controls { border-top: 1px solid var(--color-border-subtle); }
+.access-deadline-controls > summary {
+  padding: 9px 13px;
+  color: var(--color-accent-light);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+.access-deadline-controls[open] > summary { border-bottom: 1px solid var(--color-border-subtle); }
+.access-deadline fieldset { min-width: 0; margin: 0; padding: 13px; border: 0; }
+.access-deadline fieldset:disabled { opacity: .55; }
+.access-deadline legend { padding: 0; color: var(--color-text-secondary); font-size: 11px; font-weight: 750; }
+.access-deadline-choices { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.settings-content .device .access-deadline-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-field);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+.settings-content .device .access-deadline-choices label.selected {
+  border-color: var(--color-accent-border);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+.access-deadline-choices .ui-input,
+.access-custom-choice .ui-input {
+  appearance: auto;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  accent-color: var(--color-accent);
+  box-shadow: none;
+}
+.access-deadline-advanced {
+  margin-top: 11px;
+  padding: 10px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-field);
+}
+.access-deadline-advanced > summary { color: var(--color-text-muted); cursor: pointer; font-size: 11px; font-weight: 700; }
+.settings-content .device .access-custom-choice { display: flex; align-items: center; gap: 7px; margin: 12px 0 0; cursor: pointer; }
+.settings-content .device .access-custom-field > label {
+  display: block;
+  margin-top: 11px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.access-deadline-advanced input[type="datetime-local"] {
+  display: block;
+  width: min(100%, 300px);
+  margin-top: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.access-custom-field > small { display: block; margin-top: 6px; color: var(--color-text-subtle); font-size: 10px; font-weight: 400; line-height: 1.45; }
+.access-deadline-preview { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 10px; margin-top: 11px; padding: 9px 10px; border-left: 2px solid var(--color-accent); background: var(--color-accent-soft); }
+.access-deadline-preview span { color: var(--color-text-muted); font-size: 10px; }
+.access-deadline-preview strong { min-width: 0; color: var(--color-accent-text); font-size: 11px; overflow-wrap: anywhere; }
+.access-deadline-validation { margin: 9px 0 0; color: var(--color-danger-text); font-size: 11px; }
+.access-deadline-save { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 13px 13px; }
+.access-deadline-save > small { color: var(--color-text-subtle); font-size: 10px; line-height: 1.4; }
+.access-deadline-save button { flex: 0 0 auto; }
+.access-deadline-feedback { margin: 0 13px 13px; padding: 9px 10px; border-radius: 7px; font-size: 11px; line-height: 1.45; }
+.access-deadline-feedback.success { border: 1px solid var(--color-accent-border); background: var(--color-accent-soft); color: var(--color-accent-text); }
+.access-deadline-feedback.error { border: 1px solid var(--color-danger-border); background: var(--color-danger-bg); color: var(--color-danger-text); }
 .device-access-grid { display: grid; grid-template-columns: minmax(270px, 1.5fr) repeat(2, minmax(150px, 1fr)); gap: 10px; margin-top: 15px; }
 .device-server-summary, .device-permission-toggle { min-width: 0; min-height: 74px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface-raised); }
 .device-server-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 12px; }
@@ -875,6 +978,10 @@ main { padding-top: 22px; }
 .troubleshoot-block > summary { color: var(--color-warning); cursor: pointer; font-size: 12px; font-weight: 700; }
 .status.error { color: var(--color-danger); background: var(--color-danger-bg-strong); }
 .status.paused { color: var(--color-warning-strong); background: var(--color-warning-bg-strong); }
+.friend-access-expired { margin: 12px 0; padding: 13px 14px; border: 1px solid var(--color-warning-border); border-radius: 8px; background: var(--color-warning-bg); }
+.friend-access-expired strong { display: block; color: var(--color-warning-strong); font-size: 13px; }
+.friend-access-expired p { margin: 5px 0 0; color: var(--color-warning-text); font-size: 12px; line-height: 1.45; }
+.friend-access-expired small { display: block; margin-top: 6px; color: var(--color-text-muted); font-size: 11px; line-height: 1.5; }
 .friend-server-list { margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--color-border-subtle); }
 .friend-server-list > h3 { margin: 0 0 10px; font-size: 13px; color: var(--color-text-muted); }
 .data-recovery { border-color: var(--color-warning-border); background: var(--color-warning-bg); }
@@ -922,6 +1029,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .device-header { align-items: stretch; flex-direction: column; }
   .device-main { max-width: none; }
   .device-card-actions { padding-top: 0; }
+  .access-deadline-save { align-items: stretch; flex-direction: column; }
+  .access-deadline-save button { width: 100%; }
   .device-access-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .device-server-summary { grid-column: 1 / -1; }
 }

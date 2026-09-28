@@ -75,6 +75,9 @@ try {
     $css = Invoke-WebRequest -Uri ($baseUrl + $cssMatch.Value) -UseBasicParsing
     if ($css.StatusCode -ne 200 -or $css.RawContentLength -lt 1000) { throw 'The embedded CSS was not served.' }
     if (!$css.Content.Contains('.ui-button')) { throw 'The shared control-library styles were not bundled.' }
+    if (!$css.Content.Contains('.access-deadline') -or !$css.Content.Contains('.friend-access-expired')) {
+        throw 'The owner access deadline styles were not bundled.'
+    }
     $rawControls = Get-ChildItem -LiteralPath (Join-Path $repository 'ui/src') -Filter '*.tsx' |
         Where-Object Name -NE 'Controls.tsx' |
         Select-String -CaseSensitive -Pattern '<(button|input|select|textarea)\b'
@@ -86,7 +89,9 @@ try {
         'Start server', 'Invite friends',
         'Paste your server code', 'Saved servers',
         'App preferences, Friend access, timers, and advanced Host controls.', 'PC name', 'Server access', 'Choose servers', 'Search servers',
-        'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop', 'On with server exceptions',
+        'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop', 'View logs', 'On with server exceptions',
+        'Owner access', 'No deadline', 'Access ends', 'Access expired', 'Change deadline', 'Clear deadline',
+        'Advanced: custom UTC date and time', 'Exact UTC', 'On this PC', 'Save deadline', 'saved Host connection remains here',
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Game server', 'Friend app', 'Outside connection', 'Reachable outside network', 'Recommended next step',
