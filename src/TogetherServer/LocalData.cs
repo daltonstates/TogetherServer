@@ -460,6 +460,38 @@ public sealed class LocalData : IDisposable
         }
     }
 
+    public SupportLogMetadata ReadSupportLogMetadata()
+    {
+        try
+        {
+            var auditFiles = Enumerable.Range(0, RetainedAuditFiles + 1)
+                .Select(index => index == 0 ? Path.Combine(root, "audit.log") :
+                    Path.Combine(root, "audit.log." + index))
+                .Where(File.Exists).Select(path => new FileInfo(path)).ToList();
+            var logsDirectory = Path.Combine(root, "logs");
+            var runLogs = Directory.Exists(logsDirectory)
+                ? Directory.EnumerateFiles(logsDirectory, "*.log", SearchOption.TopDirectoryOnly)
+                    .Take(501).Select(path => new FileInfo(path)).ToList()
+                : [];
+            var truncated = runLogs.Count > 500;
+            if (truncated) runLogs.RemoveAt(runLogs.Count - 1);
+            return new SupportLogMetadata(
+                auditFiles.Count == 0 && runLogs.Count == 0 ? "Empty" : "Available",
+                auditFiles.Count,
+                auditFiles.Sum(file => Math.Min(file.Length, MaximumAuditBytes)),
+                auditFiles.Count == 0 ? null : auditFiles.Max(file => new DateTimeOffset(file.LastWriteTimeUtc)),
+                runLogs.Count,
+                runLogs.Sum(file => Math.Min(file.Length, 4L * 1024 * 1024 * 1024)),
+                runLogs.Count == 0 ? null : runLogs.Max(file => new DateTimeOffset(file.LastWriteTimeUtc)),
+                truncated);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException or ArgumentException)
+        {
+            return new SupportLogMetadata("Unavailable", 0, 0, null, 0, 0, null, false);
+        }
+    }
+
     public ActivityEvent RecordActivity(string category, string action, string message,
         string severity = ActivitySeverity.Info, Guid? profileId = null,
         Guid? deviceId = null, string visibility = ActivityVisibility.Local)

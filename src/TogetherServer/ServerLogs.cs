@@ -520,6 +520,13 @@ internal static class ServerLogSanitizer
         return protectedMessage;
     }
 
+    internal static string ProtectSupportValue(string value)
+    {
+        var clean = Clean(value);
+        return Protect(clean, PlayerLine.IsMatch(clean) ? "Player" : "Support",
+            ServerLogAudience.Friend, truncated: false);
+    }
+
     private static string RedactSecrets(string value)
     {
         value = Secret.Replace(value, match => match.Groups[1].Value + " [redacted]");

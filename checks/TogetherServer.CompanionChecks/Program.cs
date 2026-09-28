@@ -482,6 +482,72 @@ try
         "loopback HTTPS listener was mistaken for a public Friend route");
     Console.WriteLine("PASS companion diagnostics distinguish a live loopback listener from public reachability"); passes++;
 
+    using (var missingDiagnosticsHeader = await owner.GetAsync("/api/local/diagnostics"))
+        Require(missingDiagnosticsHeader.StatusCode == HttpStatusCode.Forbidden,
+            "owner diagnostics accepted a GET without the sensitive local header");
+    using (var missingReportHeader = await owner.GetAsync("/api/local/support-report"))
+        Require(missingReportHeader.StatusCode == HttpStatusCode.Forbidden,
+            "support export accepted a GET without the sensitive local header");
+    using (var arbitraryDiagnosticsInput = await OwnerGet(owner,
+        "/api/local/diagnostics?host=example.test&port=1&path=C:%5Cprivate"))
+        Require(arbitraryDiagnosticsInput.StatusCode == HttpStatusCode.BadRequest,
+            "owner diagnostics accepted arbitrary host, port, or path query input");
+    using (var arbitraryReportInput = await OwnerGet(owner,
+        "/api/local/support-report?output=C:%5Cprivate%5Creport.json"))
+        Require(arbitraryReportInput.StatusCode == HttpStatusCode.BadRequest,
+            "support export accepted a caller-supplied output path");
+    using (var reportBody = new HttpRequestMessage(HttpMethod.Get, "/api/local/support-report")
+    { Content = JsonContent.Create(new { output = "C:\\private\\report.json" }) })
+    {
+        reportBody.Headers.Add("X-TogetherServer-Local", "1");
+        using var response = await owner.SendAsync(reportBody);
+        Require(response.StatusCode == HttpStatusCode.BadRequest,
+            "support export accepted an arbitrary GET request body");
+    }
+    using (var wrongReportMethod = new HttpRequestMessage(HttpMethod.Post, "/api/local/support-report"))
+    {
+        wrongReportMethod.Headers.Add("Origin", owner.BaseAddress!.ToString().TrimEnd('/'));
+        wrongReportMethod.Headers.Add("X-TogetherServer-Local", "1");
+        using var response = await owner.SendAsync(wrongReportMethod);
+        Require(response.StatusCode == HttpStatusCode.MethodNotAllowed,
+            "support export exposed a mutation or arbitrary request-body route");
+    }
+    var recordedRoute = await OwnerPost<object, ExternalPortProbeResult>(owner,
+        "/api/local/network/test-friend-route", new { });
+    Require(recordedRoute.State == "Unavailable", "loopback route diagnostic did not fail honestly");
+    var ownerDiagnostics = await OwnerGetJson<OwnerDiagnosticsView>(owner, "/api/local/diagnostics");
+    var fixtureDiagnostics = ownerDiagnostics.Servers.Single(item => item.ProfileId == profile.Id);
+    var declaredPorts = fixtureDiagnostics.Checks.Single(item => item.Id == "local-game-ports");
+    var routeDiagnostic = ownerDiagnostics.SharedChecks.Single(item => item.Id == "route-diagnostic");
+    Require(declaredPorts.Detail.Contains("Local-PC listener evidence", StringComparison.Ordinal) &&
+        declaredPorts.Detail.Contains("never proves public reachability", StringComparison.Ordinal) &&
+        declaredPorts.Detail.Contains("successful game join", StringComparison.Ordinal) &&
+        routeDiagnostic.State == "Unavailable" &&
+        routeDiagnostic.Detail.Contains("does not prove pinned pairing", StringComparison.Ordinal) &&
+        routeDiagnostic.Detail.Contains("successful game join", StringComparison.Ordinal),
+        "owner diagnostics overstated local listener or outside TCP evidence");
+    var supportExport = await OwnerGetJson<SupportReportExport>(owner, "/api/local/support-report");
+    Require(supportExport.FileName == SupportReportExporter.FileName &&
+        supportExport.SizeBytes == Encoding.UTF8.GetByteCount(supportExport.Content) &&
+        supportExport.SizeBytes <= SupportReportExporter.MaximumReportBytes,
+        "support endpoint returned an unsafe filename or an unbounded UTF-8 payload");
+    Require(!supportExport.Content.Contains(endpoint, StringComparison.OrdinalIgnoreCase) &&
+        !supportExport.Content.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase) &&
+        !supportExport.Content.Contains(world, StringComparison.OrdinalIgnoreCase) &&
+        !supportExport.Content.Contains(fixturePath, StringComparison.OrdinalIgnoreCase) &&
+        !supportExport.Content.Contains(inviteA.Code, StringComparison.Ordinal),
+        "support endpoint leaked an endpoint, address, path, or pairing secret");
+    using (var reportDocument = JsonDocument.Parse(supportExport.Content))
+    {
+        Require(reportDocument.RootElement.GetProperty("reportSchemaVersion").GetInt32() ==
+                SupportReportExporter.ReportSchemaVersion &&
+            !reportDocument.RootElement.GetProperty("versions").GetProperty("staging").GetBoolean() &&
+            reportDocument.RootElement.GetProperty("recentActivity").GetArrayLength() <= 24 &&
+            reportDocument.RootElement.GetProperty("recentOperations").GetArrayLength() <= 24,
+            "support endpoint omitted schema/instance state or exceeded summary bounds");
+    }
+    Console.WriteLine("PASS owner diagnostics and support export are fixed-input local-only, honest, bounded, and redacted"); passes++;
+
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
     friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
     await WaitLocal(friendAPort); await WaitLocal(friendBPort);
@@ -1022,6 +1088,12 @@ try
     Require(blockedMode.StatusCode == HttpStatusCode.Forbidden,
         "mode change without local owner headers was accepted");
     var runningMode = await OwnerPost<object, JsonElement>(owner, "/api/local/mode/friend", new { });
+    using (var diagnosticsFromFriendPage = await OwnerGet(owner, "/api/local/diagnostics"))
+        Require(diagnosticsFromFriendPage.StatusCode == HttpStatusCode.Conflict,
+            "owner diagnostics were exposed through the Friend-mode page");
+    using (var reportFromFriendPage = await OwnerGet(owner, "/api/local/support-report"))
+        Require(reportFromFriendPage.StatusCode == HttpStatusCode.Conflict,
+            "owner support export was exposed through the Friend-mode page");
     var ownFriendLink = await OwnerPost<FriendPairRequest, FriendActionResult>(owner, "/api/local/friend/pair",
         new(PairingPassword.Encode(peerInvite), $"127.0.0.1:{peerCompanionPort}"));
     var joinedPeer = await OwnerPost<object, FriendView>(owner, "/api/local/friend/poll", new { });

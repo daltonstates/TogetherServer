@@ -6,6 +6,7 @@ import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessEx
 import { Button, Input, Select } from './Controls'
 import { ConnectionDetails } from './ConnectionDetails'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
+import { OwnerDiagnostics } from './OwnerDiagnostics'
 import {
   HostSetupDialog
 } from './features/setup/HostSetupDialog'
@@ -42,7 +43,7 @@ import './theme.css'
 import './style.css'
 import './companion.css'
 
-type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'advanced'
+type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
 type HostServerTab = 'overview' | 'players' | 'logs' | 'backups' | 'setup'
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
@@ -1117,6 +1118,8 @@ function App() {
       run: () => { navigateWorkspace('host'); void checkPorts(true) } },
     { id: 'open-friend-access', label: 'Open Friend access', detail: 'Manage paired PCs and permissions', icon: 'invite', disabled: snapshot?.mode !== 'Host' || savedProfiles.length === 0,
       run: () => openHostSettings('access') },
+    { id: 'open-diagnostics', label: 'Open diagnostics', detail: 'Read-only preflight checks and redacted support export', icon: 'warning',
+      keywords: 'support preflight report', disabled: snapshot?.mode !== 'Host', run: () => openHostSettings('diagnostics') },
     { id: 'guarded-lifecycle', label: `${selectedHostRun?.state === 'Offline' ? 'Start' : 'Stop'} selected server`,
       detail: 'Open Overview and use the guarded lifecycle control there', icon: selectedHostRun?.state === 'Offline' ? 'play' : 'stop',
       disabled: !selectedHostProfile, run: () => { navigateWorkspace('host'); setHostServerTab('overview'); setHostMobileDetail(true) } }
@@ -1190,7 +1193,8 @@ function App() {
 
       {workspacePage === 'attention' && <section className="attention-workspace" aria-label="Notifications and activity">
         <div className="attention-toolbar"><div><strong>{attentionCount ? `${attentionCount} current item${attentionCount === 1 ? '' : 's'}` : 'You are all caught up'}</strong><span>Recent app and connection activity</span></div>
-          {visibleActivity.length > 0 && <Button className="secondary" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
+          <div className="attention-toolbar-actions">{snapshot?.mode === 'Host' && <Button className="secondary" onClick={() => openHostSettings('diagnostics')}>Preflight & diagnostics</Button>}
+            {visibleActivity.length > 0 && <Button className="secondary" onClick={clearNotificationActivity}>Clear activity</Button>}</div></div>
         <div className="attention-list">
           {update?.state === 'Available' && <article className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available - v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update...</> : 'Update and restart'}</Button></div></article>}
           {notice && <article className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></article>}
@@ -1466,6 +1470,7 @@ function App() {
             <Button aria-current={hostSettingsSection === 'access' ? 'page' : undefined} className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</Button>
             <Button aria-current={hostSettingsSection === 'stop' ? 'page' : undefined} className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Stop & timer</Button>
             <Button aria-current={hostSettingsSection === 'network' ? 'page' : undefined} className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</Button>
+            <Button aria-current={hostSettingsSection === 'diagnostics' ? 'page' : undefined} className={hostSettingsSection === 'diagnostics' ? 'selected' : ''} onClick={() => setHostSettingsSection('diagnostics')}>Diagnostics</Button>
             <Button aria-current={hostSettingsSection === 'advanced' ? 'page' : undefined} className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</Button>
           </nav>
             <div className="settings-content">
@@ -1549,6 +1554,10 @@ function App() {
                   </div>
                 })}
               </section>}
+
+              {hostSettingsSection === 'diagnostics' && <OwnerDiagnostics
+                selectedProfileId={selectedHostProfileId}
+                onSelectedProfileIdChange={setSelectedHostProfileId} />}
 
               {hostSettingsSection === 'advanced' && <section className="settings-section"><h3>Advanced network and game paths</h3>
               <div className="settings-grid companion-fields">

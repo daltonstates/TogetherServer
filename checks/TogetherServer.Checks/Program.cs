@@ -5,6 +5,7 @@ using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Win32;
 using TogetherServer;
@@ -72,6 +73,99 @@ void CreateJunction(string link, string target)
 LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
 HostManager Manager(LocalData data) => new(data, Games(data));
+
+await Check("owner diagnostics reuse canonical state and support export stays bounded and redacted", async () =>
+{
+    using var data = Data("owner-diagnostics");
+    var profile = Profile("Support fixture", "support-world", FreePort());
+    data.SaveSettings(Settings(profile));
+    var games = Games(data);
+    var manager = new HostManager(data, games);
+    var snapshot = await manager.SnapshotAsync();
+    var ports = PortDiagnostics.Read(snapshot, games, false, []);
+    var route = new ExternalPortProbeResult("Reachable",
+        "An outside TCP checker reached https://203.0.113.8:5131.", 5131,
+        DateTimeOffset.UtcNow, "https://203.0.113.8:5131");
+    var diagnostics = OwnerDiagnostics.Build(snapshot, games, ports, [], data.Recovery,
+        new UpdateView("Current", "0.1.11", "0.1.11", "TogetherServer is up to date."),
+        route, isStaging: true);
+    var server = diagnostics.Servers.Single();
+    Require(server.Checks.Single(item => item.Id == "managed-process").State == "Offline",
+        "offline diagnostics invented a managed process state");
+    var portCheck = server.Checks.Single(item => item.Id == "local-game-ports");
+    Require(portCheck.Detail.Contains("Local-PC listener evidence", StringComparison.Ordinal) &&
+        portCheck.Detail.Contains("never proves public reachability", StringComparison.Ordinal) &&
+        portCheck.Detail.Contains("successful game join", StringComparison.Ordinal),
+        "declared-port diagnostics overstated local listener evidence");
+    Require(diagnostics.EvidenceBoundary.Contains("pinned Friend pairing", StringComparison.Ordinal) &&
+        diagnostics.EvidenceBoundary.Contains("save integrity", StringComparison.Ordinal),
+        "diagnostic evidence boundary omitted an external acceptance limit");
+
+    var secret = SupportReportRedactor.Redact(
+        "password=hunter2 token=abcdefghijklmnopabcdefghijklmnop TS3-super-secret-code");
+    var privatePath = SupportReportRedactor.Redact(
+        "File C:\\Users\\Alice Smith\\Saved Games\\world, retry later");
+    var address = SupportReportRedactor.Redact(
+        "Endpoint https://192.168.1.20:5131 and 10.0.0.4");
+    var certificate = SupportReportRedactor.Redact(
+        "Certificate fingerprint 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF");
+    var player = SupportReportRedactor.Redact("Player Alice said in chat: meet at the castle");
+    Require(!secret.Contains("hunter2", StringComparison.Ordinal) &&
+        !secret.Contains("super-secret", StringComparison.Ordinal) &&
+        !privatePath.Contains("Alice Smith", StringComparison.Ordinal) &&
+        !address.Contains("192.168.1.20", StringComparison.Ordinal) &&
+        !address.Contains("10.0.0.4", StringComparison.Ordinal) &&
+        !certificate.Contains("0123456789ABCDEF", StringComparison.Ordinal) &&
+        !player.Contains("Alice", StringComparison.Ordinal) &&
+        player.Contains("Player activity redacted", StringComparison.Ordinal),
+        "support-report redaction did not deterministically remove representative private values");
+
+    var injected = diagnostics with
+    {
+        SharedChecks = diagnostics.SharedChecks.Concat([
+            new OwnerDiagnosticCheck("redaction-fixture", "Support fixture", "Observed",
+                "password=hunter2 at C:\\Users\\Owner\\world via https://10.0.0.4:5131",
+                "Player Alice wrote chat content.", "Settings > Diagnostics")
+        ]).ToList()
+    };
+    var activity = Enumerable.Range(0, 100).Select(index => new TogetherServer.ActivityEvent(Guid.NewGuid(),
+        DateTimeOffset.UtcNow.AddSeconds(-index), "Player chat Alice", "Authorization Bearer secret-token",
+        "C:\\Users\\Owner\\world 10.0.0.4 password=hunter2", ProfileId: profile.Id)).ToList();
+    var operations = Enumerable.Range(0, 100).Select(index => new RemoteOperationView(Guid.NewGuid(),
+        profile.Id, new string('x', 300), RemoteOperationStates.Failed, false,
+        new string('y', 600), "password=hunter2 C:\\Users\\Owner\\world 10.0.0.4",
+        DateTimeOffset.UtcNow.AddSeconds(-index), null, DateTimeOffset.UtcNow, null)).ToList();
+    var productionRoot = Path.Combine(root, "support-instance-production");
+    var stagingRoot = Path.Combine(root, "support-instance-staging");
+    string? InstanceEnvironment(string name) => name switch
+    {
+        "TOGETHERSERVER_DATA_DIR" => productionRoot,
+        "TOGETHERSERVER_STAGING_DATA_DIR" => stagingRoot,
+        _ => null
+    };
+    var instance = AppInstance.Resolve(["--staging"], InstanceEnvironment, root);
+    var export = SupportReportExporter.Create(injected, snapshot, instance,
+        new UpdateView("Unavailable", "0.1.11", null,
+            "Update failed at https://10.0.0.4:5131 from C:\\Users\\Owner\\app.exe"),
+        activity, operations, data.ReadSupportLogMetadata());
+    Require(export.FileName == SupportReportExporter.FileName &&
+        export.ContentType == SupportReportExporter.ContentType,
+        "support export did not use its fixed safe filename and UTF-8 content type");
+    Require(export.SizeBytes == Encoding.UTF8.GetByteCount(export.Content) &&
+        export.SizeBytes <= SupportReportExporter.MaximumReportBytes,
+        "support export exceeded or misreported its UTF-8 size bound");
+    Require(!export.Content.Contains("hunter2", StringComparison.OrdinalIgnoreCase) &&
+        !export.Content.Contains("Alice", StringComparison.OrdinalIgnoreCase) &&
+        !export.Content.Contains("10.0.0.4", StringComparison.OrdinalIgnoreCase) &&
+        !export.Content.Contains("C:\\\\Users", StringComparison.OrdinalIgnoreCase) &&
+        !export.Content.Contains("secret-token", StringComparison.OrdinalIgnoreCase),
+        "support export serialized a representative secret, path, address, or player value");
+    using var report = JsonDocument.Parse(export.Content);
+    Require(report.RootElement.GetProperty("recentActivity").GetArrayLength() <= 24 &&
+        report.RootElement.GetProperty("recentOperations").GetArrayLength() <= 24,
+        "support export exceeded its recent-summary count bounds");
+    ValidateStringBounds(report.RootElement, 600);
+});
 
 await Check("borderless window geometry stays on the selected monitor and detects off-screen bounds", () =>
 {
@@ -1438,6 +1532,16 @@ static async Task KillFixture(ManagedRun run)
     process.Kill(entireProcessTree: true);
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
     await process.WaitForExitAsync(timeout.Token);
+}
+
+static void ValidateStringBounds(JsonElement element, int maximum)
+{
+    if (element.ValueKind == JsonValueKind.String && (element.GetString()?.Length ?? 0) > maximum)
+        throw new Exception("support report serialized an oversized string field");
+    if (element.ValueKind == JsonValueKind.Array)
+        foreach (var item in element.EnumerateArray()) ValidateStringBounds(item, maximum);
+    if (element.ValueKind == JsonValueKind.Object)
+        foreach (var property in element.EnumerateObject()) ValidateStringBounds(property.Value, maximum);
 }
 
 sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider

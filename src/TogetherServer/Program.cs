@@ -88,6 +88,7 @@ using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
 using var externalProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 var externalPortProbe = new ExternalPortProbe(externalProbeClient);
+ExternalPortProbeResult? latestRouteDiagnostic = null;
 using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
 var minecraftInstaller = new MinecraftInstaller(minecraftClient, data, instance.IsStaging);
 using var modeGate = new SemaphoreSlim(1, 1);
@@ -128,11 +129,84 @@ app.Use(async (context, next) =>
 static bool HasSensitiveLocalGetHeader(HttpContext context) =>
     context.Request.Headers["X-TogetherServer-Local"] == "1";
 
+static IResult? FixedOwnerGetRejection(HttpContext context)
+{
+    if (!HasSensitiveLocalGetHeader(context))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (context.Request.QueryString.HasValue ||
+        context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
+        return Results.BadRequest(new
+        {
+            code = "InvalidDiagnosticsRequest",
+            message = "Diagnostics and support export accept no query, path, host, port, URL, or request body."
+        });
+    return null;
+}
+
 app.MapGet("/api/local/snapshot", async () => friendMode
     ? Results.Json(friend.View())
     : Results.Json(await manager.SnapshotAsync()));
 app.MapGet("/api/local/instance", () => Results.Json(instance.View(port)));
 app.MapGet("/api/local/data-recovery", () => Results.Json(data.Recovery));
+app.MapGet("/api/local/diagnostics", async (HttpContext context) =>
+{
+    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
+    if (friendMode)
+        return Results.Conflict(new
+        {
+            code = "FriendMode",
+            message = "Switch to Host before opening owner diagnostics. Hosting and Friend connections keep running."
+        });
+    try
+    {
+        var snapshot = await manager.SnapshotAsync();
+        var devices = pairing.Views();
+        var ports = PortDiagnostics.Read(snapshot, games, companionServer.Active, devices,
+            companionServer.Warning, companionServer.ListenerState);
+        return Results.Json(OwnerDiagnostics.Build(snapshot, games, ports, devices,
+            data.Recovery, updater.View, latestRouteDiagnostic, instance.IsStaging));
+    }
+    catch (Exception ex)
+    {
+        DiagnosticOutput.WriteError("Owner diagnostics failed: " + ex.GetType().Name);
+        return Results.Json(new
+        {
+            code = "DiagnosticsUnavailable",
+            message = "TogetherServer could not assemble owner diagnostics. No server action was started."
+        }, statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
+app.MapGet("/api/local/support-report", async (HttpContext context) =>
+{
+    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
+    if (friendMode)
+        return Results.Conflict(new
+        {
+            code = "FriendMode",
+            message = "Switch to Host before exporting an owner support report."
+        });
+    try
+    {
+        var snapshot = await manager.SnapshotAsync();
+        var devices = pairing.Views();
+        var ports = PortDiagnostics.Read(snapshot, games, companionServer.Active, devices,
+            companionServer.Warning, companionServer.ListenerState);
+        var diagnostics = OwnerDiagnostics.Build(snapshot, games, ports, devices,
+            data.Recovery, updater.View, latestRouteDiagnostic, instance.IsStaging);
+        return Results.Json(SupportReportExporter.Create(diagnostics, snapshot, instance,
+            updater.View, data.LoadActivity(24), companionServer.RecentOperations(),
+            data.ReadSupportLogMetadata()));
+    }
+    catch (Exception ex)
+    {
+        DiagnosticOutput.WriteError("Support report failed: " + ex.GetType().Name);
+        return Results.Json(new
+        {
+            code = "SupportReportUnavailable",
+            message = "TogetherServer could not create the bounded redacted support report. No private error details were included."
+        }, statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
 app.MapGet("/api/local/window", () => Results.Json(new
 {
     available = desktop is not null,
@@ -389,17 +463,29 @@ app.MapGet("/api/local/network/ports", async () => Results.Json(PortDiagnostics.
 app.MapGet("/api/local/network/routes", () => Results.Json(ConnectionRoutes.Detect()));
 app.MapPost("/api/local/network/test-friend-route", async () =>
 {
-    if (friendMode) return Results.Conflict(new ExternalPortProbeResult("Unavailable",
-        "Switch to My server before testing the Friend route.", 0, DateTimeOffset.UtcNow));
+    if (friendMode)
+    {
+        latestRouteDiagnostic = new ExternalPortProbeResult("Unavailable",
+            "Switch to My server before testing the Friend route.", 0, DateTimeOffset.UtcNow);
+        return Results.Conflict(latestRouteDiagnostic);
+    }
     var settings = (await manager.SnapshotAsync()).Settings;
-    if (!companionServer.Active) return Results.Json(new ExternalPortProbeResult("Unavailable",
-        "Start Friend app connections from Invite friends before testing the outside route.",
-        settings.CompanionPort, DateTimeOffset.UtcNow));
+    if (!companionServer.Active)
+    {
+        latestRouteDiagnostic = new ExternalPortProbeResult("Unavailable",
+            "Start Friend app connections from Invite friends before testing the outside route.",
+            settings.CompanionPort, DateTimeOffset.UtcNow);
+        return Results.Json(latestRouteDiagnostic);
+    }
     if (IPAddress.TryParse(settings.CompanionBindAddress, out var bindAddress) && IPAddress.IsLoopback(bindAddress))
-        return Results.Json(new ExternalPortProbeResult("Unavailable",
+    {
+        latestRouteDiagnostic = new ExternalPortProbeResult("Unavailable",
             "Friend app connections are bound to this PC only. Use a LAN bind address or 0.0.0.0 for an outside route.",
-            settings.CompanionPort, DateTimeOffset.UtcNow));
-    return Results.Json(await externalPortProbe.CheckAsync(settings.CompanionEndpoint, settings.CompanionPort));
+            settings.CompanionPort, DateTimeOffset.UtcNow);
+        return Results.Json(latestRouteDiagnostic);
+    }
+    latestRouteDiagnostic = await externalPortProbe.CheckAsync(settings.CompanionEndpoint, settings.CompanionPort);
+    return Results.Json(latestRouteDiagnostic);
 });
 app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => new
 {

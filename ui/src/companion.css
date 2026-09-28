@@ -1307,6 +1307,7 @@ kbd {
 .attention-toolbar strong, .attention-toolbar span { display: block; }
 .attention-toolbar strong { font-size: 13px; }
 .attention-toolbar span { margin-top: 3px; color: var(--color-text-subtle); font-size: 10px; }
+.attention-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .attention-list { max-height: calc(100dvh - 250px); overflow-y: auto; }
 .attention-list .notification-item { padding: 14px 16px; }
 .attention-empty { display: grid; justify-items: center; gap: 6px; padding: 58px 20px; color: var(--color-text-muted); text-align: center; }
@@ -1321,6 +1322,36 @@ kbd {
 .settings-version-row, .settings-danger-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; border: 1px solid var(--color-border); border-radius: 9px; padding: 13px 14px; background: var(--color-surface-raised); }
 .settings-version-row strong, .settings-version-row small, .settings-danger-row strong, .settings-danger-row small { display: block; }
 .settings-version-row small, .settings-danger-row small { margin-top: 3px; color: var(--color-text-subtle); font-size: 11px; }
+.owner-diagnostics { min-width: 0; }
+.owner-diagnostics-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin: 16px 0 12px; }
+.owner-diagnostics-toolbar h3, .owner-diagnostics-shared h4, .support-export h4 { margin: 0; font-size: 16px; }
+.owner-diagnostics-toolbar p, .support-export p { margin: 5px 0 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
+.owner-diagnostics-boundary { margin: 0 0 13px; padding: 10px 12px; border-left: 3px solid var(--color-accent); border-radius: 0 8px 8px 0; background: var(--color-accent-soft); color: var(--color-text-secondary); font-size: 11px; line-height: 1.5; }
+.owner-diagnostics-server { display: block; max-width: 440px; margin: 12px 0 14px; color: var(--color-text-secondary); font-size: 11px; font-weight: 700; }
+.owner-diagnostics-server select { display: block; width: 100%; margin-top: 6px; }
+.owner-diagnostics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.owner-diagnostic-check { min-width: 0; padding: 12px 13px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface-raised); }
+.owner-diagnostic-check.tone-attention { border-color: var(--color-accent-border); background: var(--color-accent-soft); }
+.owner-diagnostic-check.tone-error { border-color: var(--color-danger-border); background: var(--color-danger-bg); }
+.owner-diagnostic-check-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.owner-diagnostic-check-heading span { color: var(--color-text-muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .45px; }
+.owner-diagnostic-check-heading strong { color: var(--color-text-secondary); font-size: 12px; text-align: right; }
+.owner-diagnostic-check.tone-attention .owner-diagnostic-check-heading strong { color: var(--color-accent-text); }
+.owner-diagnostic-check.tone-error .owner-diagnostic-check-heading strong { color: var(--color-danger); }
+.owner-diagnostic-check > p { margin: 8px 0 10px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.48; }
+.owner-diagnostic-next { padding-top: 8px; border-top: 1px solid var(--color-border-subtle); }
+.owner-diagnostic-next > span { color: var(--color-accent-light); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; }
+.owner-diagnostic-next p { margin: 3px 0; color: var(--color-text-muted); font-size: 10px; line-height: 1.45; }
+.owner-diagnostic-next small { color: var(--color-text-subtle); font-size: 9px; }
+.owner-diagnostics-shared { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border-subtle); }
+.owner-diagnostics-shared h4 { margin-bottom: 11px; }
+.owner-diagnostics-empty, .owner-diagnostics-error { padding: 18px; border: 1px dashed var(--color-border); border-radius: 9px; background: var(--color-surface-soft); }
+.owner-diagnostics-error { border-style: solid; border-color: var(--color-danger-border); }
+.owner-diagnostics-empty p, .owner-diagnostics-error p { margin: 5px 0 12px; color: var(--color-text-muted); font-size: 11px; }
+.support-export { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-top: 20px; padding: 15px; border: 1px solid var(--color-accent-border); border-radius: 10px; background: var(--color-accent-soft); }
+.support-export .actions { justify-content: flex-end; }
+.support-export-status { grid-column: 1 / -1; padding-top: 10px; border-top: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size: 11px; }
+.support-export-status.error { color: var(--color-danger); }
 .shortcut-reference { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-top: 18px; padding: 13px 14px; border: 1px solid var(--color-border); border-radius: 9px; color: var(--color-text-muted); font-size: 11px; }
 .shortcut-reference > span { display: inline-flex; align-items: center; gap: 6px; }
 
@@ -1394,6 +1425,9 @@ kbd {
   .settings-version-row, .settings-danger-row { align-items: stretch; flex-direction: column; }
   .settings-version-row .ui-button, .settings-danger-row .ui-button { align-self: flex-start; }
   .attention-list { max-height: none; }
+  .owner-diagnostics-grid { grid-template-columns: 1fr; }
+  .support-export { grid-template-columns: 1fr; }
+  .support-export .actions { justify-content: flex-start; }
   .status-strip { gap: 10px; padding-inline: 10px; }
   .status-strip > span:nth-child(2) { display: none; }
   .update-banner, .staging-banner { max-height: 84px; overflow-y: auto; }
@@ -1408,6 +1442,7 @@ kbd {
   .server-tabs .ui-button { padding-inline: 10px; font-size: 11px; }
   .server-detail-card .profile-top { min-height: 0; }
   .attention-toolbar { align-items: flex-start; }
+  .attention-toolbar-actions { justify-content: flex-start; }
   .attention-toolbar .ui-button { padding-inline: 8px; }
   .shortcut-reference { align-items: flex-start; flex-direction: column; }
   .command-palette-footer span:last-child { display: none; }

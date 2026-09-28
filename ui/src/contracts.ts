@@ -274,6 +274,37 @@ export type InviteState = { exists: boolean; open: boolean; canStart: boolean; d
 export type InviteResult = BasicResult & { password?: string; expiresUtc?: string | null; listenerActive?: boolean; listenerWarning?: string | null }
 export type PasswordResult = BasicResult & { password?: string }
 
+export type OwnerDiagnosticTone = 'Neutral' | 'Attention' | 'Error'
+export type OwnerDiagnosticCheck = {
+  id: string
+  label: string
+  state: string
+  detail: string
+  nextAction: string
+  location: string
+  tone: OwnerDiagnosticTone
+  observedUtc: string | null
+}
+export type OwnerServerDiagnostics = {
+  profileId: string
+  label: string
+  kind: string
+  checks: OwnerDiagnosticCheck[]
+}
+export type OwnerDiagnosticsView = {
+  generatedUtc: string
+  evidenceBoundary: string
+  servers: OwnerServerDiagnostics[]
+  sharedChecks: OwnerDiagnosticCheck[]
+  truncated: boolean
+}
+export type SupportReportExport = {
+  fileName: 'TogetherServer-support-report.json'
+  contentType: 'application/json; charset=utf-8'
+  content: string
+  sizeBytes: number
+}
+
 export type ServerLogSourceState = 'Active' | 'Ended' | 'Missing' | 'Unsupported' | 'Unavailable'
 export type ServerLogRecord = {
   timestampUtc: string | null
@@ -736,6 +767,63 @@ export const parseUpdateView: Decoder<UpdateView> = (value, context = 'update st
   return { state: literal(source.state, ['Checking', 'Current', 'Available', 'NoRelease', 'Unavailable', 'Unsupported'] as const, `${context}.state`),
     currentVersion: text(source.currentVersion, `${context}.currentVersion`), latestVersion: nullableText(source.latestVersion, `${context}.latestVersion`),
     message: text(source.message, `${context}.message`) }
+}
+
+const parseOwnerDiagnosticCheck: Decoder<OwnerDiagnosticCheck> = (value, context = 'diagnostic check') => {
+  const source = object(value, context)
+  const observedUtc = nullableText(source.observedUtc, `${context}.observedUtc`)
+  if (observedUtc !== null && !Number.isFinite(Date.parse(observedUtc)))
+    throw new ContractError(`${context}.observedUtc must be a timestamp or null.`)
+  return {
+    id: boundedText(source.id, `${context}.id`, 64),
+    label: boundedText(source.label, `${context}.label`, 120),
+    state: boundedText(source.state, `${context}.state`, 120),
+    detail: boundedText(source.detail, `${context}.detail`, 500),
+    nextAction: boundedText(source.nextAction, `${context}.nextAction`, 400),
+    location: boundedText(source.location, `${context}.location`, 120),
+    tone: literal(source.tone, ['Neutral', 'Attention', 'Error'] as const, `${context}.tone`),
+    observedUtc
+  }
+}
+
+export const parseOwnerDiagnostics: Decoder<OwnerDiagnosticsView> = (value, context = 'owner diagnostics') => {
+  const source = object(value, context)
+  const generatedUtc = boundedText(source.generatedUtc, `${context}.generatedUtc`, 64)
+  if (!Number.isFinite(Date.parse(generatedUtc))) throw new ContractError(`${context}.generatedUtc must be a timestamp.`)
+  const servers = list(source.servers, `${context}.servers`, (item, itemContext = `${context}.servers`) => {
+    const server = object(item, itemContext)
+    const checks = list(server.checks, `${itemContext}.checks`, parseOwnerDiagnosticCheck)
+    if (checks.length > 8) throw new ContractError(`${itemContext}.checks has too many entries.`)
+    return {
+      profileId: boundedText(server.profileId, `${itemContext}.profileId`, 64),
+      label: boundedText(server.label, `${itemContext}.label`, 100),
+      kind: boundedText(server.kind, `${itemContext}.kind`, 40), checks
+    }
+  })
+  if (servers.length > 64) throw new ContractError(`${context}.servers has too many entries.`)
+  const sharedChecks = list(source.sharedChecks, `${context}.sharedChecks`, parseOwnerDiagnosticCheck)
+  if (sharedChecks.length > 12) throw new ContractError(`${context}.sharedChecks has too many entries.`)
+  return {
+    generatedUtc,
+    evidenceBoundary: boundedText(source.evidenceBoundary, `${context}.evidenceBoundary`, 600),
+    servers, sharedChecks, truncated: flag(source.truncated, `${context}.truncated`)
+  }
+}
+
+export const parseSupportReportExport: Decoder<SupportReportExport> = (value, context = 'support report') => {
+  const source = object(value, context)
+  if (source.fileName !== 'TogetherServer-support-report.json')
+    throw new ContractError(`${context}.fileName is not the fixed safe filename.`)
+  if (source.contentType !== 'application/json; charset=utf-8')
+    throw new ContractError(`${context}.contentType is unsupported.`)
+  const content = text(source.content, `${context}.content`)
+  if (content.length === 0 || content.length > 128 * 1024 ||
+      [...content].some(character => character < ' ' && character !== '\r' && character !== '\n' && character !== '\t'))
+    throw new ContractError(`${context}.content is outside its supported bounds.`)
+  const sizeBytes = numeric(source.sizeBytes, `${context}.sizeBytes`)
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 1 || sizeBytes > 128 * 1024)
+    throw new ContractError(`${context}.sizeBytes is outside its supported bounds.`)
+  return { fileName: source.fileName, contentType: source.contentType, content, sizeBytes }
 }
 
 export const parseCustomScriptResult: Decoder<CustomScriptResult> = (value, context = 'custom script result') => {
