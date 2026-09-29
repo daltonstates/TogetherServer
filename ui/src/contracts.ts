@@ -299,7 +299,7 @@ export type CustomScriptResult = BasicResult & { scripts: CustomScriptBundle }
 export type CustomCertificationResult = BasicResult & { snapshot: HostSnapshot; certification: CustomCertificationState }
 export type RouteDiscovery = { privateMeshCandidates: { provider: string; interfaceName: string; address: string }[]; advancedCandidates: { provider: string; interfaceName: string; address: string }[] }
 export type GameEndpointResult = { answered: boolean; code: string; message: string; checkedUtc: string; onlinePlayers: number | null; maxPlayers: number | null }
-export type InviteState = { exists: boolean; open: boolean; canStart: boolean; durationMinutes: number; deviceLimit: number; requireApproval: boolean }
+export type InviteState = { exists: boolean; open: boolean; canStart: boolean; requireApproval: boolean }
 export type InviteResult = BasicResult & { password?: string; expiresUtc?: string | null; listenerActive?: boolean; listenerWarning?: string | null }
 export type PasswordResult = BasicResult & { password?: string }
 
@@ -1112,13 +1112,14 @@ export const parseGameEndpointResult: Decoder<GameEndpointResult> = (value, cont
 export const parseInviteState: Decoder<InviteState> = (value, context = 'invite state') => {
   const source = object(value, context)
   return { exists: flag(source.exists, `${context}.exists`), open: flag(source.open, `${context}.open`), canStart: flag(source.canStart, `${context}.canStart`),
-    durationMinutes: numeric(source.durationMinutes, `${context}.durationMinutes`), deviceLimit: numeric(source.deviceLimit, `${context}.deviceLimit`),
     requireApproval: flag(source.requireApproval, `${context}.requireApproval`) }
 }
 
 export const parseInviteResult: Decoder<InviteResult> = (value, context = 'invite result') => {
   const { source, basic } = withBasicResult(value, context)
-  return { ...basic, password: optionalText(source.password, `${context}.password`), expiresUtc: optionalNullableText(source.expiresUtc, `${context}.expiresUtc`),
+  const password = optionalText(source.password, `${context}.password`)
+  if (basic.ok && !password) throw new ContractError(`${context}.password must be a non-empty string when the server code is ready`)
+  return { ...basic, password, expiresUtc: optionalNullableText(source.expiresUtc, `${context}.expiresUtc`),
     listenerActive: source.listenerActive === undefined ? undefined : flag(source.listenerActive, `${context}.listenerActive`),
     listenerWarning: optionalNullableText(source.listenerWarning, `${context}.listenerWarning`) }
 }

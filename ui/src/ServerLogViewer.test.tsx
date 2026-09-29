@@ -64,7 +64,7 @@ describe('ServerLogViewer', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByText('new run')).toBeInTheDocument()
     expect(screen.queryByText('two')).not.toBeInTheDocument()
-    expect(screen.getByText(/1 of 3 client-held entries/i)).toBeInTheDocument()
+    expect(screen.getByText(/1 of 3 lines shown/i)).toBeInTheDocument()
   })
 
   it('drops a stale cursor and immediately tails the replacement run', async () => {

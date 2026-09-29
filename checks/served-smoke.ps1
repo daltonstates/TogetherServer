@@ -90,32 +90,43 @@ try {
         'Paste your server code', 'Saved servers',
         'App preferences, Friend access, timers, and advanced Host controls.', 'PC name', 'Server access', 'Choose servers', 'Search servers',
         'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop', 'View logs', 'On with server exceptions',
-        'Owner access', 'No deadline', 'Access ends', 'Access expired', 'Change deadline', 'Clear deadline',
-        'Advanced: custom UTC date and time', 'Exact UTC', 'On this PC', 'Save deadline', 'saved Host connection remains here',
+        'Access for this PC', 'No end date', 'Access ends', 'Access expired', 'Change deadline', 'Clear deadline',
+        'Advanced: custom UTC date and time', 'Exact UTC', 'On this PC', 'Save deadline', 'saved connection remains here',
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Game server', 'Friend app', 'Outside connection', 'Reachable outside network', 'Recommended next step',
         'Connection details', 'Hidden for stream safety', 'Server IP', 'Game password',
         'Use an eye to show only that value', 'Copy keeps it hidden', 'Notifications', 'Recent app and connection activity',
         'Attention Center', 'Search commands', 'Ctrl+K from anywhere', 'Overview', 'Players', 'Backups', 'Setup',
-        'Recent sessions', 'They do not prove who joined, a successful game join, or world/save integrity.',
+        'Recent sessions', 'They do not show who joined or prove that a join or world save succeeded.',
         'Clear activity', 'Update TogetherServer', 'Not now', 'is available',
         'Refreshing connection details', 'Connection details updated.',
         'Maximum servers running at once', 'Duplicate saved game port', 'Stop empty server and start this one',
-        'Pairing window options', 'Close pairing', 'Emergency-revoke code credentials',
-        'Require local Host approval for each new PC', 'Saved connection name', 'Forget this Host',
+        'Server code ready', 'The same code keeps working until you replace it.', 'Copy code',
+        'Getting the server code took too long. Try again.',
+        'New PCs and replacing the code', 'Ask me to approve each new PC before it can connect',
+        'Replace code and remove old access', 'Saved connection name', 'Forget this Host',
         'Maintenance mode', 'Extend empty-server timer', 'Friend extension increment',
         'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running', 'Extend this countdown',
         'Retry player count', 'Refresh player count',
         'Extra minutes for this countdown only.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
         'Custom game', 'local PowerShell actions', 'Status and players script',
-        'contract v2 echoes plus the guided live certification are required', 'TogetherServer never force-kills the game.',
+        'contract v2 checks and the guided live test are required', 'TogetherServer never force-kills the game.',
         'steam://install/896660'
     )
     foreach ($expectedText in $requiredUiText) {
         if (!$js.Content.Contains($expectedText)) {
             throw "The published GUI is missing expected guided-flow text: $expectedText"
+        }
+    }
+    $forbiddenUiText = @(
+        "Preparing this server's invite", 'Pairing window options', 'Close pairing',
+        'Emergency-revoke code credentials', 'Window minutes', 'New PC limit'
+    )
+    foreach ($forbiddenText in $forbiddenUiText) {
+        if ($js.Content.Contains($forbiddenText)) {
+            throw "The published GUI still contains removed pairing-window wording: $forbiddenText"
         }
     }
     if (!$css.Content.Contains('.server-picker-list{') -or !$css.Content.Contains('max-height:min(420px,45vh)')) {
@@ -254,7 +265,7 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     Write-Host 'PASS local mutation gate'
     if (!$js.Content.Contains('Update and restart') -or !$js.Content.Contains('Check for updates') -or
         !$js.Content.Contains('Clear activity') -or !$js.Content.Contains('Not now') -or
-        !$js.Content.Contains('Nothing needs fixing') -or !$js.Content.Contains('idle until you create an invite')) {
+        !$js.Content.Contains('Nothing needs fixing') -or !$js.Content.Contains('waiting for a server code')) {
         throw 'The update, notification, or calm idle-Friend controls were not bundled.'
     }
     $updateForbidden = $false
@@ -303,11 +314,11 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     catch { $inviteReadForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     $invitedSettings = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").settings
     $inviteHasListenerWarning = $invite.PSObject.Properties.Name -contains 'listenerWarning'
-    if (!$invite.ok -or !$invite.password.StartsWith('TS3-') -or !$inviteHasListenerWarning -or $null -ne $invite.listenerWarning -or !$sameInvite.exists -or !$sameInvite.open -or $sameInvite.password -ne $invite.password -or !$sameInvite.canStart -or $sameInvite.durationMinutes -ne 30 -or $sameInvite.deviceLimit -ne 1 -or !$inviteReadForbidden -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating a pairing window did not keep one protected bounded code and permission default, return its nullable listener warning, or prepare the standard Host address safely.' }
+    if (!$invite.ok -or $invite.message -ne 'Server code ready. It stays active until you replace it.' -or !$invite.password.StartsWith('TS3-') -or $null -ne $invite.expiresUtc -or !$inviteHasListenerWarning -or $null -ne $invite.listenerWarning -or !$sameInvite.exists -or !$sameInvite.open -or $sameInvite.password -ne $invite.password -or !$sameInvite.canStart -or $null -ne $sameInvite.expiresUtc -or !$inviteReadForbidden -or $invitedSettings.companionEndpoint -ne 'https://1.2.3.4:5131' -or $invitedSettings.companionBindAddress -ne '0.0.0.0' -or $invitedSettings.companionListeningEnabled) { throw 'Creating a server code did not keep one protected persistent code, return its nullable listener warning, or prepare the standard Host address safely.' }
     $settings.companionEndpoint = $invitedSettings.companionEndpoint
     $settings.companionBindAddress = $invitedSettings.companionBindAddress
     $settings.companionPort = $invitedSettings.companionPort
-    Write-Host 'PASS one current bounded server code returns a nullable listener warning and prepares the standard app address without opening a listener'
+    Write-Host 'PASS one persistent server code returns a nullable listener warning and prepares the standard app address without opening a listener'
     $started = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$profileId/start" -Method Post -Headers $headers
     if (!$started.ok -or $started.code -ne 'FixtureStarted') { throw "Start failed: $($started.message)" }
     $fixtureStarted = $true
@@ -440,7 +451,7 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     $mode = Invoke-RestMethod -Uri "$baseUrl/api/local/mode/friend" -Method Post -Headers $headers
     $friendResponse = Invoke-WebRequest -Uri "$baseUrl/api/local/snapshot" -UseBasicParsing
     $friend = $friendResponse.Content | ConvertFrom-Json
-    if (!$mode.ok -or $friend.mode -ne 'Friend' -or $friend.state -ne 'Not paired') { throw 'Friend mode switch failed.' }
+    if (!$mode.ok -or $friend.mode -ne 'Friend' -or $friend.state -ne 'Not connected') { throw 'Friend mode switch failed.' }
     if ($friend.hostCapabilities -isnot [System.Array] -or $friend.connections -isnot [System.Array] -or
         @($friend.connections | Where-Object { $_.hostCapabilities -isnot [System.Array] }).Count -ne 0) {
         throw 'Friend mode snapshot did not expose Host capabilities as JSON arrays for the selected and saved connections.'

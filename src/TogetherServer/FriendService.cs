@@ -100,7 +100,7 @@ internal sealed class FriendLink : IDisposable
             config.CachedProfiles ??= [];
         }
         view = config is null
-            ? new("Friend", "Not paired", "Paste the server invite code from the Host PC.", "", null, false, false, false, [], [])
+            ? new("Friend", "Not connected", "Paste the server code from the Host PC.", "", null, false, false, false, [], [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
                 null, false, false, false, [], [], ConnectionName: config.DisplayName);
     }
@@ -125,7 +125,7 @@ internal sealed class FriendLink : IDisposable
         {
             await gate.WaitAsync(cancellationToken);
             entered = true;
-            if (config is null) return LogFailure("NotPaired", "Pair with a Host first.");
+            if (config is null) return LogFailure("NotPaired", "Connect to a Host first.");
             var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null)
                 return new(false, "UnknownProfile",
@@ -141,7 +141,7 @@ internal sealed class FriendLink : IDisposable
                     ServerLogSourceStates.Unsupported, null, [], null, false);
             if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
                 return LogFailure("CredentialExpired",
-                    "This PC's Host credential expired. Pair again with the current server code.");
+                    "This PC's saved access expired. Connect again with the current server code.");
 
             try
             {
@@ -196,23 +196,23 @@ internal sealed class FriendLink : IDisposable
             PairingInvite? invite;
             if (invitation?.TrimStart().StartsWith('{') == true)
             {
-                // Existing invitations remain usable until their normal expiry.
+                // Existing JSON invitations remain readable for migration.
                 try { invite = JsonSerializer.Deserialize<PairingInvite>(invitation, Json); }
-                catch (JsonException) { return new(false, "InvalidInvite", "Pairing password is invalid.", null); }
+                catch (JsonException) { return new(false, "InvalidInvite", "The server code is not valid.", null); }
             }
             else
             {
                 if (!PairingPassword.TryDecode(invitation, hostAddress, out invite))
-                    return new(false, "InvalidInvite", "Invite is invalid, expired, no longer current, or has a different Host address. Ask the Host for the current server code.", null);
+                    return new(false, "InvalidInvite", "This server code is not valid or no longer current. Ask the Host to copy the current code.", null);
             }
             if (invite is null || !HostIdentity.TryEndpoint(invite.Endpoint, out _) ||
                 !ValidFingerprint(invite.Fingerprint) || string.IsNullOrWhiteSpace(invite.Code) ||
-                invite.DeviceId == Guid.Empty || invite.ExpiresUtc <= DateTimeOffset.UtcNow)
-                return new(false, "InvalidInvite", "Invite is invalid or expired.", null);
+                invite.DeviceId == Guid.Empty || !invite.ServerScope && invite.ExpiresUtc <= DateTimeOffset.UtcNow)
+                return new(false, "InvalidInvite", "This invite has expired or is not valid.", null);
             if (!string.IsNullOrWhiteSpace(hostAddress) &&
                 (!HostIdentity.TryAddress(hostAddress, out var enteredEndpoint) ||
                  !string.Equals(enteredEndpoint, invite.Endpoint, StringComparison.OrdinalIgnoreCase)))
-                return new(false, "HostAddressMismatch", "Host IP or port differs from this pairing invitation. Check the address with the Host.", null);
+                return new(false, "HostAddressMismatch", "The Host address does not match this server code. Check the address with the Host.", null);
             try
             {
                 using var pairingClient = MakeClient(invite.Endpoint, [invite.Fingerprint]);
@@ -220,14 +220,14 @@ internal sealed class FriendLink : IDisposable
                     JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope), Json), Encoding.UTF8, "application/json"));
                 if (!response.IsSuccessStatusCode)
                     return response.StatusCode == HttpStatusCode.TooManyRequests
-                        ? new(false, "HostBusy", "The Host is limiting connection attempts. Wait, then try the current invite again.", null)
+                        ? new(false, "HostBusy", "There were too many connection attempts. Wait a moment, then try again.", null)
                         : response.StatusCode == HttpStatusCode.Unauthorized
-                            ? new(false, "PairingRejected", "The Host rejected this code. It may have been refreshed or revoked; ask for the current server code.", null)
-                            : new(false, "HostUnavailable", $"The Host app returned {(int)response.StatusCode} during pairing. Ask the Host to check its app.", null);
+                            ? new(false, "PairingRejected", "The Host did not accept this code. It may have been replaced; ask for the current server code.", null)
+                            : new(false, "HostUnavailable", $"The Host app returned {(int)response.StatusCode} while connecting. Ask the Host to check its app.", null);
                 var credential = await response.Content.ReadFromJsonAsync<PairingCredential>(Json);
                 if (credential is null || credential.DeviceId == Guid.Empty ||
                     (!invite.ServerScope && credential.DeviceId != invite.DeviceId) || credential.Credential.Length < 32)
-                    return new(false, "PairingRejected", "Host returned an invalid credential.", null);
+                    return new(false, "PairingRejected", "The Host returned invalid access information.", null);
                 config = new FriendConfiguration
                 {
                     DisplayName = HostLabel(invite.Endpoint),
@@ -247,13 +247,13 @@ internal sealed class FriendLink : IDisposable
                 instanceId = Guid.NewGuid();
                 sequence = 0;
                 view = new FriendView("Friend", credential.ApprovalPending ? "Awaiting approval" : "Disconnected/Unknown",
-                    credential.ApprovalPending ? "Paired securely; waiting for the Host owner to approve this PC locally."
-                        : "Paired; waiting for an authenticated heartbeat.",
+                    credential.ApprovalPending ? "Connected securely. Waiting for the Host to approve this PC."
+                        : "Connected. Waiting for the Host to respond.",
                     config.Endpoint, null, false, false, false, [], [], ConnectionName: config.DisplayName);
                 return new(true, credential.ApprovalPending ? "ApprovalPending" : "Paired",
                     credential.ApprovalPending
-                        ? "Credential saved securely. The Host owner must approve this PC before it can connect."
-                        : "Device paired and credential saved in Windows protected storage.", null);
+                        ? "This PC was saved securely. The Host must approve it before it can connect."
+                        : "This PC connected and its access was saved securely.", null);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
@@ -275,7 +275,7 @@ internal sealed class FriendLink : IDisposable
                 view = view with
                 {
                     State = "Disconnected/Unknown",
-                    Detail = "Device credential expired; ask the Host for the current server code.",
+                    Detail = "This PC's saved access expired. Ask the Host for the current server code.",
                     ConnectionCode = "CredentialExpired",
                     RemoteControlsEnabled = false,
                     CanStart = false,
@@ -308,9 +308,9 @@ internal sealed class FriendLink : IDisposable
                     {
                         State = revoked ? "Revoked" : approvalPending ? "Awaiting approval" :
                             accessExpired ? "Access expired" : "Disconnected/Unknown",
-                        Detail = revoked ? "Host refreshed this server code or revoked this PC. Ask for the current code."
-                            : approvalPending ? "The Host owner must approve this PC locally before it can connect."
-                            : accessExpired ? "The Host owner's access deadline for this PC has expired."
+                        Detail = revoked ? "The Host replaced this server code or removed this PC's access. Ask for the current code."
+                            : approvalPending ? "The Host must approve this PC before it can connect."
+                            : accessExpired ? "The Host ended access for this PC at the saved time."
                             : "Host access is unavailable or denied.",
                         ConnectionCode = revoked ? "Revoked" : approvalPending ? "ApprovalPending" :
                             accessExpired ? "AccessExpired" : "HostAccessDenied",
@@ -325,7 +325,7 @@ internal sealed class FriendLink : IDisposable
                 {
                     var issue = response.StatusCode switch
                     {
-                        HttpStatusCode.Unauthorized => new ConnectionIssue("CredentialRejected", "The Host rejected this PC's credential. Ask for the current server code."),
+                        HttpStatusCode.Unauthorized => new ConnectionIssue("CredentialRejected", "The Host did not accept this PC's saved access. Ask for the current server code."),
                         HttpStatusCode.TooManyRequests => new ConnectionIssue("HostBusy", "The Host is limiting requests. Wait a moment and check again."),
                         _ => new ConnectionIssue("HostUnavailable", $"The Host app returned {(int)response.StatusCode}. Ask the Host to check its app.")
                     };
@@ -386,13 +386,13 @@ internal sealed class FriendLink : IDisposable
                 if (!response.IsSuccessStatusCode)
                     return new(false, response.StatusCode == HttpStatusCode.Unauthorized ? "CredentialRejected" : "RecoveryRejected",
                         response.StatusCode == HttpStatusCode.Unauthorized
-                            ? "The Host rejected this saved credential. Pair again with a new code."
-                            : $"The Host did not approve endpoint recovery ({(int)response.StatusCode}).", null);
+                            ? "The Host did not accept this PC's saved access. Connect again with a new code."
+                            : $"The Host did not approve the new address ({(int)response.StatusCode}).", null);
                 var proof = await response.Content.ReadFromJsonAsync<EndpointRecoveryProof>(Json);
                 if (proof is null || !string.Equals(proof.Endpoint.TrimEnd('/'), normalized.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ||
                     proof.HostId == Guid.Empty || config.HostId != Guid.Empty && proof.HostId != config.HostId ||
                     !AcceptedPins().Contains(proof.Certificates.ActiveFingerprint, StringComparer.Ordinal))
-                    return new(false, "RecoveryProofInvalid", "The endpoint did not prove the saved Host identity and credential.", null);
+                    return new(false, "RecoveryProofInvalid", "The new address did not match the saved Host and this PC's access.", null);
                 config.Endpoint = normalized;
                 config.HostId = proof.HostId;
                 ApplyHostMetadata(proof.Certificates, proof.Route);
@@ -403,13 +403,13 @@ internal sealed class FriendLink : IDisposable
                 {
                     Endpoint = config.Endpoint,
                     State = "Disconnected/Unknown",
-                    Detail = "Host endpoint recovered; checking the authenticated connection.",
+                    Detail = "Host address updated. Checking the secure connection.",
                     ConnectionCode = null,
                     RouteMode = config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
                     RouteAddress = config.Route?.Address,
                     HostId = config.HostId
                 };
-                return new(true, "EndpointRecovered", "The saved Host endpoint changed only after its existing TLS pin and device credential were verified.", null);
+                return new(true, "EndpointRecovered", "The saved Host address was updated after TogetherServer verified the Host and this PC's access.", null);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             { return PairConnectionFailure(ex); }
@@ -459,12 +459,12 @@ internal sealed class FriendLink : IDisposable
             client = null;
             data.DeleteProtected(configFile);
             config = null;
-            view = new("Friend", "Not paired", "This saved Host connection was forgotten.", "",
+            view = new("Friend", "Not connected", "This saved Host connection was forgotten.", "",
                 null, false, false, false, [], []);
             return new(true, revoked ? "ConnectionForgottenAndRevoked" : "ConnectionForgottenLocally",
                 revoked
-                    ? "This PC's Host credential was revoked, then the saved connection was removed locally."
-                    : "The saved connection was removed locally, but the Host could not be reached. Ask the Host owner to revoke this stale PC credential.",
+                    ? "The Host removed this PC's access, then TogetherServer removed the saved connection from this PC."
+                    : "The saved connection was removed from this PC, but the Host could not be reached. Ask the Host to remove this PC from Friend access.",
                 null);
         }
         finally { gate.Release(); ReleaseRetained(); }
@@ -476,15 +476,15 @@ internal sealed class FriendLink : IDisposable
         await gate.WaitAsync();
         try
         {
-            if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
+            if (config is null) return new(false, "NotPaired", "Connect to a Host first.", null);
             if (action is not ("start" or "stop" or "restart" or "replace" or "extend" or "refresh"))
-                return new(false, "InvalidAction", "Only fixed server lifecycle, countdown-extension, and player-count refresh actions are available.", null);
+                return new(false, "InvalidAction", "Only Start, Stop, Restart, timer extension, and player refresh are available.", null);
             if (action == "refresh") return await RefreshPlayerCountAsync(profileId);
             config.PendingOperations ??= [];
             var pending = config.PendingOperations.FirstOrDefault(item => item.ProfileId == profileId);
             if (pending is not null && !pending.Action.Equals(action, StringComparison.Ordinal))
                 return new(false, "OperationInProgress",
-                    "Wait for the current remote operation on this server to finish before requesting another action.", null,
+                    "Wait for the current server action to finish before requesting another one.", null,
                     OperationId: pending.OperationId, OperationState: RemoteOperationStates.Pending);
             if (pending is null)
             {
@@ -538,7 +538,7 @@ internal sealed class FriendLink : IDisposable
 
     private async Task<FriendActionResult> RefreshPlayerCountAsync(Guid profileId)
     {
-        if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
+        if (config is null) return new(false, "NotPaired", "Connect to a Host first.", null);
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/refresh")
@@ -574,7 +574,7 @@ internal sealed class FriendLink : IDisposable
 
     private async Task<FriendActionResult> SubmitPendingOperationAsync(PendingFriendOperation pending)
     {
-        if (config is null) return new(false, "NotPaired", "Pair with a Host first.", null);
+        if (config is null) return new(false, "NotPaired", "Connect to a Host first.", null);
         var hostClient = HostClient();
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/" + pending.Action)
         {
@@ -734,7 +734,7 @@ internal sealed class FriendLink : IDisposable
             view = view with
             {
                 State = "Disconnected/Unknown",
-                Detail = "Host companion access is paused.",
+                Detail = "Friend access is paused on the Host.",
                 ConnectionCode = "HostUnavailable",
                 RemoteControlsEnabled = false,
                 CanStart = false,
@@ -745,7 +745,7 @@ internal sealed class FriendLink : IDisposable
             view = view with
             {
                 State = "Disconnected/Unknown",
-                Detail = "Host rejected this device credential.",
+                Detail = "The Host did not accept this PC's saved access.",
                 ConnectionCode = "CredentialRejected",
                 RemoteControlsEnabled = false,
                 CanStart = false,
@@ -759,7 +759,7 @@ internal sealed class FriendLink : IDisposable
         view = view with
         {
             State = "Access expired",
-            Detail = "The Host owner's access deadline for this PC has expired.",
+            Detail = "The Host ended access for this PC at the saved time.",
             ConnectionCode = "AccessExpired",
             RemoteControlsEnabled = false,
             CanStart = false,
@@ -770,7 +770,7 @@ internal sealed class FriendLink : IDisposable
 
     private void ApplyStatus(CompanionStatus status)
     {
-        if (config is null) throw new InvalidOperationException("Pair with a Host first.");
+        if (config is null) throw new InvalidOperationException("Connect to a Host first.");
         config.CachedProfiles = status.Profiles.ToList();
         ApplyHostMetadata(status.Certificates, status.Route);
         var compatible = CompanionProtocol.Supports(status.Protocol);
@@ -778,7 +778,7 @@ internal sealed class FriendLink : IDisposable
         view = new FriendView("Friend", !compatible ? "Update required" :
                 status.RemoteControlsEnabled ? "Connected" : "Disabled",
             !compatible ? status.Protocol?.CompatibilityMessage ?? "Update required before remote controls can be used." :
-                status.RemoteControlsEnabled ? "Authenticated Host connection." : status.Notice ?? "Host remote controls are off.",
+                status.RemoteControlsEnabled ? "Secure Host connection." : status.Notice ?? "Friend controls are off on the Host.",
             config.Endpoint, DateTimeOffset.UtcNow, compatible && status.RemoteControlsEnabled,
             compatible && status.CanStart, compatible && status.CanStop, status.Profiles,
             status.Protocol?.Capabilities ?? [],
@@ -830,7 +830,7 @@ internal sealed class FriendLink : IDisposable
 
     private HttpClient HostClient()
     {
-        if (config is null) throw new InvalidOperationException("Pair with a Host first.");
+        if (config is null) throw new InvalidOperationException("Connect to a Host first.");
         if (client is not null) return client;
         client = MakeClient(config.Endpoint, AcceptedPins());
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
@@ -933,9 +933,9 @@ internal sealed class FriendLink : IDisposable
         if (config is null) return null;
         var warnings = new List<string>();
         if (config.CredentialExpiresUtc - DateTimeOffset.UtcNow <= TimeSpan.FromDays(14))
-            warnings.Add($"Device credential expires {config.CredentialExpiresUtc.LocalDateTime:g}");
+            warnings.Add($"Saved access expires {config.CredentialExpiresUtc.LocalDateTime:g}");
         if (config.CertificateExpiresUtc is { } certificateExpiry && certificateExpiry - DateTimeOffset.UtcNow <= TimeSpan.FromDays(30))
-            warnings.Add($"Host certificate expires {certificateExpiry.LocalDateTime:g}");
+            warnings.Add($"Secure Host identity expires {certificateExpiry.LocalDateTime:g}");
         return warnings.Count == 0 ? null : string.Join(". ", warnings) + ".";
     }
 

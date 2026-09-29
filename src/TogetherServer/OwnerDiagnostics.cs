@@ -41,12 +41,12 @@ public static class OwnerDiagnostics
         };
         if (snapshot.Settings.Profiles.Count > MaximumServers)
             shared.Add(new("server-list-bound", "Saved server list", "Partial",
-                $"Diagnostics show the first {MaximumServers} saved servers. The remaining saved profiles were not serialized.",
+                $"This report shows the first {MaximumServers} saved servers. The remaining servers are not included.",
                 "Review or remove unused saved servers before exporting another report.", "Host > Servers",
                 OwnerDiagnosticTones.Attention));
 
         return new(now,
-            "These checks reuse saved Host state and existing read-only probes. Local listeners and outside TCP checks do not prove public game reachability, pinned Friend pairing, a successful game join, or save integrity.",
+            "These checks use saved Host data and do not change the server. Local listeners and outside TCP checks do not prove that a Friend connected, joined the game, or that a world saved correctly.",
             servers, shared, snapshot.Settings.Profiles.Count > MaximumServers);
     }
 
@@ -55,7 +55,7 @@ public static class OwnerDiagnostics
         DateTimeOffset now)
     {
         var run = snapshot.Runs.SingleOrDefault(item => item.ProfileId == profile.Id) ??
-            new RunView(profile.Id, "Unknown", "Saved server has no canonical run view.", null,
+            new RunView(profile.Id, "Unknown", "TogetherServer could not read the current server session.", null,
                 PlayerCountTrusted: false);
         var gamePorts = ports.Games.SingleOrDefault(item => item.ProfileId == profile.Id);
         return new(profile.Id, Bounded(profile.Name, 80, "Saved server"), profile.Kind,
@@ -116,10 +116,10 @@ public static class OwnerDiagnostics
         var next = run.State switch
         {
             "Offline" => "Use Start server from Overview when the saved setup is ready.",
-            "Unknown" => "Review the exact recorded process from Overview; Start and Stop remain blocked while identity is uncertain.",
-            "Failed" => "Review and archive the exited recorded run only after TogetherServer proves the process is absent.",
-            "Starting" or "Stopping" => "Wait for the current lifecycle operation to finish, then refresh diagnostics.",
-            _ => "Use only the existing guarded lifecycle controls in Overview."
+            "Unknown" => "Review the saved process from Overview; Start and Stop stay blocked until TogetherServer knows which process it is.",
+            "Failed" => "Archive the failed session only after TogetherServer confirms that the process has ended.",
+            "Starting" or "Stopping" => "Wait for the current server action to finish, then refresh diagnostics.",
+            _ => "Use the Start, Stop, and Restart buttons in Overview."
         };
         return new("managed-process", "Managed process", run.State,
             Bounded(run.Detail + pid, 320, "Managed process state is unavailable."), next,
@@ -137,14 +137,14 @@ public static class OwnerDiagnostics
         {
             var capacity = run.MaxPlayers is { } maximum ? $" of {maximum}" : "";
             return new("driver-observation", "Driver readiness and players", $"Ready · {online}{capacity} online",
-                "This is the canonical current Host observation from the registered game driver. It does not identify players or prove an outside game join.",
+                "This is the latest player count reported to the Host. It does not identify players or prove that someone joined from outside the network.",
                 "Use the player-count refresh beside the server card if a new observation is needed.", "Host > Players");
         }
 
         if (run.State == "Ready")
             return new("driver-observation", "Driver readiness and players", "Player count unavailable",
-                "The driver reports Ready, but no fresh authoritative player count is available. Remote and automatic Stop remain fail-closed.",
-                "Refresh the player count and review the game-specific local status evidence.", "Host > Players",
+                "The server is Ready, but a fresh player count is not available. Remote and automatic Stop stay blocked for safety.",
+                "Refresh the player count and review the game's local status.", "Host > Players",
                 OwnerDiagnosticTones.Attention);
 
         return new("driver-observation", "Driver readiness and players", run.State,
@@ -169,8 +169,8 @@ public static class OwnerDiagnostics
             _ => OwnerDiagnosticTones.Neutral
         };
         return new("local-game-ports", "Declared game ports", game.State,
-            Bounded($"{declared} {game.Detail} Local-PC listener evidence never proves public reachability or a successful game join.",
-                420, "Local-PC port evidence is unavailable."),
+            Bounded($"{declared} {game.Detail} Seeing a port open on this PC does not prove that a Friend can reach it or join the game.",
+                420, "Local port details are unavailable."),
             game.State == "Waiting" ? "Start only from Overview when you intend to inspect live local sockets." :
                 "Use Connection help for routing guidance, then verify the game separately from a real Friend PC.",
             "Settings > Connection help", tone);
@@ -184,14 +184,14 @@ public static class OwnerDiagnostics
                 device.AssignedProfileIds.Contains(profileId) && device.LastHeartbeatUtc is not null)
             .OrderByDescending(device => device.LastHeartbeatUtc).FirstOrDefault();
         if (latest?.LastHeartbeatUtc is not { } received)
-            return new("friend-evidence", "Authenticated Friend evidence", "None recorded",
-                "No currently usable Friend assigned to this server has an authenticated heartbeat receipt.",
-                "Review assignments or create a bounded invite only when a Friend needs access.",
+            return new("friend-evidence", "Recent Friend contact", "None recorded",
+                "No connected Friend assigned to this server has contacted the Host recently.",
+                "Review server access or choose Invite friends to copy the server code.",
                 "Settings > Friend access");
         var age = received <= now ? now - received : TimeSpan.MaxValue;
         var current = age <= CurrentHeartbeat;
-        return new("friend-evidence", "Authenticated Friend evidence", current ? "Recent heartbeat" : "Stale",
-            $"The Host received an authenticated heartbeat at {received:O}. The Friend PC's network location is unknown, and this does not prove a game join.",
+        return new("friend-evidence", "Recent Friend contact", current ? "Recent" : "Old",
+            $"A connected Friend PC contacted the Host at {received:O}. Its network location is unknown, and this does not prove a game join.",
             current ? "Test the game join separately if connection acceptance is required." :
                 "Ask the assigned Friend to reopen TogetherServer and check the saved Host connection.",
             "Settings > Friend access", current ? OwnerDiagnosticTones.Neutral : OwnerDiagnosticTones.Attention,
@@ -206,11 +206,11 @@ public static class OwnerDiagnostics
             "Unknown" => OwnerDiagnosticTones.Attention,
             _ => OwnerDiagnosticTones.Neutral
         };
-        var detail = $"{control.Detail} Bind scope: {control.BindScope}. This is local-PC listener evidence, not public reachability.";
-        return new("companion-listener", "Friend companion listener", control.State,
-            Bounded(detail, 420, "Friend listener state is unavailable."),
+        var detail = $"{control.Detail} Listening on: {control.BindScope}. This confirms only what is open on this PC, not whether a Friend can reach it.";
+        return new("companion-listener", "Friend app connection", control.State,
+            Bounded(detail, 420, "Friend connection state is unavailable."),
             control.State is "Off" or CompanionListenerStates.Idle
-                ? "Create a bounded invite only when another PC needs Friend access."
+                ? "Choose Invite friends to get the server code."
                 : "Review Friend access and Connection help without changing firewall or router settings automatically.",
             "Settings > Friend access", tone);
     }
@@ -219,8 +219,8 @@ public static class OwnerDiagnostics
         ExternalPortProbeResult? result, DateTimeOffset now)
     {
         if (result is null)
-            return new("route-diagnostic", "Outside TCP route diagnostic", "Not checked",
-                "No owner-requested outside TCP result is available for this app session.",
+            return new("route-diagnostic", "Outside connection test", "Not checked",
+                "No outside TCP test has been run since TogetherServer opened.",
                 "Run the optional test only after the local Friend listener is open, or ask a Friend on another network to connect.",
                 "Settings > Connection help");
         var age = now - result.CheckedUtc;
@@ -228,9 +228,9 @@ public static class OwnerDiagnostics
             (result.Endpoint is null ||
              string.Equals(result.Endpoint, control.Endpoint, StringComparison.OrdinalIgnoreCase));
         if (!current)
-            return new("route-diagnostic", "Outside TCP route diagnostic", "Previous result expired",
-                "The latest outside TCP result is older than five minutes or no longer matches the current listener and invite endpoint.",
-                "Refresh the optional route test, then verify pinned pairing from a real Friend PC.",
+            return new("route-diagnostic", "Outside connection test", "Previous result expired",
+                "The latest outside TCP result is older than five minutes or no longer matches the current Friend connection and server code address.",
+                "Refresh the optional route test, then connect from a real Friend PC.",
                 "Settings > Connection help", OwnerDiagnosticTones.Attention, result.CheckedUtc);
         var tone = result.State switch
         {
@@ -238,9 +238,9 @@ public static class OwnerDiagnostics
             "Inconclusive" or "Unavailable" => OwnerDiagnosticTones.Attention,
             _ => OwnerDiagnosticTones.Neutral
         };
-        return new("route-diagnostic", "Outside TCP route diagnostic", result.State,
-            Bounded(result.Detail + " This is outside TCP evidence only; it does not prove pinned pairing or a successful game join.",
-                420, "Outside TCP route evidence is unavailable."),
+        return new("route-diagnostic", "Outside connection test", result.State,
+            Bounded(result.Detail + " This checks only the TCP route; it does not prove that a Friend connected or joined the game.",
+                420, "The outside TCP result is unavailable."),
             result.State == "Reachable"
                 ? "Verify Connect from a real Friend PC, then test the game join separately."
                 : "Review the shown route layers manually; TogetherServer will not change firewall, router, or DNS settings.",
@@ -250,17 +250,17 @@ public static class OwnerDiagnostics
     private static OwnerDiagnosticCheck RecoveryCheck(DataRecoveryView recovery)
     {
         if (recovery.LifecycleBlocked)
-            return new("data-recovery", "Local data recovery", "Lifecycle blocked",
-                $"{recovery.Notices.Count} quarantined local-state notice(s) require owner review. Automatic lifecycle work remains paused.",
-                "Review the retained quarantine evidence and resolve every recorded managed process before acknowledging recovery.",
+            return new("data-recovery", "Local data recovery", "Server controls blocked",
+                $"{recovery.Notices.Count} saved data warning(s) require review. Automatic server actions remain paused.",
+                "Review the saved recovery files and resolve every recorded server process before confirming recovery.",
                 "Attention Center", OwnerDiagnosticTones.Error);
         if (recovery.Notices.Count > 0)
             return new("data-recovery", "Local data recovery", "Review needed",
-                $"{recovery.Notices.Count} non-lifecycle local-state notice(s) remain for owner review.",
-                "Review and acknowledge the retained quarantine notice from the Attention Center.",
+                $"{recovery.Notices.Count} saved data warning(s) still need review.",
+                "Review and clear the saved warning from the Attention Center.",
                 "Attention Center", OwnerDiagnosticTones.Attention);
         return new("data-recovery", "Local data recovery", "No active notice",
-            "TogetherServer has no current local-state recovery notice.",
+            "TogetherServer has no saved data warning right now.",
             "Use the Attention Center if a future recovery notice appears.", "Attention Center");
     }
 

@@ -64,7 +64,7 @@ describe('RecentSessions', () => {
     expect(screen.getByText('Last 0 · peak 4')).toBeInTheDocument()
     expect(screen.getByText('Outcome unavailable')).toBeInTheDocument()
     expect(screen.getAllByText('Unavailable').length).toBeGreaterThan(1)
-    expect(screen.getByText(/do not prove who joined/)).toBeInTheDocument()
+    expect(screen.getByText(/do not show who joined/)).toBeInTheDocument()
     expect(container.querySelector('.good')).not.toBeInTheDocument()
     expect(container.querySelector('.tone-neutral')).toBeInTheDocument()
   })

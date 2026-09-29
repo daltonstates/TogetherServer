@@ -213,12 +213,12 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const sourceState: ServerLogSourceState | 'Loading' | 'Error' = unsupported ? 'Unsupported' :
     requestError ? 'Error' : result?.sourceState ?? 'Loading'
   const message = unsupported?.message ?? (requestError || result?.message ||
-    'Loading the recent tail from the exact managed run.')
+    'Loading recent lines from this server session.')
 
   return <section ref={rootRef} className="server-log-viewer" aria-label="Server logs">
     <div className="server-log-toolbar">
       <div className="server-log-heading"><span className={`server-log-state state-${sourceState.toLocaleLowerCase()}`}>{stateLabel(sourceState, paused)}</span>
-        <small>{records.length} of {safeHistoryLimit} client-held entries{result?.hasMore ? ' · more available' : ''}</small></div>
+        <small>{records.length} of {safeHistoryLimit} lines shown{result?.hasMore ? ' · more available' : ''}</small></div>
       <div className="server-log-actions"><Button className="secondary" disabled={!!unsupported} onClick={() => setPaused(value => !value)}>{paused ? <><Icon name="play" />Resume</> : <><Icon name="stop" />Pause</>}</Button>
         <Button className="secondary" disabled={loading || !!unsupported || !visible} onClick={manualRefresh}>{loading ? <><Icon name="loader" />Refreshing</> : <><Icon name="refresh" />Refresh</>}</Button></div>
     </div>
@@ -230,7 +230,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
         <option value="">All</option><option value="Info">Info</option><option value="Warning">Warning</option><option value="Error">Error</option>
       </Select></label>
       <label>Category<Select aria-label="Log category" value={filterDraft.category} onChange={event => setFilterDraft(current => ({ ...current, category: event.target.value as ServerLogFilters['category'] }))}>
-        <option value="">All</option><option value="Server">Server</option><option value="Lifecycle">Lifecycle</option><option value="Player">Player</option><option value="Connections">Connections</option>
+        <option value="">All</option><option value="Server">Server</option><option value="Lifecycle">Start and stop</option><option value="Player">Player</option><option value="Connections">Connections</option>
       </Select></label>
       <label className="server-log-contains">Contains<Input aria-label="Log contains" maxLength={80} value={filterDraft.contains} placeholder="Find text" onChange={event => setFilterDraft(current => ({ ...current, contains: event.target.value }))} /></label>
       <Button type="submit" className="secondary">Apply</Button>

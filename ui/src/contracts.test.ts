@@ -43,8 +43,8 @@ describe('runtime contracts', () => {
   it('accepts the exact not-paired Friend snapshot with unavailable Host capabilities', () => {
     const snapshot = parseSnapshot({
       mode: 'Friend',
-      state: 'Not paired',
-      detail: 'Paste the server invite code from the Host PC.',
+      state: 'Not connected',
+      detail: 'Paste the server code from the Host PC.',
       endpoint: '',
       lastConnectedUtc: null,
       remoteControlsEnabled: false,
@@ -90,8 +90,8 @@ describe('runtime contracts', () => {
     }
     const aggregate = {
       ...savedConnection,
-      state: 'Not paired',
-      detail: 'Paste the server invite code from the Host PC.',
+      state: 'Not connected',
+      detail: 'Paste the server code from the Host PC.',
       endpoint: '',
       connectionId: '00000000-0000-0000-0000-000000000000',
       connections: [savedConnection],
@@ -201,7 +201,7 @@ describe('runtime contracts', () => {
     const invite = parseInviteResult({
       ok: true,
       code: 'InviteReady',
-      message: 'Pairing is open.',
+      message: 'Server code ready.',
       password: 'TS3-test',
       expiresUtc: '2026-09-25T23:00:00Z',
       listenerActive: true,
@@ -215,6 +215,7 @@ describe('runtime contracts', () => {
     })
 
     expect(invite.listenerWarning).toBeNull()
+    expect(() => parseInviteResult({ ok: true, code: 'InviteReady', message: 'Server code ready.' })).toThrow(ContractError)
     expect(canceledBrowse.path).toBeNull()
   })
 

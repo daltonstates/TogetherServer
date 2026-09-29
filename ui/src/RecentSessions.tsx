@@ -125,17 +125,17 @@ export function RecentSessions({ profileId, visible, loader = defaultLoader }: {
 
   return <section hidden={!visible} className="recent-sessions" aria-labelledby="recent-sessions-title" aria-busy={loading}>
     <div className="recent-sessions-toolbar"><div><h4 id="recent-sessions-title">Recent sessions</h4>
-      <p>Immutable summaries from archived managed runs on this Host.</p></div>
+      <p>Summaries saved after server sessions end on this Host.</p></div>
       <Button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh'}</Button>
     </div>
     {loading && !result && <div className="recent-sessions-state" role="status">Loading recent sessions…</div>}
     {loadError && <div className="recent-sessions-state error" role="alert"><strong>Recent sessions unavailable</strong>
-      <p>TogetherServer could not read the bounded local history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
+      <p>TogetherServer could not read the saved session history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
     {!loadError && result?.sessions.length === 0 && <div className="recent-sessions-state"><strong>No archived sessions yet</strong>
-      <p>A summary appears after TogetherServer archives an exact managed run.</p></div>}
+      <p>A summary appears after TogetherServer saves a completed server session.</p></div>}
     {!loadError && result && result.sessions.length > 0 && <div className="recent-session-list">
       {result.sessions.map(session => <SessionCard key={session.operationId} session={session} />)}
     </div>}
-    <p className="recent-sessions-boundary">Player numbers are trusted server observations for that exact run. They do not prove who joined, a successful game join, or world/save integrity.</p>
+    <p className="recent-sessions-boundary">Player numbers came from the game server during that session. They do not show who joined or prove that a join or world save succeeded.</p>
   </section>
 }

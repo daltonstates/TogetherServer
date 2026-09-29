@@ -30,15 +30,15 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
     role={recovery.lifecycleBlocked ? 'alert' : 'status'} aria-labelledby="data-recovery-title">
     <div className="section-heading"><div><h2 id="data-recovery-title">Local data needs review</h2>
       <p>{recovery.lifecycleBlocked
-        ? 'TogetherServer quarantined unreadable lifecycle state and blocked Start and Restart so it cannot guess which server processes are safe to control.'
-        : 'TogetherServer quarantined unreadable local state. Review the retained files before clearing this notice.'}</p></div>
-      <span className="status error">{recovery.lifecycleBlocked ? 'Lifecycle blocked' : 'Review needed'}</span></div>
+        ? 'TogetherServer moved unreadable server-control data aside and blocked Start and Restart so it does not control the wrong process.'
+        : 'TogetherServer moved unreadable local data aside. Review the saved files before clearing this notice.'}</p></div>
+      <span className="status error">{recovery.lifecycleBlocked ? 'Server controls blocked' : 'Review needed'}</span></div>
     <ul className="recovery-file-list">{recovery.notices.map((item, index) => <li key={`${item.detectedUtc}-${index}`}>
       <strong>{safeFileName(item.stateFile)}</strong><span>{item.reason}</span>
-      <small>Quarantined as {safeFileName(item.quarantinedFile)} - {new Date(item.detectedUtc).toLocaleString()}</small>
+      <small>Saved as {safeFileName(item.quarantinedFile)} - {new Date(item.detectedUtc).toLocaleString()}</small>
     </li>)}</ul>
     {orphanedRuns.length > 0 && <div className="recovery-runs"><strong>Recorded servers without readable settings</strong>
-      <p>Resolve these exact recorded processes locally. Start and Restart are intentionally unavailable.</p>
+      <p>Review these saved server processes on this PC. Start and Restart are unavailable until they are resolved.</p>
       {orphanedRuns.map(run => <div className="recovery-run" key={run.profileId}>
         <div><strong>{run.profileId}</strong><span>{run.state} - {run.detail}</span></div>
         <div className="actions">
@@ -47,7 +47,7 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
             {pending === `recovery-stop-${run.profileId}` ? 'Stopping...' : 'Stop recorded server'}
           </Button>}
           {run.state === 'Failed' && <Button className="secondary" disabled={!!pending} onClick={() => {
-            if (window.confirm('Forget this recorded run only if TogetherServer can prove its exact managed process is no longer running?'))
+            if (window.confirm('Forget this saved session only if TogetherServer confirms that its server process is no longer running?'))
               onForgetRecordedRun(run.profileId)
           }}>Forget exited record</Button>}
           {run.state === 'Unknown' && <small>Process identity is uncertain. TogetherServer will not Stop or forget this record until it can prove what happened.</small>}
@@ -58,11 +58,11 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
         disabled={!!pending || managedRunBlocksAcknowledgement}
         onChange={event => onConfirmedChange(event.target.checked)} />{recovery.lifecycleBlocked
           ? 'I confirm no game server managed by TogetherServer is still running.'
-          : 'I reviewed the quarantined files and understand the affected saved Friend or pairing data was disabled.'}</label>
+          : 'I reviewed the saved files and understand that the affected Friend connection data was disabled.'}</label>
       {managedRunBlocksAcknowledgement && <small>Stop or resolve every recorded managed server before acknowledging recovery.</small>}
       <Button disabled={!!pending || !confirmed || managedRunBlocksAcknowledgement} onClick={onAcknowledge}>
         {pending === 'data-recovery' ? 'Checking...' : recovery.lifecycleBlocked
-          ? 'Acknowledge and re-enable lifecycle actions' : 'Acknowledge warning'}
+          ? 'Confirm and re-enable server controls' : 'Confirm review'}
       </Button>
     </div> : <div className="next-action"><span>Only My server can verify and acknowledge local recovery.</span>
       <Button disabled={!!pending} onClick={onSwitchToHost}>Switch to My server</Button></div>}

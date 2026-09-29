@@ -41,7 +41,7 @@ public sealed class FriendService : IDisposable
             var selected = connections.FirstOrDefault(item => item.ConnectionId == selectedId)
                 ?? connections.FirstOrDefault();
             return selected is null
-                ? new FriendView("Friend", "Not paired", "Paste the server invite code from the Host PC.",
+                ? new FriendView("Friend", "Not connected", "Paste the server code from the Host PC.",
                     "", null, false, false, false, [], [], Connections: connections)
                 : selected with { Connections = connections };
         }

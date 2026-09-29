@@ -120,7 +120,7 @@ public sealed class AppInstance
         StartupAvailable, UpdatesAvailable, localPort, DefaultCompanionPort, DefaultValheimPort,
         DefaultMinecraftJavaPort, DefaultMinecraftBedrockPort, DataRoot,
         IsStaging
-            ? "Staging uses a separate data folder. Production profiles, credentials, runs, settings, and world saves are not loaded or copied."
+            ? "Staging uses a separate data folder. Production servers, saved access, sessions, settings, and world saves are not loaded or copied."
             : "Production uses the normal TogetherServer data folder.");
 
     public static bool ContainsPath(string root, string candidate)

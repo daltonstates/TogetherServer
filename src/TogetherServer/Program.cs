@@ -153,7 +153,7 @@ static IResult? RecentSessionsGetRejection(HttpContext context, out int limit)
         return Results.BadRequest(new
         {
             code = "InvalidRecentSessionsRequest",
-            message = "Recent sessions accept only a saved profile ID and one bounded limit."
+            message = $"Choose a saved server and use one limit from 1 to {HostManager.MaximumRecentSessionLimit}."
         });
     if (!context.Request.Query.TryGetValue("limit", out var values)) return null;
     if (values.Count != 1 || !int.TryParse(values[0], out limit) ||
@@ -226,7 +226,7 @@ app.MapGet("/api/local/support-report", async (HttpContext context) =>
         return Results.Json(new
         {
             code = "SupportReportUnavailable",
-            message = "TogetherServer could not create the bounded redacted support report. No private error details were included."
+            message = "TogetherServer could not create the support report. Private error details were left out."
         }, statusCode: StatusCodes.Status500InternalServerError);
     }
 });
@@ -460,7 +460,7 @@ app.MapPost("/api/local/data-recovery/acknowledge", async (DataRecoveryAcknowled
         {
             ok = true,
             code = "RecoveryAcknowledged",
-            message = "Lifecycle actions are available again. Quarantined files were retained for review.",
+            message = "Server controls are available again. The saved warning files were kept for review.",
             snapshot = await manager.SnapshotAsync()
         });
     }
@@ -873,9 +873,9 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
         password = current?.Open == true ? PairingPassword.Encode(current.Invitation) : null,
         canStart = current?.CanStart ?? true,
         canViewLogs = current?.CanViewLogs ?? false,
-        expiresUtc = current?.Invitation.ExpiresUtc,
-        durationMinutes = current?.DurationMinutes ?? 30,
-        deviceLimit = current?.DeviceLimit ?? 1,
+        expiresUtc = (DateTimeOffset?)null,
+        durationMinutes = 30,
+        deviceLimit = 1,
         activatedDevices = current?.ActivatedDevices ?? 0,
         requireApproval = current?.RequireApproval ?? false
     });
@@ -883,7 +883,6 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite/current", async (Guid pr
 app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId, ServerInviteRequest request) =>
 {
     var password = "";
-    DateTimeOffset? pairingExpiresUtc = null;
     await modeGate.WaitAsync();
     try
     {
@@ -921,7 +920,6 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
                 settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh,
                 request.DurationMinutes, request.DeviceLimit, request.RequireApproval, request.CanViewLogs);
             password = PairingPassword.Encode(invite);
-            pairingExpiresUtc = invite.ExpiresUtc;
             if (request.EnableConnections)
             {
                 settings.CompanionListeningEnabled = true;
@@ -943,10 +941,10 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
     {
         ok = true,
         code = request.Refresh ? "InviteRefreshed" : "InviteReady",
-        message = request.Refresh ? "Earlier credentials from this server code were revoked and a new pairing window opened."
-            : $"Pairing is open until {pairingExpiresUtc:u}, or until its device limit is reached.",
+        message = request.Refresh ? "The old server code no longer works. PCs that used it must connect again with this code."
+            : "Server code ready. It stays active until you replace it.",
         password,
-        expiresUtc = pairingExpiresUtc,
+        expiresUtc = (DateTimeOffset?)null,
         listenerActive = companionServer.Active,
         listenerWarning = companionServer.Warning
     });

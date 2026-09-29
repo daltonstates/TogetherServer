@@ -61,37 +61,37 @@ function FriendConnectionHelp({ code }: { code: string }) {
   const steps = (() => {
     switch (code) {
       case 'InvalidInvite': case 'PairingRejected': case 'Revoked': case 'CredentialExpired': case 'CredentialRejected':
-        return { friend: 'Paste the latest invite from the Host. A saved code may have been refreshed or your PC may have been revoked.',
-          host: 'Open Invite friends and copy the current code. Check this Friend PC’s access if it was paired before.' }
+        return { friend: 'Paste the current server code from the Host. An old code may have been replaced, or the Host may have removed this PC\'s access.',
+          host: 'Open Invite friends and copy the current code. Check this Friend PC’s access if it connected before.' }
       case 'HostAddressMismatch': case 'InviteAddressInvalid':
-        return { friend: 'Check the address you entered for an older invite. New invites already include the Host address.',
-          host: 'Copy the current invite and check its public HTTPS address against the router’s WAN address.' }
+        return { friend: 'Check the address you entered for an older code. New server codes already include the Host address.',
+          host: 'Copy the current server code and check its public HTTPS address against the router’s WAN address.' }
       case 'HostIdentityMismatch':
-        return { friend: 'Stop using this invite and request a fresh copy through your usual trusted channel. Do not bypass the HTTPS identity check.',
-          host: 'Copy the current invite from the running Host app and verify its published address.' }
+        return { friend: 'Stop using this code and request a fresh copy through your usual trusted channel. Do not bypass the secure Host check.',
+          host: 'Copy the current server code from the running Host app and verify its published address.' }
       case 'FriendNetworkUnavailable':
-        return { friend: 'Restore this PC’s internet connection, then check that the invite has the Host’s current address.',
+        return { friend: 'Restore this PC’s internet connection, then check that the server code has the Host’s current address.',
           host: 'If the Friend PC is online and still cannot connect, verify the published address.' }
       case 'HostPortClosed':
-        return { friend: 'Check that the invite is current and that this PC can use the internet.',
+        return { friend: 'Check that the server code is current and that this PC can use the internet.',
           host: 'Keep TogetherServer running. Check the HTTPS listener, inbound Windows Firewall, and router TCP forwarding to the Host PC.' }
       case 'HostPortTimedOut': case 'HostTimedOut': case 'HostUnreachable':
-        return { friend: 'Check this PC’s internet connection and the address in the latest invite.',
-          host: 'Check the HTTPS listener, inbound Windows Firewall, and router TCP forwarding. Compare the router WAN address with the invite; ask your ISP about shared-address NAT or inbound filtering if they differ.' }
+        return { friend: 'Check this PC’s internet connection and the address in the current server code.',
+          host: 'Check the HTTPS listener, inbound Windows Firewall, and router TCP forwarding. Compare the router WAN address with the server code; ask your ISP about shared-address NAT or inbound filtering if they differ.' }
       case 'HostBusy':
-        return { friend: 'Wait a moment before trying the same current invite again.',
+        return { friend: 'Wait a moment before trying the same server code again.',
           host: 'Keep the Host app running and check whether it is limiting or failing requests.' }
       case 'HostUnavailable': case 'HostInvalidResponse':
         return { friend: 'Wait until the Host confirms their app is running, then check the connection again.',
           host: 'Check the Host app and HTTPS listener. If it is responding with an error, review its local connection status.' }
       case 'HostAccessDenied':
-        return { friend: 'Ask the Host whether this PC still has access. Use a fresh invite if they refreshed it.',
-          host: 'Check the Friend PC’s pairing and access in the Host app.' }
+        return { friend: 'Ask the Host whether this PC still has access. Use the current server code if the Host replaced it.',
+          host: 'Check this Friend PC under Friend access in the Host app.' }
       case 'LocalAppUnavailable':
         return { friend: 'Reopen TogetherServer on this PC and try again.',
           host: 'No Host network change is needed until the Friend app can reach its own local service.' }
       default:
-        return { friend: 'Check this PC’s internet connection and the address in the latest invite.',
+        return { friend: 'Check this PC’s internet connection and the address in the current server code.',
           host: 'Keep TogetherServer running. Check its HTTPS listener, inbound Windows Firewall, router TCP forwarding, and whether the ISP uses shared-address NAT.' }
     }
   })()
@@ -233,10 +233,7 @@ function App() {
   const [deviceNames, setDeviceNames] = useState<Record<string, string>>({})
   const [maintenanceMessages, setMaintenanceMessages] = useState<Record<string, string>>({})
   const [invitation, setInvitation] = useState('')
-  const [pairingDurationMinutes, setPairingDurationMinutes] = useState('30')
-  const [pairingDeviceLimit, setPairingDeviceLimit] = useState('1')
   const [pairingRequireApproval, setPairingRequireApproval] = useState(false)
-  const [pairingExpiresUtc, setPairingExpiresUtc] = useState<string | null>(null)
   const [friendInvite, setFriendInvite] = useState('')
   const [friendHostAddress, setFriendHostAddress] = useState('')
   const [recoveryEndpoint, setRecoveryEndpoint] = useState('')
@@ -598,51 +595,50 @@ function App() {
     snapshotEpochRef.current += 1
     setCompanion(result)
   }
-  const issueInvite = async (profileId: string, refresh = false, preserveActivePolicy = false): Promise<string | null> => {
-    if (refresh && !window.confirm('Refresh this server code? Every Friend PC that connected with this code will lose its credential and need to connect again. Any extra servers assigned to those credentials will also be removed.')) return null
+  const issueInvite = async (profileId: string, refresh = false, useSavedApproval = false): Promise<string | null> => {
+    if (refresh && !window.confirm('Replace this server code? PCs that used the old code will lose access and must connect again with the new code. Any other servers you gave those PCs will also be removed.')) return null
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 20_000)
     setPending('invite')
     setNotice(null)
     try {
-      let durationMinutes = Number(pairingDurationMinutes)
-      let deviceLimit = Number(pairingDeviceLimit)
       let requireApproval = pairingRequireApproval
-      if (!Number.isSafeInteger(durationMinutes) || durationMinutes < 5 || durationMinutes > 1440 ||
-          !Number.isSafeInteger(deviceLimit) || deviceLimit < 1 || deviceLimit > 25) {
-        setNotice({ good: false, text: 'Use 5 to 1440 minutes and a limit of 1 to 25 PCs.' })
-        return null
-      }
-      const current = await changeJson(`/api/local/servers/${profileId}/invite/current`, 'POST', parseInviteState)
+      const current = await changeJson(`/api/local/servers/${profileId}/invite/current`, 'POST', parseInviteState,
+        undefined, controller.signal)
       const canStart = current.canStart
-      if (preserveActivePolicy && current.exists && current.open) {
-        durationMinutes = current.durationMinutes
-        deviceLimit = current.deviceLimit
+      if (useSavedApproval && current.exists) {
         requireApproval = current.requireApproval
-        setPairingDurationMinutes(String(durationMinutes))
-        setPairingDeviceLimit(String(deviceLimit))
         setPairingRequireApproval(requireApproval)
       }
       const result = await changeJson(`/api/local/servers/${profileId}/invite`, 'POST', parseInviteResult,
-        { refresh, canStart, enableConnections: true, durationMinutes, deviceLimit, requireApproval })
+        { refresh, canStart, enableConnections: true, durationMinutes: 30, deviceLimit: 1, requireApproval }, controller.signal)
       const listenerWarning = result.ok && result.listenerActive !== true
         ? result.listenerWarning || `The HTTPS listener on TCP ${draft?.companionPort ?? 'the configured port'} did not start. Check Connection help before sharing this code.`
         : null
-      setInviteListenerWarning(listenerWarning || (!result.ok ? result.message : null))
-      setNotice({ good: result.ok && !listenerWarning, text: listenerWarning || result.message })
-      if (result.ok && result.password) {
-        setInvitation(result.password)
-        setPairingExpiresUtc(result.expiresUtc ?? new Date(Date.now() + durationMinutes * 60_000).toISOString())
-        await refreshCompanion()
-        const host = await readSnapshot()
-        if (host.mode === 'Host') {
-          applySnapshot(host)
-          setDraftIfClean(host.settings)
-        }
-        await checkPorts()
-        return listenerWarning ? null : result.password
+      if (!result.ok || !result.password) {
+        const message = result.ok ? 'TogetherServer did not return a server code. Try again.' : result.message
+        setInviteListenerWarning(message)
+        setNotice({ good: false, text: message })
+        return null
       }
+      setInviteListenerWarning(listenerWarning)
+      setNotice({ good: !listenerWarning, text: listenerWarning || result.message })
+      setInvitation(result.password)
+      await refreshCompanion()
+      const host = await readSnapshot()
+      if (host.mode === 'Host') {
+        applySnapshot(host)
+        setDraftIfClean(host.settings)
+      }
+      await checkPorts()
+      return listenerWarning ? null : result.password
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === 'AbortError'
+        ? 'Getting the server code took too long. Try again.' : errorMessage(error)
+      setInviteListenerWarning(message)
+      setNotice({ good: false, text: message })
       return null
-    } catch (error) { setInviteListenerWarning(errorMessage(error)); setNotice({ good: false, text: errorMessage(error) }); return null }
-    finally { setPending('') }
+    } finally { window.clearTimeout(timeout); setPending('') }
   }
   const revokeDevice = async (id: string) => {
     if (!window.confirm('Revoke this Friend device now? Its next request will be denied.')) return
@@ -659,17 +655,6 @@ function App() {
     try {
       const result = await change(`/api/local/devices/${id}/approve`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      await refreshCompanion()
-    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
-    finally { setPending('') }
-  }
-  const pairingPolicyAction = async (profileId: string, action: 'close' | 'emergency-revoke') => {
-    if (action === 'emergency-revoke' && !window.confirm('Emergency-revoke every PC credential issued through this server code? This does not affect PCs paired through other server codes.')) return
-    setPending('invite')
-    try {
-      const result = await change(`/api/local/servers/${profileId}/pairing/${action}`, 'POST')
-      setNotice({ good: result.ok, text: result.message })
-      if (result.ok) { setInvitation(''); setPairingExpiresUtc(null); setInviteProfileId('') }
       await refreshCompanion()
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
@@ -1022,9 +1007,9 @@ function App() {
       if (ready && request === inviteLoad.current) {
         try {
           await navigator.clipboard.writeText(ready)
-          setNotice({ good: true, text: 'Server code copied. Share it privately with your friends.' })
+          setNotice({ good: true, text: 'Server code copied. Send it privately to your friends.' })
         }
-        catch { setNotice({ good: false, text: 'Invite ready, but it could not be copied. Choose Copy again.' }) }
+        catch { setNotice({ good: false, text: 'The server code is ready, but it could not be copied. Choose Copy code.' }) }
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
@@ -1091,14 +1076,13 @@ function App() {
     ? currentOutsideResult(portDiagnostics?.control, internetRouteCheck) : null
   const previousRouteVerdict = !currentRouteResult &&
     (internetRouteCheck?.state === 'Reachable' || internetRouteCheck?.state === 'Not reachable')
-  const activeInviteIdle = !!(invitation && companion?.listenerState === 'Idle')
-  const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false && !activeInviteIdle
+  const activeInviteWarning = inviteListenerWarning || (invitation && companion?.listenerActive === false
     ? companion.listenerWarning || 'Friend app connections are off. Choose Invite friends again to start the HTTPS listener.'
     : null)
   const friendAppStatus = portDiagnostics?.control.remoteState === 'Friend connected' ? 'Friend connected'
-    : currentRouteResult?.state === 'Reachable' ? 'reachable outside this network; Friend pairing untested'
+    : currentRouteResult?.state === 'Reachable' ? 'reachable outside this network; Friend connection not tested'
       : companion?.listenerActive ? 'listening on this PC, outside route unconfirmed'
-        : companion?.listenerState === 'Idle' ? 'idle until you create an invite'
+        : companion?.listenerState === 'Idle' ? 'waiting for a server code'
           : companion?.listenerWarning ? 'needs attention' : 'off'
   const developmentControlPort = snapshot?.mode === 'Host'
     ? snapshot.settings.companionPort : appInstance?.companionPort
@@ -1117,12 +1101,12 @@ function App() {
       run: () => { navigateWorkspace('host'); addProfile() } },
     { id: 'refresh-connections', label: 'Refresh connection details', detail: 'Run the existing read-only Host checks', icon: 'refresh', disabled: snapshot?.mode !== 'Host' || !!pending,
       run: () => { navigateWorkspace('host'); void checkPorts(true) } },
-    { id: 'open-friend-access', label: 'Open Friend access', detail: 'Manage paired PCs and permissions', icon: 'invite', disabled: snapshot?.mode !== 'Host' || savedProfiles.length === 0,
+    { id: 'open-friend-access', label: 'Open Friend access', detail: 'Manage connected PCs and what they can do', icon: 'invite', disabled: snapshot?.mode !== 'Host' || savedProfiles.length === 0,
       run: () => openHostSettings('access') },
     { id: 'open-diagnostics', label: 'Open diagnostics', detail: 'Read-only preflight checks and redacted support export', icon: 'warning',
       keywords: 'support preflight report', disabled: snapshot?.mode !== 'Host', run: () => openHostSettings('diagnostics') },
     { id: 'guarded-lifecycle', label: `${selectedHostRun?.state === 'Offline' ? 'Start' : 'Stop'} selected server`,
-      detail: 'Open Overview and use the guarded lifecycle control there', icon: selectedHostRun?.state === 'Offline' ? 'play' : 'stop',
+      detail: 'Open Overview and use the server button there', icon: selectedHostRun?.state === 'Offline' ? 'play' : 'stop',
       disabled: !selectedHostProfile, run: () => { navigateWorkspace('host'); setHostServerTab('overview'); setHostMobileDetail(true) } }
   ]
   const pageTitle = workspacePage === 'host' ? 'Host' : workspacePage === 'join' ? 'Join' : workspacePage === 'attention' ? 'Attention Center' : 'Settings'
@@ -1165,7 +1149,7 @@ function App() {
 
     {update?.state === 'Available' && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? 'Update and restart when you are ready.'}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
 
-    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Development profiles, credentials, settings, and worlds persist in this separate instance. Production data is not loaded or copied.</span></aside>}
+    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Development servers, saved access, settings, and worlds stay in this separate instance. Production data is not loaded or copied.</span></aside>}
 
     {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
       <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
@@ -1231,15 +1215,15 @@ function App() {
               <span>{snapshot.lastConnectedUtc ? `Last reached ${new Date(snapshot.lastConnectedUtc).toLocaleTimeString()}` : 'Waiting for a reply from the Host'}</span></div>
             {snapshot.expiryWarning && <div className="notice bad" role="status">{snapshot.expiryWarning}</div>}
             <FriendAccessExpiredNotice connectionCode={snapshot.connectionCode} />
-            {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>The credential is saved. Ask the Host owner to approve this PC in Friend access; no new code is needed.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
+            {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>This PC is saved. Ask the Host to approve it under Friend access; you do not need a new code.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
             <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
               <Button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</Button></div>
             <details className="advanced-block"><summary>Connection identity and recovery</summary>
               <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}>Rename</Button></div></label>
               <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
-              <p className="helper-text">Credential expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Certificate expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
-              <label>New Host endpoint<Input value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The existing Host certificate pin and this PC's credential must both work at the new address. A different certificate is never trusted silently.</small></label>
-              <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Verifying...' : 'Verify and update endpoint'}</Button>
+              <p className="helper-text">Saved access expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Secure Host identity expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
+              <label>New Host address<Input value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
+              <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Checking...' : 'Check and update address'}</Button>
               <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
             </details>
           </> : <>
@@ -1278,7 +1262,7 @@ function App() {
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
                 {profile.autoShutdownAtUtc && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
-                {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game endpoint...' : 'Check game endpoint from this PC'}</Button>}
+                {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
               {logAvailability.visible && <div className="friend-log-surface">
                 <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
@@ -1357,7 +1341,7 @@ function App() {
                   visible={workspacePage === 'host' && hostServerTab === 'sessions'} />
                 <div hidden={hostServerTab !== 'overview'}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></div>
-                {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote lifecycle actions are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
+                {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote Start, Stop, and Restart are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
                 <details hidden={hostServerTab !== 'setup'} className="advanced-block"><summary>Friend coordination and maintenance</summary>
                   <label>Message for assigned Friends<Input maxLength={200} value={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''} onChange={event => setMaintenanceMessages(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="Updating mods until 8 PM" /><small>Up to 200 characters. Status remains visible while remote Start, Stop, Restart, replacement, and timer extension are denied.</small></label>
                   <div className="actions"><Button className="secondary" disabled={!!pending || dirty || profile.maintenance?.enabled} onClick={() => void saveMaintenance(profile, true)}>Enable maintenance</Button>{profile.maintenance?.enabled && <Button className="text-button" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button>}</div>
@@ -1372,23 +1356,19 @@ function App() {
                   <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
                 </div>
                 {hostServerTab === 'overview' && inviteProfileId === profile.id && <div className="inline-invite">
-                  {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : activeInviteIdle ? 'invite' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Friend connection needs attention' : activeInviteIdle ? 'Pairing window ended' : 'Server code copied'}</strong><p>{activeInviteWarning ? 'Fix the issue below before sharing this code.' : activeInviteIdle ? 'Nothing is wrong. Create a new invite only when another PC needs to pair.' : 'Send the copied code privately. Your Friend still needs to test Connect.'}</p></div></div>
-                    {pairingExpiresUtc && <p className="helper-text">{activeInviteIdle ? 'This pairing window is closed.' : `This window closes ${new Date(pairingExpiresUtc).toLocaleString()}, or sooner when its device limit is reached.`}</p>}
+                  {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Server code ready, connection needs attention' : 'Server code ready'}</strong><p>{activeInviteWarning ? 'Fix the connection below before sending the code.' : 'Send it privately. The same code keeps working until you replace it.'}</p></div></div>
                     {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
-                    {!activeInviteWarning && !activeInviteIdle && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
+                    {!activeInviteWarning && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
                     <div className="actions">{activeInviteWarning
                       ? <Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</Button>
-                      : activeInviteIdle ? <Button disabled={!!pending} onClick={() => void issueInvite(profile.id)}><Icon name="invite" />Create new invite</Button>
-                        : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy again</Button>}
-                      {!activeInviteIdle && <Button className="secondary" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'close')}>Close pairing</Button>}
-                      {!activeInviteIdle && <Button className="danger-outline" disabled={!!pending} onClick={() => void pairingPolicyAction(profile.id, 'emergency-revoke')}>Emergency-revoke code credentials</Button>}
+                      : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy code</Button>}
                       <Button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</Button></div>
-                    <details className="advanced-block"><summary>Pairing window options</summary><div className="settings-grid"><label>Window minutes<Input type="number" min="5" max="1440" value={pairingDurationMinutes} onChange={event => setPairingDurationMinutes(event.target.value)} /></label><label>New PC limit<Input type="number" min="1" max="25" value={pairingDeviceLimit} onChange={event => setPairingDeviceLimit(event.target.value)} /></label></div><label className="check-row"><Input type="checkbox" checked={pairingRequireApproval} onChange={event => setPairingRequireApproval(event.target.checked)} />Require local Host approval for each new PC</label><Button className="secondary" disabled={!!pending} onClick={() => void issueInvite(profile.id)}>Apply options and copy code</Button><small>The same active policy keeps its current window. Changing the policy opens a replacement window without revoking already paired PCs.</small></details>
-                    <p>Close pairing only blocks future PCs. Revoke a single PC under Friend access. Emergency revoke affects every PC issued through this server code.</p></>
+                    <details className="advanced-block"><summary>New PCs and replacing the code</summary><label className="check-row"><Input type="checkbox" checked={pairingRequireApproval} onChange={event => setPairingRequireApproval(event.target.checked)} />Ask me to approve each new PC before it can connect</label><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void issueInvite(profile.id)}>Save approval setting</Button><Button className="danger-outline" disabled={!!pending} onClick={() => void issueInvite(profile.id, true)}>Replace code and remove old access</Button></div><small>Replacing the code disconnects PCs that joined with the old code. To remove only one PC, use Friend access.</small></details></>
                     : inviteListenerWarning ? <><p className="connection-warning" role="alert">{inviteListenerWarning}</p>
                       <div className="actions"><Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</Button>
                         <Button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</Button></div></>
-                      : <p className="helper-text">Preparing this server's invite…</p>}
+                      : pending === 'invite' ? <p className="helper-text" role="status">Getting server code…</p>
+                        : <><p className="connection-warning" role="alert">The server code was not loaded.</p><div className="actions"><Button onClick={() => void inviteFriend(profile.id)}>Try again</Button><Button className="text-button" onClick={() => setInviteProfileId('')}>Done</Button></div></>}
                 </div>}
                 {status?.state === 'Ready' && !detectedGameIp && <div className="next-action"><span>Your public game address is not available yet.</span><Button className="text-button" onClick={() => openHostSettings('network')}>Check connection</Button></div>}
                 {profile.kind === 'Custom' && <div className="custom-certification">
@@ -1400,7 +1380,7 @@ function App() {
                     {certification?.inProgress && <Button className="secondary" disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'status')}>{pending === `certification-status-${profile.id}` ? 'Checking…' : 'Check certification step'}</Button>}
                     {certification?.inProgress && ['ConfirmFirstChange', 'ConfirmSecondChange'].includes(certification.stage) && <Button disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'confirm')}>{certification.stage === 'ConfirmFirstChange' ? 'Confirm change was made' : 'Confirm change survived'}</Button>}
                     {(certification?.inProgress || certification?.stage === 'Failed') && <Button className="text-button" disabled={!!pending} onClick={() => void customCertificationAction(profile.id, 'cancel')}>Cancel certification</Button>}
-                    {certification?.certified && <Button className="danger-outline" disabled={!!pending} onClick={() => { if (window.confirm('Revoke remote lifecycle authority for this Custom server? Local owner controls will remain available.')) void customCertificationAction(profile.id, 'revoke') }}>Revoke certification</Button>}
+                    {certification?.certified && <Button className="danger-outline" disabled={!!pending} onClick={() => { if (window.confirm('Turn off remote Stop, Restart, replacement, and automatic shutdown for this Custom server? Local controls will remain available.')) void customCertificationAction(profile.id, 'revoke') }}>Revoke certification</Button>}
                   </div>
                   {!certification?.certified && status?.state !== 'Offline' && !certification?.inProgress && certification?.stage !== 'Failed' && <small>Stop the server locally before beginning certification.</small>}
                 </div>}
@@ -1409,7 +1389,7 @@ function App() {
                   <p className="helper-text">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>
                   <div className="actions"><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}>Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</Button>
                     {status?.state === 'Failed' && <Button className="text-button" disabled={!!pending || dirty} onClick={() => {
-                      if (window.confirm('Archive this run only if TogetherServer can prove the exact recorded process is absent?'))
+                      if (window.confirm('Archive this session only if TogetherServer confirms that its saved server process is no longer running?'))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
@@ -1424,7 +1404,7 @@ function App() {
             })}
               </div>
           {dirty && <p className="warning-text">Save your setup changes before starting or stopping a server.</p>}
-          {companion?.devices.some(device => device.paired && !device.revoked) && <div className="access-strip"><span>Friend controls are <strong>{draft.remoteControlsEnabled ? 'on' : 'paused'}</strong> · {companion.devices.filter(device => device.paired && !device.revoked).length} paired PC{companion.devices.filter(device => device.paired && !device.revoked).length === 1 ? '' : 's'}</span>
+          {companion?.devices.some(device => device.paired && !device.revoked) && <div className="access-strip"><span>Friend controls are <strong>{draft.remoteControlsEnabled ? 'on' : 'paused'}</strong> · {companion.devices.filter(device => device.paired && !device.revoked).length} connected PC{companion.devices.filter(device => device.paired && !device.revoked).length === 1 ? '' : 's'}</span>
             <Button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}>Manage friend access</Button></div>}
             </section>
           </div>
@@ -1489,11 +1469,11 @@ function App() {
               </section>}
               {hostSettingsSection === 'access' && <section className="settings-section"><h3>Friend access</h3>
                 <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
-                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>The listener runs only while an invite is open or a paired PC can connect.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
+                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Once a server code exists, Friend connections stay available while the Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
                   <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
-                {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Paired Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can assign that PC to any combination of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
-                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Paired with an older code' : `Paired with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
-                    <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Credential expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Revoke</Button></div></div>
+                {companion?.devices.filter(device => !device.revoked).length ? <div className="device-list"><h3>Connected Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can give that PC access to any of your saved servers.</p>{companion.devices.filter(device => !device.revoked).map(device => <div className="device access-device" key={device.id}>
+                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Connected with an older code' : `Connected with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
+                    <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Saved access expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Remove access</Button></div></div>
                   <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}
                     onSave={request => saveDeviceAccessExpiry(device.id, request)} onRefresh={refreshCompanion} />
                   <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
@@ -1501,14 +1481,14 @@ function App() {
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canExtendTimer', permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked)} /><span><strong>Extend empty-server timer</strong><small>Off by default. Friends get only the fixed increment and maximum configured by the Host.</small></span></label>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canViewLogs').mixed} checked={permissionMix(device, 'canViewLogs').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canViewLogs', permissionMix(device, 'canViewLogs').mixed ? true : event.target.checked)} /><span><strong>View logs</strong><small>{permissionMix(device, 'canViewLogs').mixed ? device.canViewLogs ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canViewLogs').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}. Read-only and independent of remote controls.</small></span></label></div>
-                </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs are paired yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
+                </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs have connected yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
               <h3>Connection checks</h3>
               <div className="settings-grid companion-fields">
                 <label>Friend route<Select value={draft.connectionRoute?.mode ?? 'DirectInternet'} onChange={event => changeRoute(event.target.value as Settings['connectionRoute']['mode'], event.target.value === 'DirectInternet' ? '' : draft.connectionRoute?.address ?? '')}>
                   <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option>
-                </Select><small>Mesh and advanced routes use networking you install and manage. TogetherServer still requires TLS pins, credentials, assignments, and permissions.</small></label>
+                </Select><small>Mesh and advanced routes use networking you install and manage. TogetherServer still verifies the Host, each Friend PC, and which servers it can use.</small></label>
                 {(draft.connectionRoute?.mode ?? 'DirectInternet') !== 'DirectInternet' && <label>Selected route IPv4<Input value={draft.connectionRoute?.address ?? ''} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /><small>TogetherServer only reads adapters; it does not install clients or change network policy.</small></label>}
                 {draft.connectionRoute?.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>{routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select><small>{routeDiscovery?.privateMeshCandidates.length ? 'Selecting an address does not configure that network.' : 'No known Tailscale or ZeroTier adapter is currently up; enter an address manually if appropriate.'}</small></label>}
               </div>
@@ -1517,10 +1497,10 @@ function App() {
               {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
               <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Refresh public address</>}</Button></div>
               <div className={checkingInternetRoute ? 'internet-route-test refreshing' : 'internet-route-test'} aria-busy={checkingInternetRoute}><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? <><Icon name="loader" />Testing TCP port…</> : 'Test Friend app port from internet'}</Button>
-                <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no invite or credential is sent.</small>
+                <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no server code or saved access is sent.</small>
                 {internetRouteCheck && <p className={`internet-route-result ${previousRouteVerdict ? 'neutral' : internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
                   <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `Reachable outside network · TCP ${internetRouteCheck.port}` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
-                  <span>{internetRouteCheck.detail}</span><small>Checked {new Date(internetRouteCheck.checkedUtc).toLocaleString()}. {previousRouteVerdict && 'This result is no longer current for the saved listener, invite address, or time; test again after checking them. '}This tests TCP access only; your Friend still needs to pair, and the game join needs its own test.</small>
+                  <span>{internetRouteCheck.detail}</span><small>Checked {new Date(internetRouteCheck.checkedUtc).toLocaleString()}. {previousRouteVerdict && 'This result is no longer current for the saved connection, server code address, or time; test again after checking them. '}This tests TCP access only; your Friend still needs to connect with the code, and the game join needs its own test.</small>
                 </p>}
               </div>
               {portDiagnostics?.control.lanForwardDetail && <div className="lan-target-hint"><strong>Router forwarding target on this PC</strong>
@@ -1571,16 +1551,16 @@ function App() {
                   if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
                   edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
                 }} /></label>
-                <label>Custom HTTPS endpoint<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder={`https://127.0.0.1:${appInstance?.companionPort ?? 5131}`} /></label>
+                <label>Custom secure address<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder={`https://127.0.0.1:${appInstance?.companionPort ?? 5131}`} /></label>
                 <label>Bind IP<Input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
               </div>
               {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
-              {companion?.certificates && <div className="safety-status"><strong>Host certificate</strong><p>Active until {new Date(companion.certificates.activeExpiresUtc).toLocaleString()}.</p>
-                {companion.certificates.nextFingerprint ? <p>Next certificate is staged and is being announced to authenticated Friends.</p> : <p>No next certificate is staged yet. TogetherServer stages one automatically within 30 days of expiry.</p>}
-                {companion.certificates.previousAcceptedUntilUtc && <p>Previous pin grace ends {new Date(companion.certificates.previousAcceptedUntilUtc).toLocaleString()}.</p>}
-                <div className="actions"><Button className="secondary" disabled={!!pending || !!companion.certificates.nextFingerprint} onClick={() => void certificateAction('stage')}>Stage next certificate</Button>
-                  <Button className="secondary" disabled={!!pending || !companion.certificates.nextFingerprint} onClick={() => void certificateAction('activate')}>Activate staged certificate</Button>
-                  {companion.certificates.previousFingerprint && <Button className="text-button danger" disabled={!!pending} onClick={() => void certificateAction('retire-previous')}>Retire previous pin</Button>}</div>
+              {companion?.certificates && <div className="safety-status"><strong>Secure Host identity</strong><p>Current identity is valid until {new Date(companion.certificates.activeExpiresUtc).toLocaleString()}.</p>
+                {companion.certificates.nextFingerprint ? <p>The next identity is ready and connected Friends are receiving it.</p> : <p>TogetherServer prepares the next identity automatically within 30 days of expiry.</p>}
+                {companion.certificates.previousAcceptedUntilUtc && <p>The old identity will be accepted until {new Date(companion.certificates.previousAcceptedUntilUtc).toLocaleString()}.</p>}
+                <div className="actions"><Button className="secondary" disabled={!!pending || !!companion.certificates.nextFingerprint} onClick={() => void certificateAction('stage')}>Prepare next identity</Button>
+                  <Button className="secondary" disabled={!!pending || !companion.certificates.nextFingerprint} onClick={() => void certificateAction('activate')}>Use prepared identity</Button>
+                  {companion.certificates.previousFingerprint && <Button className="text-button danger" disabled={!!pending} onClick={() => void certificateAction('retire-previous')}>Stop accepting old identity</Button>}</div>
               </div>}
               <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</Button></div>
               {companion?.devices.some(device => device.revoked) ? <details className="advanced-block"><summary>Revoked Friend PCs</summary><div className="profile-list device-list">{companion.devices.filter(device => device.revoked).map(device => <div className="device" key={device.id}>

@@ -72,26 +72,26 @@ function friendGuidance(control: ControlCheck | undefined, result: InternetRoute
   }
   if (control.state === 'Off') return {
     summary: 'Friend app connections are off on this Host.',
-    next: 'Choose Invite friends, or turn on Friend access in Settings.'
+    next: 'Choose Invite friends to get the server code, or turn on Friend access in Settings.'
   }
   if (control.state === 'Idle') return {
-    summary: 'Friend access is idle because no invite is open and no paired PC needs the listener.',
-    next: 'Choose Invite friends when another PC needs to pair. Nothing needs fixing right now.'
+    summary: 'Friend access is waiting because this server does not have an active code or connected PC yet.',
+    next: 'Choose Invite friends to get the server code. Nothing needs fixing right now.'
   }
   if (control.state !== 'Open on PC') return {
-    summary: 'The secure Friend listener is not confirmed on this PC.',
-    next: 'Open Connection settings and resolve the Friend listener warning before checking the router.'
+    summary: 'The secure Friend connection is not running on this PC.',
+    next: 'Open Connection settings and fix the Friend connection warning before checking the router.'
   }
   if (control.bindScope === 'Loopback only') return {
-    summary: 'The Friend listener accepts connections only from this PC.',
+    summary: 'Friend connections are limited to this PC.',
     next: 'Open Connection settings and choose a LAN bind address before inviting a Friend.'
   }
   if (!['Address hint', 'Address stale'].includes(control.endpointState ?? '')) return {
-    summary: 'The address used by new invites needs review.',
-    next: 'Open Connection settings and refresh the public address before sharing an invite.'
+    summary: 'The address in the server code needs review.',
+    next: 'Open Connection settings and refresh the public address before sharing the code.'
   }
   if (result?.state === 'Reachable') return {
-    summary: `An outside checker reached HTTPS TCP ${result.port} at ${new Date(result.checkedUtc).toLocaleTimeString()}. This does not prove pinned HTTPS pairing.`,
+    summary: `An outside checker reached HTTPS TCP ${result.port} at ${new Date(result.checkedUtc).toLocaleTimeString()}. A Friend still needs to connect with the server code.`,
     next: 'Ask a Friend on another network to connect, then test the game join separately.'
   }
   if (result?.state === 'Not reachable') {
@@ -99,22 +99,22 @@ function friendGuidance(control: ControlCheck | undefined, result: InternetRoute
       ? control.lanAddresses[0].address : 'the Host LAN address shown below'
     return {
       summary: `An outside checker could not reach HTTPS TCP ${result.port}. The router, Windows Firewall, ISP filtering, or shared-address NAT may be involved.`,
-      next: `Compare the router WAN IP with the invite IP. If they match, review TCP ${result.port} forwarding to ${target} and Windows Firewall. If they differ, check upstream NAT or ask the ISP.`
+      next: `Compare the router WAN IP with the address in the server code. If they match, review TCP ${result.port} forwarding to ${target} and Windows Firewall. If they differ, check upstream NAT or ask the ISP.`
     }
   }
   if (result?.state === 'Inconclusive' || result?.state === 'Unavailable') return {
     summary: `The optional outside TCP check did not give a usable result. ${result.detail}`,
-    next: 'Ask a Friend on another network to connect. Review the invite address if that fails.'
+    next: 'Ask a Friend on another network to connect. Review the address in the server code if that fails.'
   }
   if (control.endpointState === 'Address stale') return {
-    summary: 'The last public IP lookup is old, so the invite address needs a fresh check.',
+    summary: 'The last public IP lookup is old, so the address in the server code needs a fresh check.',
     next: 'Refresh the public address, then ask a Friend on another network to connect.'
   }
   return {
     summary: hadPreviousResult
-      ? 'The earlier outside TCP result expired or no longer matches this listener and invite address.'
+      ? 'The earlier outside TCP result expired or no longer matches this connection and server code address.'
       : control.remoteState === 'Friend connected'
-        ? 'A paired Friend sent an authenticated heartbeat. That PC’s network location is unknown, so outside access is not proven.'
+        ? 'A Friend PC recently contacted this Host. Its network location is unknown, so this does not prove an outside connection.'
         : 'Outside access has not been verified by a Friend on another network.',
     next: 'Ask a Friend on another network to connect. The optional outside TCP check can help if that fails.'
   }
@@ -135,35 +135,35 @@ function gameGuidance(game: GamePortCheck | undefined, controlPort: number | und
 function friendSummary(control: ControlCheck | undefined, result: InternetRouteCheck | null): ReadinessSummary {
   if (!control) return {
     label: 'Friend access', state: 'Checking', tone: 'neutral',
-    detail: 'Reading the secure Friend listener and invite address.'
+    detail: 'Reading the secure Friend connection and server code address.'
   }
   if (control.state === 'Off') return {
     label: 'Friend access', state: 'Off', tone: 'neutral',
-    detail: 'Connections from Friend PCs are turned off until you create an invite.'
+    detail: 'Connections from Friend PCs are turned off until you choose Invite friends.'
   }
   if (control.state === 'Idle') return {
     label: 'Friend access', state: 'Idle', tone: 'neutral',
-    detail: 'Nothing needs fixing. Create an invite when another PC needs to pair.'
+    detail: 'Nothing needs fixing. Choose Invite friends when another PC needs the server code.'
   }
   if (control.state !== 'Open on PC') return {
     label: 'Friend access', state: 'Needs attention', tone: 'bad',
-    detail: 'The secure Friend listener is not available on this PC.'
+    detail: 'Secure Friend connections are not available on this PC.'
   }
   if (control.bindScope === 'Loopback only') return {
     label: 'Friend access', state: 'This PC only', tone: 'warning',
-    detail: 'The listener cannot accept another PC yet.'
+    detail: 'Another PC cannot connect yet.'
   }
   if (control.remoteState === 'Friend connected') return {
     label: 'Friend access', state: 'Friend connected', tone: 'good',
-    detail: 'An authenticated heartbeat was received; the Friend’s network location is unknown.'
+    detail: 'A Friend PC recently contacted this Host. Its network location is unknown.'
   }
   if (!['Address hint', 'Address stale'].includes(control.endpointState ?? '')) return {
     label: 'Friend access', state: 'Address needs review', tone: 'warning',
-    detail: 'The address used by new invites is missing or does not match this Host.'
+    detail: 'The address in new server codes is missing or does not match this Host.'
   }
   if (result?.state === 'Reachable') return {
     label: 'Friend access', state: 'Reachable outside network', tone: 'good',
-    detail: 'An independent TCP check reached this PC; pairing from a Friend PC is still untested.'
+    detail: 'An independent TCP check reached this PC; a real Friend connection is still untested.'
   }
   if (result?.state === 'Not reachable') return {
     label: 'Friend access', state: 'Outside route blocked', tone: 'bad',
@@ -179,7 +179,7 @@ function friendSummary(control: ControlCheck | undefined, result: InternetRouteC
   }
   return {
     label: 'Friend access', state: 'Needs a Friend test', tone: 'neutral',
-    detail: 'The listener works on this PC, but an outside connection is not verified.'
+    detail: 'Friend connections work on this PC, but an outside connection is not verified.'
   }
 }
 
@@ -235,14 +235,14 @@ function connectionIssue(control: ControlCheck | undefined, result: InternetRout
   if (!control) return null
   if (control.state === 'Off' || control.state === 'Idle') return null
   if (control.state !== 'Open on PC') return {
-    title: 'The Friend listener needs attention.', detail: control.detail, connection: true,
+    title: 'Friend connections need attention.', detail: control.detail, connection: true,
     tone: control.state === 'Unknown' ? 'warning' : 'bad'
   }
   if (control.bindScope === 'Loopback only') return {
     title: 'Friend access is limited to this PC.', detail: control.detail, connection: true, tone: 'warning'
   }
   if (!['Address hint', 'Address stale'].includes(control.endpointState ?? '')) return {
-    title: 'The invite address needs review.',
+    title: 'The server code address needs review.',
     detail: control.endpointDetail ?? 'Refresh the public address before sharing another invite.',
     connection: true,
     tone: 'warning'
@@ -263,7 +263,7 @@ function connectionIssue(control: ControlCheck | undefined, result: InternetRout
   }
   if (hadPreviousResult && !result) return {
     title: 'The previous outside check is no longer current.',
-    detail: 'The check expired or no longer matches this listener and invite address.',
+    detail: 'The check expired or no longer matches this connection and server code address.',
     connection: true,
     tone: 'warning'
   }
@@ -349,7 +349,7 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
     : checkedRoute
     ? <>{checkedRoute.detail}<small>Checked at {new Date(checkedRoute.checkedUtc).toLocaleTimeString()}.</small></>
     : routeCheck
-      ? 'The earlier result expired or no longer matches the current listener and invite address.'
+      ? 'The earlier result expired or no longer matches the current connection and server code address.'
       : guidance.summary
 
   return <div className="server-readiness" aria-label="Server connection status" aria-busy={refreshing}>
@@ -387,16 +387,16 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
                 <div><h4 id={`friend-details-${profileId}`}>Friend app</h4><p>Secure control connection</p></div>
               </div>
               <dl>
-                <TechnicalDetail label="Listener" value={control ? `HTTPS TCP ${control.port} · ${control.state}` : 'Checking'} detail={friendListenerDetail} tone={friend.tone} loading={refreshing} />
-                <TechnicalDetail label="Invite address" value={control?.endpoint ? <code>{control.endpoint}</code> : control?.endpointState ?? 'Checking'} detail={control?.endpointDetail ?? 'Waiting for a public address check.'} loading={refreshing} />
-                <TechnicalDetail label="Friend heartbeat" value={control?.remoteState ?? 'Not verified'} detail={control?.remoteDetail ?? 'Waiting for an authenticated Friend connection.'} loading={refreshing} />
+                <TechnicalDetail label="Friend connection" value={control ? `HTTPS TCP ${control.port} · ${control.state}` : 'Checking'} detail={friendListenerDetail} tone={friend.tone} loading={refreshing} />
+                <TechnicalDetail label="Server code address" value={control?.endpoint ? <code>{control.endpoint}</code> : control?.endpointState ?? 'Checking'} detail={control?.endpointDetail ?? 'Waiting for a public address check.'} loading={refreshing} />
+                <TechnicalDetail label="Recent Friend contact" value={control?.remoteState ?? 'Not verified'} detail={control?.remoteDetail ?? 'Waiting for a secure Friend connection.'} loading={refreshing} />
               </dl>
             </section>
 
             <section className="technical-detail-card technical-detail-card-wide" aria-labelledby={`outside-details-${profileId}`}>
               <div className="technical-detail-heading">
                 <span><Icon name="link" /></span>
-                <div><h4 id={`outside-details-${profileId}`}>Outside connection</h4><p>Router target and internet evidence</p></div>
+                <div><h4 id={`outside-details-${profileId}`}>Outside connection</h4><p>Router target and internet check</p></div>
               </div>
               <dl>
                 <TechnicalDetail label="Router target" value={control?.lanAddresses?.length === 1

@@ -144,11 +144,11 @@ export function OwnerAccessDeadlineEditor({
   return <section className={`access-deadline ${expired ? 'expired' : ''}`} aria-labelledby={`${id}-title`}>
     <div className="access-deadline-current">
       <div>
-        <span id={`${id}-title`}>Owner access</span>
-        {!device.accessExpiresUtc && <><strong>No deadline</strong><small>Separate from credential expiry, approval, revocation, assignments, and permissions.</small></>}
+        <span id={`${id}-title`}>Access for this PC</span>
+        {!device.accessExpiresUtc && <><strong>No end date</strong><small>This does not change approvals, server access, or permissions.</small></>}
         {device.accessExpiresUtc && !expired && deadlineMs !== null && <>
           <strong>Access ends {formatLocal(new Date(deadlineMs))}</strong>
-          <small>{accessDeadlineRelativeText(deadlineMs, nowMs)} · The saved credential and assignments stay unchanged.</small>
+          <small>{accessDeadlineRelativeText(deadlineMs, nowMs)} · This PC's saved access and servers stay unchanged.</small>
         </>}
         {device.accessExpiresUtc && expired && deadlineMs !== null && <>
           <strong>Access expired</strong>
@@ -160,7 +160,7 @@ export function OwnerAccessDeadlineEditor({
     <details className="access-deadline-controls">
       <summary>Change deadline</summary>
       <fieldset disabled={disabled || saving}>
-        <legend>Choose an owner access deadline</legend>
+        <legend>Choose when access ends</legend>
         <div className="access-deadline-choices">
           {accessDurationChoices.map(option => <label key={option.value} className={choice === option.value ? 'selected' : ''}>
             <Input type="radio" name={`${id}-access-deadline`} checked={choice === option.value} onChange={() => choose(option.value)} />
@@ -209,7 +209,7 @@ export function FriendAccessExpiredNotice({ connectionCode }: { connectionCode?:
   if (connectionCode !== 'AccessExpired') return null
   return <div className="friend-access-expired" role="status">
     <strong>Access expired</strong>
-    <p>The Host owner ended access for this PC at its saved deadline.</p>
-    <small>Ask the Host to extend or clear the deadline. This saved Host connection remains here, so you do not need a new invite.</small>
+    <p>The Host ended access for this PC at the saved time.</p>
+    <small>Ask the Host to extend or clear the end date. This saved connection remains here, so you do not need a new server code.</small>
   </div>
 }

@@ -32,7 +32,7 @@ describe('DataRecoveryPanel', () => {
     expect(screen.getAllByRole('button', { name: 'Stop recorded server' })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Forget exited record' })).toHaveLength(1)
     expect(screen.getByText(/Process identity is uncertain/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Acknowledge and re-enable/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Confirm and re-enable/ })).toBeDisabled()
     expect(screen.queryByText(/C:\\private/)).not.toBeInTheDocument()
     expect(screen.getByText('runs.json')).toBeInTheDocument()
   })
@@ -44,7 +44,7 @@ describe('DataRecoveryPanel', () => {
 
     const checkbox = screen.getByRole('checkbox')
     expect(checkbox).not.toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Acknowledge warning' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Confirm review' })).not.toBeDisabled()
     fireEvent.click(checkbox)
     expect(onConfirmedChange).toHaveBeenCalledWith(false)
   })

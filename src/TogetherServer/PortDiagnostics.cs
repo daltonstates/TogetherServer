@@ -98,10 +98,10 @@ public static class PortDiagnostics
         var remoteState = controlState == CompanionListenerStates.Idle ? "Not needed" :
             lastFriend == default ? "Not verified" : "Friend connected";
         var remoteDetail = controlState == CompanionListenerStates.Idle
-            ? "No active invite or usable paired PC needs the Friend listener. Create an invite when another PC needs to pair."
+            ? "No active server code or connected PC needs the Friend connection yet. Choose Invite friends to get the server code."
             : lastFriend == default
-            ? "No paired Friend has a current authenticated heartbeat. Test pairing from a PC outside this network to verify that route."
-            : $"A paired Friend sent a heartbeat at {lastFriend.ToLocalTime():t}. Its network location is unknown; an outside-network test is still needed.";
+            ? "No connected Friend has contacted this Host recently. Test the server code from a PC outside this network."
+            : $"A Friend PC last contacted this Host at {lastFriend.ToLocalTime():t}. Its network location is unknown, so an outside-network test is still needed.";
         var (endpointState, endpointDetail) = EndpointStatus(settings, checkedUtc);
         var (lanAddresses, lanForwardDetail) = ReadLanAddresses();
 
@@ -116,10 +116,10 @@ public static class PortDiagnostics
         string? listenerState)
     {
         if (!enabled)
-            return ("Off", "Friend connections are off. Create or copy an invite to enable the HTTPS listener.");
+            return ("Off", "Friend connections are off. Choose Invite friends to get the server code and turn them on.");
         if (listenerState == CompanionListenerStates.Idle)
             return (CompanionListenerStates.Idle,
-                "Friend access is idle. Nothing is wrong: no active invite or usable paired PC needs the listener. Choose Invite friends when another PC needs to pair.");
+                "Friend access is waiting. Nothing is wrong: choose Invite friends to get the server code when another PC needs it.");
         if (!active)
             return ("Not listening", string.IsNullOrWhiteSpace(listenerWarning)
                 ? "Friend connections are enabled, but the HTTPS listener is not running. Check the Host connection warning."
@@ -136,19 +136,19 @@ public static class PortDiagnostics
     private static (string State, string Detail) EndpointStatus(HostSettings settings, DateTimeOffset checkedUtc)
     {
         if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
-            return ("Not configured", "Create an invite after checking the public IP address to set the Friend app address.");
+            return ("Not configured", "Choose Invite friends after checking the public IP address to set the Friend app address.");
         if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out var endpoint) ||
             endpoint.Port != settings.CompanionPort)
-            return ("Invalid", "The HTTPS endpoint and companion port do not match. Check Settings and safety.");
+            return ("Invalid", "The secure Friend address and Friend app port do not match. Check Connection settings.");
         if (!GameConnection.IsPublicIpv4(endpoint.Host))
-            return ("Local only", "The invite endpoint needs a public IPv4 address for an outside-network Friend.");
+            return ("Local only", "The server code needs a public IPv4 address for a Friend outside this network.");
         if (settings.PublicGameIpCheckedUtc is not { } addressCheckedUtc ||
             addressCheckedUtc > checkedUtc || checkedUtc - addressCheckedUtc > TimeSpan.FromHours(1) ||
             !GameConnection.IsPublicIpv4(settings.PublicGameIp))
             return ("Address stale", "Check the public IP again. An old address may no longer lead to this Host.");
         if (!string.Equals(endpoint.Host, settings.PublicGameIp, StringComparison.OrdinalIgnoreCase))
-            return ("Address differs", "The invite address differs from this PC's recent outbound public IP. Verify the router's WAN address and endpoint.");
-        return ("Address hint", "The invite matches a recent outbound public IP lookup. It does not verify Windows Firewall, router forwarding, or the Friend route. Compare the router's WAN address to check for shared-address NAT.");
+            return ("Address differs", "The address in the server code differs from this PC's recent public IP. Check the router's WAN address and Connection settings.");
+        return ("Address hint", "The server code matches a recent public IP lookup. This does not verify Windows Firewall, router forwarding, or a Friend connection. Compare the router's WAN address to check for shared-address NAT.");
     }
 
     private static (IReadOnlyList<LanAddressHint> Addresses, string Detail) ReadLanAddresses()

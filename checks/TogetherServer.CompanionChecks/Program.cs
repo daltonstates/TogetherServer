@@ -144,7 +144,7 @@ try
             Endpoint = "https://127.0.0.1:5131",
             Fingerprint = new string('A', 64),
             PairingOpenedUtc = DateTimeOffset.UtcNow,
-            PairingExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            PairingExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-30),
             DurationMinutes = 30,
             DeviceLimit = 1
         };
@@ -156,7 +156,8 @@ try
                 .SequenceEqual([existingScopedProfile]) &&
             migrated.Single(device => device.Id == existingLegacyDevice).AssignedProfileIds!.Count == 0 &&
             migrated.All(device => !device.CanViewLogs && !device.CanViewLogsForProfile(existingScopedProfile)) &&
-            migratedService.CurrentServerInvite(existingScopedProfile) is not null &&
+            migratedService.CurrentServerInvite(existingScopedProfile) is { Open: true } migratedCode &&
+            migratedCode.Invitation.ExpiresUtc == PairingService.PersistentServerCodeExpiry &&
             migrationData.HasProtected("pairing-state.protected"),
             "legacy devices/invites did not migrate atomically with fail-closed explicit server access");
     }
@@ -175,7 +176,7 @@ try
         invalidIndexData.SaveProtected("friend-connections.protected", Encoding.UTF8.GetBytes("{not-json"));
         using var service = new FriendService(invalidIndexData);
         var invalidView = service.View();
-        Require(invalidView.State == "Not paired" && invalidView.Connections?.Count == 0 &&
+        Require(invalidView.State == "Not connected" && invalidView.Connections?.Count == 0 &&
             invalidIndexData.Recovery.Notices.Any(notice => notice.StateFile == "friend-connections.protected"),
             "a malformed protected Friend index crashed startup, was not quarantined, or resurrected a legacy credential");
     }
@@ -188,7 +189,7 @@ try
             JsonSerializer.SerializeToUtf8Bytes(new { }, webJson));
         using var service = new FriendService(invalidConfigData);
         var invalidView = service.View();
-        Require(invalidView.State == "Not paired" && invalidView.Connections?.Count == 0 &&
+        Require(invalidView.State == "Not connected" && invalidView.Connections?.Count == 0 &&
             invalidConfigData.Recovery.Notices.Any(notice =>
                 notice.StateFile == $"friend-{invalidConnectionId:N}.protected"),
             "a semantically invalid protected Friend config was loaded or silently deleted");
@@ -231,15 +232,15 @@ try
     using (var pairingData = new LocalData(pairingPolicyRoot))
     {
         var pairingProfile = Guid.NewGuid();
-        var pairingService = new PairingService(pairingData);
-        var window = pairingService.IssueServer(pairingProfile, true, false,
+        var pairingClock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 28, 12, 0, 0, TimeSpan.Zero));
+        var pairingService = new PairingService(pairingData, pairingClock);
+        var serverCode = pairingService.IssueServer(pairingProfile, true, false,
             "https://127.0.0.1:5131", new string('A', 64), false,
-            durationMinutes: 30, deviceLimit: 2, requireApproval: true);
-        var policyFirst = pairingService.Activate(new(pairingProfile, window.Code, true));
-        var policySecond = pairingService.Activate(new(pairingProfile, window.Code, true));
-        var overLimit = pairingService.Activate(new(pairingProfile, window.Code, true));
-        Require(policyFirst?.ApprovalPending == true && policySecond?.ApprovalPending == true && overLimit is null,
-            "pairing window approval or device limit was not enforced");
+            durationMinutes: 5, deviceLimit: 1, requireApproval: true);
+        var policyFirst = pairingService.Activate(new(pairingProfile, serverCode.Code, true));
+        var policySecond = pairingService.Activate(new(pairingProfile, serverCode.Code, true));
+        Require(policyFirst?.ApprovalPending == true && policySecond?.ApprovalPending == true,
+            "persistent server code did not give each PC separate approval-pending access");
         var pending = pairingService.Authenticate(policyFirst!.DeviceId, policyFirst.Credential, out _);
         Require(!pending.Ok && pending.Code == "ApprovalPending" && pairingService.Approve(policyFirst.DeviceId).Ok &&
             pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Ok,
@@ -253,20 +254,30 @@ try
                 canViewLogs: false).Ok &&
             pairingService.AuthorizeViewLogs(loadedLogDevice, pairingProfile, out _).Code == "PermissionDenied",
             "a loaded device object retained View logs after the owner revoked it");
-        var reopened = pairingService.IssueServer(pairingProfile, true, false,
-            window.Endpoint, window.Fingerprint, false, durationMinutes: 60, deviceLimit: 1);
-        Require(reopened.Code != window.Code && reopened.ExpiresUtc > DateTimeOffset.UtcNow.AddMinutes(59),
-            "changing the pairing duration did not open a new bounded window");
+        pairingClock.SetUtcNow(pairingClock.GetUtcNow().AddDays(30));
+        var laterDevice = pairingService.Activate(new(pairingProfile, serverCode.Code, true));
+        var unchanged = pairingService.IssueServer(pairingProfile, true, false,
+            serverCode.Endpoint, serverCode.Fingerprint, false, durationMinutes: 60, deviceLimit: 25,
+            requireApproval: false);
+        Require(laterDevice?.ApprovalPending == true && unchanged.Code == serverCode.Code &&
+            unchanged.ExpiresUtc == PairingService.PersistentServerCodeExpiry &&
+            pairingService.CurrentServerInvite(pairingProfile) is { Open: true, RequireApproval: false },
+            "server code expired, stopped accepting PCs, or changed while saving its approval setting");
         Require(pairingService.ClosePairing(pairingProfile).Ok &&
-            pairingService.Activate(new(pairingProfile, reopened.Code, true)) is null &&
+            pairingService.Activate(new(pairingProfile, serverCode.Code, true)) is null &&
             pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Ok,
-            "closing pairing revoked an existing PC or left the shared code usable");
+            "turning off the legacy server-code route revoked an existing PC or left the old code usable");
+        var reopened = pairingService.IssueServer(pairingProfile, true, false,
+            serverCode.Endpoint, serverCode.Fingerprint, false);
+        Require(reopened.Code != serverCode.Code &&
+            pairingService.Activate(new(pairingProfile, reopened.Code, true)) is not null,
+            "choosing Invite friends did not restore a persistent current server code");
         Require(pairingService.EmergencyRevoke(pairingProfile).Ok &&
             pairingService.Authenticate(policyFirst.DeviceId, policyFirst.Credential, out _).Code == "Revoked" &&
-            pairingData.LoadActivity().All(item => !item.Message.Contains(window.Code, StringComparison.Ordinal)),
+            pairingData.LoadActivity().All(item => !item.Message.Contains(serverCode.Code, StringComparison.Ordinal)),
             "emergency revoke did not invalidate code-issued credentials or activity exposed a code");
     }
-    Console.WriteLine("PASS bounded pairing windows separate approval, close, per-PC credentials, and emergency revoke"); passes++;
+    Console.WriteLine("PASS persistent server codes keep per-PC approval and revocation separate"); passes++;
 
     var accessRoot = Path.Combine(root, "owner-access-expiry");
     var accessProfile = Guid.NewGuid();
@@ -445,8 +456,10 @@ try
         decoded.Endpoint == endpoint &&
         decoded.Fingerprint == inviteA.Fingerprint &&
         !PairingPassword.TryDecode("wrong-password", endpoint, out _) &&
-        !PairingPassword.TryDecode(PairingPassword.Encode(inviteA with { ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }), endpoint, out _),
-        "generated server code did not preserve its server scope, secret, and full TLS pin or reject invalid values");
+        PairingPassword.TryDecode(PairingPassword.Encode(inviteA with { ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }), endpoint, out var oldServerCode) &&
+        oldServerCode!.ServerScope &&
+        !PairingPassword.TryDecode(PairingPassword.Encode(inviteA with { ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1), ServerScope = false }), endpoint, out _),
+        "generated server code did not preserve its server scope, secret, full TLS pin, or persistent TS3 compatibility");
     var currentInvite = await OwnerPost<object, JsonElement>(owner,
         $"/api/local/servers/{profile.Id}/invite/current", new { });
     var currentJoinInvite = await OwnerPost<object, JsonElement>(owner,
@@ -535,12 +548,12 @@ try
     var fixtureDiagnostics = ownerDiagnostics.Servers.Single(item => item.ProfileId == profile.Id);
     var declaredPorts = fixtureDiagnostics.Checks.Single(item => item.Id == "local-game-ports");
     var routeDiagnostic = ownerDiagnostics.SharedChecks.Single(item => item.Id == "route-diagnostic");
-    Require(declaredPorts.Detail.Contains("Local-PC listener evidence", StringComparison.Ordinal) &&
-        declaredPorts.Detail.Contains("never proves public reachability", StringComparison.Ordinal) &&
-        declaredPorts.Detail.Contains("successful game join", StringComparison.Ordinal) &&
+    Require(declaredPorts.Detail.Contains("Seeing a port open on this PC", StringComparison.Ordinal) &&
+        declaredPorts.Detail.Contains("does not prove that a Friend can reach it", StringComparison.Ordinal) &&
+        declaredPorts.Detail.Contains("join the game", StringComparison.Ordinal) &&
         routeDiagnostic.State == "Unavailable" &&
-        routeDiagnostic.Detail.Contains("does not prove pinned pairing", StringComparison.Ordinal) &&
-        routeDiagnostic.Detail.Contains("successful game join", StringComparison.Ordinal),
+        routeDiagnostic.Detail.Contains("does not prove that a Friend connected", StringComparison.Ordinal) &&
+        routeDiagnostic.Detail.Contains("joined the game", StringComparison.Ordinal),
         "owner diagnostics overstated local listener or outside TCP evidence");
     var supportExport = await OwnerGetJson<SupportReportExport>(owner, "/api/local/support-report");
     Require(supportExport.FileName == SupportReportExporter.FileName &&
@@ -1859,10 +1872,10 @@ try
         $"/api/local/friend/connections/{firstConnection.ConnectionId}/forget", new { });
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
     Require(offlineForgotten.Ok && offlineForgotten.Code == "ConnectionForgottenLocally" &&
-        offlineForgotten.Message.Contains("Host owner to revoke", StringComparison.Ordinal) &&
+        offlineForgotten.Message.Contains("Ask the Host to remove this PC from Friend access", StringComparison.Ordinal) &&
         aView.Connections?.Count == 0,
-        "offline Forget did not remove the protected local credential with an explicit stale-Host warning");
-    Console.WriteLine("PASS offline Forget removes the local credential and warns about Host revocation"); passes++;
+        "offline Forget did not remove the saved local access with an explicit Host cleanup warning");
+    Console.WriteLine("PASS offline Forget removes saved local access and warns about Host cleanup"); passes++;
 
     Console.WriteLine($"Companion checks: {passes} groups passed, 0 failed. Data: {root}");
     return 0;

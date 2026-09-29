@@ -20,7 +20,7 @@ public static class CompanionProtocol
         "activity-feed",
         "timer-extension",
         "player-count-refresh",
-        "pairing-windows",
+        "persistent-server-codes",
         "action-protocol-header",
         ServerLogsCapability
     ];

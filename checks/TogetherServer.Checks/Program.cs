@@ -93,12 +93,12 @@ await Check("owner diagnostics reuse canonical state and support export stays bo
     Require(server.Checks.Single(item => item.Id == "managed-process").State == "Offline",
         "offline diagnostics invented a managed process state");
     var portCheck = server.Checks.Single(item => item.Id == "local-game-ports");
-    Require(portCheck.Detail.Contains("Local-PC listener evidence", StringComparison.Ordinal) &&
-        portCheck.Detail.Contains("never proves public reachability", StringComparison.Ordinal) &&
-        portCheck.Detail.Contains("successful game join", StringComparison.Ordinal),
+    Require(portCheck.Detail.Contains("Seeing a port open on this PC", StringComparison.Ordinal) &&
+        portCheck.Detail.Contains("does not prove that a Friend can reach it", StringComparison.Ordinal) &&
+        portCheck.Detail.Contains("join the game", StringComparison.Ordinal),
         "declared-port diagnostics overstated local listener evidence");
-    Require(diagnostics.EvidenceBoundary.Contains("pinned Friend pairing", StringComparison.Ordinal) &&
-        diagnostics.EvidenceBoundary.Contains("save integrity", StringComparison.Ordinal),
+    Require(diagnostics.EvidenceBoundary.Contains("Friend connected", StringComparison.Ordinal) &&
+        diagnostics.EvidenceBoundary.Contains("world saved correctly", StringComparison.Ordinal),
         "diagnostic evidence boundary omitted an external acceptance limit");
 
     var secret = SupportReportRedactor.Redact(

@@ -13,7 +13,7 @@ const now = () => new Date('2026-09-28T12:00:00.000Z')
 const success: DeviceAccessExpiryResult = {
   ok: true,
   code: 'AccessExpirySet',
-  message: 'This Friend PC\'s owner access deadline was saved.',
+  message: 'This Friend PC\'s access end date was saved.',
   accessExpiresUtc: '2026-09-29T12:00:00Z',
   accessExpired: false
 }
@@ -69,12 +69,12 @@ describe('OwnerAccessDeadlineEditor', () => {
 
     expect(onRefresh).toHaveBeenCalledTimes(accessDurationChoices.length)
     expect(onRefresh.mock.invocationCallOrder[0]).toBeGreaterThan(onSave.mock.invocationCallOrder[0])
-    expect(await screen.findByRole('status')).toHaveTextContent('owner access deadline was saved')
+    expect(await screen.findByRole('status')).toHaveTextContent('access end date was saved')
   })
 
   it('sends the dedicated clear request without changing another access setting', async () => {
     const cleared: DeviceAccessExpiryResult = {
-      ok: true, code: 'AccessExpiryCleared', message: 'This Friend PC no longer has an owner access deadline.',
+      ok: true, code: 'AccessExpiryCleared', message: 'This Friend PC no longer has an access end date.',
       accessExpiresUtc: null, accessExpired: false
     }
     const onSave = vi.fn(async () => cleared)
@@ -124,7 +124,7 @@ describe('OwnerAccessDeadlineEditor', () => {
     renderEditor({ current: device({ accessExpiresUtc: '2026-09-28T18:00:00Z' }) })
 
     expect(screen.getByText('Access ends LOCAL 2026-09-28T18:00:00.000Z')).toBeInTheDocument()
-    expect(screen.getByText(/in 6 hours/)).toHaveTextContent('saved credential and assignments stay unchanged')
+    expect(screen.getByText(/in 6 hours/)).toHaveTextContent("saved access and servers stay unchanged")
   })
 
   it('reports a request failure and does not refresh stale state', async () => {
@@ -149,7 +149,7 @@ describe('OwnerAccessDeadlineEditor', () => {
 
     expect(screen.getByRole('button', { name: 'Saving deadline…' })).toBeDisabled()
     finish(success)
-    expect(await screen.findByRole('status')).toHaveTextContent('owner access deadline was saved')
+    expect(await screen.findByRole('status')).toHaveTextContent('access end date was saved')
   })
 })
 
@@ -182,10 +182,10 @@ describe('FriendAccessExpiredNotice', () => {
     const { rerender } = render(<FriendAccessExpiredNotice connectionCode="AccessExpired" />)
 
     expect(screen.getByText('Access expired')).toBeInTheDocument()
-    expect(screen.getByText(/extend or clear the deadline/i)).toBeInTheDocument()
-    expect(screen.getByText(/saved Host connection remains here/i)).toBeInTheDocument()
+    expect(screen.getByText(/extend or clear the end date/i)).toBeInTheDocument()
+    expect(screen.getByText(/saved connection remains here/i)).toBeInTheDocument()
 
     rerender(<FriendAccessExpiredNotice connectionCode="CredentialExpired" />)
-    expect(screen.queryByText(/saved Host connection remains here/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/saved connection remains here/i)).not.toBeInTheDocument()
   })
 })

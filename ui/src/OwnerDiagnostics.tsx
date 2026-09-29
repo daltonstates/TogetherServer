@@ -108,14 +108,14 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
           {selected.checks.map(check => <DiagnosticCard key={check.id} check={check} />)}
         </div>}
       </> : <div className="owner-diagnostics-empty"><strong>No saved server yet</strong>
-        <p>Save a server setup to see server-specific process, driver, player, and local-port evidence. App checks remain available below.</p></div>}
+        <p>Save a server setup to see its process, player count, and local port checks. App checks remain available below.</p></div>}
 
       <div className="owner-diagnostics-shared"><h4>App, recovery, and Friend access</h4>
         <div className="owner-diagnostics-grid">{diagnostics.sharedChecks.map(check =>
           <DiagnosticCard key={check.id} check={check} />)}</div></div>
       <section className="support-export" aria-labelledby="support-export-title">
         <div><h4 id="support-export-title">Export support report</h4>
-          <p>Creates bounded UTF-8 JSON in memory for Copy or Download. It excludes credentials, codes, passwords, protected data, scripts and arguments, full private paths, addresses and endpoints, certificate material, player/chat identity, raw logs, worlds, and environment variables.</p></div>
+          <p>Creates a size-limited JSON report without saving anything on the Host. It leaves out saved access, server codes, passwords, scripts, private paths, addresses, secure identity data, player/chat details, raw logs, worlds, and environment variables.</p></div>
         <div className="actions"><Button disabled={!!exportBusy} onClick={() => void exportReport('copy')}>
           {exportBusy === 'copy' ? 'Copying…' : 'Copy report'}</Button>
           <Button className="secondary" disabled={!!exportBusy} onClick={() => void exportReport('download')}>

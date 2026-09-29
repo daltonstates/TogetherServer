@@ -5,14 +5,14 @@ import type { OwnerDiagnosticsView, SupportReportExport } from './contracts'
 
 const diagnostics: OwnerDiagnosticsView = {
   generatedUtc: '2026-09-28T12:00:00Z',
-  evidenceBoundary: 'Local listeners and outside TCP checks do not prove public game reachability, pinned pairing, a successful game join, or save integrity.',
+  evidenceBoundary: 'These checks do not prove that a Friend connected, joined the game, or that a world saved correctly.',
   servers: [{
     profileId: '11111111-1111-4111-8111-111111111111', label: 'Weekend world', kind: 'Valheim',
     checks: [
       { id: 'configuration', label: 'Saved setup', state: 'Saved', detail: 'The existing driver accepts the saved configuration.',
         nextAction: 'Review Setup before changing it.', location: 'Host > Setup', tone: 'Neutral', observedUtc: null },
       { id: 'local-game-ports', label: 'Declared game ports', state: 'Open on PC',
-        detail: 'Local-PC listener evidence never proves public reachability or a successful game join.',
+        detail: 'Seeing a port open on this PC does not prove that a Friend can reach it or join the game.',
         nextAction: 'Verify the game separately from a real Friend PC.', location: 'Settings > Connection help', tone: 'Attention', observedUtc: null }
     ]
   }],
@@ -35,8 +35,8 @@ describe('OwnerDiagnostics', () => {
     const { container } = render(<OwnerDiagnostics selectedProfileId={diagnostics.servers[0].profileId}
       diagnosticsLoader={async () => diagnostics} supportReportLoader={async () => report} />)
 
-    expect(await screen.findByText('Local-PC listener evidence never proves public reachability or a successful game join.')).toBeInTheDocument()
-    expect(screen.getByText(/do not prove public game reachability/)).toBeInTheDocument()
+    expect(await screen.findByText('Seeing a port open on this PC does not prove that a Friend can reach it or join the game.')).toBeInTheDocument()
+    expect(screen.getByText(/do not prove that a Friend connected/)).toBeInTheDocument()
     expect(container.querySelector('.good')).not.toBeInTheDocument()
     expect(container.querySelector('.tone-neutral')).toBeInTheDocument()
     expect(container.querySelector('.tone-attention')).toBeInTheDocument()
