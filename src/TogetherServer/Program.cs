@@ -75,7 +75,8 @@ var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() 
 var games = new GameServerRegistry(data);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
-var manager = new HostManager(data, games);
+using var hostingPower = new WindowsHostingPowerGuard();
+var manager = new HostManager(data, games, TimeProvider.System, hostingPower);
 var serverLogs = new ServerLogService(data, manager);
 var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
@@ -518,6 +519,8 @@ app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => 
 app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => manager.StartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) => HostOnly(() => manager.RestartAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/safe-restart", (Guid id) =>
+    HostOnly(() => manager.SafeRestartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, CountdownExtensionRequest request) =>
     HostOnly(() => manager.ExtendAutoShutdownAsync(id, request.Minutes)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
@@ -551,6 +554,12 @@ app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => 
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
     ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })
     : Results.Json(await manager.BackupsAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
+    HostOnly(() => manager.CreateManualBackupAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/verify", async (Guid id, Guid backupId) =>
+    friendMode
+        ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backup verification is local-owner-only." })
+        : Results.Json(await manager.VerifyBackupAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore", (Guid id, Guid backupId) =>
     HostOnly(() => manager.RestoreBackupAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
@@ -1098,8 +1107,21 @@ var friendPollTask = Task.Run(async () =>
 });
 var idleShutdownTask = Task.Run(async () =>
 {
+    var previousCycleUtc = DateTimeOffset.UtcNow;
     while (!pollStop.IsCancellationRequested)
     {
+        var cycleUtc = DateTimeOffset.UtcNow;
+        var pollingGap = cycleUtc - previousCycleUtc;
+        previousCycleUtc = cycleUtc;
+        if (pollingGap > TimeSpan.FromSeconds(30) || pollingGap < TimeSpan.Zero)
+        {
+            try
+            {
+                await manager.HandleSystemResumeAsync();
+                await companionServer.SyncAsync();
+            }
+            catch (Exception ex) { DiagnosticOutput.WriteError("Resume revalidation failed: " + ex.GetType().Name); }
+        }
         try { await manager.RefreshObservationsAsync(); }
         catch (Exception ex) { DiagnosticOutput.WriteError("Server observation failed: " + ex.GetType().Name); }
         try { await manager.MaintainIdleShutdownAsync(); }

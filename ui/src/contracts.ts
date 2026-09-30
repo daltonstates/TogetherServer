@@ -8,6 +8,7 @@ export type Settings = {
   friendTimerExtensionMinutes: number
   friendTimerExtensionMaximumMinutes: number
   autoShutdownEnabled: boolean
+  keepAwakeWhileHosting: boolean
   remoteControlsEnabled: boolean
   companionListeningEnabled: boolean
   companionBindAddress: string
@@ -32,6 +33,9 @@ export type Run = {
   playerNames: string[] | null
   playerCountTrusted: boolean
   friendAddedMinutes: number
+  addedShutdownMinutes: number
+  playerObservationSource: string | null
+  playerCountObservedUtc: string | null
 }
 
 export type CustomCertificationState = {
@@ -63,6 +67,8 @@ export type WorldBackupStatus = {
   lastFailureUtc: string | null
   lastFailure: string | null
   completedCount: number
+  retainedSizeBytes: number
+  availableSpaceBytes: number | null
 }
 
 export type WorldBackupRecord = {
@@ -70,13 +76,14 @@ export type WorldBackupRecord = {
   profileId: string
   kind: string
   worldId: string
-  backupKind: 'Rolling' | 'PreRestore'
+  backupKind: 'Rolling' | 'Manual' | 'PreRestore'
   createdUtc: string
   sizeBytes: number
   fileCount: number
 }
 
 export type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
+export type WorldBackupVerificationResult = BasicResult & { backupId: string; checkedUtc: string }
 
 export type ServerSessionEndReason = 'GracefulStop' | 'ProcessExited' |
   'RecoveryProcessExitedBeforeReady' | 'OwnerArchivedExitedRun' | 'ProcessExitedBeforeRestore'
@@ -119,6 +126,14 @@ export type ActivityEvent = {
   visibility: string
 }
 
+export type HostingPowerView = {
+  settingEnabled: boolean
+  managedServerRunning: boolean
+  requestActive: boolean
+  state: 'Disabled' | 'Waiting' | 'Active' | 'Unavailable'
+  message: string
+}
+
 export type HostSnapshot = {
   mode: 'Host'
   evidence: string
@@ -131,6 +146,7 @@ export type HostSnapshot = {
   backups?: Record<string, WorldBackupStatus>
   activity?: ActivityEvent[]
   recovery?: DataRecoveryView | null
+  hostingPower?: HostingPowerView | null
 }
 
 export type RemoteOperation = {
@@ -512,6 +528,7 @@ export const parseSettings: Decoder<Settings> = (value, context = 'settings') =>
     friendTimerExtensionMinutes: numeric(source.friendTimerExtensionMinutes, `${context}.friendTimerExtensionMinutes`),
     friendTimerExtensionMaximumMinutes: numeric(source.friendTimerExtensionMaximumMinutes, `${context}.friendTimerExtensionMaximumMinutes`),
     autoShutdownEnabled: flag(source.autoShutdownEnabled, `${context}.autoShutdownEnabled`),
+    keepAwakeWhileHosting: source.keepAwakeWhileHosting === undefined ? false : flag(source.keepAwakeWhileHosting, `${context}.keepAwakeWhileHosting`),
     remoteControlsEnabled: flag(source.remoteControlsEnabled, `${context}.remoteControlsEnabled`),
     companionListeningEnabled: flag(source.companionListeningEnabled, `${context}.companionListeningEnabled`),
     companionBindAddress: text(source.companionBindAddress, `${context}.companionBindAddress`),
@@ -539,7 +556,10 @@ const parseRun: Decoder<Run> = (value, context = 'run') => {
     hostAddedTime: flag(source.hostAddedTime, `${context}.hostAddedTime`),
     playerNames: source.playerNames === null ? null : textList(source.playerNames, `${context}.playerNames`),
     playerCountTrusted: flag(source.playerCountTrusted, `${context}.playerCountTrusted`),
-    friendAddedMinutes: numeric(source.friendAddedMinutes, `${context}.friendAddedMinutes`)
+    friendAddedMinutes: numeric(source.friendAddedMinutes, `${context}.friendAddedMinutes`),
+    addedShutdownMinutes: source.addedShutdownMinutes === undefined ? 0 : numeric(source.addedShutdownMinutes, `${context}.addedShutdownMinutes`),
+    playerObservationSource: source.playerObservationSource === undefined ? null : nullableText(source.playerObservationSource, `${context}.playerObservationSource`),
+    playerCountObservedUtc: source.playerCountObservedUtc === undefined ? null : nullableText(source.playerCountObservedUtc, `${context}.playerCountObservedUtc`)
   }
 }
 
@@ -582,7 +602,20 @@ const parseBackupStatus: Decoder<WorldBackupStatus> = (value, context = 'backup 
   return {
     profileId: text(source.profileId, `${context}.profileId`), lastSuccessfulUtc: nullableText(source.lastSuccessfulUtc, `${context}.lastSuccessfulUtc`),
     lastFailureUtc: nullableText(source.lastFailureUtc, `${context}.lastFailureUtc`), lastFailure: nullableText(source.lastFailure, `${context}.lastFailure`),
-    completedCount: numeric(source.completedCount, `${context}.completedCount`)
+    completedCount: numeric(source.completedCount, `${context}.completedCount`),
+    retainedSizeBytes: numeric(source.retainedSizeBytes, `${context}.retainedSizeBytes`),
+    availableSpaceBytes: nullableNumber(source.availableSpaceBytes, `${context}.availableSpaceBytes`)
+  }
+}
+
+const parseHostingPower: Decoder<HostingPowerView> = (value, context = 'hosting power') => {
+  const source = object(value, context)
+  return {
+    settingEnabled: flag(source.settingEnabled, `${context}.settingEnabled`),
+    managedServerRunning: flag(source.managedServerRunning, `${context}.managedServerRunning`),
+    requestActive: flag(source.requestActive, `${context}.requestActive`),
+    state: literal(source.state, ['Disabled', 'Waiting', 'Active', 'Unavailable'] as const, `${context}.state`),
+    message: text(source.message, `${context}.message`)
   }
 }
 
@@ -598,7 +631,8 @@ const parseHostSnapshot: Decoder<HostSnapshot> = (value, context = 'host snapsho
     crashRecovery: optionalObject(source.crashRecovery, `${context}.crashRecovery`, (item, itemContext) => dictionary(item, itemContext ?? '', parseCrashRecovery)),
     backups: optionalObject(source.backups, `${context}.backups`, (item, itemContext) => dictionary(item, itemContext ?? '', parseBackupStatus)),
     activity: source.activity === undefined || source.activity === null ? undefined : list(source.activity, `${context}.activity`, parseActivity),
-    recovery: source.recovery === undefined ? undefined : source.recovery === null ? null : parseDataRecoveryView(source.recovery, `${context}.recovery`)
+    recovery: source.recovery === undefined ? undefined : source.recovery === null ? null : parseDataRecoveryView(source.recovery, `${context}.recovery`),
+    hostingPower: source.hostingPower === undefined ? undefined : source.hostingPower === null ? null : parseHostingPower(source.hostingPower, `${context}.hostingPower`)
   }
 }
 
@@ -1143,9 +1177,15 @@ export const parseWorldBackupList: Decoder<WorldBackupList> = (value, context = 
   return { backups: list(source.backups, `${context}.backups`, (item, itemContext) => {
     const entry = object(item, itemContext ?? `${context}.backups`)
     return { id: text(entry.id, `${itemContext}.id`), profileId: text(entry.profileId, `${itemContext}.profileId`), kind: text(entry.kind, `${itemContext}.kind`),
-      worldId: text(entry.worldId, `${itemContext}.worldId`), backupKind: literal(entry.backupKind, ['Rolling', 'PreRestore'] as const, `${itemContext}.backupKind`),
+      worldId: text(entry.worldId, `${itemContext}.worldId`), backupKind: literal(entry.backupKind, ['Rolling', 'Manual', 'PreRestore'] as const, `${itemContext}.backupKind`),
       createdUtc: text(entry.createdUtc, `${itemContext}.createdUtc`), sizeBytes: numeric(entry.sizeBytes, `${itemContext}.sizeBytes`), fileCount: numeric(entry.fileCount, `${itemContext}.fileCount`) }
   }), status: parseBackupStatus(source.status, `${context}.status`) }
+}
+
+export const parseWorldBackupVerificationResult: Decoder<WorldBackupVerificationResult> = (value, context = 'backup verification') => {
+  const source = object(value, context)
+  return { ...parseBasicResult(source, context), backupId: text(source.backupId, `${context}.backupId`),
+    checkedUtc: text(source.checkedUtc, `${context}.checkedUtc`) }
 }
 
 export const parseRouteDiscovery: Decoder<RouteDiscovery> = (value, context = 'route discovery') => {

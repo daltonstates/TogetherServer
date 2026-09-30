@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, type Settings } from './contracts'
+import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, parseWorldBackupList, parseWorldBackupVerificationResult, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
+import hostSnapshotFixture from '../../contracts/host-snapshot.v1.json'
 
 const settings: Settings = {
   maxConcurrentServers: 1,
@@ -8,6 +9,7 @@ const settings: Settings = {
   friendTimerExtensionMinutes: 15,
   friendTimerExtensionMaximumMinutes: 60,
   autoShutdownEnabled: false,
+  keepAwakeWhileHosting: false,
   remoteControlsEnabled: false,
   companionListeningEnabled: false,
   companionBindAddress: '127.0.0.1',
@@ -20,6 +22,32 @@ const settings: Settings = {
 }
 
 describe('runtime contracts', () => {
+  it('accepts the shared backend and UI Host snapshot fixture', () => {
+    const snapshot = parseSnapshot(hostSnapshotFixture)
+    expect(snapshot.mode).toBe('Host')
+    if (snapshot.mode === 'Host') {
+      expect(snapshot.settings.keepAwakeWhileHosting).toBe(true)
+      expect(snapshot.runs[0]).toMatchObject({ addedShutdownMinutes: 25, playerObservationSource: 'FixtureReady' })
+      expect(snapshot.backups?.['11111111-1111-4111-8111-111111111111']).toMatchObject({ retainedSizeBytes: 4096 })
+      expect(snapshot.hostingPower).toMatchObject({ state: 'Active', requestActive: true })
+    }
+  })
+
+  it('strictly decodes manual backup capacity and integrity results', () => {
+    const list = parseWorldBackupList({ backups: [{ id: 'backup', profileId: 'profile', kind: 'Valheim',
+      worldId: 'world', backupKind: 'Manual', createdUtc: '2026-09-29T12:00:00Z', sizeBytes: 2048, fileCount: 2 }],
+    status: { profileId: 'profile', lastSuccessfulUtc: '2026-09-29T12:00:00Z', lastFailureUtc: null,
+      lastFailure: null, completedCount: 1, retainedSizeBytes: 2048, availableSpaceBytes: 4096 } })
+    const verified = parseWorldBackupVerificationResult({ ok: true, code: 'BackupVerified',
+      message: 'Verified.', backupId: 'backup', checkedUtc: '2026-09-29T12:01:00Z' })
+
+    expect(list.backups[0].backupKind).toBe('Manual')
+    expect(list.status.availableSpaceBytes).toBe(4096)
+    expect(verified).toMatchObject({ ok: true, backupId: 'backup' })
+    expect(() => parseWorldBackupList({ ...list, status: { ...list.status, retainedSizeBytes: '2048' } }))
+      .toThrow(ContractError)
+  })
+
   it('accepts a valid Host snapshot and recovery view', () => {
     const recovery = {
       lifecycleBlocked: true,

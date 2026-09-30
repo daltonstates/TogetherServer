@@ -4,6 +4,18 @@ type ReadableStorage = Pick<Storage, 'getItem' | 'removeItem'>
 type WritableStorage = Pick<Storage, 'setItem'>
 type StorageProvider<T> = () => T
 
+export type ActivityDestination =
+  | { workspace: 'host'; section: 'overview' | 'players' | 'backups' | 'sessions'; profileId?: string | null; label: string }
+  | { workspace: 'settings'; section: 'access' | 'network' | 'stop' | 'diagnostics'; profileId?: string | null; label: string }
+
+type RoutedActivity = {
+  id: string
+  category: string
+  action: string
+  profileId?: string | null
+  deviceId?: string | null
+}
+
 export const activityClearStorageKey = 'togetherserver.activity-clear-markers'
 
 export function activityAfterMarker<T extends ActivityItem>(activity: T[], marker?: string): T[] {
@@ -47,4 +59,28 @@ export function writeActivityClearMarkersTo(provider: StorageProvider<WritableSt
   markers: ActivityClearMarkers): void {
   try { provider().setItem(activityClearStorageKey, JSON.stringify({ version: 1, markers })) }
   catch { /* Browser storage is optional; the clear still applies for this app session. */ }
+}
+
+export function activityDestination(item: RoutedActivity): ActivityDestination | null {
+  switch (item.category) {
+    case 'Backup': return { workspace: 'host', section: 'backups', profileId: item.profileId, label: 'Open world protection' }
+    case 'Countdown': case 'Players': return { workspace: 'host', section: 'players', profileId: item.profileId, label: 'Open players & timer' }
+    case 'Lifecycle': case 'Maintenance': return { workspace: 'host', section: 'overview', profileId: item.profileId, label: 'Open server' }
+    case 'Remote': return { workspace: 'host', section: 'sessions', profileId: item.profileId, label: 'Review server activity' }
+    case 'Connections': case 'Access': return { workspace: 'settings', section: 'access', profileId: item.profileId, label: 'Review Friend access' }
+    case 'Network': return { workspace: 'settings', section: 'network', profileId: item.profileId, label: 'Open Connection Doctor' }
+    case 'Recovery': return { workspace: 'settings', section: 'diagnostics', profileId: item.profileId, label: 'Review diagnostics' }
+    default: return null
+  }
+}
+
+export function collapseRepeatedActivity<T extends RoutedActivity>(activity: T[]) {
+  const groups = new Map<string, { item: T; repeatCount: number }>()
+  for (const item of activity) {
+    const key = [item.category, item.action, item.profileId ?? '', item.deviceId ?? ''].join('|')
+    const existing = groups.get(key)
+    if (existing) existing.repeatCount += 1
+    else groups.set(key, { item, repeatCount: 1 })
+  }
+  return [...groups.values()]
 }

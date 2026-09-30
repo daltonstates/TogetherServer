@@ -4,9 +4,12 @@ import { ApiError, changeJson, errorMessage, getJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
+import { ConnectionDoctor } from './ConnectionDoctor'
 import { ConnectionDetails } from './ConnectionDetails'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
+import { PaneErrorBoundary } from './PaneErrorBoundary'
+import { PlayersPanel } from './PlayersPanel'
 import { RecentSessions } from './RecentSessions'
 import {
   HostSetupDialog
@@ -17,21 +20,26 @@ import {
   parseDataRecoveryView, parseDesktopPreferenceResult, parseDesktopPreferences,
   parseFriendSnapshot, parseGameEndpointResult, parseInternetRouteCheck, parseInviteResult,
   parseInviteState, parsePasswordResult, parsePortDiagnostics, parsePublicIpDetection, parseRouteDiscovery,
-  parseSnapshot, parseUpdateView, parseWorldBackupList,
+  parseSnapshot, parseUpdateView, parseWorldBackupList, parseWorldBackupVerificationResult,
   type ActionResult, type AppInstanceView, type BasicResult, type CompanionInfo,
   type DataRecoveryView, type DesktopPreferences, type Device, type FriendIssue,
   type DeviceAccessExpiryRequest, type DeviceAccessExpiryResult,
   type FriendSnapshot, type GameEndpointResult, type PublicIpDetection, type PublicProfile, type RouteDiscovery, type Settings,
-  type Snapshot, type UpdateView, type WorldBackupList
+  type Snapshot, type UpdateView, type WorldBackupList, type WorldBackupVerificationResult
 } from './contracts'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
-import { devicePermission, globalPermissionRequest, permissionMix, type PermissionAction } from './permissionState'
+import {
+  devicePermission, globalPermissionRequest, matchingPermissionPreset, permissionMix,
+  permissionPresetRequest, permissionPresets, type PermissionAction, type PermissionPreset
+} from './permissionState'
 import {
   activityAfterMarker,
+  activityDestination,
+  collapseRepeatedActivity,
   readActivityClearMarkersFrom,
   withActivityClearMarker,
   writeActivityClearMarkersTo
@@ -136,6 +144,16 @@ function countdownLabel(deadline: string | null, nowMs: number) {
   return `Stops in ${hours > 0 ? `${hours}:` : ''}${hours > 0 ? String(minutes).padStart(2, '0') : minutes}:${String(remainder).padStart(2, '0')}`
 }
 
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Unavailable'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1 }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`
+}
+
 function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs, players,
   onRefresh, refreshing = false, refreshDisabled = false }: {
   state: string; online: number | null; capacity: number | null; deadline: string | null; timerReason: string | null; nowMs: number; players?: string[] | null
@@ -231,6 +249,7 @@ function App() {
   const [inviteProfileId, setInviteProfileId] = useState('')
   const [inviteListenerWarning, setInviteListenerWarning] = useState<string | null>(null)
   const [deviceNames, setDeviceNames] = useState<Record<string, string>>({})
+  const [permissionPresetDraft, setPermissionPresetDraft] = useState<Record<string, PermissionPreset>>({})
   const [maintenanceMessages, setMaintenanceMessages] = useState<Record<string, string>>({})
   const [invitation, setInvitation] = useState('')
   const [pairingRequireApproval, setPairingRequireApproval] = useState(false)
@@ -240,6 +259,7 @@ function App() {
   const [friendConnectionName, setFriendConnectionName] = useState('')
   const [gameEndpointResults, setGameEndpointResults] = useState<Record<string, GameEndpointResult>>({})
   const [backupLists, setBackupLists] = useState<Record<string, WorldBackupList>>({})
+  const [backupVerifications, setBackupVerifications] = useState<Record<string, WorldBackupVerificationResult>>({})
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
   const [showPairing, setShowPairing] = useState(false)
   const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
@@ -680,6 +700,18 @@ function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const applyDevicePermissionPreset = async (device: Device, preset: PermissionPreset) => {
+    if (preset === 'custom') return
+    setPending(device.id)
+    try {
+      const result = await change(`/api/local/devices/${device.id}/permissions`, 'PUT',
+        permissionPresetRequest(preset))
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) setPermissionPresetDraft(current => ({ ...current, [device.id]: preset }))
+      await refreshCompanion()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
   const saveDeviceAccessExpiry = async (deviceId: string, request: DeviceAccessExpiryRequest): Promise<DeviceAccessExpiryResult> => {
     setPending(`access-expiry-${deviceId}`)
     try {
@@ -688,7 +720,7 @@ function App() {
       setPending('')
     }
   }
-  const saveHostFlags = async (patch: Partial<Pick<Settings, 'companionListeningEnabled' | 'remoteControlsEnabled' | 'autoShutdownEnabled'>>) => {
+  const saveHostFlags = async (patch: Partial<Pick<Settings, 'companionListeningEnabled' | 'remoteControlsEnabled' | 'autoShutdownEnabled' | 'keepAwakeWhileHosting'>>) => {
     setPending('host-flags')
     setNotice(null)
     try {
@@ -871,6 +903,44 @@ function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const createManualBackup = async (profileId: string) => {
+    setPending(`manual-backup-${profileId}`)
+    setNotice(null)
+    try {
+      const result = await changeAction(`/api/local/profiles/${profileId}/backups/manual`, 'POST')
+      applySnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) {
+        const list = await getJson(`/api/local/profiles/${profileId}/backups`, parseWorldBackupList)
+        setBackupLists(current => ({ ...current, [profileId]: list }))
+      }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const safeRestart = async (profileId: string) => {
+    if (!window.confirm('Safe restart will gracefully stop this server, create an offline checkpoint, and only then start it again. If the checkpoint fails, the server stays offline. Continue?')) return
+    setPending(`safe-restart-${profileId}`)
+    setNotice(null)
+    try {
+      const result = await changeAction(`/api/local/profiles/${profileId}/safe-restart`, 'POST')
+      applySnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      const list = await getJson(`/api/local/profiles/${profileId}/backups`, parseWorldBackupList)
+      setBackupLists(current => ({ ...current, [profileId]: list }))
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const verifyBackup = async (profileId: string, backupId: string) => {
+    setPending(`verify-backup-${backupId}`)
+    setNotice(null)
+    try {
+      const result = await changeJson(`/api/local/profiles/${profileId}/backups/${backupId}/verify`, 'POST',
+        parseWorldBackupVerificationResult)
+      setBackupVerifications(current => ({ ...current, [backupId]: result }))
+      setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
   const restoreBackup = async (profileId: string, backupId: string, createdUtc: string) => {
     if (!window.confirm(`Restore the backup from ${new Date(createdUtc).toLocaleString()}? The server must remain offline. TogetherServer will first retain a pre-restore snapshot.`)) return
     setPending(`restore-${profileId}`)
@@ -1033,6 +1103,20 @@ function App() {
   }
   workspaceNavigationRef.current = navigateWorkspace
 
+  const openActivity = (item: NonNullable<Snapshot['activity']>[number]) => {
+    const destination = activityDestination(item)
+    if (!destination) return
+    if (destination.profileId) setSelectedHostProfileId(destination.profileId)
+    if (destination.workspace === 'settings') {
+      setHostSettingsSection(destination.section)
+      setWorkspacePage('settings')
+      return
+    }
+    setHostServerTab(destination.section)
+    setHostMobileDetail(true)
+    setWorkspacePage('host')
+  }
+
   const detectedGameIp = snapshot?.mode === 'Host' && snapshot.settings.publicGameIpCheckedUtc &&
     Date.now() - Date.parse(snapshot.settings.publicGameIpCheckedUtc) < 60 * 60 * 1000
     ? snapshot.settings.publicGameIp : ''
@@ -1092,6 +1176,7 @@ function App() {
   const selectedHostRun = snapshot?.mode === 'Host' && selectedHostProfile
     ? snapshot.runs.find(run => run.profileId === selectedHostProfile.id) : undefined
   const attentionCount = visibleActivity.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
+  const groupedActivity = collapseRepeatedActivity(visibleActivity)
   const commands: WorkspaceCommand[] = [
     { id: 'nav-host', label: 'Open Host', detail: 'Manage servers on this PC', icon: 'server', keywords: 'Alt+1', run: () => navigateWorkspace('host') },
     { id: 'nav-join', label: 'Open Join', detail: 'Connect to a friend without interrupting hosting', icon: 'link', keywords: 'Alt+2', run: () => navigateWorkspace('join') },
@@ -1168,25 +1253,28 @@ function App() {
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
       {(!snapshot || !appInstance) && !loadError && <section className="panel">Loading local state…</section>}
 
-      {dataRecovery && <DataRecoveryPanel recovery={dataRecovery} mode={snapshot?.mode ?? null}
+      {dataRecovery && <PaneErrorBoundary title="Data recovery" resetKey={dataRecovery.notices.map(item => item.detectedUtc).join('|')}><DataRecoveryPanel recovery={dataRecovery} mode={snapshot?.mode ?? null}
         runs={snapshot?.mode === 'Host' ? snapshot.runs : []}
         configuredProfileIds={snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : []}
         pending={pending} confirmed={recoveryConfirmed} onConfirmedChange={setRecoveryConfirmed}
         onAcknowledge={() => void acknowledgeDataRecovery()} onSwitchToHost={() => void switchMode('host')}
         onStopRecordedRun={profileId => void run(`recovery-stop-${profileId}`, `/api/local/profiles/${profileId}/stop`, 'POST')}
-        onForgetRecordedRun={profileId => void run(`recovery-forget-${profileId}`, `/api/local/profiles/${profileId}/forget`, 'POST')} />}
+        onForgetRecordedRun={profileId => void run(`recovery-forget-${profileId}`, `/api/local/profiles/${profileId}/forget`, 'POST')} /></PaneErrorBoundary>}
 
-      {workspacePage === 'attention' && <section className="attention-workspace" aria-label="Notifications and activity">
+      {workspacePage === 'attention' && <PaneErrorBoundary title="Attention Center" resetKey={visibleActivity[0]?.id ?? 'empty'}><section className="attention-workspace" aria-label="Notifications and activity">
         <div className="attention-toolbar"><div><strong>{attentionCount ? `${attentionCount} current item${attentionCount === 1 ? '' : 's'}` : 'You are all caught up'}</strong><span>Recent app and connection activity</span></div>
           <div className="attention-toolbar-actions">{snapshot?.mode === 'Host' && <Button className="secondary" onClick={() => openHostSettings('diagnostics')}>Preflight & diagnostics</Button>}
             {visibleActivity.length > 0 && <Button className="secondary" onClick={clearNotificationActivity}>Clear activity</Button>}</div></div>
         <div className="attention-list">
           {update?.state === 'Available' && <article className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available - v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update...</> : 'Update and restart'}</Button></div></article>}
           {notice && <article className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></article>}
-          {visibleActivity.map(item => <article className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}</small></div></article>)}
+          {groupedActivity.map(({ item, repeatCount }) => {
+            const destination = activityDestination(item)
+            return <article className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{destination && snapshot?.mode === 'Host' && <Button className="text-button" onClick={() => openActivity(item)}>{destination.label}</Button>}</div></article>
+          })}
           {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && <div className="attention-empty"><Icon name="check" size={22} /><strong>No recent activity</strong><p>Important Host, Friend, update, and recovery events will appear here.</p></div>}
         </div>
-      </section>}
+      </section></PaneErrorBoundary>}
 
       {workspacePage === 'settings' && snapshot?.mode === 'Friend' && <section className="settings-workspace" aria-labelledby="friend-app-settings-title">
         <div className="modal-heading"><div><h2 id="friend-app-settings-title">App settings</h2><p>Windows behavior and update preferences for this app.</p></div><Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>Back to Join</Button></div>
@@ -1264,15 +1352,15 @@ function App() {
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
-              {logAvailability.visible && <div className="friend-log-surface">
-                <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
+                {logAvailability.visible && <div className="friend-log-surface">
+                  <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
                   onClick={() => setFriendLogProfileId(current => current === profile.id ? '' : profile.id)}>
                   <Icon name="server" />{friendLogProfileId === profile.id ? 'Hide logs' : 'View logs'}
                 </Button>
-                {friendLogProfileId === profile.id && <ServerLogViewer
+                {friendLogProfileId === profile.id && <PaneErrorBoundary title="Shared server logs" resetKey={profile.id}><ServerLogViewer
                   endpoint={`/api/local/friend/${profile.id}/logs`}
                   visible={workspacePage === 'join' && friendLogProfileId === profile.id}
-                  unsupported={logAvailability.unsupported} />}
+                  unsupported={logAvailability.unsupported} /></PaneErrorBoundary>}
               </div>}
               {gameEndpointResults[profile.id] && <p className={gameEndpointResults[profile.id].answered ? 'helper-text' : 'warning-text'}>{gameEndpointResults[profile.id].message}</p>}
               {operationConflict && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{operationConflict.message}</p>
@@ -1314,6 +1402,7 @@ function App() {
               const recovery = snapshot.crashRecovery?.[profile.id]
               const backupStatus = snapshot.backups?.[profile.id]
               const backupList = backupLists[profile.id]
+              const shownBackupStatus = backupList?.status ?? backupStatus
               const connectionKey = `host-${profile.id}`
               const addressKey = `${connectionKey}-address`
               const passwordKey = `${connectionKey}-password`
@@ -1335,12 +1424,15 @@ function App() {
                 refreshing={pending === `players-${profile.id}`} refreshDisabled={!!pending || dirty}
                 onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
-                {hostServerTab === 'logs' && <ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
-                  visible={workspacePage === 'host' && hostServerTab === 'logs'} />}
-                <RecentSessions profileId={profile.id}
-                  visible={workspacePage === 'host' && hostServerTab === 'sessions'} />
-                <div hidden={hostServerTab !== 'overview'}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
-                  busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></div>
+                {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
+                  visible={workspacePage === 'host' && hostServerTab === 'logs'} /></PaneErrorBoundary>}
+                <PaneErrorBoundary title="Recent sessions" resetKey={profile.id}><RecentSessions profileId={profile.id}
+                  visible={workspacePage === 'host' && hostServerTab === 'sessions'} /></PaneErrorBoundary>
+                <div hidden={hostServerTab !== 'overview'}><PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                  busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary></div>
+                {hostServerTab === 'players' && status && <PaneErrorBoundary title="Players workspace" resetKey={profile.id}><PlayersPanel run={status} activity={snapshot.activity} nowMs={nowMs}
+                  refreshing={pending === `players-${profile.id}`} disabled={!!pending || dirty}
+                  onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></PaneErrorBoundary>}
                 {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote Start, Stop, and Restart are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
                 <details hidden={hostServerTab !== 'setup'} className="advanced-block"><summary>Friend coordination and maintenance</summary>
                   <label>Message for assigned Friends<Input maxLength={200} value={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''} onChange={event => setMaintenanceMessages(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="Updating mods until 8 PM" /><small>Up to 200 characters. Status remains visible while remote Start, Stop, Restart, replacement, and timer extension are denied.</small></label>
@@ -1393,12 +1485,18 @@ function App() {
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
-                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <div className="world-protection-summary"><strong>World protection</strong><p>Crash recovery is {profile.crashRecovery?.enabled ? 'on' : 'off'} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p>
-                    {backupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(backupStatus.lastSuccessfulUtc).toLocaleString()} · {backupStatus.completedCount} retained.</small>}
-                    {backupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(backupStatus.lastFailureUtc).toLocaleString()}: {backupStatus.lastFailure}</p>}
-                    <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
-                    {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. A backup is created only after a confirmed graceful Stop while rolling backups are enabled.</p> : backupList.backups.map(backup => <div className="device" key={backup.id}><div><strong>{backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : 'Rolling backup'}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {(backup.sizeBytes / 1048576).toFixed(1)} MB</small></div><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div>)}</div>}
-                  </div>}
+                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>Crash recovery is {profile.crashRecovery?.enabled ? 'on' : 'off'} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
+                    {shownBackupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(shownBackupStatus.lastSuccessfulUtc).toLocaleString()} · {shownBackupStatus.completedCount} retained · {formatBytes(shownBackupStatus.retainedSizeBytes)} used.</small>}
+                    {shownBackupStatus?.availableSpaceBytes != null && <small>{formatBytes(shownBackupStatus.availableSpaceBytes)} available on the backup drive.</small>}
+                    {shownBackupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</p>}
+                    <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} title={status?.state !== 'Offline' ? 'Stop the server before copying its world.' : undefined} onClick={() => void createManualBackup(profile.id)}>{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
+                    <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds.</small>
+                    {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
+                      const verification = backupVerifications[backup.id]
+                      const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'
+                      return <div className="device backup-record" key={backup.id}><div><strong>{label}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {formatBytes(backup.sizeBytes)}</small>{verification && <small className={verification.ok ? 'verification-ok' : 'warning-text'}>{verification.ok ? 'Integrity verified' : 'Integrity check failed'} {new Date(verification.checkedUtc).toLocaleString()}. The live world was not changed.</small>}</div><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void verifyBackup(profile.id, backup.id)}>{pending === `verify-backup-${backup.id}` ? 'Verifying…' : 'Verify'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div></div>
+                    })}</div>}
+                  </div></PaneErrorBoundary>}
                 </details>
               </article>
             })}
@@ -1462,6 +1560,7 @@ function App() {
                 <div className="app-settings-grid">
                   <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} /></label>
                   <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
+                  <label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong><small>Uses a scoped idle-sleep request only while an exact managed server process is running. Manual sleep can still interrupt hosting.</small>{snapshot.hostingPower && <small>Current state: {snapshot.hostingPower.state}. {snapshot.hostingPower.message}</small>}</span><Input type="checkbox" checked={draft.keepAwakeWhileHosting} disabled={!!pending} onChange={event => void saveHostFlags({ keepAwakeWhileHosting: event.target.checked })} /></label>
                 </div>
                 <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : 'Updates are checked automatically and installed only when you choose.'}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
                 <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Active or unresolved managed servers still block Quit.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
@@ -1476,6 +1575,19 @@ function App() {
                     <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Saved access expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Remove access</Button></div></div>
                   <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}
                     onSave={request => saveDeviceAccessExpiry(device.id, request)} onRefresh={refreshCompanion} />
+                  {(() => {
+                    const selectedPreset = permissionPresetDraft[device.id] ?? matchingPermissionPreset(device)
+                    const preset = selectedPreset === 'custom' ? null : permissionPresets[selectedPreset]
+                    return <div className="permission-preset"><label>Permission preset<Select value={selectedPreset}
+                      disabled={!!pending || !device.paired || device.approvalPending}
+                      onChange={event => setPermissionPresetDraft(current => ({ ...current, [device.id]: event.target.value as PermissionPreset }))}>
+                      <option value="status">Status only</option><option value="start">Can start</option>
+                      <option value="helper">Trusted helper</option><option value="custom">Custom</option>
+                    </Select></label><div><p>{preset?.detail ?? 'This PC has individual or per-server choices. Use the controls below to keep editing them.'}</p>
+                      <small>Applying a preset updates every assigned server and clears its per-server exceptions.</small></div>
+                      <Button className="secondary" disabled={!!pending || !preset || selectedPreset === matchingPermissionPreset(device)}
+                        onClick={() => void applyDevicePermissionPreset(device, selectedPreset)}>Apply preset</Button></div>
+                  })()}
                   <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStart', permissionMix(device, 'canStart').mixed ? true : event.target.checked)} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
@@ -1485,6 +1597,13 @@ function App() {
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
               <h3>Connection checks</h3>
+              <PaneErrorBoundary title="Connection Doctor" resetKey={selectedHostProfileId}><ConnectionDoctor
+                profile={selectedHostProfile} run={selectedHostRun} ports={portDiagnostics}
+                routeCheck={internetRouteCheck} devices={companion?.devices ?? []}
+                busy={checkingPorts || checkingInternetRoute || !!pending} routeMode={draft.connectionRoute?.mode ?? 'DirectInternet'}
+                onRefresh={() => { void checkPorts(true); void refreshCompanion() }}
+                onTestRoute={() => void checkInternetRoute()} onOpenAccess={() => setHostSettingsSection('access')}
+                onOpenDiagnostics={() => setHostSettingsSection('diagnostics')} /></PaneErrorBoundary>
               <div className="settings-grid companion-fields">
                 <label>Friend route<Select value={draft.connectionRoute?.mode ?? 'DirectInternet'} onChange={event => changeRoute(event.target.value as Settings['connectionRoute']['mode'], event.target.value === 'DirectInternet' ? '' : draft.connectionRoute?.address ?? '')}>
                   <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option>
@@ -1538,9 +1657,9 @@ function App() {
                 })}
               </section>}
 
-              {hostSettingsSection === 'diagnostics' && <OwnerDiagnostics
+              {hostSettingsSection === 'diagnostics' && <PaneErrorBoundary title="Preflight & diagnostics" resetKey={selectedHostProfileId}><OwnerDiagnostics
                 selectedProfileId={selectedHostProfileId}
-                onSelectedProfileIdChange={setSelectedHostProfileId} />}
+                onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
 
               {hostSettingsSection === 'advanced' && <section className="settings-section"><h3>Advanced network and game paths</h3>
               <div className="settings-grid companion-fields">

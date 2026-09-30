@@ -19,6 +19,7 @@ const settings: Settings = {
   friendTimerExtensionMinutes: 15,
   friendTimerExtensionMaximumMinutes: 60,
   autoShutdownEnabled: false,
+  keepAwakeWhileHosting: false,
   remoteControlsEnabled: false,
   companionListeningEnabled: false,
   companionBindAddress: '127.0.0.1',

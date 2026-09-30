@@ -31,6 +31,7 @@ public sealed class HostSettings
     public int FriendTimerExtensionMinutes { get; set; } = 15;
     public int FriendTimerExtensionMaximumMinutes { get; set; } = 60;
     public bool AutoShutdownEnabled { get; set; }
+    public bool KeepAwakeWhileHosting { get; set; }
     public bool RemoteControlsEnabled { get; set; }
     public bool CompanionListeningEnabled { get; set; }
     public string CompanionBindAddress { get; set; } = "127.0.0.1";

@@ -1,6 +1,6 @@
 # Implementation status
 
-> **Status and history:** This is a chronological implementation log, not the current architecture contract. Earlier entries preserve what was true when each slice landed and may describe behavior that has since been removed. Current authority is `AGENTS.md` plus docs 00 through 04 and the live checkout. As of 2026-09-26, v0.1.9 is the newest published stable release; the newest dated section at the end of this file is the current implementation summary. In particular, old references to a Friend game-client heartbeat or a permitted-player list gating shutdown are historical: only the game server's fresh authoritative player count controls remote or automatic Stop, and positive or Unknown fails closed.
+> **Status and history:** This is a chronological implementation log, not the current architecture contract. Earlier entries preserve what was true when each slice landed and may describe behavior that has since been removed. Current authority is `AGENTS.md` plus docs 00 through 04 and the live checkout. As of 2026-09-29, v0.1.11 is the newest published stable release; the newest dated section at the end of this file is the current implementation summary. In particular, old references to a Friend game-client heartbeat or a permitted-player list gating shutdown are historical: only the game server's fresh authoritative player count controls remote or automatic Stop, and positive or Unknown fails closed.
 
 ## 2026-09-20 — Slice 1 local Host and fixture
 
@@ -1232,3 +1232,24 @@ The same journey grants Start/Stop, remotely starts a disposable Valheim protoco
 | External acceptance | Not run: loopback HTTPS and disposable fixtures do not prove a public/private Friend route, actual Friend PC, real game join, player transition, or recognizable save/restart. Those remain required before a stable real-game claim. |
 
 No version, installer, tag, release, production process, production data, real credential, real world, game binary, firewall, router, or DNS setting was changed.
+
+## 2026-09-29 - Recovery, connection, world-safety, and hosting workspaces
+
+Starting Git HEAD: `d2f3e1d`, branch `main`. This source slice completes the current local roadmap without opening, querying, stopping, restarting, replacing, or otherwise communicating with the installed TogetherServer process that was already running.
+
+- **Connection Doctor** now keeps listener, code address, outside TCP, authenticated Friend heartbeat, local game readiness, and real join evidence separate. Its in-view **Test with a Friend** session establishes a post-start heartbeat/count baseline and asks for explicit join and saved-change confirmation without storing an authorization or acceptance claim or changing network policy.
+- **World Safety Center** adds Host-only Offline manual checkpoints, completed-manifest re-verification, retained-size/free-space reporting, and Safe restart. Safe restart uses the serialized exact-process Stop, requires a successful rolling or manual offline checkpoint, and only then invokes Start; checkpoint failure leaves the server Offline. A tampered backup fails verification without changing the live world.
+- **Resilient hosting** adds an opt-in scoped Windows system-required power request only while an exact managed process is present. A long suspend/resume polling gap publishes stale readiness/player/countdown evidence as Unknown, preserves saved added-time credit, and requires a fresh probe before recreating a deadline. Tests inject a fake power adapter and never change the machine's power policy.
+- The Host **Players** workspace shows trusted count, source, freshness, timer state, saved Host/Friend time, and count-only transitions. Permission presets atomically apply Status only, Can start, or Trusted helper and clear per-server exceptions. The Attention Center groups repeated events and links reviewed categories to fixed destinations. Independent pane error boundaries keep the remaining app usable and expose a retry with no lifecycle action.
+- `contracts/host-snapshot.v1.json` is consumed by both .NET and TypeScript checks so the new power, player, and backup-capacity contract fields cannot silently drift.
+
+| Check | Result |
+| --- | --- |
+| UI tests, lint, and production bundle | Pass: Vitest 18 files / 80 tests, ESLint with zero warnings, and TypeScript/Vite production build with 41 transformed modules. |
+| Release build and source formatting | Pass: `dotnet build TogetherServer.slnx -c Release --no-restore` completed with 0 warnings and 0 errors; `dotnet format TogetherServer.slnx --verify-no-changes --no-restore` and `git diff --check` passed after one whitespace-only correction. |
+| Core Host checks | Pass: 44 groups, 0 failures. New coverage proves shared snapshot deserialization, scoped activate/clear, fail-closed resume, preserved added time, Offline-only manual backup, retained/free capacity, manifest verification/tamper failure, and Safe restart ordering with disposable files and the synthetic fixture. |
+| Companion and driver regressions | Pass: Companion 44, Valheim 10, Minecraft 8, Minecraft setup 5, Custom 6, and updater 15 groups, all with 0 failures. No terms-gated or real game binary was downloaded or run. |
+| Packaged/native/browser acceptance | Not run in this slice. The owner explicitly required no stop, start, query, or other action involving the currently running app, so installed-app, served-app, native-window, staging-process, installer, and browser interaction checks were intentionally left untouched. Source component/build evidence is not visual or installed-binary proof. |
+| External acceptance | Not run: no actual Friend PC/network, public/private route, real game join, identifiable player, Windows sleep/resume cycle, valued world, restore drill, or recognizable real-game save/restart was exercised. The guided checklist, fixture, and loopback suites do not satisfy these gates. |
+
+No version, package, installer, tag, or release was produced. The already running app and its process, listener, data, credentials, worlds, game binaries, firewall, router, DNS, and update state were not inspected or changed.

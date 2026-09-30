@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Device } from './contracts'
-import { devicePermission, globalPermissionRequest, permissionMix } from './permissionState'
+import {
+  devicePermission, globalPermissionRequest, matchingPermissionPreset,
+  permissionMix, permissionPresetRequest
+} from './permissionState'
 
 const device: Device = {
   id: 'device', profileId: 'one', assignedProfileIds: ['one', 'two'], name: 'Friend PC',
@@ -35,5 +38,22 @@ describe('Friend permission wiring', () => {
     expect(devicePermission({ ...device, serverPermissions: [] }, 'one')).toMatchObject({
       canStart: true, canStop: false, canExtendTimer: true, canViewLogs: false
     })
+  })
+
+  it('builds atomic reviewed preset requests without granting hidden actions', () => {
+    expect(permissionPresetRequest('status')).toEqual({
+      canStart: false, canStop: false, canExtendTimer: false, canViewLogs: false, scope: null
+    })
+    expect(permissionPresetRequest('start')).toEqual({
+      canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false, scope: null
+    })
+    expect(permissionPresetRequest('helper')).toEqual({
+      canStart: true, canStop: true, canExtendTimer: true, canViewLogs: true, scope: null
+    })
+  })
+
+  it('labels mixed per-server grants as Custom', () => {
+    expect(matchingPermissionPreset(device)).toBe('custom')
+    expect(matchingPermissionPreset({ ...device, canExtendTimer: false, serverPermissions: [] })).toBe('start')
   })
 })

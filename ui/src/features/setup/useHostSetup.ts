@@ -166,7 +166,8 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       ...current,
       companionListeningEnabled: settings.companionListeningEnabled,
       remoteControlsEnabled: settings.remoteControlsEnabled,
-      autoShutdownEnabled: settings.autoShutdownEnabled
+      autoShutdownEnabled: settings.autoShutdownEnabled,
+      keepAwakeWhileHosting: settings.keepAwakeWhileHosting
     } : current)
   }
 

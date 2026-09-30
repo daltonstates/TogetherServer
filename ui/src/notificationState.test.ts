@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   activityAfterMarker,
+  activityDestination,
   activityClearStorageKey,
+  collapseRepeatedActivity,
   readActivityClearMarkers,
   readActivityClearMarkersFrom,
   withActivityClearMarker,
@@ -45,5 +47,27 @@ describe('notification activity state', () => {
     const denied = () => { throw new DOMException('denied', 'SecurityError') }
     expect(readActivityClearMarkersFrom(denied)).toEqual({})
     expect(() => writeActivityClearMarkersTo(denied, { host: 'activity-id' })).not.toThrow()
+  })
+
+  it('routes actionable events without embedding commands in activity data', () => {
+    expect(activityDestination({ id: '1', category: 'Backup', action: 'BackupFailed', profileId: 'server' }))
+      .toEqual({ workspace: 'host', section: 'backups', profileId: 'server', label: 'Open world protection' })
+    expect(activityDestination({ id: '2', category: 'Access', action: 'PermissionsChanged' }))
+      .toEqual({ workspace: 'settings', section: 'access', profileId: undefined, label: 'Review Friend access' })
+    expect(activityDestination({ id: 'players', category: 'Players', action: 'CountIncreased', profileId: 'server' }))
+      .toEqual({ workspace: 'host', section: 'players', profileId: 'server', label: 'Open players & timer' })
+    expect(activityDestination({ id: '3', category: 'Other', action: 'Observed' })).toBeNull()
+  })
+
+  it('collapses repeated event kinds while retaining the newest item', () => {
+    const grouped = collapseRepeatedActivity([
+      { id: 'new', category: 'Network', action: 'RouteChanged', profileId: null },
+      { id: 'old', category: 'Network', action: 'RouteChanged', profileId: null },
+      { id: 'backup', category: 'Backup', action: 'BackupFailed', profileId: 'server' }
+    ])
+    expect(grouped).toEqual([
+      { item: { id: 'new', category: 'Network', action: 'RouteChanged', profileId: null }, repeatCount: 2 },
+      { item: { id: 'backup', category: 'Backup', action: 'BackupFailed', profileId: 'server' }, repeatCount: 1 }
+    ])
   })
 })

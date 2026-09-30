@@ -11,21 +11,25 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
     DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null,
     bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
-    bool PlayerCountTrusted = true, int FriendAddedMinutes = 0);
+    bool PlayerCountTrusted = true, int FriendAddedMinutes = 0,
+    long AddedShutdownMinutes = 0, string? PlayerObservationSource = null,
+    DateTimeOffset? PlayerCountObservedUtc = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot,
     IReadOnlyDictionary<Guid, CustomCertificationState>? CustomCertifications = null,
     IReadOnlyDictionary<Guid, CrashRecoveryState>? CrashRecovery = null,
     IReadOnlyDictionary<Guid, WorldBackupStatus>? Backups = null,
     IReadOnlyList<ActivityEvent>? Activity = null,
-    DataRecoveryView? Recovery = null);
+    DataRecoveryView? Recovery = null,
+    HostingPowerView? HostingPower = null);
 public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
     bool CanReplace, string? BlockReason = null);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
     IReadOnlyList<PortConflictView>? PortConflicts = null);
 public sealed record CountdownExtensionRequest(long Minutes);
 public sealed record HostControlPolicyChange(bool? CompanionListeningEnabled = null,
-    bool? RemoteControlsEnabled = null, bool? AutoShutdownEnabled = null);
+    bool? RemoteControlsEnabled = null, bool? AutoShutdownEnabled = null,
+    bool? KeepAwakeWhileHosting = null);
 public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string State, string Detail,
     string Source, DateTimeOffset ObservedUtc, bool Ok, int? OnlinePlayers = null,
     int? MaxPlayers = null, IReadOnlyList<string>? PlayerNames = null, bool PlayerCountTrusted = false);
@@ -46,12 +50,14 @@ public sealed class HostManager
     private readonly LocalData data;
     private readonly GameServerRegistry games;
     private readonly TimeProvider clock;
+    private readonly IHostingPowerGuard powerGuard;
     private HostSettings settings;
     private readonly List<ManagedRun> runs;
     private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
     private readonly Dictionary<Guid, long> addedShutdownMinutes = [];
     private readonly Dictionary<Guid, int> friendAddedMinutes = [];
     private readonly Dictionary<Guid, ServerObservation> observations = [];
+    private readonly HashSet<Guid> resumeRevalidationProfiles = [];
     private readonly SemaphoreSlim observationRefresh = new(1, 1);
     private readonly Dictionary<Guid, CustomCertificationSession> customCertificationSessions = [];
     private readonly List<CrashRecoveryState> crashRecovery;
@@ -60,10 +66,15 @@ public sealed class HostManager
     public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
     public HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock = null)
+        : this(data, games, clock, new NullHostingPowerGuard()) { }
+
+    internal HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock,
+        IHostingPowerGuard powerGuard)
     {
         this.data = data;
         this.games = games;
         this.clock = clock ?? TimeProvider.System;
+        this.powerGuard = powerGuard;
         settings = data.LoadSettings();
         runs = data.LoadRuns();
         crashRecovery = data.LoadCrashRecoveryStates();
@@ -192,14 +203,34 @@ public sealed class HostManager
                 var currentIds = runs.Select(run => run.ProfileId).ToHashSet();
                 foreach (var removed in observations.Keys.Where(id => !currentIds.Contains(id)).ToList())
                     observations.Remove(removed);
+                resumeRevalidationProfiles.RemoveWhere(id => !currentIds.Contains(id));
                 foreach (var result in checkedRuns)
                 {
                     var run = runs.SingleOrDefault(run => run.ProfileId == result.ProfileId && run.OperationId == result.OperationId);
                     if (run is null) continue;
                     var previousState = observations.TryGetValue(result.ProfileId, out var previousObservation)
                         ? previousObservation.State : null;
+                    var previousTrustedPlayers = previousObservation?.OperationId == result.OperationId &&
+                        previousObservation.PlayerCountTrusted
+                            ? previousObservation.OnlinePlayers
+                            : run.LastTrustedOnlinePlayers;
                     observations[result.ProfileId] = ToObservation(result.ProfileId, result.OperationId,
                         result.Health, clock.GetUtcNow());
+                    resumeRevalidationProfiles.Remove(result.ProfileId);
+                    if (result.Health.PlayerCountTrusted && result.Health.OnlinePlayers is { } currentPlayers &&
+                        currentPlayers >= 0 && currentPlayers != previousTrustedPlayers &&
+                        (previousTrustedPlayers is not null || currentPlayers > 0))
+                    {
+                        var direction = previousTrustedPlayers is null ? "observed" :
+                            currentPlayers > previousTrustedPlayers ? "increased" : "decreased";
+                        Activity("Players", direction == "increased" ? "CountIncreased" :
+                                direction == "decreased" ? "CountDecreased" : "CountObserved",
+                            previousTrustedPlayers is null
+                                ? $"A trusted player count reported {currentPlayers} online."
+                                : $"The trusted player count {direction} from {previousTrustedPlayers} to {currentPlayers}.",
+                            ActivitySeverity.Info, result.ProfileId,
+                            visibility: ActivityVisibility.AssignedFriends);
+                    }
                     if (RecordTrustedPlayerObservation(run, result.Health))
                         runsChanged = true;
                     if (previousState is not null && !string.Equals(previousState, result.Health.State, StringComparison.Ordinal))
@@ -283,7 +314,7 @@ public sealed class HostManager
         try
         {
             if (change.CompanionListeningEnabled is null && change.RemoteControlsEnabled is null &&
-                change.AutoShutdownEnabled is null)
+                change.AutoShutdownEnabled is null && change.KeepAwakeWhileHosting is null)
                 return Result(false, "InvalidPolicyChange", "Choose a Host control to change.");
 
             var next = CopySettings(settings);
@@ -296,6 +327,8 @@ public sealed class HostManager
                 next.RemoteControlsEnabled = remoteControls;
             if (change.AutoShutdownEnabled is { } automaticShutdown)
                 next.AutoShutdownEnabled = automaticShutdown;
+            if (change.KeepAwakeWhileHosting is { } keepAwake)
+                next.KeepAwakeWhileHosting = keepAwake;
             return UpdateSettingsLocked(next);
         }
         finally { gate.Release(); }
@@ -443,6 +476,11 @@ public sealed class HostManager
             addedShutdownMinutes.Clear();
             friendAddedMinutes.Clear();
         }
+        if (previous.KeepAwakeWhileHosting != next.KeepAwakeWhileHosting)
+            Activity("Lifecycle", next.KeepAwakeWhileHosting ? "KeepAwakeEnabled" : "KeepAwakeDisabled",
+                next.KeepAwakeWhileHosting
+                    ? "Windows idle sleep prevention will be requested while an exact managed server process is running."
+                    : "Windows idle sleep prevention is off.", ActivitySeverity.Important);
         var allowedRecoveryProfiles = settings.Profiles
             .Where(profile => profile.CrashRecovery.Enabled && games.TryGet(profile.Kind, out var driver) &&
                 driver.SupportsCrashRecovery)
@@ -469,6 +507,7 @@ public sealed class HostManager
         FriendTimerExtensionMinutes = source.FriendTimerExtensionMinutes,
         FriendTimerExtensionMaximumMinutes = source.FriendTimerExtensionMaximumMinutes,
         AutoShutdownEnabled = source.AutoShutdownEnabled,
+        KeepAwakeWhileHosting = source.KeepAwakeWhileHosting,
         RemoteControlsEnabled = source.RemoteControlsEnabled,
         CompanionListeningEnabled = source.CompanionListeningEnabled,
         CompanionBindAddress = source.CompanionBindAddress,
@@ -1093,6 +1132,24 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<HostSnapshot> HandleSystemResumeAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            observations.Clear();
+            shutdownDeadlines.Clear();
+            resumeRevalidationProfiles.Clear();
+            foreach (var run in runs.Where(run => Identity(run) == "Matched"))
+                resumeRevalidationProfiles.Add(run.ProfileId);
+            Activity("Lifecycle", "ResumeRevalidation",
+                "Windows resumed after a long polling gap. Server readiness, player counts, and empty-server countdowns require fresh observations.",
+                ActivitySeverity.Important, visibility: ActivityVisibility.AssignedFriends);
+            return Snapshot();
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task<IReadOnlyList<ActionResult>> MaintainCrashRecoveryAsync()
     {
         await gate.WaitAsync();
@@ -1181,6 +1238,103 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<ActionResult> CreateManualBackupAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try { return CreateManualBackupUnderGate(profileId); }
+        finally { gate.Release(); }
+    }
+
+    public async Task<WorldBackupVerificationResult> VerifyBackupAsync(Guid profileId, Guid backupId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null)
+                return new(false, "UnknownProfile", "Choose a saved profile.", backupId, clock.GetUtcNow());
+            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
+                return new(false, "BackupsUnsupported",
+                    "Backup verification is available only for reviewed built-in game drivers.", backupId, clock.GetUtcNow());
+            var verified = backups.Verify(profile, backupId);
+            Activity("Backup", verified.Ok ? "IntegrityVerified" : "IntegrityFailed",
+                verified.Ok ? "A local-owner backup integrity check completed." :
+                    "A local-owner backup integrity check failed. The live world was not changed.",
+                verified.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
+            return verified;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> SafeRestartAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired",
+                    "Review and acknowledge the recovered local data before safely restarting a server.");
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups ||
+                driver.ManagedSaveDirectory(profile) is null)
+                return Result(false, "BackupsUnsupported",
+                    "Safe restart requires a reviewed built-in driver with an offline save directory.");
+            var run = runs.SingleOrDefault(item => item.ProfileId == profileId);
+            if (run is null) return Result(false, "NotManaged", "Start the server before using Safe restart.");
+            if (Identity(run) != "Matched")
+                return Result(false, "IdentityUnknown", "Process identity is uncertain. No stop signal was sent.");
+
+            var stopped = await StopUnderGateAsync(profileId, null);
+            if (!stopped.Ok)
+                return Result(false, stopped.Code, "Safe restart did not stop the server. " + stopped.Message,
+                    stopped.PortConflicts);
+            var rollingCheckpointCompleted = profile.Backups.Enabled && stopped.Code != "StoppedBackupFailed";
+            if (!rollingCheckpointCompleted)
+            {
+                var backup = CreateManualBackupUnderGate(profileId);
+                if (!backup.Ok)
+                    return Result(false, "SafeRestartBackupFailed",
+                        $"{profile.Name} stopped gracefully and remains offline because its checkpoint failed. {backup.Message}");
+            }
+            var started = StartUnderGate(profileId, false);
+            if (!started.Ok)
+                return Result(false, "SafeRestartStartFailed",
+                    $"{profile.Name} stopped and its checkpoint completed, but it could not start again. {started.Message}",
+                    started.PortConflicts);
+            Activity("Backup", "SafeRestartCompleted",
+                "The server stopped gracefully, completed an offline checkpoint, and started again.",
+                ActivitySeverity.Important, profileId);
+            return Result(true, "SafeRestartCompleted",
+                $"{profile.Name} stopped gracefully, completed an offline checkpoint, and started again.");
+        }
+        finally { gate.Release(); }
+    }
+
+    private ActionResult CreateManualBackupUnderGate(Guid profileId)
+    {
+        if (data.Recovery.LifecycleBlocked)
+            return Result(false, "DataRecoveryRequired",
+                "Review and acknowledge the recovered local data before creating a backup.");
+        var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+        if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
+            return Result(false, "BackupsUnsupported",
+                "Manual backups are available only for reviewed built-in game drivers.");
+        var activeSave = BlockIfSaveDirectoryActive(profile, "creating a manual backup");
+        if (activeSave is not null) return activeSave;
+        var saveDirectory = driver.ManagedSaveDirectory(profile);
+        if (saveDirectory is null)
+            return Result(false, "BackupsUnsupported",
+                "The selected driver does not expose a reviewed save-only directory.");
+        var created = backups.Create(profile, BackupKinds.Manual, saveDirectory);
+        Activity("Backup", created.Ok ? "ManualBackupCompleted" : "ManualBackupFailed",
+            created.Ok ? "A local-owner offline backup completed." :
+                "A local-owner offline backup failed. Review world protection.",
+            created.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
+        return Result(created.Ok, created.Ok ? "ManualBackupCompleted" : created.Code, created.Message);
+    }
+
     public async Task<ActionResult> RestoreBackupAsync(Guid profileId, Guid backupId)
     {
         await gate.WaitAsync();
@@ -1193,17 +1347,8 @@ public sealed class HostManager
             if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
             if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
                 return Result(false, "BackupsUnsupported", "Backups and restore are available only for reviewed built-in game drivers.");
-            var run = runs.SingleOrDefault(item => item.ProfileId == profileId);
-            if (run is not null)
-            {
-                var identity = Identity(run);
-                if (identity == "Missing")
-                    ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.ProcessExitedBeforeRestore);
-                else return Result(false, identity == "Matched" ? "ServerRunning" : "IdentityUnknown",
-                    identity == "Matched"
-                        ? "Stop the server gracefully before restoring a backup."
-                        : "Process identity is uncertain, so restore remains blocked.");
-            }
+            var activeSave = BlockIfSaveDirectoryActive(profile, "restoring a backup");
+            if (activeSave is not null) return activeSave;
             if (crashRecovery.RemoveAll(item => item.ProfileId == profileId) > 0)
                 data.SaveCrashRecoveryStates(crashRecovery);
             var saveDirectory = driver.ManagedSaveDirectory(profile);
@@ -1216,6 +1361,31 @@ public sealed class HostManager
             return Result(restored.Ok, restored.Code, restored.Message);
         }
         finally { gate.Release(); }
+    }
+
+    private ActionResult? BlockIfSaveDirectoryActive(ServerProfile profile, string action)
+    {
+        foreach (var run in runs.Where(item => WorldConflict(item, profile)).ToList())
+        {
+            var identity = Identity(run);
+            if (identity == "Missing")
+            {
+                ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.ProcessExitedBeforeRestore);
+                continue;
+            }
+            var sameProfile = run.ProfileId == profile.Id;
+            var runningName = settings.Profiles.SingleOrDefault(item => item.Id == run.ProfileId)?.Name ?? "another server";
+            if (identity == "Matched")
+                return Result(false, sameProfile ? "ServerRunning" : "WorldRunning",
+                    sameProfile
+                        ? $"Stop the server gracefully before {action}."
+                        : $"{runningName} is using the same save directory. Stop it gracefully before {action}.");
+            return Result(false, "IdentityUnknown",
+                sameProfile
+                    ? $"Process identity is uncertain, so {action} remains blocked."
+                    : $"Process identity for {runningName} is uncertain. Resolve that run before {action}.");
+        }
+        return null;
     }
 
     public async Task<ActionResult> ExtendAutoShutdownAsync(Guid profileId, long minutes)
@@ -1517,6 +1687,8 @@ public sealed class HostManager
                         : "A recorded run remains authoritative, but its saved server profile and exact process identity are unavailable.",
                 run.ProcessId, run.DeclaredPorts, PlayerCountTrusted: false));
         }
+        var currentRunIds = runs.Select(run => run.ProfileId).ToHashSet();
+        resumeRevalidationProfiles.RemoveWhere(id => !currentRunIds.Contains(id));
         var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
         if (recovery.LifecycleBlocked)
         {
@@ -1536,7 +1708,8 @@ public sealed class HostManager
             var view = views[index] with
             {
                 HostAddedTime = AddedTimeIsActive(views[index].ProfileId),
-                FriendAddedMinutes = friendAddedMinutes.GetValueOrDefault(views[index].ProfileId)
+                FriendAddedMinutes = friendAddedMinutes.GetValueOrDefault(views[index].ProfileId),
+                AddedShutdownMinutes = addedShutdownMinutes.GetValueOrDefault(views[index].ProfileId)
             };
             views[index] = view;
             if (recovery.LifecycleBlocked)
@@ -1546,14 +1719,25 @@ public sealed class HostManager
                     AutoShutdownAtUtc = null,
                     AutoShutdownReason = "Automatic lifecycle actions are paused until the owner reviews recovered local data.",
                     HostAddedTime = false,
-                    FriendAddedMinutes = 0
+                    FriendAddedMinutes = 0,
+                    AddedShutdownMinutes = 0
                 };
                 continue;
             }
             if (view.State != "Ready")
             {
+                if (resumeRevalidationProfiles.Contains(view.ProfileId))
+                {
+                    CancelCountdown(view.ProfileId, "Windows resumed and a fresh server observation is pending.");
+                    views[index] = view with
+                    {
+                        AutoShutdownReason = WithSavedTime(view.ProfileId,
+                            "Waiting for a fresh post-resume player count before automatic shutdown can continue.")
+                    };
+                    continue;
+                }
                 CancelCountdown(view.ProfileId, "The server is no longer Ready.", true);
-                views[index] = view with { HostAddedTime = false, FriendAddedMinutes = 0 };
+                views[index] = view with { HostAddedTime = false, FriendAddedMinutes = 0, AddedShutdownMinutes = 0 };
                 continue;
             }
             if (!settings.AutoShutdownEnabled)
@@ -1563,7 +1747,8 @@ public sealed class HostManager
                 {
                     AutoShutdownReason = "Automatic shutdown is off.",
                     HostAddedTime = false,
-                    FriendAddedMinutes = 0
+                    FriendAddedMinutes = 0,
+                    AddedShutdownMinutes = 0
                 };
                 continue;
             }
@@ -1614,6 +1799,7 @@ public sealed class HostManager
                 AutoShutdownAtUtc = deadline
             };
         }
+        var hostingPower = ReconcileHostingPower();
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
                 .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
@@ -1623,13 +1809,38 @@ public sealed class HostManager
             crashRecovery.ToDictionary(item => item.ProfileId, item => item),
             settings.Profiles.ToDictionary(profile => profile.Id, profile => backups.Status(profile.Id)),
             data.LoadActivity(100),
-            recovery);
+            recovery,
+            hostingPower);
     }
 
-    private static RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health) =>
-        new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
+    private HostingPowerView ReconcileHostingPower()
+    {
+        var managedServerRunning = runs.Any(run => Identity(run) == "Matched");
+        var required = settings.KeepAwakeWhileHosting && managedServerRunning;
+        powerGuard.SetRequired(required);
+        if (!settings.KeepAwakeWhileHosting)
+            return new(false, managedServerRunning, false, "Disabled",
+                "Turn this on if Windows idle sleep should be prevented only while a managed server is running.");
+        if (!managedServerRunning)
+            return new(true, false, false, "Waiting",
+                "No exact managed server process is running, so no power request is active.");
+        if (powerGuard.IsActive)
+            return new(true, true, true, "Active",
+                "Windows idle sleep is being prevented while the managed server runs. Manual sleep can still interrupt hosting.");
+        return new(true, true, false, "Unavailable",
+            powerGuard.LastError ?? "The Windows power request is unavailable. Hosting continues without sleep prevention.");
+    }
+
+    private RunView DriverView(Guid profileId, ManagedRun run, GameHealthResult health)
+    {
+        observations.TryGetValue(profileId, out var observation);
+        var matchingObservation = observation?.OperationId == run.OperationId ? observation : null;
+        return new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
             health.OnlinePlayers, health.MaxPlayers, PlayerNames: health.PlayerNames,
-            PlayerCountTrusted: health.PlayerCountTrusted);
+            PlayerCountTrusted: health.PlayerCountTrusted,
+            PlayerObservationSource: matchingObservation?.Source,
+            PlayerCountObservedUtc: matchingObservation?.ObservedUtc);
+    }
 
     private void CancelCountdown(Guid profileId, string reason, bool discardAddedTime = false)
     {

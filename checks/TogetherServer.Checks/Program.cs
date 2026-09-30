@@ -74,6 +74,21 @@ LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
 HostManager Manager(LocalData data) => new(data, Games(data));
 
+await Check("shared Host snapshot fixture matches the backend contract", async () =>
+{
+    var fixtureJson = await File.ReadAllTextAsync(Path.GetFullPath("contracts/host-snapshot.v1.json"));
+    var fixtureSnapshot = JsonSerializer.Deserialize<HostSnapshot>(fixtureJson,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var profileId = Guid.Parse("11111111-1111-4111-8111-111111111111");
+    Require(fixtureSnapshot is not null && fixtureSnapshot.Mode == "Host" &&
+        fixtureSnapshot.Settings.KeepAwakeWhileHosting &&
+        fixtureSnapshot.Runs.Single().AddedShutdownMinutes == 25 &&
+        fixtureSnapshot.Runs.Single().PlayerObservationSource == "FixtureReady" &&
+        fixtureSnapshot.Backups![profileId].RetainedSizeBytes == 4096 &&
+        fixtureSnapshot.HostingPower is { State: "Active", RequestActive: true },
+        "the checked-in shared Host snapshot no longer matches backend records");
+});
+
 await Check("owner diagnostics reuse canonical state and support export stays bounded and redacted", async () =>
 {
     using var data = Data("owner-diagnostics");
@@ -1540,6 +1555,99 @@ await Check("crash recovery suspends a live process that never becomes Ready", a
     Require((await manager.StopAsync(profile.Id)).Ok, "timed-out recovery fixture cleanup failed");
 });
 
+await Check("hosting power request and resume revalidation stay scoped and fail closed", async () =>
+{
+    using var data = Data("hosting-power-resume");
+    var clock = new ManualTimeProvider(DateTimeOffset.Parse("2026-09-29T12:00:00Z"));
+    var profile = Profile("hosting-power-resume", "hosting-power-resume", FreePort());
+    var settings = Settings(profile);
+    settings.KeepAwakeWhileHosting = true;
+    settings.AutoShutdownEnabled = true;
+    settings.IdleMinutes = 1;
+    var driver = new ObservationFixtureDriver
+    {
+        HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+            OnlinePlayers: 0, MaxPlayers: 10, PlayerCountTrusted: true)
+    };
+    using var power = new RecordingPowerGuard();
+    var manager = new HostManager(data, new GameServerRegistry([driver]), clock, power);
+    Require((await manager.UpdateSettingsAsync(settings)).Ok && !power.IsActive,
+        "the scoped power request activated while no managed server was running");
+    Require((await manager.StartAsync(profile.Id)).Ok && power.IsActive,
+        "the scoped power request did not activate for the exact managed process");
+    await manager.RefreshObservationsAsync();
+    Require((await manager.ExtendAutoShutdownAsync(profile.Id, 5)).Ok, "could not save countdown time");
+    var beforeResume = await manager.SnapshotAsync();
+    Require(beforeResume.Runs.Single().AutoShutdownAtUtc is not null &&
+        beforeResume.Runs.Single().AddedShutdownMinutes == 5,
+        "the trusted zero-player observation did not start the fixture countdown");
+
+    clock.Advance(TimeSpan.FromMinutes(10));
+    var resumed = await manager.HandleSystemResumeAsync();
+    var resumedRun = resumed.Runs.Single();
+    Require(resumedRun.AutoShutdownAtUtc is null && !resumedRun.PlayerCountTrusted &&
+        resumedRun.AddedShutdownMinutes == 5 && power.IsActive,
+        "resume reused stale readiness/count data, discarded saved time, or dropped the live scoped request");
+    await manager.RefreshObservationsAsync();
+    var refreshed = await manager.SnapshotAsync();
+    Require(refreshed.Runs.Single().AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(6),
+        "a fresh trusted post-resume observation did not create a new bounded countdown");
+    Require((await manager.StopAsync(profile.Id)).Ok && !power.IsActive,
+        "the scoped power request was not cleared after confirmed fixture Stop");
+    Require(power.Requests.Contains(true) && power.Requests.Last() == false,
+        "the power guard did not receive a scoped activate-then-clear lifecycle");
+});
+
+await Check("manual backup verification and Safe restart protect the live world", async () =>
+{
+    using var data = Data("manual-backup-safe-restart");
+    var profile = Profile("manual-backup-safe-restart-world", "manual-backup-safe-restart", FreePort());
+    var alias = Profile("manual-backup-safe-restart-alias", "manual-backup-safe-restart-alias", FreePort());
+    alias.WorldId = profile.WorldId;
+    alias.WorldDirectory = profile.WorldDirectory;
+    profile.Backups = new BackupOptions { Enabled = false, RetentionCount = 5, MinimumFreeSpaceMb = 0 };
+    var marker = Path.Combine(profile.WorldDirectory, "world.txt");
+    File.WriteAllText(marker, "offline checkpoint");
+    var manager = Manager(data);
+    var settings = Settings(profile);
+    settings.Profiles.Add(alias);
+    Require((await manager.UpdateSettingsAsync(settings)).Ok, "settings failed");
+    var manual = await manager.CreateManualBackupAsync(profile.Id);
+    var list = await manager.BackupsAsync(profile.Id);
+    var first = list.Backups.Single();
+    Require(manual.Ok && first.BackupKind == BackupKinds.Manual &&
+        list.Status.RetainedSizeBytes > 0 && list.Status.AvailableSpaceBytes is > 0,
+        "offline Back up now did not create a visible manual checkpoint with capacity evidence");
+    Require((await manager.VerifyBackupAsync(profile.Id, first.Id)).Ok,
+        "a newly completed manual checkpoint did not pass manifest verification");
+
+    var payload = Path.Combine(data.BackupsRoot, profile.Id.ToString("N"),
+        first.Id.ToString("N") + ".backup", "payload", "world.txt");
+    File.WriteAllText(payload, "tampered checkpoint");
+    File.WriteAllText(marker, "live world remains");
+    var tampered = await manager.VerifyBackupAsync(profile.Id, first.Id);
+    Require(!tampered.Ok && tampered.Code == "BackupIntegrityFailed" &&
+        File.ReadAllText(marker) == "live world remains",
+        "verification accepted tampering or changed the live world");
+
+    Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
+    Require((await manager.CreateManualBackupAsync(profile.Id)).Code == "ServerRunning",
+        "manual backup copied a world while its exact managed process was running");
+    Require((await manager.CreateManualBackupAsync(alias.Id)).Code == "WorldRunning",
+        "manual backup copied a save directory owned by another live profile");
+    var restarted = await manager.SafeRestartAsync(profile.Id);
+    Require(restarted.Ok && restarted.Code == "SafeRestartCompleted" && data.LoadRuns().Count == 1,
+        "Safe restart did not complete its graceful Stop, offline checkpoint, then Start sequence");
+    list = await manager.BackupsAsync(profile.Id);
+    Require(list.Backups.Count(item => item.BackupKind == BackupKinds.Manual) == 2 &&
+        list.Backups.First().BackupKind == BackupKinds.Manual,
+        "Safe restart did not retain its offline manual checkpoint");
+    Directory.Delete(profile.WorldDirectory, recursive: true);
+    var failedRestart = await manager.SafeRestartAsync(profile.Id);
+    Require(!failedRestart.Ok && failedRestart.Code == "SafeRestartBackupFailed" && data.LoadRuns().Count == 0,
+        "Safe restart launched again after its required offline checkpoint failed");
+});
+
 await Check("graceful stop backup and offline restore protect the world", async () =>
 {
     using var data = Data("backup-integration");
@@ -1624,6 +1732,9 @@ await Check("backup staging, integrity, retention, and free-space checks fail cl
     File.WriteAllText(marker, "live remains");
     Require(!service.Restore(profile, second.Backup.Id).Ok && File.ReadAllText(marker) == "live remains",
         "tampered backup changed the live save directory");
+    File.WriteAllText(Path.Combine(Path.GetDirectoryName(selectedPath)!, "..", "complete.json"), "{");
+    Require(!service.Verify(profile, second.Backup.Id).Ok && File.ReadAllText(marker) == "live remains",
+        "a malformed completion manifest escaped typed verification failure or changed the live save directory");
 
     var stageRoot = Path.Combine(data.BackupsRoot, profile.Id.ToString("N"));
     var abandoned = Path.Combine(stageRoot, Guid.NewGuid().ToString("N") + ".staging");
@@ -1814,4 +1925,17 @@ sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
     private DateTimeOffset utcNow = utcNow;
     public override DateTimeOffset GetUtcNow() => utcNow;
     public void Advance(TimeSpan value) => utcNow = utcNow.Add(value);
+}
+
+sealed class RecordingPowerGuard : IHostingPowerGuard
+{
+    public List<bool> Requests { get; } = [];
+    public bool IsActive { get; private set; }
+    public string? LastError => null;
+    public void SetRequired(bool required)
+    {
+        Requests.Add(required);
+        IsActive = required;
+    }
+    public void Dispose() => SetRequired(false);
 }

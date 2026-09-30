@@ -81,6 +81,7 @@ public sealed record RecentServerSessionsResult(bool Ok, string Code, string Mes
 public static class BackupKinds
 {
     public const string Rolling = "Rolling";
+    public const string Manual = "Manual";
     public const string PreRestore = "PreRestore";
 }
 
@@ -111,9 +112,12 @@ public sealed class BackupCatalog
 }
 
 public sealed record WorldBackupStatus(Guid ProfileId, DateTimeOffset? LastSuccessfulUtc,
-    DateTimeOffset? LastFailureUtc, string? LastFailure, int CompletedCount);
+    DateTimeOffset? LastFailureUtc, string? LastFailure, int CompletedCount,
+    long RetainedSizeBytes = 0, long? AvailableSpaceBytes = null);
 public sealed record WorldBackupList(IReadOnlyList<WorldBackupRecord> Backups, WorldBackupStatus Status);
 public sealed record WorldBackupResult(bool Ok, string Code, string Message, WorldBackupRecord? Backup = null);
+public sealed record WorldBackupVerificationResult(bool Ok, string Code, string Message,
+    Guid BackupId, DateTimeOffset CheckedUtc);
 public sealed record RestoreBackupRequest(Guid BackupId);
 
 internal static class WorldRestorePhases
@@ -184,8 +188,16 @@ internal sealed class WorldBackupService
             var completed = catalog.Records.Where(item => item.ProfileId == profileId).ToList();
             var failure = catalog.Failures.Where(item => item.ProfileId == profileId)
                 .OrderByDescending(item => item.FailedUtc).FirstOrDefault();
+            long retainedSize;
+            try { retainedSize = completed.Aggregate(0L, (total, item) => checked(total + item.SizeBytes)); }
+            catch (OverflowException) { retainedSize = long.MaxValue; }
+            long? freeSpace = null;
+            try { freeSpace = availableSpace(data.BackupsRoot); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or
+                NotSupportedException or System.ComponentModel.Win32Exception)
+            { }
             return new(profileId, completed.Count == 0 ? null : completed.Max(item => item.CreatedUtc),
-                failure?.FailedUtc, failure?.Message, completed.Count);
+                failure?.FailedUtc, failure?.Message, completed.Count, retainedSize, freeSpace);
         }
     }
 
@@ -202,7 +214,7 @@ internal sealed class WorldBackupService
             var stage = Path.Combine(profileRoot, id.ToString("N") + ".staging");
             try
             {
-                if (backupKind is not (BackupKinds.Rolling or BackupKinds.PreRestore))
+                if (backupKind is not (BackupKinds.Rolling or BackupKinds.Manual or BackupKinds.PreRestore))
                     throw new InvalidDataException("Unknown backup kind.");
                 var source = SafeWorldRoot(saveDirectory);
                 if (Contains(source, data.BackupsRoot) || Contains(data.BackupsRoot, source))
@@ -262,7 +274,45 @@ internal sealed class WorldBackupService
                 catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException or InvalidOperationException) { }
                 try { RecordFailure(profile.Id, "BackupFailed", ex.Message); }
                 catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException or InvalidDataException) { }
-                return new(false, "BackupFailed", "The server stopped, but its rolling backup failed: " + ex.Message);
+                var purpose = backupKind == BackupKinds.Rolling
+                    ? "The server stopped, but its rolling backup failed: "
+                    : backupKind == BackupKinds.PreRestore
+                        ? "The required pre-restore snapshot failed: "
+                        : "The manual backup failed: ";
+                return new(false, "BackupFailed", purpose + ex.Message);
+            }
+        }
+    }
+
+    public WorldBackupVerificationResult Verify(ServerProfile profile, Guid backupId)
+    {
+        lock (sync)
+        {
+            var checkedUtc = clock.GetUtcNow();
+            var record = data.LoadBackupCatalog().Records
+                .SingleOrDefault(item => item.Id == backupId && item.ProfileId == profile.Id);
+            if (record is null)
+                return new(false, "BackupNotFound", "Choose a completed backup for this server.", backupId, checkedUtc);
+            if (!string.Equals(record.Kind, profile.Kind, StringComparison.Ordinal) ||
+                !string.Equals(record.WorldId, profile.WorldId, StringComparison.Ordinal))
+                return new(false, "BackupProfileMismatch",
+                    "That backup belongs to a different game or world configuration.", backupId, checkedUtc);
+            try
+            {
+                ReadAndVerifyManifest(record, BackupDirectory(profile.Id, backupId));
+                data.TryAudit($"backup-verified {profile.Id} {backupId} {checkedUtc:O}");
+                return new(true, "BackupVerified",
+                    $"Backup integrity verified across {record.FileCount} files.", backupId, checkedUtc);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       InvalidOperationException or NotSupportedException or
+                                       System.ComponentModel.Win32Exception or CryptographicException or OverflowException or
+                                       JsonException)
+            {
+                try { RecordFailure(profile.Id, "BackupIntegrityFailed", ex.Message); }
+                catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException or InvalidDataException) { }
+                return new(false, "BackupIntegrityFailed",
+                    "Backup integrity could not be verified. The live world was not changed.", backupId, checkedUtc);
             }
         }
     }
@@ -280,8 +330,8 @@ internal sealed class WorldBackupService
             var catalog = data.LoadBackupCatalog();
             var record = catalog.Records.SingleOrDefault(item => item.Id == backupId && item.ProfileId == profile.Id);
             if (record is null) return new(false, "BackupNotFound", "Choose a completed backup for this server.");
-            if (!record.Kind.Equals(profile.Kind, StringComparison.Ordinal) ||
-                !record.WorldId.Equals(profile.WorldId, StringComparison.Ordinal))
+            if (!string.Equals(record.Kind, profile.Kind, StringComparison.Ordinal) ||
+                !string.Equals(record.WorldId, profile.WorldId, StringComparison.Ordinal))
                 return new(false, "BackupProfileMismatch", "That backup belongs to a different game or world configuration.");
             var sourceDirectory = BackupDirectory(profile.Id, backupId);
             try
@@ -364,7 +414,8 @@ internal sealed class WorldBackupService
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
-                                       InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception or CryptographicException or OverflowException)
+                                       InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception or
+                                       CryptographicException or OverflowException or JsonException)
             {
                 try { RecordFailure(profile.Id, "RestoreFailed", ex.Message); }
                 catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException or InvalidDataException) { }
@@ -397,10 +448,13 @@ internal sealed class WorldBackupService
         var manifest = File.Exists(marker)
             ? JsonSerializer.Deserialize<BackupManifest>(File.ReadAllText(marker), Json)
             : null;
-        if (manifest is null || manifest.BackupId != record.Id || manifest.ProfileId != record.ProfileId ||
-            !manifest.Kind.Equals(record.Kind, StringComparison.Ordinal) ||
-            !manifest.WorldId.Equals(record.WorldId, StringComparison.Ordinal) ||
-            manifest.Files.Count != record.FileCount)
+        if (manifest is null || manifest.Files is null || manifest.Files.Any(file => file is null) ||
+            manifest.BackupId != record.Id || manifest.ProfileId != record.ProfileId ||
+            !string.Equals(manifest.Kind, record.Kind, StringComparison.Ordinal) ||
+            !string.Equals(manifest.WorldId, record.WorldId, StringComparison.Ordinal) ||
+            !string.Equals(manifest.BackupKind, record.BackupKind, StringComparison.Ordinal) ||
+            manifest.CreatedUtc != record.CreatedUtc || manifest.Files.Count != record.FileCount ||
+            manifest.Files.Aggregate(0L, (total, file) => checked(total + file.Length)) != record.SizeBytes)
             throw new InvalidDataException("The backup completion marker is missing or does not match its catalog record.");
         VerifyTree(Path.Combine(directory, "payload"), manifest.Files);
         return manifest;
