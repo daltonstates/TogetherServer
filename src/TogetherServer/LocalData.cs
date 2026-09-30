@@ -57,6 +57,7 @@ public sealed class ServerProfile
     public int GamePort { get; set; } = 2456;
     public string ExecutablePath { get; set; } = "";
     public MinecraftOptions? Minecraft { get; set; }
+    public FactorioOptions? Factorio { get; set; }
     public CustomGameOptions? Custom { get; set; }
     public CrashRecoveryOptions CrashRecovery { get; set; } = new();
     public BackupOptions Backups { get; set; } = new();
@@ -84,6 +85,11 @@ public sealed class BackupOptions
 public sealed class MinecraftOptions
 {
     public string ServerJarPath { get; set; } = "";
+}
+
+public sealed class FactorioOptions
+{
+    public int RconPort { get; set; } = 27015;
 }
 
 public sealed class CustomGameOptions
@@ -153,7 +159,12 @@ public sealed class LocalData : IDisposable
     public string ManagedWorldsRoot => Path.Combine(root, "worlds");
     public string MinecraftInstallRoot => Path.Combine(root, "minecraft-servers");
     public string MinecraftRuntimeRoot => Path.Combine(root, "minecraft-runtimes");
+    public string FactorioServersRoot => Path.Combine(root, "factorio-servers");
     public string BackupsRoot => Path.Combine(root, "backups");
+    internal string RootPath => root;
+    internal string LogsRoot => Path.Combine(root, "logs");
+    internal string RestoreRehearsalsRoot => Path.Combine(root, "restore-rehearsals");
+    internal string UpdateCheckpointsRoot => Path.Combine(root, "update-checkpoints");
     public string NewWorldDirectory(Guid profileId) => Path.Combine(ManagedWorldsRoot, profileId.ToString("N"));
     public bool OwnsNewWorld(ServerProfile profile) =>
         Load("new-world-ownership.json", new List<NewWorldOwnership>()).Any(item =>
@@ -265,6 +276,20 @@ public sealed class LocalData : IDisposable
     {
         var bytes = LoadProtected($"valheim-password-{profileId:N}.protected");
         return bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes);
+    }
+    public string LoadOrCreateFactorioRconPassword(Guid profileId)
+    {
+        var name = $"factorio-rcon-{profileId:N}.protected";
+        var existing = LoadProtected(name);
+        if (existing is not null)
+        {
+            var value = Encoding.UTF8.GetString(existing);
+            if (value.Length is >= 32 and <= 128 && !value.Any(char.IsControl)) return value;
+            QuarantineState(name, "TogetherServer disabled invalid protected Factorio RCON access.", false);
+        }
+        var created = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        SaveProtected(name, Encoding.UTF8.GetBytes(created));
+        return created;
     }
     public bool HasCustomScripts(Guid profileId) => HasProtected($"custom-scripts-{profileId:N}.protected");
     public void SaveCustomScripts(Guid profileId, CustomScriptBundle scripts) =>

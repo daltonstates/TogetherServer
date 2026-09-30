@@ -1,6 +1,6 @@
 # Game support catalog
 
-Updated 2026-09-23. This is the exhaustive **evaluated backlog for TogetherServer**, not a claim that every multiplayer game ever released has been discovered. A game belongs here only when it is a plausible Windows-first local Host target or a frequently requested game whose current distribution model blocks local hosting. Recheck upstream documentation before implementation because server binaries, ports, protocols, and licensing change.
+Updated 2026-09-30. This is the exhaustive **evaluated backlog for TogetherServer**, not a claim that every multiplayer game ever released has been discovered. A game belongs here only when it is a plausible Windows-first local Host target or a frequently requested game whose current distribution model blocks local hosting. Recheck upstream documentation before implementation because server binaries, ports, protocols, and licensing change.
 
 ## What "support" means
 
@@ -21,6 +21,7 @@ A built-in driver is accepted only after fixed arguments, declared ports, real r
 | Valheim | Built-in | Real join/save/restart and public Friend route remain separately recorded gates. |
 | Minecraft: Java Edition | Built-in preview | Fixture-tested; owner-installed server join, player transition, and save/restart remain. |
 | Minecraft: Bedrock Edition | Built-in preview | Fixture-tested; owner-installed server join, player transition, and save/restart remain. |
+| Factorio | Built-in preview | Fixture-tested fixed RCON lifecycle and managed save copy; owner-installed client join, player transition, save/restart/restore, and intended routes remain. |
 
 ## Recommended built-in order
 
@@ -28,12 +29,12 @@ These give the best early coverage across common server shapes instead of adding
 
 | Wave | Games | Why this group |
 | --- | --- | --- |
-| 1 | Factorio; Terraria; Project Zomboid; Palworld; Satisfactory | Covers direct executable/headless launch, configuration files, console or admin APIs, UDP/TCP status, and different save layouts. |
+| 1 | Terraria; Project Zomboid; Palworld; Satisfactory | Covers direct executable/headless launch, configuration files, console or admin APIs, UDP/TCP status, and different save layouts. Factorio has moved into built-in preview. |
 | 2 | V Rising; 7 Days to Die; Enshrouded; Core Keeper; Don't Starve Together | Popular persistent co-op servers with Windows tooling, but authentication, query, or graceful-stop details need game-specific review. |
 | 3 | ARK: Survival Ascended; ARK: Survival Evolved; Conan Exiles; Rust; Space Engineers | High demand but larger installs, more ports/settings, longer startup, and more complicated admin/query acceptance. |
 | 4 | Source/GoldSrc family | One reviewed protocol/console foundation can cover several titles, but each game still needs explicit ports, app identity, and save/map behavior. |
 
-Factorio documents a headless server and save-on-exit behavior; Terraria documents a dedicated server executable and config-file launch; Satisfactory has a Windows server plus query/HTTPS management interfaces; and V Rising publishes Windows dedicated-server and RCON instructions. Those upstream surfaces make them credible candidates, not accepted drivers.
+Terraria documents a dedicated server executable and config-file launch; Satisfactory has a Windows server plus query/HTTPS management interfaces; and V Rising publishes Windows dedicated-server and RCON instructions. Those upstream surfaces make them credible candidates, not accepted drivers. Factorio's documented headless/RCON surface now has a reviewed preview driver, but its real-game gates remain open.
 
 ## Windows-first candidate inventory
 
@@ -144,7 +145,7 @@ Every game below can use **Custom now** if the owner supplies reviewed scripts a
 | Colony Survival | Candidate | Headless server commands, player list, and world save Stop. |
 | DCS World Dedicated Server | Candidate | Large updater/install, WebGUI auth, mission/player status, and shutdown. |
 | Euro Truck Simulator 2 | Candidate | Convoy server token/config, player status, and session Stop. |
-| Factorio | Next | Fixed save/config launch, RCON/player state, save command, and exit. |
+| Factorio | Built-in preview | Managed copy-first save, fixed launch, authenticated RCON count, and `/quit` are fixture-tested; real join/save/restart/restore acceptance remains. |
 | Farming Simulator 22 | Candidate | Game license/web admin requirements, savegame slot, and shutdown. |
 | Farming Simulator 25 | Candidate | Game license/web admin requirements, savegame slot, and shutdown. |
 | IL-2 Sturmovik: Great Battles | Candidate | DServer account/config, player status, mission rotation, and Stop. |

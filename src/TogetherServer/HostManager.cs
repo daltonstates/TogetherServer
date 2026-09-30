@@ -21,7 +21,9 @@ public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> 
     IReadOnlyDictionary<Guid, WorldBackupStatus>? Backups = null,
     IReadOnlyList<ActivityEvent>? Activity = null,
     DataRecoveryView? Recovery = null,
-    HostingPowerView? HostingPower = null);
+    HostingPowerView? HostingPower = null,
+    StorageHealthView? StorageHealth = null,
+    StartupRecoveryView? StartupRecovery = null);
 public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadOnlyList<GamePort> SharedPorts,
     bool CanReplace, string? BlockReason = null);
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
@@ -62,6 +64,8 @@ public sealed class HostManager
     private readonly Dictionary<Guid, CustomCertificationSession> customCertificationSessions = [];
     private readonly List<CrashRecoveryState> crashRecovery;
     private readonly WorldBackupService backups;
+    private readonly StorageHealthService storageHealth;
+    private readonly StartupRecoveryService? startupRecovery;
 
     public HostManager(LocalData data) : this(data, new GameServerRegistry(data), TimeProvider.System) { }
 
@@ -69,12 +73,13 @@ public sealed class HostManager
         : this(data, games, clock, new NullHostingPowerGuard()) { }
 
     internal HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock,
-        IHostingPowerGuard powerGuard)
+        IHostingPowerGuard powerGuard, StartupRecoveryService? startupRecovery = null)
     {
         this.data = data;
         this.games = games;
         this.clock = clock ?? TimeProvider.System;
         this.powerGuard = powerGuard;
+        this.startupRecovery = startupRecovery;
         settings = data.LoadSettings();
         runs = data.LoadRuns();
         crashRecovery = data.LoadCrashRecoveryStates();
@@ -87,6 +92,7 @@ public sealed class HostManager
         }
         if (recoveryNormalized) data.SaveCrashRecoveryStates(crashRecovery);
         backups = new WorldBackupService(data, this.clock);
+        storageHealth = new StorageHealthService(data, this.clock);
     }
 
     internal async Task<ManagedServerLogSource?> ResolveServerLogSourceAsync(Guid profileId)
@@ -260,7 +266,7 @@ public sealed class HostManager
                             visibility: ActivityVisibility.AssignedFriends);
                     }
                 }
-                if (runsChanged) data.SaveRuns(runs);
+                if (runsChanged) SaveRunsState();
                 if (recoveryChanged) data.SaveCrashRecoveryStates(crashRecovery);
             }
             finally { gate.Release(); }
@@ -298,7 +304,7 @@ public sealed class HostManager
     }
 
     private static bool ShouldRetryPlayerCount(ManagedRun run, GameHealthResult health) =>
-        run.Kind is GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock &&
+        run.Kind is GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Factorio &&
         health.OnlinePlayers is null && health.State is "Starting" or "Ready";
 
     public async Task<ActionResult> UpdateSettingsAsync(HostSettings next)
@@ -345,6 +351,7 @@ public sealed class HostManager
             profile.CrashRecovery ??= new CrashRecoveryOptions();
             profile.Backups ??= new BackupOptions();
             profile.Maintenance ??= new MaintenanceOptions();
+            if (profile.Kind == GameKinds.Factorio) profile.Factorio ??= new FactorioOptions();
         }
         if (settings.PublicGameIpCheckedUtc is { } recorded &&
             (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
@@ -1020,14 +1027,14 @@ public sealed class HostManager
         observations.Remove(profileId);
         driver.PrepareStart(profile, run);
         runs.Add(run);
-        data.SaveRuns(runs); // An interrupted launch stays Unknown, blocking a second writer.
+        SaveRunsState(); // An interrupted launch stays Unknown, blocking a second writer.
         try
         {
             var launch = driver.Start(profile, run);
             run.ProcessId = launch.ProcessId;
             using (var started = Process.GetProcessById(run.ProcessId.Value))
                 run.StartTimeUtcTicks = started.StartTime.ToUniversalTime().Ticks;
-            data.SaveRuns(runs);
+            SaveRunsState();
             Activity("Lifecycle", "Started", $"{profile.Name} started.", ActivitySeverity.Important,
                 profile.Id, visibility: ActivityVisibility.AssignedFriends);
             return Result(true, launch.Code, launch.Message);
@@ -1037,14 +1044,14 @@ public sealed class HostManager
             if (run.ProcessId is null && run.ConsoleCaptureProcessId is null)
             {
                 runs.Remove(run);
-                data.SaveRuns(runs);
+                SaveRunsState();
             }
             else
             {
                 // A capture host or game process may already exist even when
                 // its launch handshake could not be confirmed. Preserve the
                 // unresolved run so another writer cannot start over it.
-                data.SaveRuns(runs);
+                SaveRunsState();
             }
             return Result(false, "LaunchFailed", "Server launch failed: " + ex.Message);
         }
@@ -1264,6 +1271,45 @@ public sealed class HostManager
             return verified;
         }
         finally { gate.Release(); }
+    }
+
+    public async Task<BackupSafetyResult> CopyBackupToVaultAsync(Guid profileId, Guid backupId,
+        string destinationRoot)
+    {
+        ServerProfile? profile;
+        await gate.WaitAsync();
+        try { profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId); }
+        finally { gate.Release(); }
+        if (profile is null)
+            return new(false, "UnknownProfile", "Choose a saved profile.", backupId, clock.GetUtcNow());
+        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
+            return new(false, "BackupsUnsupported",
+                "Backup vault copies are available only for reviewed built-in game drivers.", backupId, clock.GetUtcNow());
+        var result = backups.CopyToVault(profile, backupId, destinationRoot);
+        Activity("Backup", result.Ok ? "VaultCopyVerified" : "VaultCopyFailed",
+            result.Ok ? "A completed backup was copied to the selected vault and hash-verified." :
+                "A backup-vault copy was not confirmed; the local backup was kept.",
+            result.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
+        return result;
+    }
+
+    public async Task<BackupSafetyResult> RehearseRestoreAsync(Guid profileId, Guid backupId)
+    {
+        ServerProfile? profile;
+        await gate.WaitAsync();
+        try { profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId); }
+        finally { gate.Release(); }
+        if (profile is null)
+            return new(false, "UnknownProfile", "Choose a saved profile.", backupId, clock.GetUtcNow());
+        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
+            return new(false, "BackupsUnsupported",
+                "Restore rehearsal is available only for reviewed built-in game drivers.", backupId, clock.GetUtcNow());
+        var result = backups.RehearseRestore(profile, backupId);
+        Activity("Backup", result.Ok ? "RestoreRehearsalCompleted" : "RestoreRehearsalFailed",
+            result.Ok ? "A completed backup restored into scratch storage and passed hash verification." :
+                "A disposable restore rehearsal failed; the live world was not changed.",
+            result.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
+        return result;
     }
 
     public async Task<ActionResult> SafeRestartAsync(Guid profileId)
@@ -1505,14 +1551,14 @@ public sealed class HostManager
             // the middle, the resulting absent process is archived but never
             // mistaken for a crash that should be relaunched.
             run.StopRequestedUtc = clock.GetUtcNow();
-            data.SaveRuns(runs);
+            SaveRunsState();
             var stopped = await driver.StopAsync(process, run);
             if (stopped.ExitCode != 0)
             {
                 if (Identity(run) == "Matched")
                 {
                     run.StopRequestedUtc = null;
-                    data.SaveRuns(runs);
+                    SaveRunsState();
                 }
                 return Result(false, stopped.Code, stopped.Message);
             }
@@ -1520,7 +1566,7 @@ public sealed class HostManager
             if (!process.HasExited)
             {
                 run.StopRequestedUtc = null;
-                data.SaveRuns(runs);
+                SaveRunsState();
                 return Result(false, "StopUnconfirmed", "The game driver returned before the exact managed process exited.");
             }
             var endedUtc = clock.GetUtcNow();
@@ -1563,7 +1609,7 @@ public sealed class HostManager
             if (Identity(run) == "Matched")
             {
                 run.StopRequestedUtc = null;
-                data.SaveRuns(runs);
+                SaveRunsState();
             }
             return Result(false, "StopUnconfirmed", "The game driver could not confirm a graceful stop: " + ex.Message);
         }
@@ -1810,7 +1856,9 @@ public sealed class HostManager
             settings.Profiles.ToDictionary(profile => profile.Id, profile => backups.Status(profile.Id)),
             data.LoadActivity(100),
             recovery,
-            hostingPower);
+            hostingPower,
+            storageHealth.Read(settings),
+            startupRecovery?.View(views, settings));
     }
 
     private HostingPowerView ReconcileHostingPower()
@@ -1997,7 +2045,7 @@ public sealed class HostManager
             backupIsConsistent &&
             trustedCountsAreConsistent;
         var gameKind = item.Kind is GameKinds.Fixture or GameKinds.Valheim or
-            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Custom
+            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Factorio or GameKinds.Custom
                 ? item.Kind : "Unavailable";
         return new(item.ProfileId, item.OperationId, gameKind,
             complete ? item.StartedUtc : null,
@@ -2193,6 +2241,13 @@ public sealed class HostManager
                         return "Each custom port needs TCP or UDP, a port from 1024 to 65535, a valid address family, and a short label.";
                 }
             }
+            if (profile.Kind == GameKinds.Factorio)
+            {
+                profile.Factorio ??= new FactorioOptions();
+                if (profile.Factorio.RconPort is < 1024 or > 65535 ||
+                    profile.Factorio.RconPort == profile.GamePort)
+                    return "Factorio needs a separate local RCON port from 1024 to 65535.";
+            }
             if (string.IsNullOrWhiteSpace(profile.WorldDirectory))
                 return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
                     ? "Choose and copy an existing world in Setup step 1."
@@ -2212,6 +2267,7 @@ public sealed class HostManager
         a.Crossplay == b.Crossplay && a.PublicListing == b.PublicListing &&
         a.WorldId == b.WorldId && a.WorldSource == b.WorldSource && a.GamePort == b.GamePort &&
         (a.Minecraft?.ServerJarPath ?? "") == (b.Minecraft?.ServerJarPath ?? "") &&
+        (a.Factorio?.RconPort ?? 0) == (b.Factorio?.RconPort ?? 0) &&
         SameCustom(a.Custom, b.Custom) &&
         Path.GetFullPath(a.WorldDirectory).Equals(Path.GetFullPath(b.WorldDirectory), StringComparison.OrdinalIgnoreCase) &&
         (a.Kind == GameKinds.Custom && b.Kind == GameKinds.Custom ||
@@ -2405,9 +2461,21 @@ public sealed class HostManager
         observations.Remove(run.ProfileId);
         if (!preserveRecoveryState)
             crashRecovery.RemoveAll(item => item.ProfileId == run.ProfileId);
-        data.SaveRuns(runs);
+        SaveRunsState();
         data.SaveCrashRecoveryStates(crashRecovery);
         data.TryAudit($"run-archived {run.ProfileId} operation={run.OperationId} reason={endReason} outcome={outcome} recovery={recoveryScheduled} {now:O}");
+    }
+
+    private void SaveRunsState()
+    {
+        data.SaveRuns(runs);
+        if (startupRecovery is null) return;
+        try { startupRecovery.UpdateActiveProfiles(runs); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException or ArgumentException or JsonException)
+        {
+            data.TryAudit($"app-session-update-failed {ex.GetType().Name} {clock.GetUtcNow():O}");
+        }
     }
 
     private static DateTimeOffset? RunStartUtc(long? utcTicks)

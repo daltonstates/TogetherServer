@@ -94,7 +94,7 @@ export type ServerSessionBackupResult = 'Completed' | 'Failed' | 'NotConfigured'
 export type RecentServerSession = {
   profileId: string
   operationId: string
-  gameKind: 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Custom' | 'Unavailable'
+  gameKind: 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Custom' | 'Unavailable'
   startedUtc: string | null
   endedUtc: string | null
   durationSeconds: number | null
@@ -134,6 +134,37 @@ export type HostingPowerView = {
   message: string
 }
 
+export type StorageLocationHealth = {
+  id: string
+  label: string
+  state: 'Available' | 'Attention' | 'Unknown'
+  detail: string
+  availableSpaceBytes: number | null
+  usedBytes: number
+  measurementTruncated: boolean
+}
+
+export type StorageHealthView = {
+  checkedUtc: string
+  locations: StorageLocationHealth[]
+  warnings: string[]
+  resources: {
+    logicalProcessors: number
+    processWorkingSetBytes: number
+    managedMemoryBytes: number
+    totalAvailableMemoryBytes: number | null
+    evidenceBoundary: string
+  }
+}
+
+export type StartupRecoveryView = {
+  previousSessionInterrupted: boolean
+  previousStartedUtc: string | null
+  items: { profileId: string; state: string; detail: string; canResume: boolean }[]
+  message: string
+  windowsRestartRegistered: boolean
+}
+
 export type HostSnapshot = {
   mode: 'Host'
   evidence: string
@@ -147,6 +178,8 @@ export type HostSnapshot = {
   activity?: ActivityEvent[]
   recovery?: DataRecoveryView | null
   hostingPower?: HostingPowerView | null
+  storageHealth?: StorageHealthView | null
+  startupRecovery?: StartupRecoveryView | null
 }
 
 export type RemoteOperation = {
@@ -305,7 +338,7 @@ export type AppInstanceView = {
   dataRoot: string
   dataIsolation: string
 }
-export type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string }
+export type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string; publisherTrust: string }
 export type DesktopPreferences = { available: boolean; launchAtLogin: boolean; closeToTray: boolean; startupAvailable: boolean }
 export type DesktopPreferenceResult = BasicResult & { preferences: DesktopPreferences }
 export type FriendIssue = { code: string; message: string }
@@ -318,6 +351,11 @@ export type GameEndpointResult = { answered: boolean; code: string; message: str
 export type InviteState = { exists: boolean; open: boolean; canStart: boolean; requireApproval: boolean }
 export type InviteResult = BasicResult & { password?: string; expiresUtc?: string | null; listenerActive?: boolean; listenerWarning?: string | null }
 export type PasswordResult = BasicResult & { password?: string }
+export type BackupSafetyResult = BasicResult & { backupId: string; completedUtc: string; fileCount: number; sizeBytes: number }
+export type FactorioImportResult = BasicResult & { worldId: string | null; worldDirectory: string | null }
+export type AcceptanceCheckView = { id: string; label: string; evidence: string; confirmed: boolean; confirmedUtc: string | null }
+export type AcceptanceView = { profileId: string; stale: boolean; updatedUtc: string | null; checks: AcceptanceCheckView[]; evidenceBoundary: string }
+export type AcceptanceResult = BasicResult & { view: AcceptanceView }
 
 export type OwnerDiagnosticTone = 'Neutral' | 'Attention' | 'Error'
 export type OwnerDiagnosticCheck = {
@@ -468,11 +506,15 @@ function dictionary<T>(value: unknown, context: string, decode: Decoder<T>): Rec
 
 export function parseProfile(value: unknown, context = 'profile'): Profile {
   const source = object(value, context)
-  const kind = literal(source.kind, ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Custom'] as const, `${context}.kind`)
+  const kind = literal(source.kind, ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Custom'] as const, `${context}.kind`)
   const worldSource = literal(source.worldSource, ['Existing', 'New'] as const, `${context}.worldSource`)
   const minecraft = source.minecraft === undefined ? undefined : source.minecraft === null ? null : (() => {
     const item = object(source.minecraft, `${context}.minecraft`)
     return { serverJarPath: text(item.serverJarPath, `${context}.minecraft.serverJarPath`) }
+  })()
+  const factorio = source.factorio === undefined ? undefined : source.factorio === null ? null : (() => {
+    const item = object(source.factorio, `${context}.factorio`)
+    return { rconPort: numeric(item.rconPort, `${context}.factorio.rconPort`) }
   })()
   const custom = source.custom === undefined ? undefined : source.custom === null ? null : (() => {
     const item = object(source.custom, `${context}.custom`)
@@ -513,7 +555,7 @@ export function parseProfile(value: unknown, context = 'profile'): Profile {
     publicListing: flag(source.publicListing, `${context}.publicListing`), worldId: text(source.worldId, `${context}.worldId`),
     worldSource, worldDirectory: text(source.worldDirectory, `${context}.worldDirectory`),
     gamePort: numeric(source.gamePort, `${context}.gamePort`), executablePath: text(source.executablePath, `${context}.executablePath`),
-    minecraft, custom, crashRecovery, backups, maintenance
+    minecraft, factorio, custom, crashRecovery, backups, maintenance
   }
 }
 
@@ -619,6 +661,49 @@ const parseHostingPower: Decoder<HostingPowerView> = (value, context = 'hosting 
   }
 }
 
+const parseStorageHealth: Decoder<StorageHealthView> = (value, context = 'storage health') => {
+  const source = object(value, context)
+  const resources = object(source.resources, `${context}.resources`)
+  return {
+    checkedUtc: utcTimestamp(source.checkedUtc, `${context}.checkedUtc`),
+    locations: list(source.locations, `${context}.locations`, (item, itemContext) => {
+      const location = object(item, itemContext ?? `${context}.locations`)
+      return {
+        id: text(location.id, `${itemContext}.id`), label: text(location.label, `${itemContext}.label`),
+        state: literal(location.state, ['Available', 'Attention', 'Unknown'] as const, `${itemContext}.state`),
+        detail: text(location.detail, `${itemContext}.detail`),
+        availableSpaceBytes: nullableNumber(location.availableSpaceBytes, `${itemContext}.availableSpaceBytes`),
+        usedBytes: numeric(location.usedBytes, `${itemContext}.usedBytes`),
+        measurementTruncated: flag(location.measurementTruncated, `${itemContext}.measurementTruncated`)
+      }
+    }),
+    warnings: textList(source.warnings, `${context}.warnings`),
+    resources: {
+      logicalProcessors: numeric(resources.logicalProcessors, `${context}.resources.logicalProcessors`),
+      processWorkingSetBytes: numeric(resources.processWorkingSetBytes, `${context}.resources.processWorkingSetBytes`),
+      managedMemoryBytes: numeric(resources.managedMemoryBytes, `${context}.resources.managedMemoryBytes`),
+      totalAvailableMemoryBytes: nullableNumber(resources.totalAvailableMemoryBytes, `${context}.resources.totalAvailableMemoryBytes`),
+      evidenceBoundary: text(resources.evidenceBoundary, `${context}.resources.evidenceBoundary`)
+    }
+  }
+}
+
+const parseStartupRecovery: Decoder<StartupRecoveryView> = (value, context = 'startup recovery') => {
+  const source = object(value, context)
+  return {
+    previousSessionInterrupted: flag(source.previousSessionInterrupted, `${context}.previousSessionInterrupted`),
+    previousStartedUtc: nullableUtcTimestamp(source.previousStartedUtc, `${context}.previousStartedUtc`),
+    items: list(source.items, `${context}.items`, (item, itemContext) => {
+      const recovery = object(item, itemContext ?? `${context}.items`)
+      return { profileId: text(recovery.profileId, `${itemContext}.profileId`),
+        state: text(recovery.state, `${itemContext}.state`), detail: text(recovery.detail, `${itemContext}.detail`),
+        canResume: flag(recovery.canResume, `${itemContext}.canResume`) }
+    }),
+    message: text(source.message, `${context}.message`),
+    windowsRestartRegistered: flag(source.windowsRestartRegistered, `${context}.windowsRestartRegistered`)
+  }
+}
+
 const parseHostSnapshot: Decoder<HostSnapshot> = (value, context = 'host snapshot') => {
   const source = object(value, context)
   if (source.mode !== 'Host') throw new ContractError(`${context}.mode must be Host.`)
@@ -632,7 +717,9 @@ const parseHostSnapshot: Decoder<HostSnapshot> = (value, context = 'host snapsho
     backups: optionalObject(source.backups, `${context}.backups`, (item, itemContext) => dictionary(item, itemContext ?? '', parseBackupStatus)),
     activity: source.activity === undefined || source.activity === null ? undefined : list(source.activity, `${context}.activity`, parseActivity),
     recovery: source.recovery === undefined ? undefined : source.recovery === null ? null : parseDataRecoveryView(source.recovery, `${context}.recovery`),
-    hostingPower: source.hostingPower === undefined ? undefined : source.hostingPower === null ? null : parseHostingPower(source.hostingPower, `${context}.hostingPower`)
+    hostingPower: source.hostingPower === undefined ? undefined : source.hostingPower === null ? null : parseHostingPower(source.hostingPower, `${context}.hostingPower`),
+    storageHealth: source.storageHealth === undefined ? undefined : source.storageHealth === null ? null : parseStorageHealth(source.storageHealth, `${context}.storageHealth`),
+    startupRecovery: source.startupRecovery === undefined ? undefined : source.startupRecovery === null ? null : parseStartupRecovery(source.startupRecovery, `${context}.startupRecovery`)
   }
 }
 
@@ -849,7 +936,7 @@ export const parseRecentServerSessions: Decoder<RecentServerSessionsResult> = (v
       profileId: itemProfileId,
       operationId,
       gameKind: literal(item.gameKind,
-        ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Custom', 'Unavailable'] as const,
+        ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Custom', 'Unavailable'] as const,
         `${itemContext}.gameKind`),
       startedUtc,
       endedUtc,
@@ -922,7 +1009,8 @@ export const parseUpdateView: Decoder<UpdateView> = (value, context = 'update st
   const source = object(value, context)
   return { state: literal(source.state, ['Checking', 'Current', 'Available', 'NoRelease', 'Unavailable', 'Unsupported'] as const, `${context}.state`),
     currentVersion: text(source.currentVersion, `${context}.currentVersion`), latestVersion: nullableText(source.latestVersion, `${context}.latestVersion`),
-    message: text(source.message, `${context}.message`) }
+    message: text(source.message, `${context}.message`),
+    publisherTrust: source.publisherTrust === undefined ? 'Unknown' : text(source.publisherTrust, `${context}.publisherTrust`) }
 }
 
 const parseOwnerDiagnosticCheck: Decoder<OwnerDiagnosticCheck> = (value, context = 'diagnostic check') => {
@@ -1186,6 +1274,36 @@ export const parseWorldBackupVerificationResult: Decoder<WorldBackupVerification
   const source = object(value, context)
   return { ...parseBasicResult(source, context), backupId: text(source.backupId, `${context}.backupId`),
     checkedUtc: text(source.checkedUtc, `${context}.checkedUtc`) }
+}
+
+export const parseBackupSafetyResult: Decoder<BackupSafetyResult> = (value, context = 'backup safety result') => {
+  const source = object(value, context)
+  return { ...parseBasicResult(source, context), backupId: text(source.backupId, `${context}.backupId`),
+    completedUtc: utcTimestamp(source.completedUtc, `${context}.completedUtc`),
+    fileCount: numeric(source.fileCount, `${context}.fileCount`), sizeBytes: numeric(source.sizeBytes, `${context}.sizeBytes`) }
+}
+
+export const parseFactorioImportResult: Decoder<FactorioImportResult> = (value, context = 'Factorio import result') => {
+  const source = object(value, context)
+  return { ...parseBasicResult(source, context), worldId: nullableText(source.worldId, `${context}.worldId`),
+    worldDirectory: nullableText(source.worldDirectory, `${context}.worldDirectory`) }
+}
+
+export const parseAcceptanceView: Decoder<AcceptanceView> = (value, context = 'acceptance view') => {
+  const source = object(value, context)
+  return { profileId: text(source.profileId, `${context}.profileId`), stale: flag(source.stale, `${context}.stale`),
+    updatedUtc: nullableUtcTimestamp(source.updatedUtc, `${context}.updatedUtc`),
+    checks: list(source.checks, `${context}.checks`, (item, itemContext) => {
+      const check = object(item, itemContext ?? `${context}.checks`)
+      return { id: text(check.id, `${itemContext}.id`), label: text(check.label, `${itemContext}.label`),
+        evidence: text(check.evidence, `${itemContext}.evidence`), confirmed: flag(check.confirmed, `${itemContext}.confirmed`),
+        confirmedUtc: nullableUtcTimestamp(check.confirmedUtc, `${itemContext}.confirmedUtc`) }
+    }), evidenceBoundary: text(source.evidenceBoundary, `${context}.evidenceBoundary`) }
+}
+
+export const parseAcceptanceResult: Decoder<AcceptanceResult> = (value, context = 'acceptance result') => {
+  const source = object(value, context)
+  return { ...parseBasicResult(source, context), view: parseAcceptanceView(source.view, `${context}.view`) }
 }
 
 export const parseRouteDiscovery: Decoder<RouteDiscovery> = (value, context = 'route discovery') => {

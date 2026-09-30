@@ -76,13 +76,16 @@ var games = new GameServerRegistry(data);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 using var hostingPower = new WindowsHostingPowerGuard();
-var manager = new HostManager(data, games, TimeProvider.System, hostingPower);
+var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
+var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery);
+var acceptanceRecorder = new AcceptanceRecorder(data, TimeProvider.System);
+var updateCheckpoints = new StateCheckpointService(data, TimeProvider.System);
 var serverLogs = new ServerLogService(data, manager);
 var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
-var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "",
-    Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0),
+var appVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0);
+var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "", appVersion,
     enabled: instance.UpdatesAvailable,
     disabledMessage: "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.");
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -355,7 +358,14 @@ app.MapPost("/api/local/update/install", async (HttpContext context) =>
         if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
             return Results.Json(new UpdateResult(false, "ManagedRunPresent",
                 "Stop or resolve every hosted server before installing the update."));
-        var started = updater.StartReplacement();
+        var targetVersion = updater.PreparedVersion;
+        if (targetVersion is null)
+            return Results.Json(new UpdateResult(false, "NotReady", "No verified update is ready."));
+        var checkpoint = updateCheckpoints.Create(appVersion.ToString(3), targetVersion,
+            Environment.ProcessPath ?? "");
+        if (!checkpoint.Ok || checkpoint.Checkpoint is null)
+            return Results.Json(new UpdateResult(false, checkpoint.Code, checkpoint.Message));
+        var started = updater.StartReplacement(checkpoint.Checkpoint);
         if (started.Ok)
         {
             updatePending = true;
@@ -550,6 +560,28 @@ app.MapGet("/api/local/profiles/{id:guid}/sessions", async (HttpContext context,
     var result = await manager.RecentSessionsAsync(id, limit);
     return result.Ok ? Results.Json(result) : Results.NotFound(result);
 });
+app.MapGet("/api/local/profiles/{id:guid}/acceptance", async (HttpContext context, Guid id) =>
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (context.Request.QueryString.HasValue ||
+        context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
+        return Results.BadRequest(new { code = "InvalidAcceptanceRequest", message = "Acceptance review accepts no query or request body." });
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    var snapshot = await manager.SnapshotAsync();
+    return Results.Json(acceptanceRecorder.View(snapshot.Settings, id));
+});
+app.MapPut("/api/local/profiles/{id:guid}/acceptance", async (Guid id, AcceptanceChange change) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+        var snapshot = await manager.SnapshotAsync();
+        return Results.Json(acceptanceRecorder.Change(snapshot.Settings, id, change));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
     ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })
@@ -560,8 +592,48 @@ app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/verify", asyn
     friendMode
         ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backup verification is local-owner-only." })
         : Results.Json(await manager.VerifyBackupAsync(id, backupId)));
+app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/vault", async (Guid id, Guid backupId) =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to choose a backup-vault folder." });
+    try
+    {
+        var destination = await desktop.PickFolderAsync("Choose an external drive or network folder for this verified backup");
+        if (destination is null)
+            return Results.Json(new BackupSafetyResult(false, "Canceled", "No backup-vault folder was selected.", backupId, DateTimeOffset.UtcNow));
+        return Results.Json(await manager.CopyBackupToVaultAsync(id, backupId, destination));
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+    {
+        return Results.Json(new BackupSafetyResult(false, "VaultCopyFailed",
+            "The backup-vault folder could not be used. The local backup was kept unchanged.", backupId, DateTimeOffset.UtcNow));
+    }
+});
+app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/rehearse", async (Guid id, Guid backupId) =>
+    friendMode
+        ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." })
+        : Results.Json(await manager.RehearseRestoreAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore", (Guid id, Guid backupId) =>
     HostOnly(() => manager.RestoreBackupAsync(id, backupId)));
+app.MapPost("/api/local/profiles/{id:guid}/resume-hosting", (Guid id) => HostOnly(async () =>
+{
+    var snapshot = await manager.SnapshotAsync();
+    if (!startupRecovery.CanResume(id))
+        return new ActionResult(false, "ResumeUnavailable",
+            "This server was not recorded as active in the interrupted app session.", snapshot);
+    var run = snapshot.Runs.SingleOrDefault(item => item.ProfileId == id);
+    if (run?.State == "Failed")
+    {
+        var archived = await manager.ForgetAsync(id);
+        if (!archived.Ok) return archived;
+    }
+    else if (run is not null && run.State != "Offline")
+        return new ActionResult(false, "ResumeBlocked",
+            run.State is "Ready" or "Starting" or "Process running"
+                ? "TogetherServer already reattached to the exact managed process; another copy was not started."
+                : "The prior process identity needs local review before hosting can resume.", snapshot);
+    return await manager.StartAsync(id);
+}));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
 app.MapPut("/api/local/profiles/{id:guid}/custom-scripts", (Guid id, CustomScriptBundle scripts) =>
@@ -657,6 +729,37 @@ app.MapPost("/api/local/valheim/browse-server", async () =>
         return Results.Json(new { ok = true, code = "ServerSelected", message = "Server executable selected. Save settings before starting.", executablePath = path });
     }
     catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message }); }
+});
+app.MapPost("/api/local/factorio/browse-executable", async () =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
+    try
+    {
+        var path = await desktop.PickFileAsync("Choose owner-installed Factorio server",
+            "Factorio server (factorio.exe)|factorio.exe|Applications (*.exe)|*.exe");
+        if (path is null) return Results.Json(new { ok = false, code = "Canceled", message = "No server executable selected.", path = (string?)null });
+        if (!File.Exists(path) || !Path.GetFileName(path).Equals("factorio.exe", StringComparison.OrdinalIgnoreCase))
+            return Results.Json(new { ok = false, code = "InvalidServerExecutable", message = "Choose factorio.exe from an owner-installed Factorio server.", path = (string?)null });
+        return Results.Json(new { ok = true, code = "PathSelected", message = "Factorio executable selected. Save setup before starting.", path = (string?)path });
+    }
+    catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message, path = (string?)null }); }
+});
+app.MapPost("/api/local/factorio/import-save", async (FactorioImportRequest request) =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
+    if (instance.FreshWorldsOnly) return Results.Conflict(new FactorioImportResult(false,
+        "StagingFactorioDisabled", "Factorio preview is unavailable in fresh-world-only staging."));
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
+    try
+    {
+        var path = await desktop.PickFileAsync("Choose an existing Factorio save to copy",
+            "Factorio saves (*.zip)|*.zip");
+        return Results.Json(path is null
+            ? new FactorioImportResult(false, "Canceled", "No Factorio save was selected.")
+            : FactorioSetup.ImportCopy(data, request.ProfileId, path));
+    }
+    catch (Exception ex) { return Results.Json(new FactorioImportResult(false, "BrowseFailed", "Could not open the Windows file picker: " + ex.Message)); }
 });
 app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request) =>
 {
@@ -1177,6 +1280,7 @@ if (desktop is not null)
     app.Lifetime.ApplicationStarted.Register(desktop.Start);
     app.Lifetime.ApplicationStopping.Register(desktop.Exit);
 }
+app.Lifetime.ApplicationStopping.Register(startupRecovery.MarkClean);
 try { await app.RunAsync(); }
 catch (Exception ex) when (openWindow)
 {

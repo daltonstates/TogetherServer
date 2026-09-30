@@ -5,6 +5,7 @@ import {
   parseBrowseResult,
   parseCustomScriptResult,
   parseDiscovery,
+  parseFactorioImportResult,
   parseImportResult,
   parseMinecraftBrowseResult,
   parseMinecraftDiscovery,
@@ -341,6 +342,22 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     finally { setPending('') }
   }
 
+  const browseFactorio = async (profile: Profile, target: 'executable' | 'save') => {
+    setPending(profile.id)
+    try {
+      const result = target === 'executable'
+        ? await changeJson('/api/local/factorio/browse-executable', 'POST', parseBrowseResult)
+        : await changeJson('/api/local/factorio/import-save', 'POST', parseFactorioImportResult,
+          { profileId: profile.id })
+      if (target === 'executable' && result.ok && 'path' in result && result.path)
+        updateProfile(profile.id, { executablePath: result.path })
+      if (target === 'save' && result.ok && 'worldId' in result && result.worldId && result.worldDirectory)
+        updateProfile(profile.id, { worldId: result.worldId, worldDirectory: result.worldDirectory })
+      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+
   const applyMinecraftInstallation = (profile: Profile, item: MinecraftInstallation, announce = true) => {
     setDraft(current => current ? { ...current, profiles: current.profiles.map(saved =>
       saved.id === profile.id ? minecraftProfile(saved, item) : saved) } : current)
@@ -376,8 +393,10 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
 
   const changeGameKind = (profile: Profile, kind: Profile['kind']) => {
     if (profile.kind === kind || snapshot?.mode !== 'Host') return
-    if (freshWorldsOnly && kind === 'Custom') {
-      setNotice({ good: false, text: 'Custom scripts are disabled in staging so they cannot reference production files.' })
+    if (freshWorldsOnly && (kind === 'Custom' || kind === 'Factorio')) {
+      setNotice({ good: false, text: kind === 'Custom'
+        ? 'Custom scripts are disabled in staging so they cannot reference production files.'
+        : 'Factorio preview needs an existing save, so it is unavailable in fresh-world-only staging.' })
       return
     }
     setPasswords(current => ({ ...current, [profile.id]: '' }))
@@ -398,8 +417,10 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       worldDirectory: kind === 'Valheim' ? `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` : '',
       gamePort: kind === 'Valheim' ? (instance?.valheimPort ?? 2456)
         : kind === 'MinecraftJava' ? (instance?.minecraftJavaPort ?? 25565)
-          : kind === 'MinecraftBedrock' ? (instance?.minecraftBedrockPort ?? 19132) : (instance?.valheimPort ?? 2456),
+          : kind === 'MinecraftBedrock' ? (instance?.minecraftBedrockPort ?? 19132)
+            : kind === 'Factorio' ? 34197 : (instance?.valheimPort ?? 2456),
       executablePath: '', minecraft: kind === 'MinecraftJava' ? { serverJarPath: '' } : null,
+      factorio: kind === 'Factorio' ? { rconPort: 27015 } : null,
       custom: kind === 'Custom' ? { gameName: '', primaryProtocol: 'UDP', shareJoinAddress: true, additionalPorts: [] } : null,
       crashRecovery: { enabled: false }, backups: { enabled: false, retentionCount: 5, minimumFreeSpaceMb: 1024 },
       maintenance: { enabled: false, message: '' } })
@@ -594,6 +615,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     addCustomPort,
     removeCustomPort,
     browseCustomDirectory,
+    browseFactorio,
     applyMinecraftInstallation,
     scanMinecraft,
     installMinecraft,

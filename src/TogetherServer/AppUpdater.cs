@@ -9,7 +9,8 @@ using System.Text.RegularExpressions;
 
 namespace TogetherServer;
 
-public sealed record UpdateView(string State, string CurrentVersion, string? LatestVersion, string Message);
+public sealed record UpdateView(string State, string CurrentVersion, string? LatestVersion, string Message,
+    string PublisherTrust = "Checking");
 public sealed record UpdateResult(bool Ok, string Code, string Message);
 public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256);
 public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message, bool IsUnsigned = false);
@@ -31,13 +32,15 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
     private readonly IAuthenticodeVerifier signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
     private UpdateView view = enabled
         ? new("Checking", currentVersion.ToString(3), null, "Checking for updates.")
-        : new("Unsupported", currentVersion.ToString(3), null, disabledMessage);
+        : new("Unsupported", currentVersion.ToString(3), null, disabledMessage, "Development build");
     private UpdateRelease? available;
     private string? preparedPath;
     private string? publisherKey;
     private DateTimeOffset checkedUtc;
 
     public UpdateView View => view;
+    public string? PreparedVersion => available is not null && preparedPath is not null && File.Exists(preparedPath)
+        ? available.Version.ToString(3) : null;
     public bool IsStandalone => File.Exists(executablePath) &&
         Path.GetExtension(executablePath).Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
         !File.Exists(Path.ChangeExtension(executablePath, ".deps.json"));
@@ -51,7 +54,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < AutomaticCheckInterval) return view;
             checkedUtc = DateTimeOffset.UtcNow;
             if (!IsStandalone)
-                return view = new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.");
+                return view = new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.",
+                    "Development build");
             var installedSignature = signatureVerifier.Verify(executablePath);
             var signed = installedSignature.Valid && !string.IsNullOrWhiteSpace(installedSignature.PublisherKey);
             if (!signed && !installedSignature.IsUnsigned)
@@ -60,7 +64,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 preparedPath = null;
                 publisherKey = null;
                 return view = new("Unsupported", currentVersion.ToString(3), null,
-                    "Automatic updates are disabled because Windows found an invalid or unverifiable signature on this EXE.");
+                    "Automatic updates are disabled because Windows found an invalid or unverifiable signature on this EXE.",
+                    "Signature rejected");
             }
             var nextPublisherKey = signed
                 ? installedSignature.PublisherKey
@@ -77,7 +82,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 {
                     available = null;
                     preparedPath = null;
-                    return view = new("NoRelease", currentVersion.ToString(3), null, "No published TogetherServer release yet.");
+                    return view = new("NoRelease", currentVersion.ToString(3), null, "No published TogetherServer release yet.",
+                        signed ? "Verified publisher" : "GitHub digest only");
                 }
                 response.EnsureSuccessStatusCode();
                 await using var releaseStream = await response.Content.ReadAsStreamAsync();
@@ -93,22 +99,26 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 var release = ParseRelease(json);
                 if (release is null)
                     return view = new("Unavailable", currentVersion.ToString(3), null,
-                        "The latest release has no valid Windows EXE and SHA-256 digest.");
+                        "The latest release has no valid Windows EXE and SHA-256 digest.",
+                        signed ? "Verified publisher" : "GitHub digest only");
                 if (release.Version.CompareTo(currentVersion) <= 0)
                 {
                     available = null;
                     preparedPath = null;
-                    return view = new("Current", currentVersion.ToString(3), release.Version.ToString(3), "TogetherServer is up to date.");
+                    return view = new("Current", currentVersion.ToString(3), release.Version.ToString(3), "TogetherServer is up to date.",
+                        signed ? "Verified publisher" : "GitHub digest only");
                 }
                 if (available?.Tag != release.Tag || available.Sha256 != release.Sha256) preparedPath = null;
                 available = release;
                 return view = new("Available", currentVersion.ToString(3), release.Version.ToString(3),
-                    $"TogetherServer {release.Version.ToString(3)} is available.");
+                    $"TogetherServer {release.Version.ToString(3)} is available.",
+                    signed ? "Verified publisher" : "GitHub digest only");
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException)
             {
                 return view = new("Unavailable", currentVersion.ToString(3), null,
-                    "Could not check GitHub Releases. Your current app keeps working.");
+                    "Could not check GitHub Releases. Your current app keeps working.",
+                    signed ? "Verified publisher" : "GitHub digest only");
             }
         }
         finally { gate.Release(); }
@@ -185,7 +195,9 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         finally { gate.Release(); }
     }
 
-    public UpdateResult StartReplacement()
+    public UpdateResult StartReplacement() => StartReplacement(null);
+
+    internal UpdateResult StartReplacement(StateCheckpointReference? checkpoint)
     {
         if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
         if (!IsStandalone || view.State != "Available" || available is null || preparedPath is null || !File.Exists(preparedPath))
@@ -199,6 +211,11 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (publisherKey is not null && (!HasMatchingPublisher(executablePath, publisherKey) ||
                 !HasMatchingPublisher(preparedPath, publisherKey)))
                 return new(false, "InvalidSignature", "The installed app or downloaded update failed publisher verification.");
+            var installedHash = HashAsync(executablePath).GetAwaiter().GetResult();
+            if (checkpoint is not null && !StateCheckpointService.TryValidate(dataRoot,
+                    checkpoint.Directory, checkpoint.ManifestSha256, out _, installedHash))
+                return new(false, "CheckpointInvalid",
+                    "The verified local-state recovery checkpoint changed before update handoff.");
             File.Copy(preparedPath, helper, true);
             if (!HasHashAsync(helper, available.Sha256).GetAwaiter().GetResult())
                 return new(false, "InvalidDownload", "The updater copy failed its SHA-256 check.");
@@ -213,6 +230,11 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                          Path.GetFullPath(executablePath), Path.GetFullPath(preparedPath), available.Sha256,
                          Path.GetFullPath(dataRoot), ready, verification })
                 start.ArgumentList.Add(argument);
+            if (checkpoint is not null)
+            {
+                start.ArgumentList.Add(Path.GetFullPath(checkpoint.Directory));
+                start.ArgumentList.Add(checkpoint.ManifestSha256);
+            }
             using var launched = Process.Start(start);
             if (launched is null) return new(false, "LaunchFailed", "Could not start the updater.");
             for (var attempt = 0; attempt < 100 && !File.Exists(ready) && !launched.HasExited; attempt++)

@@ -293,6 +293,9 @@ await Check("staging starts with isolated empty data and fresh-world defaults", 
     Require(instance.ValidateSettings(valid).Code == "StagingFreshWorldRequired", "staging accepted an existing Valheim world");
     valid.Profiles[0].Kind = GameKinds.Custom;
     Require(instance.ValidateSettings(valid).Code == "StagingCustomDisabled", "staging accepted an unrestricted custom script profile");
+    valid.Profiles[0].Kind = GameKinds.Factorio;
+    Require(instance.ValidateSettings(valid).Code == "StagingFactorioDisabled",
+        "staging accepted a Factorio profile that requires an existing save copy");
     return Task.CompletedTask;
 });
 
@@ -734,7 +737,8 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
         "the synthetic fixture driver was enabled without an explicit test opt-in");
     var registry = Games(data);
     Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[]
-        { GameKinds.Custom, GameKinds.Fixture, GameKinds.MinecraftBedrock, GameKinds.MinecraftJava, GameKinds.Valheim }),
+        { GameKinds.Custom, GameKinds.Factorio, GameKinds.Fixture, GameKinds.MinecraftBedrock,
+            GameKinds.MinecraftJava, GameKinds.Valheim }),
         "The built-in, custom, and fixture games were not separately registered");
     var profile = Profile("unknown-game", "unknown-game", FreePort());
     profile.Kind = "UnregisteredGame";
@@ -1844,6 +1848,106 @@ await Check("interrupted restore journal reconciles rollback and installed repla
         semanticData.Recovery.Notices.Any(notice => notice.StateFile == "restore-transactions.json"),
         "a syntactically valid but semantically invalid restore journal silently disappeared");
     await Task.CompletedTask;
+});
+
+await Check("acceptance confirmations are configuration-bound and persist no route or server details", () =>
+{
+    using var data = Data("acceptance-recorder");
+    var profile = Profile("Private server name", "private-world", FreePort());
+    profile.ServerName = "Private server name";
+    var settings = Settings(profile);
+    settings.CompanionPort = 55131;
+    settings.ConnectionRoute = new() { Mode = "Manual", Address = "198.51.100.44" };
+    var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero));
+    var recorder = new AcceptanceRecorder(data, clock);
+    var recorded = recorder.Change(settings, profile.Id,
+        new AcceptanceChange(AcceptanceCheckIds.FriendRoute, true));
+    Require(recorded.Ok && recorded.View.Checks.Single(item =>
+            item.Id == AcceptanceCheckIds.FriendRoute).Confirmed,
+        "owner confirmation was not recorded for the current configuration");
+    var persisted = File.ReadAllText(Path.Combine(data.RootPath, "acceptance-records.json"));
+    Require(!persisted.Contains(profile.ServerName, StringComparison.Ordinal) &&
+        !persisted.Contains(settings.ConnectionRoute.Address, StringComparison.Ordinal) &&
+        !persisted.Contains(profile.WorldDirectory, StringComparison.OrdinalIgnoreCase),
+        "acceptance storage persisted server, route, or path details instead of a fingerprint");
+    profile.GamePort++;
+    var stale = recorder.View(settings, profile.Id);
+    Require(stale.Stale && stale.Checks.All(item => !item.Confirmed),
+        "a changed game configuration retained current acceptance credit");
+    return Task.CompletedTask;
+});
+
+await Check("update checkpoint is same-root, bounded, hash-verified, and rejects tampering", () =>
+{
+    using var data = Data("state-checkpoint");
+    var profile = Profile("checkpoint", "checkpoint-world", FreePort());
+    data.SaveSettings(Settings(profile));
+    data.SaveState("checkpoint-fixture.json", new { Value = "owner-local-state" });
+    data.SaveState("app-session.json", new { Excluded = true });
+    var executable = Path.Combine(root, "checkpoint-previous.exe");
+    File.WriteAllBytes(executable, SHA256.HashData(Encoding.UTF8.GetBytes("synthetic executable")));
+    var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 30, 12, 30, 0, TimeSpan.Zero));
+    var service = new StateCheckpointService(data, clock);
+    var result = service.Create("0.2.1", "0.2.2", executable);
+    Require(result.Ok && result.Checkpoint is not null && result.Checkpoint.FileCount > 0 &&
+        AppInstance.ContainsPath(data.UpdateCheckpointsRoot, result.Checkpoint.Directory),
+        "verified update checkpoint was not created under the owned checkpoint root");
+    var checkpoint = result.Checkpoint ?? throw new Exception("checkpoint reference was missing");
+    Require(!File.Exists(Path.Combine(checkpoint.Directory, "app-session.json")),
+        "ephemeral app-session marker was included in recovery state");
+    Require(StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory,
+        checkpoint.ManifestSha256, out _), "fresh checkpoint did not validate");
+    Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory,
+        checkpoint.ManifestSha256, out _, new string('A', 64)),
+        "checkpoint was not bound to the previous executable hash");
+    var copiedState = Directory.EnumerateFiles(checkpoint.Directory, "*.json")
+        .First(path => !Path.GetFileName(path).Equals("checkpoint-manifest.json", StringComparison.OrdinalIgnoreCase));
+    File.AppendAllText(copiedState, "tamper");
+    Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory,
+        checkpoint.ManifestSha256, out _), "tampered checkpoint was accepted");
+    return Task.CompletedTask;
+});
+
+await Check("interrupted app recovery requires deliberate resume and clean exit clears the prompt", () =>
+{
+    using var data = Data("startup-recovery");
+    var profile = Profile("resume profile", "resume-world", FreePort());
+    var settings = Settings(profile);
+    data.SaveState("app-session.json", new ApplicationSessionState
+    {
+        SessionId = Guid.NewGuid(),
+        StartedUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
+        CleanExit = false,
+        ActiveProfileIds = [profile.Id]
+    });
+    var recovery = new StartupRecoveryService(data, [], "not-an-executable");
+    var offline = recovery.View([], settings);
+    Require(offline.PreviousSessionInterrupted && recovery.CanResume(profile.Id) &&
+        offline.Items.Single().State == "Ready to resume" && offline.Items.Single().CanResume,
+        "interrupted offline server was not presented as a deliberate resume choice");
+    var attached = recovery.View([new RunView(profile.Id, "Ready", "exact process", 123)], settings);
+    Require(attached.Items.Single().State == "Reattached" && !attached.Items.Single().CanResume &&
+        !recovery.CanResume(profile.Id) && recovery.View([], settings).Items.Count == 0,
+        "an exact live process was offered a duplicate resume start");
+    recovery.MarkClean();
+    var next = new StartupRecoveryService(data, [], "not-an-executable");
+    Require(!next.View([], settings).PreviousSessionInterrupted,
+        "clean shutdown retained an interrupted-session warning");
+    next.MarkClean();
+    return Task.CompletedTask;
+});
+
+await Check("storage and resource health remains informational lifecycle evidence", () =>
+{
+    using var data = Data("storage-health");
+    var profile = Profile("storage profile", "storage-world", FreePort());
+    var health = new StorageHealthService(data, TimeProvider.System).Read(Settings(profile));
+    Require(health.Locations.Any(item => item.Id == "app-data") &&
+        health.Locations.Any(item => item.Id == "world-" + profile.Id.ToString("N")) &&
+        health.Resources.LogicalProcessors > 0 &&
+        health.Resources.EvidenceBoundary.Contains("never authorize lifecycle actions", StringComparison.Ordinal),
+        "storage/resource projection lost its non-authoritative evidence boundary");
+    return Task.CompletedTask;
 });
 
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");

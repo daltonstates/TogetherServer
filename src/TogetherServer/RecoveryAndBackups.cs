@@ -118,6 +118,8 @@ public sealed record WorldBackupList(IReadOnlyList<WorldBackupRecord> Backups, W
 public sealed record WorldBackupResult(bool Ok, string Code, string Message, WorldBackupRecord? Backup = null);
 public sealed record WorldBackupVerificationResult(bool Ok, string Code, string Message,
     Guid BackupId, DateTimeOffset CheckedUtc);
+public sealed record BackupSafetyResult(bool Ok, string Code, string Message,
+    Guid BackupId, DateTimeOffset CompletedUtc, int FileCount = 0, long SizeBytes = 0);
 public sealed record RestoreBackupRequest(Guid BackupId);
 
 internal static class WorldRestorePhases
@@ -317,6 +319,129 @@ internal sealed class WorldBackupService
         }
     }
 
+    public BackupSafetyResult CopyToVault(ServerProfile profile, Guid backupId, string destinationRoot)
+    {
+        lock (sync)
+        {
+            var completedUtc = clock.GetUtcNow();
+            var record = data.LoadBackupCatalog().Records
+                .SingleOrDefault(item => item.Id == backupId && item.ProfileId == profile.Id);
+            if (record is null)
+                return new(false, "BackupNotFound", "Choose a completed backup for this server.", backupId, completedUtc);
+            var stage = "";
+            try
+            {
+                if (!string.Equals(record.Kind, profile.Kind, StringComparison.Ordinal) ||
+                    !string.Equals(record.WorldId, profile.WorldId, StringComparison.Ordinal))
+                    throw new InvalidDataException("The backup does not match this saved server.");
+                var selectedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destinationRoot));
+                if (!Directory.Exists(selectedRoot))
+                    throw new DirectoryNotFoundException("The selected backup-vault folder is unavailable.");
+                if ((File.GetAttributes(selectedRoot) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("The selected backup-vault folder cannot be a link or reparse point.");
+                var vaultRoot = Path.Combine(selectedRoot, "TogetherServer Backups");
+                if (Contains(data.RootPath, vaultRoot) || Contains(vaultRoot, data.RootPath) ||
+                    Contains(profile.WorldDirectory, vaultRoot) || Contains(vaultRoot, profile.WorldDirectory))
+                    throw new InvalidOperationException("Choose a backup-vault folder outside app data and the live server save.");
+                var source = BackupDirectory(profile.Id, backupId);
+                var manifest = ReadAndVerifyManifest(record, source);
+                EnsurePlainDirectory(vaultRoot, "The TogetherServer backup-vault folder");
+                var profileRoot = Path.Combine(vaultRoot, profile.Id.ToString("N"));
+                EnsurePlainDirectory(profileRoot, "The server backup-vault folder");
+                var destination = Path.Combine(profileRoot, backupId.ToString("N") + ".backup");
+                if (Directory.Exists(destination))
+                {
+                    VerifyExportedBackup(destination, manifest);
+                    return new(true, "VaultCopyVerified",
+                        "This verified backup is already stored in the selected vault. The local copy was kept.",
+                        backupId, completedUtc, record.FileCount, record.SizeBytes);
+                }
+                EnsureFreeSpace(selectedRoot, record.SizeBytes, profile.Backups.MinimumFreeSpaceMb);
+                stage = Path.Combine(profileRoot, backupId.ToString("N") + "." + Guid.NewGuid().ToString("N") + ".staging");
+                EnsurePlainDirectory(stage, "The backup-vault staging folder");
+                var copied = CopyTree(Path.Combine(source, "payload"), Path.Combine(stage, "payload"));
+                if (!copied.Files.SequenceEqual(manifest.Files))
+                    throw new CryptographicException("The vault copy did not match the completed backup manifest.");
+                File.Copy(Path.Combine(source, "complete.json"), Path.Combine(stage, "complete.json"), false);
+                VerifyExportedBackup(stage, manifest);
+                Directory.Move(stage, destination);
+                stage = "";
+                VerifyExportedBackup(destination, manifest);
+                data.TryAudit($"backup-vault-copy-verified {profile.Id} {backupId} files={record.FileCount} bytes={record.SizeBytes} {completedUtc:O}");
+                return new(true, "VaultCopyVerified",
+                    "Backup copied and hash-verified in the selected vault. The local backup was kept.",
+                    backupId, completedUtc, record.FileCount, record.SizeBytes);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       InvalidOperationException or NotSupportedException or
+                                       System.ComponentModel.Win32Exception or CryptographicException or OverflowException or
+                                       JsonException or ArgumentException)
+            {
+                if (!string.IsNullOrWhiteSpace(stage))
+                {
+                    try
+                    {
+                        var parent = Directory.GetParent(stage)?.FullName;
+                        if (parent is not null) SafeDeleteDirectory(stage, parent);
+                    }
+                    catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException or InvalidOperationException) { }
+                }
+                data.TryAudit($"backup-vault-copy-failed {profile.Id} {backupId} {ex.GetType().Name} {completedUtc:O}");
+                return new(false, "VaultCopyFailed",
+                    "The backup-vault copy was not confirmed. The local backup was kept unchanged.",
+                    backupId, completedUtc);
+            }
+        }
+    }
+
+    public BackupSafetyResult RehearseRestore(ServerProfile profile, Guid backupId)
+    {
+        lock (sync)
+        {
+            var completedUtc = clock.GetUtcNow();
+            var record = data.LoadBackupCatalog().Records
+                .SingleOrDefault(item => item.Id == backupId && item.ProfileId == profile.Id);
+            if (record is null)
+                return new(false, "BackupNotFound", "Choose a completed backup for this server.", backupId, completedUtc);
+            var rehearsalRoot = data.RestoreRehearsalsRoot;
+            var stage = Path.Combine(rehearsalRoot, Guid.NewGuid().ToString("N") + ".rehearsal");
+            try
+            {
+                if (!string.Equals(record.Kind, profile.Kind, StringComparison.Ordinal) ||
+                    !string.Equals(record.WorldId, profile.WorldId, StringComparison.Ordinal))
+                    throw new InvalidDataException("The backup does not match this saved server.");
+                var source = BackupDirectory(profile.Id, backupId);
+                var manifest = ReadAndVerifyManifest(record, source);
+                EnsurePlainDirectory(rehearsalRoot, "The restore-rehearsal folder");
+                EnsureFreeSpace(rehearsalRoot, record.SizeBytes, profile.Backups.MinimumFreeSpaceMb);
+                EnsurePlainDirectory(stage, "The restore-rehearsal staging folder");
+                var copied = CopyTree(Path.Combine(source, "payload"), stage);
+                if (!copied.Files.SequenceEqual(manifest.Files))
+                    throw new CryptographicException("The rehearsal copy did not match the completed backup manifest.");
+                VerifyTree(stage, manifest.Files);
+                data.TryAudit($"backup-restore-rehearsal-complete {profile.Id} {backupId} files={record.FileCount} bytes={record.SizeBytes} {completedUtc:O}");
+                return new(true, "RestoreRehearsalCompleted",
+                    "The backup restored into disposable scratch storage and passed a full hash check. The live world was not touched.",
+                    backupId, completedUtc, record.FileCount, record.SizeBytes);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       InvalidOperationException or NotSupportedException or
+                                       System.ComponentModel.Win32Exception or CryptographicException or OverflowException or
+                                       JsonException or ArgumentException)
+            {
+                data.TryAudit($"backup-restore-rehearsal-failed {profile.Id} {backupId} {ex.GetType().Name} {completedUtc:O}");
+                return new(false, "RestoreRehearsalFailed",
+                    "The disposable restore rehearsal failed. The live world and completed backup were not changed.",
+                    backupId, completedUtc);
+            }
+            finally
+            {
+                try { SafeDeleteDirectory(stage, rehearsalRoot); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { }
+            }
+        }
+    }
+
     public WorldBackupResult Restore(ServerProfile profile, Guid backupId) =>
         Restore(profile, backupId, profile.WorldDirectory);
 
@@ -458,6 +583,19 @@ internal sealed class WorldBackupService
             throw new InvalidDataException("The backup completion marker is missing or does not match its catalog record.");
         VerifyTree(Path.Combine(directory, "payload"), manifest.Files);
         return manifest;
+    }
+
+    private static void VerifyExportedBackup(string directory, BackupManifest manifest)
+    {
+        var marker = Path.Combine(directory, "complete.json");
+        var copy = File.Exists(marker)
+            ? JsonSerializer.Deserialize<BackupManifest>(File.ReadAllText(marker), Json)
+            : null;
+        if (copy is null || copy.BackupId != manifest.BackupId || copy.ProfileId != manifest.ProfileId ||
+            copy.CreatedUtc != manifest.CreatedUtc || copy.Files is null ||
+            !copy.Files.SequenceEqual(manifest.Files))
+            throw new InvalidDataException("The vault completion marker does not match the source backup.");
+        VerifyTree(Path.Combine(directory, "payload"), manifest.Files);
     }
 
     private static (long SizeBytes, List<BackupManifestFile> Files) CopyTree(string source, string destination)
@@ -793,6 +931,13 @@ internal sealed class WorldBackupService
         var parentPath = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var childPath = Path.GetFullPath(child).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return childPath.StartsWith(parentPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void EnsurePlainDirectory(string path, string description)
+    {
+        Directory.CreateDirectory(path);
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException(description + " cannot be a link or reparse point.");
     }
 
     private static void SafeDeleteDirectory(string path, string requiredParent)

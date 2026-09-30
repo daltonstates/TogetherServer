@@ -93,6 +93,9 @@ public sealed class AppInstance
             if (profile.Kind == GameKinds.Custom)
                 return new(false, "StagingCustomDisabled",
                     "Custom scripts are disabled in staging because they can reference files outside the staging data folder.");
+            if (profile.Kind == GameKinds.Factorio)
+                return new(false, "StagingFactorioDisabled",
+                    "Factorio preview requires an existing save and is disabled in fresh-world-only staging.");
             if (profile.Kind == GameKinds.Valheim && !profile.WorldSource.Equals("New", StringComparison.OrdinalIgnoreCase))
                 return new(false, "StagingFreshWorldRequired",
                     "Development creates and keeps worlds in separate storage; it cannot load or copy an existing production world.");

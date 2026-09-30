@@ -5,6 +5,7 @@ import { AppErrorBoundary } from './AppErrorBoundary'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
 import { ConnectionDoctor } from './ConnectionDoctor'
+import { FriendConnectionDoctor } from './FriendConnectionDoctor'
 import { ConnectionDetails } from './ConnectionDetails'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
@@ -16,7 +17,7 @@ import {
 } from './features/setup/HostSetupDialog'
 import { useHostSetup } from './features/setup/useHostSetup'
 import {
-  parseActionResult, parseAppInstance, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
+  parseActionResult, parseAppInstance, parseBackupSafetyResult, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
   parseDataRecoveryView, parseDesktopPreferenceResult, parseDesktopPreferences,
   parseFriendSnapshot, parseGameEndpointResult, parseInternetRouteCheck, parseInviteResult,
   parseInviteState, parsePasswordResult, parsePortDiagnostics, parsePublicIpDetection, parseRouteDiscovery,
@@ -317,7 +318,7 @@ function App() {
     showPasswords, editedProfile, setupIssues, stepIssues, customScriptsChanged, setupRef,
     sensitiveDraft, edit, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
     synchronizeHostSnapshot, resetForMode, saveSetup, updateProfile, editCustomScripts, updateCustomPort,
-    addCustomPort, removeCustomPort, browseCustomDirectory, applyMinecraftInstallation, scanMinecraft,
+    addCustomPort, removeCustomPort, browseCustomDirectory, browseFactorio, applyMinecraftInstallation, scanMinecraft,
     installMinecraft, changeGameKind, addProfile, removeProfile, cancelSetup, finishSetupLater, openSetup,
     continueSetup, scanValheim, importWorld, browseServer, browseMinecraft, browseWorld, setSetupStep,
     setSourceRoot, setPassword, setShowPassword, setMinecraftSetupModeFor, setMinecraftTermsFor
@@ -941,6 +942,26 @@ function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const copyBackupToVault = async (profileId: string, backupId: string) => {
+    setPending(`vault-backup-${backupId}`)
+    setNotice(null)
+    try {
+      const result = await changeJson(`/api/local/profiles/${profileId}/backups/${backupId}/vault`, 'POST',
+        parseBackupSafetyResult)
+      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const rehearseBackupRestore = async (profileId: string, backupId: string) => {
+    setPending(`rehearse-backup-${backupId}`)
+    setNotice(null)
+    try {
+      const result = await changeJson(`/api/local/profiles/${profileId}/backups/${backupId}/rehearse`, 'POST',
+        parseBackupSafetyResult)
+      setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
   const restoreBackup = async (profileId: string, backupId: string, createdUtc: string) => {
     if (!window.confirm(`Restore the backup from ${new Date(createdUtc).toLocaleString()}? The server must remain offline. TogetherServer will first retain a pre-restore snapshot.`)) return
     setPending(`restore-${profileId}`)
@@ -1175,7 +1196,8 @@ function App() {
   const selectedHostProfile = savedProfiles.find(profile => profile.id === selectedHostProfileId) ?? savedProfiles[0]
   const selectedHostRun = snapshot?.mode === 'Host' && selectedHostProfile
     ? snapshot.runs.find(run => run.profileId === selectedHostProfile.id) : undefined
-  const attentionCount = visibleActivity.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
+  const storageWarnings = snapshot?.mode === 'Host' ? snapshot.storageHealth?.warnings ?? [] : []
+  const attentionCount = visibleActivity.length + storageWarnings.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
   const groupedActivity = collapseRepeatedActivity(visibleActivity)
   const commands: WorkspaceCommand[] = [
     { id: 'nav-host', label: 'Open Host', detail: 'Manage servers on this PC', icon: 'server', keywords: 'Alt+1', run: () => navigateWorkspace('host') },
@@ -1232,13 +1254,13 @@ function App() {
       </div>
     </header>
 
-    {update?.state === 'Available' && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? 'Update and restart when you are ready.'}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
+    {update?.state === 'Available' && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
 
     {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Development servers, saved access, settings, and worlds stay in this separate instance. Production data is not loaded or copied.</span></aside>}
 
     {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
       <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
-      <div className="update-dialog-content"><p>{updateBlockedReason ?? 'The download is checked against the fixed GitHub release asset, its declared size and version, and its SHA-256 digest.'}</p>{notice && !notice.good && <div className="notice bad" role="status">{notice.text}</div>}</div>
+      <div className="update-dialog-content"><p>{updateBlockedReason ?? 'Before closing, TogetherServer verifies the download, preserves the previous EXE, and creates a same-user settings/access recovery checkpoint.'}</p><p className="helper-text">Publisher trust: {update.publisherTrust}. A trusted Windows publisher still requires the owner’s signing certificate; unsigned builds remain clearly labeled.</p>{notice && !notice.good && <div className="notice bad" role="status">{notice.text}</div>}</div>
       <div className="actions update-dialog-actions"><Button className="secondary" disabled={updateBusy} onClick={dismissUpdatePrompt}>Not now</Button><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div>
     </dialog>}
 
@@ -1261,19 +1283,37 @@ function App() {
         onStopRecordedRun={profileId => void run(`recovery-stop-${profileId}`, `/api/local/profiles/${profileId}/stop`, 'POST')}
         onForgetRecordedRun={profileId => void run(`recovery-forget-${profileId}`, `/api/local/profiles/${profileId}/forget`, 'POST')} /></PaneErrorBoundary>}
 
+      {snapshot?.mode === 'Host' && snapshot.startupRecovery?.previousSessionInterrupted &&
+        <section className="panel startup-recovery" aria-labelledby="startup-recovery-title"><div className="section-heading"><div><h2 id="startup-recovery-title">Recovered app session</h2><p>{snapshot.startupRecovery.message}</p></div></div>
+          <div className="choices">{snapshot.startupRecovery.items.map(item => {
+            const profile = snapshot.settings.profiles.find(candidate => candidate.id === item.profileId)
+            return <div className="choice" key={item.profileId}><span><strong>{profile?.name ?? 'Saved server'} · {item.state}</strong><small>{item.detail}</small></span>
+              {item.canResume && <Button disabled={!!pending || dirty} onClick={() => {
+                if (window.confirm('Resume hosting through the normal Start checks? TogetherServer will never start a second copy of a process it reattached to.'))
+                  void run(`resume-${item.profileId}`, `/api/local/profiles/${item.profileId}/resume-hosting`, 'POST')
+              }}>{pending === `resume-${item.profileId}` ? 'Resuming…' : 'Resume hosting'}</Button>}</div>
+          })}</div>
+          <small>{snapshot.startupRecovery.windowsRestartRegistered ? 'Windows can reopen this app after an application failure.' : 'Windows application-restart registration is unavailable in this build.'} Reopening the app never starts a game automatically.</small>
+        </section>}
+
       {workspacePage === 'attention' && <PaneErrorBoundary title="Attention Center" resetKey={visibleActivity[0]?.id ?? 'empty'}><section className="attention-workspace" aria-label="Notifications and activity">
         <div className="attention-toolbar"><div><strong>{attentionCount ? `${attentionCount} current item${attentionCount === 1 ? '' : 's'}` : 'You are all caught up'}</strong><span>Recent app and connection activity</span></div>
           <div className="attention-toolbar-actions">{snapshot?.mode === 'Host' && <Button className="secondary" onClick={() => openHostSettings('diagnostics')}>Preflight & diagnostics</Button>}
             {visibleActivity.length > 0 && <Button className="secondary" onClick={clearNotificationActivity}>Clear activity</Button>}</div></div>
         <div className="attention-list">
+          {snapshot?.mode === 'Host' && storageWarnings.map((warning, index) => <article className="notification-item bad" role="status" key={`storage-${index}`}><span><Icon name="warning" /></span><div><strong>Storage health</strong><p>{warning}</p></div></article>)}
           {update?.state === 'Available' && <article className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available - v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update...</> : 'Update and restart'}</Button></div></article>}
           {notice && <article className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></article>}
           {groupedActivity.map(({ item, repeatCount }) => {
             const destination = activityDestination(item)
             return <article className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{destination && snapshot?.mode === 'Host' && <Button className="text-button" onClick={() => openActivity(item)}>{destination.label}</Button>}</div></article>
           })}
-          {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && <div className="attention-empty"><Icon name="check" size={22} /><strong>No recent activity</strong><p>Important Host, Friend, update, and recovery events will appear here.</p></div>}
+          {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && storageWarnings.length === 0 && <div className="attention-empty"><Icon name="check" size={22} /><strong>No recent activity</strong><p>Important Host, Friend, update, and recovery events will appear here.</p></div>}
         </div>
+        {snapshot?.mode === 'Host' && snapshot.storageHealth && <details className="advanced-block storage-health-details"><summary>Storage and resource details</summary>
+          <div className="storage-health-grid">{snapshot.storageHealth.locations.map(location => <div className="storage-health-item" key={location.id}><span><strong>{location.label}</strong><small>{location.state}</small></span><span>{location.availableSpaceBytes == null ? 'Space unavailable' : `${formatBytes(location.availableSpaceBytes)} available`}{location.usedBytes > 0 ? ` · ${formatBytes(location.usedBytes)} measured` : ''}</span><small>{location.detail}</small></div>)}</div>
+          <p className="helper-text">{snapshot.storageHealth.resources.logicalProcessors} logical processors · {formatBytes(snapshot.storageHealth.resources.processWorkingSetBytes)} app working set. {snapshot.storageHealth.resources.evidenceBoundary}</p>
+        </details>}
       </section></PaneErrorBoundary>}
 
       {workspacePage === 'settings' && snapshot?.mode === 'Friend' && <section className="settings-workspace" aria-labelledby="friend-app-settings-title">
@@ -1283,7 +1323,7 @@ function App() {
             <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} /></label>
             <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
           </div>
-          <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : 'Updates install only when you choose.'}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
+          <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : `Updates install only when you choose · ${update?.publisherTrust ?? 'checking trust'}. A verified local-state checkpoint is required before replacement.`}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
           <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Hosted servers on this PC still keep the existing Quit guard.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
           <div className="shortcut-reference"><strong>Keyboard shortcuts</strong><span><kbd>Ctrl K</kbd> Command palette</span><span><kbd>Alt 1</kbd> Host</span><span><kbd>Alt 2</kbd> Join</span><span><kbd>Alt 3</kbd> Attention</span><span><kbd>Alt 4</kbd> Settings</span><span><kbd>Esc</kbd> Close or go back</span></div>
         </section></div>
@@ -1322,6 +1362,9 @@ function App() {
             {pairIssue && <div className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></div>}
             <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<Input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
+          {snapshot.endpoint && !showPairing && <FriendConnectionDoctor snapshot={snapshot}
+            gameResults={gameEndpointResults} busy={!!pending}
+            onRefresh={() => void checkFriendConnection()} onProbe={profileId => void probeGameEndpoint(profileId)} />}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
           {snapshot.profiles.map(profile => {
@@ -1485,16 +1528,16 @@ function App() {
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
-                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>Crash recovery is {profile.crashRecovery?.enabled ? 'on' : 'off'} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
+                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio'].includes(profile.kind) && <PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
                     {shownBackupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(shownBackupStatus.lastSuccessfulUtc).toLocaleString()} · {shownBackupStatus.completedCount} retained · {formatBytes(shownBackupStatus.retainedSizeBytes)} used.</small>}
                     {shownBackupStatus?.availableSpaceBytes != null && <small>{formatBytes(shownBackupStatus.availableSpaceBytes)} available on the backup drive.</small>}
                     {shownBackupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</p>}
                     <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} title={status?.state !== 'Offline' ? 'Stop the server before copying its world.' : undefined} onClick={() => void createManualBackup(profile.id)}>{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
-                    <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds.</small>
+                    <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds. “Copy to vault” uses a Windows folder picker, verifies every hash after transfer, and keeps the local backup. Choose an external or network location when you want another-device protection. “Test restore” uses disposable scratch storage and never swaps the live world.</small>
                     {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
                       const verification = backupVerifications[backup.id]
                       const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'
-                      return <div className="device backup-record" key={backup.id}><div><strong>{label}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {formatBytes(backup.sizeBytes)}</small>{verification && <small className={verification.ok ? 'verification-ok' : 'warning-text'}>{verification.ok ? 'Integrity verified' : 'Integrity check failed'} {new Date(verification.checkedUtc).toLocaleString()}. The live world was not changed.</small>}</div><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void verifyBackup(profile.id, backup.id)}>{pending === `verify-backup-${backup.id}` ? 'Verifying…' : 'Verify'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div></div>
+                      return <div className="device backup-record" key={backup.id}><div><strong>{label}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {formatBytes(backup.sizeBytes)}</small>{verification && <small className={verification.ok ? 'verification-ok' : 'warning-text'}>{verification.ok ? 'Integrity verified' : 'Integrity check failed'} {new Date(verification.checkedUtc).toLocaleString()}. The live world was not changed.</small>}</div><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void verifyBackup(profile.id, backup.id)}>{pending === `verify-backup-${backup.id}` ? 'Verifying…' : 'Verify'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void copyBackupToVault(profile.id, backup.id)}>{pending === `vault-backup-${backup.id}` ? 'Copying…' : 'Copy to vault'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void rehearseBackupRestore(profile.id, backup.id)}>{pending === `rehearse-backup-${backup.id}` ? 'Testing…' : 'Test restore'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div></div>
                     })}</div>}
                   </div></PaneErrorBoundary>}
                 </details>
@@ -1532,6 +1575,7 @@ function App() {
           onPasswordChange={setPassword}
           onShowPasswordChange={setShowPassword}
           onBrowseCustomDirectory={profile => void browseCustomDirectory(profile)}
+          onBrowseFactorio={(profile, target) => void browseFactorio(profile, target)}
           onMinecraftSetupModeChange={setMinecraftSetupModeFor}
           onBrowseMinecraft={(profile, target) => void browseMinecraft(profile, target)}
           onApplyMinecraftInstallation={applyMinecraftInstallation} onScanMinecraft={folder => void scanMinecraft(folder)}
@@ -1562,7 +1606,7 @@ function App() {
                   <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
                   <label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong><small>Uses a scoped idle-sleep request only while an exact managed server process is running. Manual sleep can still interrupt hosting.</small>{snapshot.hostingPower && <small>Current state: {snapshot.hostingPower.state}. {snapshot.hostingPower.message}</small>}</span><Input type="checkbox" checked={draft.keepAwakeWhileHosting} disabled={!!pending} onChange={event => void saveHostFlags({ keepAwakeWhileHosting: event.target.checked })} /></label>
                 </div>
-                <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : 'Updates are checked automatically and installed only when you choose.'}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
+                <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : `Updates are checked automatically, installed only when you choose, and require a verified local-state recovery checkpoint · ${update?.publisherTrust ?? 'checking trust'}.`}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
                 <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Active or unresolved managed servers still block Quit.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
                 <div className="shortcut-reference"><strong>Keyboard shortcuts</strong><span><kbd>Ctrl K</kbd> Command palette</span><span><kbd>Alt 1</kbd> Host</span><span><kbd>Alt 2</kbd> Join</span><span><kbd>Alt 3</kbd> Attention</span><span><kbd>Alt 4</kbd> Settings</span><span><kbd>Esc</kbd> Close or go back</span></div>
               </section>}

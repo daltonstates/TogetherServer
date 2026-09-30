@@ -4,6 +4,7 @@ import { Icon } from './Icon'
 import type { Device, Run } from './contracts'
 import type { Profile } from './GameProfile'
 import type { InternetRouteCheck, PortDiagnostics } from './ServerReadiness'
+import { AcceptanceRecorder } from './AcceptanceRecorder'
 
 export type DoctorStage = {
   id: 'listener' | 'address' | 'route' | 'friend' | 'game' | 'join'
@@ -110,6 +111,7 @@ export function ConnectionDoctor({ profile, run, ports, routeCheck, devices, bus
         <label className="check-row"><Input type="checkbox" checked={friendTest.savedChangeConfirmed} disabled={!friendTest.friendConfirmed} onChange={event => setFriendTest(current => current && ({ ...current, savedChangeConfirmed: event.target.checked }))} />After a graceful save/restart, the Friend confirmed a recognizable in-game change remained.</label>
         {friendTest.savedChangeConfirmed && <p className="friend-test-complete">The coordinated checklist is complete in this view. Record formal external acceptance separately; TogetherServer does not turn these confirmations into automatic proof.</p>}
       </div>}
+      <AcceptanceRecorder profileId={profile.id} />
       <small className="evidence-boundary">A local listener, TCP response, heartbeat, or player count never substitutes for the later stage. TogetherServer does not change firewall, router, DNS, or private-network policy.</small></>}
   </section>
 }

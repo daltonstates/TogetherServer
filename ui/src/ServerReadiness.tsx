@@ -128,7 +128,8 @@ function gameGuidance(game: GamePortCheck | undefined, controlPort: number | und
   if (game.routeKind === 'Unknown') return 'The saved game driver is unavailable, so its game route is unknown.'
   const gameName = game.kind === 'Valheim' ? 'Valheim Steam' :
     game.kind === 'MinecraftJava' ? 'Minecraft Java' :
-      game.kind === 'MinecraftBedrock' ? 'Minecraft Bedrock' : 'This game'
+      game.kind === 'MinecraftBedrock' ? 'Minecraft Bedrock' :
+        game.kind === 'Factorio' ? 'Factorio' : 'This game'
   return `${gameName} uses direct ${game.protocol} ${game.ports.join(', ')}. These game ports are separate from Friend app HTTPS TCP ${controlPort ?? 'port'}. Local sockets do not prove outside access.`
 }
 

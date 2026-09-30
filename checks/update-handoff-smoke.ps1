@@ -45,6 +45,22 @@ Copy-Item -LiteralPath $appPath -Destination $payload
 Copy-Item -LiteralPath $appPath -Destination $helper
 $hash = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash
 $previousHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+$checkpointId = [guid]::NewGuid().ToString('N')
+$checkpoint = Join-Path $dataRoot "update-checkpoints/$checkpointId.checkpoint"
+New-Item -ItemType Directory -Path $checkpoint -Force | Out-Null
+$checkpointManifest = [ordered]@{
+    schemaVersion = 1
+    id = ([guid]::ParseExact($checkpointId, 'N')).ToString('D')
+    createdUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    currentVersion = '0.2.1'
+    targetVersion = '0.2.1'
+    storageSchemaVersion = 2
+    previousExecutableSha256 = $previousHash
+    files = @()
+} | ConvertTo-Json -Depth 4
+$checkpointManifestPath = Join-Path $checkpoint 'checkpoint-manifest.json'
+[IO.File]::WriteAllText($checkpointManifestPath, $checkpointManifest, [Text.UTF8Encoding]::new($false))
+$checkpointHash = (Get-FileHash -LiteralPath $checkpointManifestPath -Algorithm SHA256).Hash
 
 $oldDataRoot = $env:TOGETHERSERVER_DATA_DIR
 $oldStagingDataRoot = $env:TOGETHERSERVER_STAGING_DATA_DIR
@@ -58,7 +74,7 @@ $updater = $null
 try {
     $parent = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 4') -WindowStyle Hidden -PassThru
     $startTicks = $parent.StartTime.ToUniversalTime().Ticks
-    $argumentLine = "--apply-update $($parent.Id) $startTicks `"$target`" `"$payload`" $hash `"$dataRoot`" `"$ready`" $verification"
+    $argumentLine = "--apply-update $($parent.Id) $startTicks `"$target`" `"$payload`" $hash `"$dataRoot`" `"$ready`" $verification `"$checkpoint`" $checkpointHash"
     $updater = Start-Process -FilePath $helper -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
     $signaled = $false
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
@@ -67,7 +83,7 @@ try {
         Start-Sleep -Milliseconds 50
     }
     if (!$signaled) { throw 'Updater did not signal readiness.' }
-    Write-Host "PASS $verificationLabel-verified updater helper signaled readiness before old process exit"
+    Write-Host "PASS $verificationLabel-verified updater helper rechecked the local-state checkpoint and signaled readiness before old process exit"
     if (!$updater.WaitForExit(20000) -or $updater.ExitCode -ne 0) { throw 'Updater did not finish the replacement and relaunch.' }
     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hash) { throw 'The installed EXE does not match the verified payload.' }
     if ((Get-FileHash -LiteralPath ($target + '.previous') -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous EXE backup was not preserved.' }

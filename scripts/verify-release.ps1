@@ -86,6 +86,7 @@ try {
     $checkProjects = @(
         'checks/TogetherServer.Checks/TogetherServer.Checks.csproj',
         'checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj',
+        'checks/TogetherServer.FactorioChecks/TogetherServer.FactorioChecks.csproj',
         'checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj',
         'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
         'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',

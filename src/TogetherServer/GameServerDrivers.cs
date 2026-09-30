@@ -12,6 +12,7 @@ public static class GameKinds
     public const string Valheim = "Valheim";
     public const string MinecraftJava = "MinecraftJava";
     public const string MinecraftBedrock = "MinecraftBedrock";
+    public const string Factorio = "Factorio";
     public const string Custom = "Custom";
     public const string Fixture = "Fixture";
 }
@@ -58,6 +59,7 @@ public sealed class GameServerRegistry
             new ValheimServerDriver(data),
             new MinecraftJavaServerDriver(data),
             new MinecraftBedrockServerDriver(data),
+            new FactorioServerDriver(data),
             new CustomGameServerDriver(data)
         };
         includeFixture |= string.Equals(Environment.GetEnvironmentVariable(FixtureOptInEnvironmentVariable), "1",

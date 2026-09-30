@@ -1,4 +1,4 @@
-export type GameKind = 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Custom'
+export type GameKind = 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Custom'
 
 export type CustomPort = {
   protocol: 'TCP' | 'UDP'
@@ -27,6 +27,7 @@ export type Profile = {
   gamePort: number
   executablePath: string
   minecraft?: { serverJarPath: string } | null
+  factorio?: { rconPort: number } | null
   custom?: CustomGameOptions | null
   crashRecovery?: { enabled: boolean } | null
   backups?: { enabled: boolean; retentionCount: number; minimumFreeSpaceMb: number } | null
@@ -35,7 +36,8 @@ export type Profile = {
 
 export function gameLabel(kind: string): string {
   return kind === 'MinecraftJava' ? 'Minecraft Java Edition' :
-    kind === 'MinecraftBedrock' ? 'Minecraft Bedrock Edition' : kind
+    kind === 'MinecraftBedrock' ? 'Minecraft Bedrock Edition' :
+      kind === 'Factorio' ? 'Factorio (preview)' : kind
 }
 
 export function profileGameLabel(profile: Pick<Profile, 'kind' | 'custom'>): string {

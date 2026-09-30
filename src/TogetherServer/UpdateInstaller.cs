@@ -11,7 +11,7 @@ public static class UpdateInstaller
 
     public static async Task<int> RunAsync(string[] args, IAuthenticodeVerifier? authenticodeVerifier = null)
     {
-        if (args.Length != 9 || args[0] != "--apply-update" ||
+        if (args.Length is not (9 or 11) || args[0] != "--apply-update" ||
             !int.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out var parentId) || parentId < 1 ||
             !long.TryParse(args[2], NumberStyles.None, CultureInfo.InvariantCulture, out var parentStart) ||
             !Regex.IsMatch(args[5], "^[0-9A-Fa-f]{64}$", RegexOptions.CultureInvariant) ||
@@ -37,6 +37,8 @@ public static class UpdateInstaller
                 !HasPublisher(payload, args[8], signatureVerifier) ||
                 !HasPublisher(helper, args[8], signatureVerifier))) return 2;
             originalHash = await AppUpdater.HashAsync(target);
+            if (args.Length == 11 &&
+                !StateCheckpointService.TryValidate(root, args[9], args[10], out _, originalHash)) return 2;
 
             using var parent = Process.GetProcessById(parentId);
             if (parent.StartTime.ToUniversalTime().Ticks != parentStart) return 2;

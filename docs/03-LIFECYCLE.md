@@ -14,6 +14,8 @@ Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` base
 
 For Minecraft's console-capture helper, a launch failure is removable only when the helper explicitly reports that it failed before creating a game process and the exact recorded helper PID, start time, and executable are confirmed exited. That removes only the failed run and permits a retry. A timeout, missing or malformed handshake, possible game PID, live helper, PID reuse, path/start-time mismatch, or process-access failure remains unresolved and blocks another writer.
 
+Factorio preview starts only an owner-installed `factorio.exe` against the verified managed copy of the selected save ZIP. Its UDP game port and separate RCON port are declared before launch, and readiness requires an authenticated fixed RCON reply rather than process existence. TogetherServer never downloads Factorio, accepts its terms, hosts from the original save, or supplies arbitrary RCON text.
+
 An ordinary Start conflict does not stop anything. A paired device with Start permission for the requested assigned profile may separately confirm **replace empty port conflict**. Assignment or Stop permission for the conflicting profile is intentionally not required, but the response exposes only its saved name and shared ports. The Host denies replacement if remote controls are off, either profile is in maintenance, process identity is uncertain, readiness/count is unavailable, any player is online, or Host/Friend-added shutdown time remains saved for the conflicting run. It then repeats exact zero inside the lifecycle gate, gracefully stops each conflict, and launches the requested profile only after those exits are confirmed.
 
 ### Stop
@@ -25,6 +27,8 @@ An ordinary Start conflict does not stop anything. A paired device with Start pe
 
 Minecraft Java and Bedrock use a fixed `stop` console command sent only after exact process and isolated-console checks. Their local status replies include player counts, so Friend and automatic Stop use the same two-query zero-player gate. Disposable stop markers do not establish real save integrity.
 
+Factorio preview uses an authenticated fixed `/quit` RCON action and waits for the exact process to exit. The same two-query zero-player gate protects Friend and automatic Stop. Fixture save markers and a successful `/quit` do not establish a real Factorio client join or valued-save integrity, and automatic crash restart remains unavailable for the preview.
+
 A Custom profile may show the count and player names returned by its bounded Status/players script, but that data is not an occupancy authority by default. The Host-only certification requires contract-v2 probe/run echoes, zero → positive → zero, a fresh in-gate zero recheck, graceful exit of the exact wrapper, restart of the same profile/world, another real-client join, owner confirmation that a recognizable change survived, and a final return to zero. The resulting protected fingerprint is invalidated by changes to any script, world ID, working/save directory, declared port, or contract version. While it matches, the Custom count can enter the same two-stage gate used by built-in drivers for Friend Stop, Restart, replacement, and optional idle shutdown. Positive, Unknown, stale, contradictory, or mismatched evidence always denies the action. Local owner Stop remains available without certification and never force-kills the game.
 
 ### Host app restart
@@ -35,11 +39,17 @@ An exact run record is archived automatically only when its recorded PID is defi
 
 Optional built-in crash recovery is off by default. Only a previously Ready run with a definitively exited exact process is eligible. The three launch attempts wait 1, 5, and 15 minutes. A recovered process must reach Ready; an exit before Ready advances the bounded retry state, and the third failure suspends recovery. Custom profiles are not eligible.
 
+An interrupted TogetherServer session also produces a local startup recovery summary. Exact surviving runs are reattached; definitively exited runs may offer one deliberate owner **Resume hosting** action; ambiguous identity remains **Needs review**. A clean exit is recorded separately. Windows may reopen TogetherServer after a crash/restart, but neither that registration nor the recovery assistant automatically starts a game server.
+
 Optional rolling backup runs only after confirmed graceful process exit. The built-in driver supplies its reviewed save directory; Custom working directories are never copied. Backup copies go to staging, reject links/reparse points, hash every file into a completion manifest, and become visible only after an atomic directory rename. Retention and a free-space reserve are owner-configured; status reports retained bytes and destination free space without treating capacity as integrity proof. A backup failure does not pretend the still-successful graceful Stop failed, but remains visible on the Host.
 
 The local owner may request a manual checkpoint only when no exact managed process is running and no uncertain run identity exists. Manual checkpoints use the same staging, manifest, hashing, retention, and reviewed save-only root. Verification re-reads the completed manifest and hashes every payload file without reading or changing the live world. Safe restart first confirms an exact graceful Stop, accepts its successful rolling checkpoint when configured or creates a manual checkpoint otherwise, and invokes Start only after that checkpoint succeeds. Stop success followed by checkpoint failure intentionally leaves the server Offline. These routes are not exposed to Friends.
 
 Restore is local-owner-only and requires Offline with no uncertain run identity. The chosen completed manifest is verified first, a pre-restore snapshot must succeed, and a same-volume staged directory replaces the live save. No Friend endpoint exposes backup listing, restore, delete, or arbitrary file access.
+
+The owner may copy a completed verified backup to a selected vault. TogetherServer verifies every destination hash and retains the local copy; the owner must choose an external or network folder when another-device protection is intended. **Test restore** copies the payload into disposable owned scratch storage, verifies the full manifest, and deletes that scratch copy without changing the live world. Neither result proves the real game can load the save, so a recognizable real-game restore drill remains an acceptance gate.
+
+Before an owner-approved in-app update closes the app, a bounded local-state recovery checkpoint is hashed and bound to the current/target versions, storage schema, and previous EXE. The replacement helper validates that checkpoint again before replacing the verified executable. This checkpoint is recovery material, not automatic schema rollback or evidence that a new version can load every world.
 
 ### Archived session summaries
 

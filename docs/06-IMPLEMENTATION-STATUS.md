@@ -1253,3 +1253,27 @@ Starting Git HEAD: `d2f3e1d`, branch `main`. This source slice completes the cur
 | External acceptance | Not run: no actual Friend PC/network, public/private route, real game join, identifiable player, Windows sleep/resume cycle, valued world, restore drill, or recognizable real-game save/restart was exercised. The guided checklist, fixture, and loopback suites do not satisfy these gates. |
 
 No version, package, installer, tag, or release was produced. The already running app and its process, listener, data, credentials, worlds, game binaries, firewall, router, DNS, and update state were not inspected or changed.
+
+## 2026-09-30 - Recovery safeguards, Friend diagnostics, and Factorio preview
+
+Starting Git HEAD: `4acf618767710f5480b582d68cf6621545a3e374`, branch `main`. This slice adds the remaining recovery and verification workspaces while preserving the existing Host/Friend contract and leaving the already running installed app completely alone.
+
+- **Backup Vault** copies a completed managed-world backup to an owner-selected local, removable, or network destination and verifies source and destination hashes. **Test restore** expands and hashes a backup only in disposable rehearsal storage; it never replaces the live world.
+- **Friend Connection Doctor** checks saved access in ordered stages: saved profile, Host TCP, pinned TLS, authenticated device access, protocol compatibility, assignment, and the selected game's endpoint. Its copyable report contains only stage results, not addresses, codes, credentials, device IDs, names, or raw errors.
+- **Safe updates and recovery** create and revalidate a bounded local-state checkpoint before executable replacement. Startup records distinguish reattached, exited, needs-review, and ready-to-resume servers; resuming is deliberate and a reboot or crash never starts a game automatically.
+- **Storage health and acceptance** warn about constrained backup/log space while presenting CPU and memory only as informational readings. Owner-recorded external checks are tied to a configuration fingerprint and are never treated as authorization, player count, or automated proof.
+- **Factorio preview** is a reviewed fixed-argument built-in driver for an owner-installed server and a copy-once managed save. It uses local RCON for fixed count/Stop operations, keeps RCON separate from the game port, and remains fixture-tested preview support until real owner-installed join and save/restart acceptance is recorded.
+- Update trust now clearly distinguishes a verified publisher from GitHub-digest-only and development builds. The candidate remains unsigned; obtaining and using a trusted publisher certificate is an owner/release prerequisite, not something this source slice can manufacture.
+
+| Check | Result |
+| --- | --- |
+| UI tests, lint, and production bundle | Pass: Vitest 19 files / 82 tests, ESLint with zero warnings, and TypeScript/Vite production build with 43 transformed modules. |
+| Release build and source formatting | Pass: `dotnet build TogetherServer.slnx -c Release --no-restore` completed with 0 warnings and 0 errors; `dotnet format TogetherServer.slnx --verify-no-changes --no-restore` passed. |
+| Host and game-driver suites | Pass: Core Host 48, Valheim 10, Factorio 2, Minecraft 8, Minecraft setup 5, Custom 6, and updater 15 groups, all with 0 failures. Factorio used only the disposable protocol fixture. |
+| Exact-candidate Friend regression | Pass: Core remote journey 6 groups and Companion 44 groups against the exact candidate. It proved authenticated saved access, remote Start, occupied Stop denial, zero-player graceful Stop, typed closed-port behavior, and reconnection with the same saved access after isolated Host and Friend candidate restarts. |
+| Packaged smoke and isolation | Pass: served bundled-app smoke 22 groups and production/staging isolation 3 groups. Hidden desktop/native UI smoke was deliberately skipped, and no browser backend was used. |
+| Checkpoint-bearing update handoff | Pass: 3 groups. The helper revalidated the local-state checkpoint and installed-payload digest before signaling readiness, replaced only its disposable isolated executable, then relaunched and quit through the guarded local API. |
+| Exact disposable candidate | Pass: SHA-256 `F6347575A4186923EDB8284974ABB5E600E3A18FCDB527E5F55D3CECB4FBD877`, file version `0.2.1.0`, pre-commit product identity `0.2.1+4acf618767710f5480b582d68cf6621545a3e374`; Authenticode status `NotSigned`. This is validation evidence, not a release artifact. |
+| External acceptance | Not run: no actual Friend PC or non-loopback route, real game client/join, real Factorio installation, identifiable player transition, valued world, real restore, Windows sleep/resume cycle, or recognizable save/restart was exercised. Fixture, loopback, and owner-recorded checklist evidence do not satisfy those gates. |
+
+No version, package, installer, tag, or release was produced. The already running installed app was never opened, queried, stopped, restarted, replaced, or sent a request; its listener, data, credentials, worlds, game binaries, firewall, router, DNS, and update state were untouched. All process-based checks used separately named executables and isolated disposable data roots.
