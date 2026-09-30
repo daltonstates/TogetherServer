@@ -449,13 +449,19 @@ try
             File.WriteAllText(timerCountPath, "1");
             await host.RefreshObservationsAsync();
             var canceledExtension = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id);
-            Require(canceledExtension.OnlinePlayers == 1 && canceledExtension.AutoShutdownAtUtc is null,
-                "an online player did not cancel the extended countdown");
+            Require(canceledExtension.OnlinePlayers == 1 && canceledExtension.AutoShutdownAtUtc is null &&
+                canceledExtension.HostAddedTime &&
+                canceledExtension.AutoShutdownReason?.Contains("30 added minutes are saved", StringComparison.Ordinal) == true,
+                "an online player did not pause the countdown while preserving its added time");
+            var extendedWhileOccupied = await host.ExtendAutoShutdownAsync(stopProfile.Id, 15);
+            Require(extendedWhileOccupied.Ok &&
+                extendedWhileOccupied.Snapshot.Runs.Single(run => run.ProfileId == stopProfile.Id).AutoShutdownAtUtc is null,
+                "the Host could not add shutdown time while a player was online");
             File.WriteAllText(timerCountPath, "0");
             await host.RefreshObservationsAsync();
             Require((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id)
-                    .AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(1),
-                "an extension leaked into the next empty-server countdown");
+                    .AutoShutdownAtUtc == clock.GetUtcNow().AddMinutes(46),
+                "saved added time was not applied to the next empty-server countdown");
 
             var longerTimerSettings = stopData.LoadSettings();
             longerTimerSettings.IdleMinutes = 2;
@@ -516,7 +522,7 @@ try
             if ((await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == stopProfile.Id).State != "Offline")
                 await host.StopAsync(stopProfile.Id);
         }
-        Console.WriteLine("PASS server-count-only countdown extends, resets for players/Unknown, and stops gracefully after a final zero check"); passes++;
+        Console.WriteLine("PASS server-count-only countdown preserves added time through players, resets timer policy, and stops gracefully after a final zero check"); passes++;
     }
 
     using (var logData = new LocalData(Path.Combine(root, "private-log-count-host")))

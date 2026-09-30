@@ -49,7 +49,7 @@ public sealed class HostManager
     private HostSettings settings;
     private readonly List<ManagedRun> runs;
     private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
-    private readonly HashSet<Guid> hostAddedTime = [];
+    private readonly Dictionary<Guid, long> addedShutdownMinutes = [];
     private readonly Dictionary<Guid, int> friendAddedMinutes = [];
     private readonly Dictionary<Guid, ServerObservation> observations = [];
     private readonly SemaphoreSlim observationRefresh = new(1, 1);
@@ -390,7 +390,7 @@ public sealed class HostManager
         {
             customCertificationSessions.Remove(profileId);
             shutdownDeadlines.Remove(profileId);
-            hostAddedTime.Remove(profileId);
+            addedShutdownMinutes.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             try
             {
@@ -440,7 +440,7 @@ public sealed class HostManager
         if (previous.AutoShutdownEnabled != next.AutoShutdownEnabled || previous.IdleMinutes != next.IdleMinutes)
         {
             shutdownDeadlines.Clear();
-            hostAddedTime.Clear();
+            addedShutdownMinutes.Clear();
             friendAddedMinutes.Clear();
         }
         var allowedRecoveryProfiles = settings.Profiles
@@ -532,7 +532,7 @@ public sealed class HostManager
             data.DeleteCustomCertification(profileId);
             customCertificationSessions.Remove(profileId);
             shutdownDeadlines.Remove(profileId);
-            hostAddedTime.Remove(profileId);
+            addedShutdownMinutes.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             data.TryAudit($"custom-scripts-saved {profileId} {clock.GetUtcNow():O}");
             data.TryAudit($"custom-certification-invalidated {profileId} scripts-changed {clock.GetUtcNow():O}");
@@ -579,7 +579,7 @@ public sealed class HostManager
             data.DeleteCustomCertification(profileId);
             customCertificationSessions.Remove(profileId);
             shutdownDeadlines.Remove(profileId);
-            hostAddedTime.Remove(profileId);
+            addedShutdownMinutes.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             var fingerprint = CustomCertification.Fingerprint(profile, scripts!, driver.Ports(profile));
             var started = StartUnderGate(profileId, false);
@@ -813,7 +813,7 @@ public sealed class HostManager
             customCertificationSessions.Remove(profileId);
             data.DeleteCustomCertification(profileId);
             shutdownDeadlines.Remove(profileId);
-            hostAddedTime.Remove(profileId);
+            addedShutdownMinutes.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             observations.Remove(profileId);
             data.TryAudit($"custom-certification-canceled {profileId} {clock.GetUtcNow():O}");
@@ -842,7 +842,7 @@ public sealed class HostManager
             customCertificationSessions.Remove(profileId);
             data.DeleteCustomCertification(profileId);
             shutdownDeadlines.Remove(profileId);
-            hostAddedTime.Remove(profileId);
+            addedShutdownMinutes.Remove(profileId);
             friendAddedMinutes.Remove(profileId);
             observations.Remove(profileId);
             data.TryAudit($"custom-certification-revoked {profileId} {clock.GetUtcNow():O}");
@@ -881,13 +881,13 @@ public sealed class HostManager
             var stoppedNames = new List<string>();
             foreach (var conflict in initial.PortConflicts)
             {
-                if (HostAddedTimeIsActive(conflict.ProfileId))
+                if (AddedTimeIsActive(conflict.ProfileId))
                     return Result(false, "PortConflictProtected",
                         $"{conflict.ProfileName} is being kept alive with time added by " +
                         (friendAddedMinutes.GetValueOrDefault(conflict.ProfileId) > 0 ? "a Friend." : "the Host."),
                         initial.PortConflicts);
                 var operation = await StopUnderGateAsync(conflict.ProfileId, run =>
-                    !HostAddedTimeIsActive(conflict.ProfileId) &&
+                    !AddedTimeIsActive(conflict.ProfileId) &&
                     settings.Profiles.SingleOrDefault(profile => profile.Id == conflict.ProfileId)?.Maintenance?.Enabled != true &&
                     games.TryGet(run.Kind, out var driver) &&
                     driver.Health(run) is
@@ -976,7 +976,7 @@ public sealed class HostManager
             StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
         };
         shutdownDeadlines.Remove(profileId);
-        hostAddedTime.Remove(profileId);
+        addedShutdownMinutes.Remove(profileId);
         friendAddedMinutes.Remove(profileId);
         observations.Remove(profileId);
         driver.PrepareStart(profile, run);
@@ -1057,7 +1057,7 @@ public sealed class HostManager
             if (data.Recovery.LifecycleBlocked)
             {
                 shutdownDeadlines.Clear();
-                hostAddedTime.Clear();
+                addedShutdownMinutes.Clear();
                 friendAddedMinutes.Clear();
                 return [Result(false, "DataRecoveryRequired",
                     "Automatic shutdown is paused until the owner reviews and acknowledges the recovered local data.")];
@@ -1065,7 +1065,7 @@ public sealed class HostManager
             if (!settings.AutoShutdownEnabled)
             {
                 shutdownDeadlines.Clear();
-                hostAddedTime.Clear();
+                addedShutdownMinutes.Clear();
                 friendAddedMinutes.Clear();
                 return [];
             }
@@ -1078,8 +1078,6 @@ public sealed class HostManager
             foreach (var profileId in due)
             {
                 if (!shutdownDeadlines.Remove(profileId, out var deadline)) continue;
-                hostAddedTime.Remove(profileId);
-                friendAddedMinutes.Remove(profileId);
                 var result = await StopUnderGateAsync(profileId,
                     run => AutoShutdownStillSafe(run, deadline));
                 data.TryAudit($"auto-stop {profileId} {result.Code} {clock.GetUtcNow():O}");
@@ -1231,23 +1229,24 @@ public sealed class HostManager
             if (minutes < 1)
                 return Result(false, "InvalidExtension", "Enter a positive whole number of minutes to add.");
             if (!settings.AutoShutdownEnabled)
-                return Result(false, "TimerNotRunning", "Automatic shutdown is off, so there is no countdown to extend.");
+                return Result(false, "TimerNotRunning", "Automatic shutdown is off, so shutdown time cannot be added.");
             var view = Snapshot().Runs.SingleOrDefault(run => run.ProfileId == profileId);
-            if (view is null || view.State != "Ready" || view.OnlinePlayers != 0 ||
-                view.AutoShutdownAtUtc is null || !shutdownDeadlines.TryGetValue(profileId, out var deadline))
-                return Result(false, "TimerNotRunning",
-                    "The server needs an active zero-player countdown before time can be added.");
-            try { shutdownDeadlines[profileId] = deadline.AddMinutes(minutes); }
-            catch (ArgumentOutOfRangeException)
-            {
+            if (view is null || view.State != "Ready" || !view.PlayerCountTrusted || view.OnlinePlayers is null)
+                return Result(false, "TimerUnavailable",
+                    "The server must be Ready with a reliable player count before time can be added.");
+            if (!TryAddShutdownMinutes(profileId, minutes))
                 return Result(false, "InvalidExtension", "That extension would put the countdown outside the supported date range.");
-            }
-            hostAddedTime.Add(profileId);
             data.TryAudit($"auto-shutdown-extended {profileId} minutes={minutes} {clock.GetUtcNow():O}");
-            Activity("Countdown", "OwnerExtended", $"The Host added {minutes} minute{(minutes == 1 ? "" : "s")} to the countdown.",
+            var timing = view.OnlinePlayers == 0
+                ? "to the active countdown"
+                : "while players were online; it is saved for the next empty-server countdown";
+            Activity("Countdown", "OwnerExtended",
+                $"The Host added {minutes} minute{(minutes == 1 ? "" : "s")} {timing}.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             var profileName = settings.Profiles.SingleOrDefault(profile => profile.Id == profileId)?.Name ?? "Server";
-            return Result(true, "CountdownExtended", $"Added {minutes} minute{(minutes == 1 ? "" : "s")} to {profileName}'s countdown.");
+            return Result(true, "CountdownExtended", view.OnlinePlayers == 0
+                ? $"Added {minutes} minute{(minutes == 1 ? "" : "s")} to {profileName}'s countdown."
+                : $"Added {minutes} minute{(minutes == 1 ? "" : "s")} to {profileName}. The time is saved and will apply when the server reaches 0 players.");
         }
         finally { gate.Release(); }
     }
@@ -1263,35 +1262,56 @@ public sealed class HostManager
             var increment = settings.FriendTimerExtensionMinutes;
             var maximum = settings.FriendTimerExtensionMaximumMinutes;
             if (!settings.AutoShutdownEnabled)
-                return Result(false, "TimerNotRunning", "Automatic shutdown is off, so there is no countdown to extend.");
+                return Result(false, "TimerNotRunning", "Automatic shutdown is off, so shutdown time cannot be added.");
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
             if (profile.Maintenance?.Enabled == true)
-                return Result(false, "MaintenanceMode", "Remote timer extension is paused while this server is in maintenance mode.");
+                return Result(false, "MaintenanceMode", "Adding shutdown time is paused while this server is in maintenance mode.");
             var view = Snapshot().Runs.SingleOrDefault(run => run.ProfileId == profileId);
-            if (view is null || view.State != "Ready" || !view.PlayerCountTrusted || view.OnlinePlayers != 0 ||
-                view.AutoShutdownAtUtc is null || !shutdownDeadlines.TryGetValue(profileId, out var deadline))
-                return Result(false, "TimerNotRunning",
-                    "A fresh authoritative zero-player countdown is required before time can be added.");
+            if (view is null || view.State != "Ready" || !view.PlayerCountTrusted || view.OnlinePlayers is null)
+                return Result(false, "TimerUnavailable",
+                    "A Ready server with a fresh authoritative player count is required before time can be added.");
             var alreadyAdded = friendAddedMinutes.GetValueOrDefault(profileId);
             if (increment < 1 || maximum < increment || alreadyAdded + increment > maximum)
                 return Result(false, "ExtensionLimitReached",
-                    $"The Host allows at most {maximum} minutes of Friend-added time per countdown.");
-            try { shutdownDeadlines[profileId] = deadline.AddMinutes(increment); }
-            catch (ArgumentOutOfRangeException)
-            {
+                    $"The Host allows at most {maximum} minutes of Friend-added time per server run.");
+            if (!TryAddShutdownMinutes(profileId, increment))
                 return Result(false, "InvalidExtension", "The configured extension would put the countdown outside the supported date range.");
-            }
             friendAddedMinutes[profileId] = alreadyAdded + increment;
-            hostAddedTime.Add(profileId);
             data.TryAudit($"auto-shutdown-friend-extended {profileId} minutes={increment} total={alreadyAdded + increment} {clock.GetUtcNow():O}");
-            Activity("Countdown", "FriendExtended", $"A Friend added the fixed {increment}-minute extension.",
+            var timing = view.OnlinePlayers == 0
+                ? "to the active countdown"
+                : "while players were online; it is saved for the next empty-server countdown";
+            Activity("Countdown", "FriendExtended", $"A Friend added the fixed {increment}-minute extension {timing}.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             return Result(true, "CountdownExtended",
-                $"Added the Host-configured {increment} minutes to {profile.Name}'s countdown. " +
-                $"{maximum - alreadyAdded - increment} Friend-added minutes remain for this countdown.");
+                $"Added the Host-configured {increment} minutes to {profile.Name}. " +
+                (view.OnlinePlayers == 0 ? "The active countdown was extended. " : "The time is saved until the server reaches 0 players. ") +
+                $"{maximum - alreadyAdded - increment} Friend-added minutes remain for this server run.");
         }
         finally { gate.Release(); }
+    }
+
+    private bool TryAddShutdownMinutes(Guid profileId, long minutes)
+    {
+        var alreadyAdded = addedShutdownMinutes.GetValueOrDefault(profileId);
+        if (minutes < 1 || alreadyAdded > long.MaxValue - minutes) return false;
+        var total = alreadyAdded + minutes;
+        DateTimeOffset? extendedDeadline = null;
+        try
+        {
+            // Validate both a future fresh idle window and the currently active
+            // deadline before committing the run-level extension credit.
+            _ = clock.GetUtcNow().AddMinutes(settings.IdleMinutes).AddMinutes(total);
+            if (shutdownDeadlines.TryGetValue(profileId, out var deadline))
+                extendedDeadline = deadline.AddMinutes(minutes);
+        }
+        catch (ArgumentOutOfRangeException) { return false; }
+
+        addedShutdownMinutes[profileId] = total;
+        if (extendedDeadline is { } nextDeadline)
+            shutdownDeadlines[profileId] = nextDeadline;
+        return true;
     }
 
     private async Task<ActionResult> StopUnderGateAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe)
@@ -1501,17 +1521,24 @@ public sealed class HostManager
         if (recovery.LifecycleBlocked)
         {
             shutdownDeadlines.Clear();
-            hostAddedTime.Clear();
+            addedShutdownMinutes.Clear();
             friendAddedMinutes.Clear();
         }
         else
         {
-            foreach (var profileId in shutdownDeadlines.Keys.Where(id => !currentProfiles.Contains(id)).ToList())
-                CancelCountdown(profileId, "The saved server is no longer available.");
+            foreach (var profileId in shutdownDeadlines.Keys.Concat(addedShutdownMinutes.Keys)
+                         .Concat(friendAddedMinutes.Keys).Distinct()
+                         .Where(id => !currentProfiles.Contains(id)).ToList())
+                CancelCountdown(profileId, "The saved server is no longer available.", true);
         }
         for (var index = 0; index < views.Count; index++)
         {
-            var view = views[index];
+            var view = views[index] with
+            {
+                HostAddedTime = AddedTimeIsActive(views[index].ProfileId),
+                FriendAddedMinutes = friendAddedMinutes.GetValueOrDefault(views[index].ProfileId)
+            };
+            views[index] = view;
             if (recovery.LifecycleBlocked)
             {
                 views[index] = view with
@@ -1525,52 +1552,66 @@ public sealed class HostManager
             }
             if (view.State != "Ready")
             {
-                CancelCountdown(view.ProfileId, "The server is no longer Ready.");
+                CancelCountdown(view.ProfileId, "The server is no longer Ready.", true);
+                views[index] = view with { HostAddedTime = false, FriendAddedMinutes = 0 };
                 continue;
             }
             if (!settings.AutoShutdownEnabled)
             {
-                CancelCountdown(view.ProfileId, "Automatic shutdown was turned off.");
-                views[index] = view with { AutoShutdownReason = "Automatic shutdown is off." };
+                CancelCountdown(view.ProfileId, "Automatic shutdown was turned off.", true);
+                views[index] = view with
+                {
+                    AutoShutdownReason = "Automatic shutdown is off.",
+                    HostAddedTime = false,
+                    FriendAddedMinutes = 0
+                };
                 continue;
             }
             if (!view.PlayerCountTrusted)
             {
                 CancelCountdown(view.ProfileId, "The authoritative player count became unavailable.");
+                var reason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
+                    ? "Owner certification and a fresh valid Custom contract-v2 player count are required for automatic shutdown."
+                    : "A fresh authoritative player count is required for automatic shutdown.";
                 views[index] = view with
                 {
-                    AutoShutdownReason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
-                    ? "Owner certification and a fresh valid Custom contract-v2 player count are required for automatic shutdown."
-                    : "A fresh authoritative player count is required for automatic shutdown."
+                    AutoShutdownReason = WithSavedTime(view.ProfileId, reason)
                 };
                 continue;
             }
             if (view.OnlinePlayers is null)
             {
                 CancelCountdown(view.ProfileId, "The current player count became unknown.");
-                views[index] = view with { AutoShutdownReason = "Waiting for a reliable player count." };
+                views[index] = view with
+                {
+                    AutoShutdownReason = WithSavedTime(view.ProfileId, "Waiting for a reliable player count.")
+                };
                 continue;
             }
             if (view.OnlinePlayers != 0)
             {
                 CancelCountdown(view.ProfileId, "A player joined the server.");
-                views[index] = view with { AutoShutdownReason = "Waiting for the server to be empty." };
+                views[index] = view with
+                {
+                    AutoShutdownReason = WithSavedTime(view.ProfileId, "Waiting for the server to be empty.")
+                };
                 continue;
             }
             if (!shutdownDeadlines.TryGetValue(view.ProfileId, out var deadline))
             {
-                deadline = now.AddMinutes(settings.IdleMinutes);
+                var addedMinutes = addedShutdownMinutes.GetValueOrDefault(view.ProfileId);
+                deadline = now.AddMinutes(settings.IdleMinutes).AddMinutes(addedMinutes);
                 shutdownDeadlines[view.ProfileId] = deadline;
                 Activity("Countdown", "Started",
-                    $"The empty-server countdown started for {settings.IdleMinutes} minutes.",
+                    addedMinutes > 0
+                        ? $"The empty-server countdown started for {settings.IdleMinutes} minutes plus {addedMinutes} saved added minute{(addedMinutes == 1 ? "" : "s")}."
+                        : $"The empty-server countdown started for {settings.IdleMinutes} minutes.",
                     ActivitySeverity.Important, view.ProfileId,
                     visibility: ActivityVisibility.AssignedFriends);
             }
             views[index] = view with
             {
-                AutoShutdownAtUtc = deadline,
-                HostAddedTime = HostAddedTimeIsActive(view.ProfileId),
-                FriendAddedMinutes = friendAddedMinutes.GetValueOrDefault(view.ProfileId)
+                AutoShutdownAtUtc = deadline
             };
         }
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
@@ -1590,15 +1631,30 @@ public sealed class HostManager
             health.OnlinePlayers, health.MaxPlayers, PlayerNames: health.PlayerNames,
             PlayerCountTrusted: health.PlayerCountTrusted);
 
-    private void CancelCountdown(Guid profileId, string reason)
+    private void CancelCountdown(Guid profileId, string reason, bool discardAddedTime = false)
     {
         var wasRunning = shutdownDeadlines.Remove(profileId);
-        hostAddedTime.Remove(profileId);
-        friendAddedMinutes.Remove(profileId);
+        var savedMinutes = addedShutdownMinutes.GetValueOrDefault(profileId);
+        if (discardAddedTime)
+        {
+            addedShutdownMinutes.Remove(profileId);
+            friendAddedMinutes.Remove(profileId);
+        }
         if (wasRunning)
-            Activity("Countdown", "Canceled", "The empty-server countdown was canceled. " + reason,
+            Activity("Countdown", "Canceled", "The empty-server countdown was canceled. " + reason +
+                (!discardAddedTime && savedMinutes > 0
+                    ? $" {savedMinutes} added minute{(savedMinutes == 1 ? " remains" : "s remain")} saved for the next empty-server countdown."
+                    : ""),
                 ActivitySeverity.Important, profileId,
                 visibility: ActivityVisibility.AssignedFriends);
+    }
+
+    private string WithSavedTime(Guid profileId, string reason)
+    {
+        var savedMinutes = addedShutdownMinutes.GetValueOrDefault(profileId);
+        return savedMinutes > 0
+            ? reason + $" {savedMinutes} added minute{(savedMinutes == 1 ? " is" : "s are")} saved for the next empty-server countdown."
+            : reason;
     }
 
     private void Activity(string category, string action, string message,
@@ -1632,7 +1688,7 @@ public sealed class HostManager
                 : $"{profile.Name} maintenance: {profile.Maintenance.Message}";
             return false;
         }
-        if (HostAddedTimeIsActive(run.ProfileId))
+        if (AddedTimeIsActive(run.ProfileId))
         {
             reason = $"{profile?.Name ?? "The conflicting server"} is being kept alive with time added by " +
                 (friendAddedMinutes.GetValueOrDefault(run.ProfileId) > 0 ? "a Friend." : "the Host.");
@@ -1658,8 +1714,7 @@ public sealed class HostManager
         return true;
     }
 
-    private bool HostAddedTimeIsActive(Guid profileId) => hostAddedTime.Contains(profileId) &&
-        shutdownDeadlines.TryGetValue(profileId, out var deadline) && deadline > clock.GetUtcNow();
+    private bool AddedTimeIsActive(Guid profileId) => addedShutdownMinutes.GetValueOrDefault(profileId) > 0;
 
     private GameHealthResult ObservedHealth(ManagedRun run)
     {
@@ -1772,7 +1827,7 @@ public sealed class HostManager
         session.Failure = message;
         session.OnlinePlayers = null;
         shutdownDeadlines.Remove(profile.Id);
-        hostAddedTime.Remove(profile.Id);
+        addedShutdownMinutes.Remove(profile.Id);
         friendAddedMinutes.Remove(profile.Id);
         observations.Remove(profile.Id);
         try { data.DeleteCustomCertification(profile.Id); }
@@ -2134,7 +2189,7 @@ public sealed class HostManager
         data.SaveRunArchive(archive);
         runs.Remove(run);
         shutdownDeadlines.Remove(run.ProfileId);
-        hostAddedTime.Remove(run.ProfileId);
+        addedShutdownMinutes.Remove(run.ProfileId);
         friendAddedMinutes.Remove(run.ProfileId);
         observations.Remove(run.ProfileId);
         if (!preserveRecoveryState)

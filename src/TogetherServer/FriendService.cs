@@ -478,7 +478,7 @@ internal sealed class FriendLink : IDisposable
         {
             if (config is null) return new(false, "NotPaired", "Connect to a Host first.", null);
             if (action is not ("start" or "stop" or "restart" or "replace" or "extend" or "refresh"))
-                return new(false, "InvalidAction", "Only Start, Stop, Restart, timer extension, and player refresh are available.", null);
+                return new(false, "InvalidAction", "Only Start, Stop, Restart, adding shutdown time, and player refresh are available.", null);
             if (action == "refresh") return await RefreshPlayerCountAsync(profileId);
             config.PendingOperations ??= [];
             var pending = config.PendingOperations.FirstOrDefault(item => item.ProfileId == profileId);

@@ -1142,7 +1142,7 @@ public sealed class PairingService
         bool canExtendTimer = false, bool canViewLogs = false)
     {
         if (scope is not (null or "start" or "stop" or "extend" or "logs"))
-            return new PairingDecision(false, "InvalidPermissionScope", "Choose Start, Stop, Extend timer, or View logs permissions.");
+            return new PairingDecision(false, "InvalidPermissionScope", "Choose Start, Stop, Add shutdown time, or View logs permissions.");
         lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);

@@ -1443,7 +1443,7 @@ try
         AutoShutdownEnabled = true,
         IdleMinutes = 15,
         FriendTimerExtensionMinutes = 5,
-        FriendTimerExtensionMaximumMinutes = 5
+        FriendTimerExtensionMaximumMinutes = 10
     };
     Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", stopSettings)).Ok,
         "restricted Host settings failed");
@@ -1638,10 +1638,8 @@ try
         hostDeadline is not null && hostDeadline.Value > DateTimeOffset.UtcNow.AddMinutes(14),
         "Host API did not start a server-count-only empty-server deadline without game-client settings");
     var friendExtended = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
-    var friendLimit = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
-    Require(friendExtended.Ok && friendExtended.Code == "CountdownExtended" &&
-        !friendLimit.Ok && friendLimit.Code == "ExtensionLimitReached",
-        "fixed Friend timer increment or per-countdown maximum was not enforced");
+    Require(friendExtended.Ok && friendExtended.Code == "CountdownExtended",
+        "the fixed Friend timer increment was not applied");
     var extendedCountdown = await OwnerPost<CountdownExtensionRequest, ActionResult>(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/countdown/extend", new(37));
     Require(extendedCountdown.Ok, "Host could not extend an active countdown");
@@ -1651,7 +1649,8 @@ try
     var stopView = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     var friendProfile = stopView.Profiles.Single();
     Require(friendProfile.OnlinePlayers == 0 && friendProfile.MaxPlayers == 10 &&
-        friendProfile.AutoShutdownAtUtc == hostDeadline && friendProfile.CanStopNow && friendProfile.StopReason is null,
+        friendProfile.AutoShutdownAtUtc == hostDeadline && friendProfile.CanStopNow && friendProfile.StopReason is null &&
+        friendProfile.CanExtendTimer && friendProfile.TimerExtensionRemainingMinutes == 5,
         "Friend UI did not receive the player count, shared countdown, and available remote Stop state");
     var playerCountPath = Path.Combine(stopProfile.WorldDirectory, "synthetic-online-players.txt");
     File.WriteAllText(playerCountPath, "1");
@@ -1663,9 +1662,16 @@ try
         friendRefresh.Status?.Profiles.Single().OnlinePlayers == 1 &&
         refreshedHostView!.Runs.Single(run => run.ProfileId == stopProfile.Id).OnlinePlayers == 1 &&
         observedOccupied.OnlinePlayers == 1 && observedOccupied.AutoShutdownAtUtc is null &&
+        observedOccupied.CanExtendTimer &&
+        observedOccupied.AutoShutdownReason?.Contains("added minutes are saved", StringComparison.Ordinal) == true &&
         !observedOccupied.CanStopNow &&
         observedOccupied.StopReason?.Contains("1 player is online", StringComparison.Ordinal) == true,
         "Friend refresh did not update the Host cache, response status, and local Friend view together");
+    var occupiedFriendExtension = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
+    var friendLimit = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
+    Require(occupiedFriendExtension.Ok && occupiedFriendExtension.Code == "CountdownExtended" &&
+        !friendLimit.Ok && friendLimit.Code == "ExtensionLimitReached",
+        "Friend-added time was not accepted while occupied or its per-run maximum was not enforced");
     Console.WriteLine("PASS Friend player-count refresh returns one canonical Host status to both views"); passes++;
     var occupiedStop = await FriendAction(stopFriendLocal, stopProfile.Id, "stop");
     Require(!occupiedStop.Ok && occupiedStop.Code == "PlayersOnline",
@@ -1677,9 +1683,12 @@ try
         if (emptyView.Profiles.Single().OnlinePlayers == 0 && emptyView.Profiles.Single().CanStopNow) break;
         await Task.Delay(100);
     }
-    var resetFriendExtension = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
-    Require(resetFriendExtension.Ok,
-        "a positive-player cancellation did not reset the Friend extension allowance for the next zero-player countdown");
+    var persistedFriendLimit = await FriendAction(stopFriendLocal, stopProfile.Id, "extend");
+    var resumedTimer = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+    Require(!persistedFriendLimit.Ok && persistedFriendLimit.Code == "ExtensionLimitReached" &&
+        resumedTimer.Profiles.Single().AutoShutdownAtUtc > DateTimeOffset.UtcNow.AddMinutes(60) &&
+        resumedTimer.Profiles.Single().TimerExtensionRemainingMinutes == 0,
+        "player activity discarded added time or reset the Friend extension allowance for the same server run");
     Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(stopOwner,
         $"/api/local/devices/{stopDeviceId}/servers", new([stopProfile.Id, replacementProfile.Id],
         [new DeviceServerPermissionRequest(stopProfile.Id, true, true,
@@ -1811,8 +1820,8 @@ try
         unknownConflict.PortConflicts?.SingleOrDefault() is
         { ProfileId: var unknownConflictId, CanReplace: false } &&
         unknownConflictId == stopProfile.Id &&
-        unknownConflict.PortConflicts.Single().BlockReason?.Contains("authoritative player count", StringComparison.OrdinalIgnoreCase) == true,
-        "a conflicting server with an Unknown player count was incorrectly offered for replacement");
+        unknownConflict.PortConflicts.Single().BlockReason?.Contains("time added by the Host", StringComparison.OrdinalIgnoreCase) == true,
+        "a transient Unknown player count discarded the Host's saved added time");
     File.WriteAllText(playerCountPath, "1");
     var observedOne = false;
     for (var i = 0; i < 80; i++)
@@ -1828,8 +1837,8 @@ try
         occupiedConflict.PortConflicts?.SingleOrDefault() is
         { ProfileId: var occupiedConflictId, CanReplace: false } &&
         occupiedConflictId == stopProfile.Id &&
-        occupiedConflict.PortConflicts.Single().BlockReason?.Contains("player", StringComparison.OrdinalIgnoreCase) == true,
-        "an occupied conflicting server was incorrectly offered for replacement");
+        occupiedConflict.PortConflicts.Single().BlockReason?.Contains("time added by the Host", StringComparison.OrdinalIgnoreCase) == true,
+        "an online player discarded the Host's saved added time");
     File.WriteAllText(playerCountPath, "0");
     var observedZero = false;
     for (var i = 0; i < 80; i++)
@@ -1840,6 +1849,15 @@ try
         await Task.Delay(100);
     }
     Require(observedZero, "observation supervisor did not publish the empty player count");
+    var stillProtectedConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
+    Require(!stillProtectedConflict.Ok && stillProtectedConflict.Code == "PortConflict" &&
+        stillProtectedConflict.PortConflicts?.SingleOrDefault() is { CanReplace: false } &&
+        stillProtectedConflict.PortConflicts.Single().BlockReason?.Contains("time added by the Host", StringComparison.OrdinalIgnoreCase) == true,
+        "saved added time did not protect the next empty-server countdown");
+    var resetTimerSettings = (await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot"))!.Settings;
+    resetTimerSettings.AutoShutdownEnabled = false;
+    Require((await OwnerPut<HostSettings, ActionResult>(stopOwner, "/api/local/settings", resetTimerSettings)).Ok,
+        "automatic shutdown could not be disabled to clear the saved extension for replacement coverage");
     var replaceableConflict = await FriendAction(stopFriendLocal, replacementProfile.Id, "start");
     Require(!replaceableConflict.Ok && replaceableConflict.Code == "PortConflict" &&
         replaceableConflict.PortConflicts?.SingleOrDefault() is { ProfileId: var conflictId, CanReplace: true } &&
@@ -1864,7 +1882,7 @@ try
         $"/api/local/profiles/{replacementProfile.Id}/stop", new { });
     Require(replacementCleanup.Ok,
         $"replacement fixture cleanup failed: {replacementCleanup.Code} {replacementCleanup.Message}");
-    Console.WriteLine("PASS Start-only Friend can replace an unassigned empty port conflict, but Host-added time blocks it"); passes++;
+    Console.WriteLine("PASS Host-added time survives Unknown/player transitions and blocks replacement until timer policy resets"); passes++;
 
     StopApp(host);
     host = null;

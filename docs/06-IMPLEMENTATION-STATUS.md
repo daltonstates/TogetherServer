@@ -1198,3 +1198,22 @@ The Host card removes pairing-window duration, device-count, close-window, and e
 | External acceptance | Not run: no actual Friend PC/network, public/private route, real game join, player transition, valued world, or save/restart integrity test was used. Loopback and fixture results do not satisfy those gates. |
 
 No version, package, installer, tag, or release was created. No installed or running production process, production data, real credential, real world, game binary, public listener configuration, firewall, router, or DNS setting was opened or changed.
+
+## 2026-09-29 - Added shutdown time survives player activity
+
+Starting Git HEAD: `d6e149cbf50d42d67e775a47c48f866f312c4096`, branch `main`. Added shutdown minutes are now in-memory credit for the current managed server run instead of state owned only by one active zero-player deadline. The Host can add an entered duration whenever a Ready server has a reliable zero or positive count. A Friend with the existing per-server permission can add the fixed Host-configured increment under the same conditions, including while players are online, up to one maximum for that managed run.
+
+A positive or Unknown player count still cancels the ticking UTC deadline immediately, so automatic Stop remains fail closed. It no longer discards previously added minutes or resets the Friend allowance. The next exact-zero observation starts a fresh configured idle window plus all saved added time. Stopping/restarting the server, changing the idle wait, disabling automatic shutdown, lifecycle recovery, or restarting the Host app clears the in-memory credit. Port-conflict replacement remains denied while any Host- or Friend-added time is saved. Countdown expiry still performs the same fresh exact-zero query inside the serialized lifecycle gate before graceful Stop.
+
+Host and Friend cards expose **Add shutdown time** while a reliable positive count is present. The paused timer reason states how many added minutes remain saved, and Friend controls continue exposing only the fixed increment and remaining per-run allowance. Product, architecture, security, lifecycle, acceptance, and README text now describe the same reset and safety boundaries.
+
+| Check | Result |
+| --- | --- |
+| UI tests, lint, and production build | Pass: Vitest 15 files / 68 tests; ESLint with zero warnings; TypeScript/Vite production build transformed 38 modules. |
+| Release build and formatting | Pass: `dotnet build TogetherServer.slnx -c Release --no-restore` completed with 0 warnings and 0 errors; `dotnet format TogetherServer.slnx --verify-no-changes --no-restore` passed. |
+| Focused lifecycle checks | Pass: Valheim 10 groups, including Host addition while occupied and saved time on the next zero-player window; Companion 44 groups, including permitted Friend addition while occupied, per-run maximum persistence, and replacement protection; Custom 6 groups; core Host checks 41 groups. |
+| Minecraft regressions | Final pass: 8 groups, 0 failures. One preceding run reported 7 passes and one disposable fixture file-in-use race while recreating its local `java.exe`; no matching process remained, and the unchanged serial rerun passed all groups. No real or terms-gated Minecraft binary was used. |
+| Bundled-app smoke | Pass: 22 served groups and 8 hidden native desktop groups against the rebuilt Release apphost, including bundled UI text, exact Host extension, managed synthetic start/stop, tray, and guarded Quit paths. |
+| External acceptance | Not run: no actual Friend PC/network, public/private route, real game join, player transition, valued world, or recognizable save/restart was exercised. Fixture and loopback checks do not satisfy those gates. |
+
+No version, package, installer, tag, or release was created. The separate installed production process and its data/worlds were not opened, stopped, copied, or changed; firewall, router, DNS, and public-listener settings were untouched.

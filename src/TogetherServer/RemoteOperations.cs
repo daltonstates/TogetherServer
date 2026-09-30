@@ -268,7 +268,7 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
         "stop" => "Stop",
         "restart" => "Restart",
         "replace" => "empty-server replacement",
-        "extend" => "countdown extension",
+        "extend" => "shutdown-time addition",
         _ => "server action"
     };
 

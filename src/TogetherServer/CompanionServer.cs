@@ -222,6 +222,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var canStop = permission?.CanStop ?? own?.CanStop == true;
                 var canExtendTimer = permission?.CanExtendTimer ?? own?.CanExtendTimer == true;
                 var canViewLogs = permission?.CanViewLogs ?? own?.CanViewLogs == true;
+                var canAddShutdownTime = canExtendTimer && snapshot.Settings.AutoShutdownEnabled &&
+                    run.State == "Ready" && run.PlayerCountTrusted && run.OnlinePlayers is not null;
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
                 return new PublicProfile(profile.Id, profile.Name,
                     run.State,
@@ -236,7 +238,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     recentOperations.FirstOrDefault(operation => operation.ProfileId == profile.Id),
                     profile.Maintenance?.Enabled == true,
                     string.IsNullOrWhiteSpace(profile.Maintenance?.Message) ? null : profile.Maintenance.Message,
-                    canExtendTimer,
+                    canAddShutdownTime,
                     snapshot.Settings.FriendTimerExtensionMinutes,
                     Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes),
                     canViewLogs);
