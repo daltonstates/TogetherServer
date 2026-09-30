@@ -95,6 +95,9 @@ try {
         $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
         Invoke-Checked $name { dotnet run --project $checkProject -c Release }
     }
+    Invoke-Checked 'Core remote journey' {
+        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
+    }
     Invoke-Checked 'TogetherServer.CompanionChecks' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
     }

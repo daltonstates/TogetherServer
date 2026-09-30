@@ -1217,3 +1217,18 @@ Host and Friend cards expose **Add shutdown time** while a reliable positive cou
 | External acceptance | Not run: no actual Friend PC/network, public/private route, real game join, player transition, valued world, or recognizable save/restart was exercised. Fixture and loopback checks do not satisfy those gates. |
 
 No version, package, installer, tag, or release was created. The separate installed production process and its data/worlds were not opened, stopped, copied, or changed; firewall, router, DNS, and public-listener settings were untouched.
+
+## 2026-09-29 - Release-blocking core remote journey
+
+Starting Git HEAD: `0786b7cb10321a0246c78dac5a9482fe88a99dfb`, branch `main`. The exact-candidate verifier now runs a dedicated, fast **Core remote journey** before the broader Companion suite. It launches the packaged Host and Friend as separate processes with isolated data, creates a server code and pinned HTTPS identity, and treats the connection as verified only after the saved device credential completes an authenticated heartbeat. An open TCP listener by itself is not a connection pass. Stopping the Host proves the Friend reports typed `HostPortClosed` while retaining the time of the last authenticated response.
+
+The same journey grants Start/Stop, remotely starts a disposable Valheim protocol fixture to Ready, proves a positive authoritative player count denies Stop, changes the count to zero, and requires graceful Stop of the exact process. It then restarts both app processes with the same isolated data and proves the saved pin, credential, assignment, permissions, and lifecycle controls reconnect without another server code. The release verifier fails immediately if any part of this sequence fails. The stale staging-smoke banner assertion was also aligned with the current visible isolation wording, restoring the full repository gate without weakening its production-data checks.
+
+| Check | Result |
+| --- | --- |
+| Dedicated core remote journey | Pass: 6 groups, 0 failures against the packaged `0.2.1` candidate: authenticated connection, remote Start/Ready, occupied Stop denial, zero-player graceful Stop, typed closed-port status, and saved-access reconnect plus Start/Stop after both apps restart. |
+| Existing automated suites | Pass: UI 15 files / 68 tests; Host core 41, Valheim 10, Minecraft 8, Minecraft setup 5, Custom 6, updater 15, and Companion 44 groups, all with 0 failures. |
+| Packaged and update smoke | Pass: served 22 groups, production/staging isolation 3, hidden desktop 8, and update handoff 3 groups. The exact pre-commit candidate remained SHA-256 `02344EDF7F383A7D8DCA2EBED92EF03190A3DE5B154526EAAD4192FB885F5319` throughout the serial matrix. |
+| External acceptance | Not run: loopback HTTPS and disposable fixtures do not prove a public/private Friend route, actual Friend PC, real game join, player transition, or recognizable save/restart. Those remain required before a stable real-game claim. |
+
+No version, installer, tag, release, production process, production data, real credential, real world, game binary, firewall, router, or DNS setting was changed.

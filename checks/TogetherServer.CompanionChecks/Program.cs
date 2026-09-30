@@ -15,6 +15,11 @@ var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10
 var valheimFixturePath = Path.GetFullPath("src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe");
 if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
     throw new Exception("Run scripts/build.ps1 first.");
+if (args.Skip(1).Contains("--core-remote-journey", StringComparer.OrdinalIgnoreCase))
+{
+    await CoreRemoteJourney.RunAsync(appPath, valheimFixturePath);
+    return 0;
+}
 var root = Path.GetFullPath("local-data/companion-checks/" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var hostData = Path.Combine(root, "host");

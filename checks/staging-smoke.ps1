@@ -147,7 +147,7 @@ try {
     $stagingScriptPath = [regex]::Match($stagingPage.Content, '/assets/[^" ]+\.js').Value
     $stagingScript = Invoke-WebRequest -Uri ($stagingUrl + $stagingScriptPath) -UseBasicParsing
     if (!$stagingScript.Content.Contains('DEVELOPMENT / STAGING') -or
-        !$stagingScript.Content.Contains('Development profiles, credentials, settings, and worlds persist in this separate instance.') -or
+        !$stagingScript.Content.Contains('Development servers, saved access, settings, and worlds stay in this separate instance.') -or
         !$stagingScript.Content.Contains('Production data is not loaded or copied.')) {
         throw 'The bundled staging UI is missing its visible data-isolation warning.'
     }
