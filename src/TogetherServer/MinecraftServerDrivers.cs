@@ -74,12 +74,6 @@ internal abstract class MinecraftServerDriver(LocalData data, bool java) : IGame
             return new("MinecraftWorldMismatch", "The saved world name must match server.properties level-name exactly.");
         if (!int.TryParse(port, out var configuredPort) || configuredPort != profile.GamePort)
             return new("MinecraftPortMismatch", "The saved game port must match server.properties server-port.");
-        var reviewedFiles = java
-            ? new[] { "server-properties", "operators", "allow-list", "player-bans", "ip-bans" }
-            : new[] { "server-properties", "allow-list", "permissions" };
-        foreach (var key in reviewedFiles)
-            if (ServerFiles.CheckActiveConfiguration(data, profile, key) is { } issue)
-                return new("MinecraftConfigurationInvalid", issue);
         if (!java)
         {
             if (ServerAddOns.VersionWarning(data, profile) is { } addOnWarning)
@@ -94,6 +88,12 @@ internal abstract class MinecraftServerDriver(LocalData data, bool java) : IGame
                 !lan.Equals("false", StringComparison.OrdinalIgnoreCase))
                 return new("MinecraftLanVisibilityInvalid", "Bedrock enable-lan-visibility must be true or false.");
         }
+        var reviewedFiles = java
+            ? new[] { "server-properties", "operators", "allow-list", "player-bans", "ip-bans" }
+            : new[] { "server-properties", "allow-list", "permissions" };
+        foreach (var key in reviewedFiles)
+            if (ServerFiles.CheckActiveConfiguration(data, profile, key) is { } issue)
+                return new("MinecraftConfigurationInvalid", issue);
         return null;
     }
 
