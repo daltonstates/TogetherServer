@@ -205,7 +205,7 @@ try {
     if ($installDenied.ok -or $installDenied.code -ne 'TermsRequired' -or (Test-Path -LiteralPath (Join-Path $caseRoot 'minecraft-servers'))) { throw 'Minecraft install ran without consent.' }
     Write-Host 'PASS Minecraft discovery and in-app install consent gate without a game download'
     $gameTypes = @(Invoke-RestMethod -Uri "$baseUrl/api/local/game-types")
-    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Custom,Factorio,Fixture,MinecraftBedrock,MinecraftJava,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
+    if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Custom,Factorio,Fixture,MinecraftBedrock,MinecraftJava,Terraria,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
     Write-Host 'PASS explicit game-driver catalog exposes the custom script manager and reviewed built-in drivers'
 
     $customId = [guid]::NewGuid().ToString()
