@@ -1314,3 +1314,22 @@ The tab edits only an existing active Minecraft Java/Bedrock `server.properties`
 | Visual and external acceptance | No browser session was available for a rendered click-through. No real game binary, Friend PC, public route, game join, mod loader, or valued-world save/restart was exercised. |
 
 The production app, its worlds, credentials, listener, and network settings were not changed. No installer, release, or production update was produced.
+
+## 2026-10-01 - Complete Host server support tools
+
+- **Files and player administration:** the Host Files tab opens reviewed files in Notepad and edits active Java/Bedrock player lists, Factorio settings, and Terraria config as well as the earlier Minecraft properties and Valheim lists. Factorio and Terraria can create their per-server config after a managed save exists. Minecraft Start rechecks edited properties and player JSON; Factorio and Terraria Start recheck their config.
+- **Guided changes and recovery:** Prepare changes pauses Friend controls first, requires a fresh trusted exact-zero count before Stop, then makes an Offline complete setup checkpoint. Finish maintenance requires Ready and an explicit real-game-join confirmation. Complete setup restore verifies its protected config sidecar, makes a pre-restore checkpoint, checks the restored add-on state, and attempts rollback on failure. A durable pending marker blocks Start and new edits until an interrupted restore is retried.
+- **Add-ons:** the reviewed import paths accept an owner-selected local Factorio mod ZIP or Bedrock world `.mcpack`, show enabled state and compatibility information, support one Undo, and require a complete Offline checkpoint before mutation. Shared Bedrock packs outside the selected world remain external and block a complete setup claim. Java stays official vanilla; Valheim and Terraria mod loaders remain unsupported.
+- **Troubleshooting:** the log viewer highlights likely startup, settings, and add-on problems. Support report schema 2 adds bounded file-availability, enabled-add-on count, game-version, and review-status fields without file contents, player names, package names, or paths.
+
+| Check | Result |
+| --- | --- |
+| Final exact candidate | Pass: `scripts/verify-release.ps1 -Build` for source `d5e50f5c5455f7245b4b26c4c68cc31a70969cbf`; SHA-256 `BD34200F38269059C5F25BA0D84D33284B2745CFCCD8550745DCE2289F4DB759` stayed unchanged. Version `0.2.1.0`; Authenticode `NotSigned`. Local candidate only; no release published. |
+| Source and UI | Pass: locked restore, zero-warning builds, formatting, lint, 24 UI files / 90 tests, and bundled production UI. |
+| Host and game suites | Pass: core Host 56, Valheim 10, Factorio 2, Minecraft 8, Minecraft setup 5, Custom 6, and updater 15 groups. New checks cover occupied/zero guided maintenance, complete setup restore and retry guard, external player-list validation, Factorio/Bedrock add-on import and Undo, malformed pack rejection, and redacted support summary. |
+| Packaged Host/Friend | Pass: core remote journey 6 and Companion 45 groups, including maintenance denial and authenticated remote Start/Stop. |
+| Packaged app | Pass: served smoke 22, production/staging isolation 3, hidden desktop smoke 8, and update handoff 3 groups. |
+| Earlier gate attempts | First build was blocked by one orphan disposable fixture process from an earlier failed local test; its exact repository executable, command line, and absent parent were verified before it was stopped. The next gate found a changed Bedrock IPv6-port error code; the existing code was restored and the targeted Minecraft suite passed before the final full pass. |
+| Visual and external acceptance | Browser discovery returned no session, so no rendered click-through. No owner-installed game binary, real mod load, Friend PC/WAN route, real game join, recognizable save after restart, valued-world restore, or different-PC complete setup transfer was exercised. Fixture and loopback evidence do not establish those outcomes. |
+
+The running production app, worlds, credentials, listener, router, firewall, and DNS were not changed. The same-Windows-user protected setup sidecar is not a cross-account Host migration mechanism.
