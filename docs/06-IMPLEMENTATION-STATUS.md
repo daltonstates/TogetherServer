@@ -1277,3 +1277,25 @@ Starting Git HEAD: `4acf618767710f5480b582d68cf6621545a3e374`, branch `main`. Th
 | External acceptance | Not run: no actual Friend PC or non-loopback route, real game client/join, real Factorio installation, identifiable player transition, valued world, real restore, Windows sleep/resume cycle, or recognizable save/restart was exercised. Fixture, loopback, and owner-recorded checklist evidence do not satisfy those gates. |
 
 No version, package, installer, tag, or release was produced. The already running installed app was never opened, queried, stopped, restarted, replaced, or sent a request; its listener, data, credentials, worlds, game binaries, firewall, router, DNS, and update state were untouched. All process-based checks used separately named executables and isolated disposable data roots.
+
+## 2026-09-30 - Guided hosting, Host move kits, and Terraria preview
+
+Source commits `689d54c` and `86c3a98` add six requested features to the existing Host/Friend app:
+
+- **Game server update flow:** changing the selected executable or Java server JAR stales owner acceptance confirmations; the Host shows offline backup and real join/save retest steps.
+- **Friend Join guide:** game-specific instructions appear beside the assigned server, including Terraria.
+- **Guided maintenance:** the Host can pause Friend lifecycle actions, show a message, stop at a trusted zero count, make an offline backup, restart, and open Connection Doctor.
+- **Temporary helper access:** one-hour or eight-hour grants overlay Start, Stop, timer extension, and logs only on existing assignments. Exact expiry or End now restores saved permissions; normal safety gates still apply.
+- **Host move kit:** a completed world backup is copied to an owner-selected folder with nonsecret setup details and hash-verified again on the destination PC. The owner copies the payload into fresh offline game storage, installs the server locally, and pairs Friends again. Existing worlds and access credentials are not migrated automatically.
+- **Terraria preview:** the owner selects an installed `TerrariaServer.exe` and imports a hash-verified `.wld` copy. Fixed world/port launch and local `exit` Stop are implemented; a TCP probe leaves occupancy Unknown, so Friend and automatic Stop remain blocked. No real Terraria binary or world was run.
+
+| Check | Result |
+| --- | --- |
+| Final exact candidate | Pass: `scripts/verify-release.ps1 -Build` for source `86c3a98bc74a308c81b87d407c1c4a9baf4947d3`; SHA-256 `3BD1B9498DC53C80D52570AC19F302AAA9CD33DDA3820424DF566CC5F2F1E2F2` remained unchanged through serial checks. Version `0.2.1.0`; Authenticode `NotSigned`. This is a local candidate, not a published release. |
+| Source and UI | Pass: locked restore, 0-warning .NET build, formatting, UI lint, 22 UI files / 87 tests, and bundled TypeScript/Vite build. |
+| Host and game suites | Pass: Core Host 50, Valheim 10, Factorio 2, Minecraft 8, Minecraft setup 5, Custom 6, updater 15 groups. Terraria and move-kit checks use disposable files and synthetic executable names only. |
+| Packaged Host/Friend | Pass: core remote journey 6 and Companion 45 groups. The first full attempt saw one empty HTTP body in a Companion test after 24 groups; the same exact candidate passed a direct 45-group rerun and a later full 45-group run. The cause of that one transient response remains unconfirmed. |
+| Packaged app and handoff | Pass: served smoke 22, simultaneous production/staging isolation 3, hidden desktop smoke 8, and update handoff 3 groups. The first served run exposed an outdated six-driver assertion; `86c3a98` updated it for Terraria before the final full pass. |
+| External acceptance | Not run: an actual Friend PC and non-loopback route, owner-installed Terraria server/client, verified Terraria player transitions, game join, recognizable save after restart, a valued-world restore, and real Host move to another PC remain required. Local fixtures and TCP listeners do not establish those outcomes. |
+
+The already running production app and its worlds, saved access, listener, and network settings were not changed. The failed served smoke left one isolated synthetic fixture process; its executable path and parent were verified before stopping only that fixture for the final build.
