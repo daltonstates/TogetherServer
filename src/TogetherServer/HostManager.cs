@@ -1246,6 +1246,113 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<ServerFilesView> ServerFilesAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null
+                ? new(false, "UnknownProfile", "Choose a saved Host server.", [], [])
+                : ServerFiles.List(data, profile);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<string?> ServerFolderAsync(Guid profileId, string key)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null ? null : ServerFiles.Location(data, profile, key);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerFileContentResult> ReadServerFileAsync(Guid profileId, string key)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null
+                ? new(false, "UnknownProfile", "Choose a saved Host server.", key)
+                : ServerFiles.Read(data, profile, key);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerFileChangeResult> SaveServerFileAsync(Guid profileId, string key,
+        ServerFileChangeRequest request)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.", key);
+            if (ServerFileEditBlock(profile, key) is { } blocked) return blocked;
+            var validation = ServerFiles.ValidateChange(profile, key, request);
+            if (!validation.Ok) return validation;
+            var current = ServerFiles.Read(data, profile, key);
+            if (!current.Ok || !string.Equals(current.Sha256, request.ExpectedSha256,
+                    StringComparison.OrdinalIgnoreCase))
+                return new(false, "FileChanged", "The file changed on disk. Reload it before saving.", key);
+            if (string.Equals(current.Content, request.Content, StringComparison.Ordinal))
+                return new(true, "NoChanges", "The file already matches your draft.", key,
+                    current.Sha256, current.CanUndo);
+            var backup = CreateManualBackupUnderGate(profileId);
+            if (!backup.Ok)
+                return new(false, "CheckpointFailed",
+                    "The offline world checkpoint failed. The file was not changed. " + backup.Message, key);
+            var saved = ServerFiles.Save(data, profile, key, request);
+            if (saved.Ok && saved.Code == "FileSaved")
+                Activity("Configuration", "FileSaved", "The Host changed a reviewed server file after an offline checkpoint.",
+                    ActivitySeverity.Important, profileId);
+            return saved;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerFileChangeResult> UndoServerFileAsync(Guid profileId, string key,
+        ServerFileUndoRequest request)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.", key);
+            if (ServerFileEditBlock(profile, key) is { } blocked) return blocked;
+            var current = ServerFiles.Read(data, profile, key);
+            if (!current.Ok || !current.CanUndo ||
+                !string.Equals(current.Sha256, request.ExpectedSha256, StringComparison.OrdinalIgnoreCase))
+                return new(false, "UndoUnavailable", "Reload the file before restoring its previous version.", key);
+            var backup = CreateManualBackupUnderGate(profileId);
+            if (!backup.Ok)
+                return new(false, "CheckpointFailed",
+                    "The offline world checkpoint failed. The file was not changed. " + backup.Message, key);
+            var restored = ServerFiles.Undo(data, profile, key, request);
+            if (restored.Ok)
+                Activity("Configuration", "FileRestored", "The Host restored a reviewed server file after an offline checkpoint.",
+                    ActivitySeverity.Important, profileId);
+            return restored;
+        }
+        finally { gate.Release(); }
+    }
+
+    private ServerFileChangeResult? ServerFileEditBlock(ServerProfile profile, string key)
+    {
+        if (data.Recovery.LifecycleBlocked)
+            return new(false, "DataRecoveryRequired", "Resolve local data recovery before changing server files.", key);
+        if (profile.Maintenance?.Enabled != true)
+            return new(false, "MaintenanceRequired", "Begin maintenance before changing server files.", key);
+        if (BlockIfSaveDirectoryActive(profile, "changing server files") is { } active)
+            return new(false, active.Code, active.Message, key);
+        if (runs.Any(item => item.ProfileId == profile.Id))
+            return new(false, "ServerRunning", "Stop or resolve this server before changing its files.", key);
+        return null;
+    }
+
     public async Task<ActionResult> CreateManualBackupAsync(Guid profileId)
     {
         await gate.WaitAsync();

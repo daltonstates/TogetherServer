@@ -195,6 +195,24 @@ internal sealed class DesktopWindow
         return await selected.Task;
     }
 
+    public bool OpenFolder(string path)
+    {
+        try
+        {
+            if (!Path.IsPathFullyQualified(path) || !Directory.Exists(path)) return false;
+            var full = Path.GetFullPath(path);
+            for (var current = new DirectoryInfo(full); current is not null; current = current.Parent)
+                if ((current.Attributes & FileAttributes.ReparsePoint) != 0) return false;
+            var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            start.ArgumentList.Add(full);
+            using var process = Process.Start(start);
+            return process is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                                   InvalidOperationException or System.ComponentModel.Win32Exception)
+        { return false; }
+    }
+
     public void Exit()
     {
         closing = true;

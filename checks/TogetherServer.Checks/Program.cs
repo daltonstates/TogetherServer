@@ -2034,6 +2034,73 @@ await Check("storage and resource health remains informational lifecycle evidenc
     return Task.CompletedTask;
 });
 
+await Check("server file edits require maintenance, an offline checkpoint, and a matching version", async () =>
+{
+    using var data = Data("server-file-edits");
+    var profile = Profile("server-file-world", "server-file-world", FreePort());
+    profile.Kind = GameKinds.Valheim;
+    profile.ServerName = "Server file checks";
+    profile.Backups = new BackupOptions { MinimumFreeSpaceMb = 0 };
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.txt"), "recognizable save");
+    var adminList = Path.Combine(profile.WorldDirectory, "adminlist.txt");
+    File.WriteAllText(adminList, "Steam_111\n");
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "server-file profile setup failed");
+    var files = await manager.ServerFilesAsync(profile.Id);
+    Require(files.Ok && files.Locations.Any(item => item.Key == "save" && item.Available) &&
+        files.Files.Any(item => item.Key == "admin-list" && item.Available) &&
+        await manager.ServerFolderAsync(profile.Id, "arbitrary") is null,
+        "server file list exposed an arbitrary location or omitted the active file");
+    var before = await manager.ReadServerFileAsync(profile.Id, "admin-list");
+    Require(before.Ok && before.Content == "Steam_111\n" && before.Sha256 is not null,
+        "server file read did not return the exact active version");
+    var request = new ServerFileChangeRequest(before.Sha256!, "Steam_222\n");
+    Require((await manager.SaveServerFileAsync(profile.Id, "admin-list", request)).Code ==
+        "MaintenanceRequired" && File.ReadAllText(adminList) == "Steam_111\n",
+        "file changed without maintenance mode");
+    profile.Maintenance.Enabled = true;
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "maintenance setup failed");
+    Require((await manager.SaveServerFileAsync(profile.Id, "admin-list",
+        request with { ExpectedSha256 = new string('0', 64) })).Code == "FileChanged" &&
+        (await manager.BackupsAsync(profile.Id)).Backups.Count == 0,
+        "stale file edit created a checkpoint or overwrote external changes");
+    var saved = await manager.SaveServerFileAsync(profile.Id, "admin-list", request);
+    Require(saved.Ok && saved.CanUndo && File.ReadAllText(adminList) == "Steam_222\n" &&
+        (await manager.BackupsAsync(profile.Id)).Backups.Count == 1,
+        "offline config edit did not checkpoint, save, and retain Undo");
+    var restored = await manager.UndoServerFileAsync(profile.Id, "admin-list",
+        new ServerFileUndoRequest(saved.Sha256!));
+    Require(restored.Ok && File.ReadAllText(adminList) == "Steam_111\n" &&
+        (await manager.BackupsAsync(profile.Id)).Backups.Count == 2 &&
+        !(await manager.ReadServerFileAsync(profile.Id, "admin-list")).CanUndo,
+        "Undo did not restore the previous file after another offline checkpoint");
+});
+
+await Check("Minecraft file editor rejects a world or port mismatch", () =>
+{
+    using var data = Data("minecraft-file-locations");
+    var profile = Profile("server-properties-world", "known-world", FreePort());
+    profile.Kind = GameKinds.MinecraftBedrock;
+    Directory.CreateDirectory(Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId));
+    Directory.CreateDirectory(Path.Combine(profile.WorldDirectory, "behavior_packs"));
+    var locations = ServerFiles.List(data, profile).Locations;
+    Require(locations.Any(item => item.Key == "server" && item.Path == profile.WorldDirectory && item.Available) &&
+        locations.Any(item => item.Key == "save" && item.Path ==
+            Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId) && item.Available) &&
+        locations.Any(item => item.Key == "behavior-packs" && item.Available),
+        "Minecraft folders did not point at the selected server, world, and shared add-ons");
+    var valid = $"level-name=known-world\nserver-port={profile.GamePort}\nserver-portv6=19133\nenable-lan-visibility=false\n";
+    Require(ServerFiles.ValidateChange(profile, "server-properties",
+        new ServerFileChangeRequest("old-hash", valid)).Ok, "matching properties were rejected");
+    Require(ServerFiles.ValidateChange(profile, "server-properties",
+        new ServerFileChangeRequest("old-hash", valid.Replace("known-world", "wrong-world"))).Code ==
+        "InvalidConfiguration", "world mismatch was accepted");
+    Require(ServerFiles.ValidateChange(profile, "server-properties",
+        new ServerFileChangeRequest("old-hash", valid + "server-port=12345\n")).Code ==
+        "InvalidConfiguration", "duplicate port was accepted");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");
 return failed == 0 ? 0 : 1;
 

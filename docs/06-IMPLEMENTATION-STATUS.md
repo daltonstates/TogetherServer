@@ -1299,3 +1299,18 @@ Source commits `689d54c` and `86c3a98` add six requested features to the existin
 | External acceptance | Not run: an actual Friend PC and non-loopback route, owner-installed Terraria server/client, verified Terraria player transitions, game join, recognizable save after restart, a valued-world restore, and real Host move to another PC remain required. Local fixtures and TCP listeners do not establish those outcomes. |
 
 The already running production app and its worlds, saved access, listener, and network settings were not changed. The failed served smoke left one isolated synthetic fixture process; its executable path and parent were verified before stopping only that fixture for the final build.
+
+## 2026-10-01 - Host server files and guarded text edits
+
+The selected Host server now has a **Files** tab. Fixed local-owner actions open existing server, selected world/save, TogetherServer log, and profile-backup folders in File Explorer; Bedrock additionally exposes existing shared behavior-pack and resource-pack folders. Minecraft Java resolves its prepared server folder instead of the Java runtime folder. No arbitrary request path, Friend file endpoint, folder creation, or mod-loader claim is added.
+
+The tab edits only an existing active Minecraft Java/Bedrock `server.properties` or Valheim `adminlist.txt`, `bannedlist.txt`, or `permittedlist.txt`. The Host-only loopback routes require the sensitive-read header or the normal local mutation origin/header checks. Saving and Undo require maintenance, an Offline or resolved run, and an exact on-disk hash; each makes a successful offline world checkpoint first. Minecraft world/port settings must still match the saved profile. The previous file version is kept in Windows-protected storage for one Undo. Linked, oversized, missing, and non-UTF-8 files are left untouched. The existing world backup restore still covers the reviewed save directory, not every game config or mod file.
+
+| Check | Result |
+| --- | --- |
+| Source and UI | Pass: Release .NET build with 0 warnings/errors, `dotnet format --verify-no-changes`, UI lint, 23 files / 88 UI tests, and bundled TypeScript/Vite build. |
+| Host checks | Pass: 52 groups, including maintenance denial, stale-edit rejection before backup, offline checkpoint/save/Undo, Minecraft folder mapping, and world/port validation. |
+| Isolated served process | Pass: a fresh staging Host served the bundled page; sensitive file GET without its header returned 403; maintenance and stale edits were denied; save and Undo each completed with a checkpoint. The exact isolated test process was identified and stopped afterward. |
+| Visual and external acceptance | No browser session was available for a rendered click-through. No real game binary, Friend PC, public route, game join, mod loader, or valued-world save/restart was exercised. |
+
+The production app, its worlds, credentials, listener, and network settings were not changed. No installer, release, or production update was produced.

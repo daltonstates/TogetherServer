@@ -536,6 +536,57 @@ app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, Countdow
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/players/refresh", (Guid id) =>
     HostOnly(() => manager.RefreshPlayerCountAsync(id)));
+app.MapGet("/api/local/profiles/{id:guid}/files", async (HttpContext context, Guid id) =>
+{
+    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
+    return Results.Json(await manager.ServerFilesAsync(id));
+});
+app.MapGet("/api/local/profiles/{id:guid}/files/{key}", async (HttpContext context, Guid id, string key) =>
+{
+    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
+    return Results.Json(await manager.ReadServerFileAsync(id, key));
+});
+app.MapPost("/api/local/profiles/{id:guid}/folders/{key}/open", async (Guid id, string key) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { ok = false, code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Server folders are Host-only." });
+        if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window first." });
+        var folder = await manager.ServerFolderAsync(id, key);
+        return Results.Json(folder is not null && desktop.OpenFolder(folder)
+            ? new { ok = true, code = "FolderOpened", message = "Folder opened in File Explorer." }
+            : new { ok = false, code = "FolderUnavailable", message = "This server folder is not available on this PC." });
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPut("/api/local/profiles/{id:guid}/files/{key}", async (Guid id, string key,
+    ServerFileChangeRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
+        return Results.Json(await manager.SaveServerFileAsync(id, key, request));
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/profiles/{id:guid}/files/{key}/undo", async (Guid id, string key,
+    ServerFileUndoRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
+        return Results.Json(await manager.UndoServerFileAsync(id, key, request));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapGet("/api/local/profiles/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {
     if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
