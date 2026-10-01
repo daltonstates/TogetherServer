@@ -609,6 +609,38 @@ app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/vault", async
             "The backup-vault folder could not be used. The local backup was kept unchanged.", backupId, DateTimeOffset.UtcNow));
     }
 });
+app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/move-kit", async (Guid id, Guid backupId) =>
+{
+    if (friendMode) return Results.Conflict(new HostMoveKitResult(false, "FriendMode", "Switch to Host mode first."));
+    if (desktop is null) return Results.Conflict(new HostMoveKitResult(false, "WindowUnavailable", "Open the TogetherServer window to choose a move-kit folder."));
+    try
+    {
+        var destination = await desktop.PickFolderAsync("Choose an external drive or network folder for the Host move kit");
+        return Results.Json(destination is null
+            ? new HostMoveKitResult(false, "Canceled", "No move-kit folder was selected.")
+            : await manager.PrepareMoveKitAsync(id, backupId, destination));
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+    {
+        return Results.Json(new HostMoveKitResult(false, "MoveKitFailed", "The move-kit folder could not be used."));
+    }
+});
+app.MapPost("/api/local/move-kit/inspect", async () =>
+{
+    if (friendMode) return Results.Conflict(new HostMoveKitResult(false, "FriendMode", "Switch to Host mode first."));
+    if (desktop is null) return Results.Conflict(new HostMoveKitResult(false, "WindowUnavailable", "Open the TogetherServer window to choose a move kit."));
+    try
+    {
+        var directory = await desktop.PickFolderAsync("Choose a TogetherServer .backup move-kit folder");
+        return Results.Json(directory is null
+            ? new HostMoveKitResult(false, "Canceled", "No move kit was selected.")
+            : manager.InspectMoveKit(directory));
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+    {
+        return Results.Json(new HostMoveKitResult(false, "MoveKitInvalid", "The selected move kit could not be inspected."));
+    }
+});
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/rehearse", async (Guid id, Guid backupId) =>
     friendMode
         ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." })
@@ -760,6 +792,37 @@ app.MapPost("/api/local/factorio/import-save", async (FactorioImportRequest requ
             : FactorioSetup.ImportCopy(data, request.ProfileId, path));
     }
     catch (Exception ex) { return Results.Json(new FactorioImportResult(false, "BrowseFailed", "Could not open the Windows file picker: " + ex.Message)); }
+});
+app.MapPost("/api/local/terraria/browse-executable", async () =>
+{
+    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first.", path = (string?)null });
+    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window first.", path = (string?)null });
+    try
+    {
+        var path = await desktop.PickFileAsync("Choose owner-installed Terraria server",
+            "Terraria server (TerrariaServer.exe)|TerrariaServer.exe|Applications (*.exe)|*.exe");
+        return Results.Json(path is null
+            ? new { ok = false, code = "Canceled", message = "No server executable was selected.", path = (string?)null }
+            : new { ok = true, code = "PathSelected", message = "Terraria server executable selected.", path = (string?)path });
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+    { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not choose the Terraria executable.", path = (string?)null }); }
+});
+app.MapPost("/api/local/terraria/import-world", async (TerrariaImportRequest request) =>
+{
+    if (friendMode) return Results.Conflict(new TerrariaImportResult(false, "FriendMode", "Switch to Host mode first."));
+    if (instance.FreshWorldsOnly) return Results.Conflict(new TerrariaImportResult(false,
+        "StagingTerrariaDisabled", "Terraria preview is unavailable in fresh-world-only staging."));
+    if (desktop is null) return Results.Conflict(new TerrariaImportResult(false, "WindowUnavailable", "Open the TogetherServer window first."));
+    try
+    {
+        var path = await desktop.PickFileAsync("Choose an existing Terraria world to copy", "Terraria worlds (*.wld)|*.wld");
+        return Results.Json(path is null
+            ? new TerrariaImportResult(false, "Canceled", "No Terraria world was selected.")
+            : TerrariaSetup.ImportCopy(data, request.ProfileId, path));
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+    { return Results.Json(new TerrariaImportResult(false, "BrowseFailed", "Could not choose the Terraria world.")); }
 });
 app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request) =>
 {
@@ -1104,6 +1167,23 @@ app.MapPut("/api/local/devices/{id:guid}/access-expiry", async (Guid id, DeviceA
         {
             "UnknownDevice" => Results.NotFound(result),
             "Revoked" => Results.Conflict(result),
+            _ => Results.BadRequest(result)
+        };
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPut("/api/local/devices/{id:guid}/temporary-helper", async (Guid id, TemporaryHelperRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode)
+            return Results.Conflict(new TemporaryHelperResult(false, "FriendMode", "Switch to Host mode first."));
+        var result = pairing.SetTemporaryHelper(id, request);
+        return result.Ok ? Results.Json(result) : result.Code switch
+        {
+            "UnknownDevice" => Results.NotFound(result),
+            "Revoked" or "AccessUnavailable" => Results.Conflict(result),
             _ => Results.BadRequest(result)
         };
     }

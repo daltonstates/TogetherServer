@@ -8,13 +8,21 @@ public static class GameEndpointProbe
     public static GameEndpointProbeResult Check(PublicProfile profile)
     {
         var checkedUtc = DateTimeOffset.UtcNow;
-        if (profile.Kind is not (GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock))
+        if (profile.Kind is not (GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Terraria))
             return new(false, "UnsupportedGameProbe",
-                "A Friend-side game endpoint check is available only for built-in Valheim and Minecraft servers.", checkedUtc);
+                "A Friend-side game endpoint check is unavailable for this game.", checkedUtc);
         if (!TryEndpoint(profile.JoinAddress, out var address, out var port))
             return new(false, "GameEndpointUnavailable", "The Host has not shared a valid game endpoint.", checkedUtc);
         try
         {
+            if (profile.Kind == GameKinds.Terraria)
+            {
+                using var client = new TcpClient(AddressFamily.InterNetwork);
+                using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
+                client.ConnectAsync(address, port, timeout.Token).GetAwaiter().GetResult();
+                return new(true, "GamePortOpen",
+                    "A TCP listener is reachable from this PC. Terraria join and player count are unverified.", checkedUtc);
+            }
             GamePlayerCount? players;
             bool answered;
             if (profile.Kind == GameKinds.Valheim)
@@ -37,7 +45,7 @@ public static class GameEndpointProbe
                     checkedUtc, players?.Online, players?.Capacity)
                 : new(false, "GameEndpointNoReply", "The game query did not receive a valid reply from this PC. This does not prove the server is offline.", checkedUtc);
         }
-        catch (Exception ex) when (ex is SocketException or IOException or ArgumentException)
+        catch (Exception ex) when (ex is SocketException or IOException or ArgumentException or OperationCanceledException)
         {
             return new(false, "GameEndpointNoReply", "The game query did not receive a valid reply from this PC. This does not prove the server is offline.", checkedUtc);
         }

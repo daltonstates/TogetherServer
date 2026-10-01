@@ -1,6 +1,6 @@
 # TogetherServer
 
-TogetherServer is one Windows app for hosting Valheim, Minecraft Java, Minecraft Bedrock, the fixture-tested Factorio preview, or an owner-scripted custom game server and connecting to a friend's server. The same EXE runs on every PC. It opens a borderless native window with app-styled minimize, maximize, and close controls around its bundled interface; Node and the .NET SDK are needed only to build it.
+TogetherServer is one Windows app for hosting Valheim, Minecraft Java, Minecraft Bedrock, the Factorio and Terraria previews, or an owner-scripted custom game server and connecting to a friend's server. The same EXE runs on every PC. It opens a borderless native window with app-styled minimize, maximize, and close controls around its bundled interface; Node and the .NET SDK are needed only to build it.
 
 ## Install and open the app
 
@@ -91,6 +91,16 @@ Choose **Factorio**, name the server, and use **Browse and copy save** on an exi
 
 This preview has fixture evidence for fixed launch, authenticated zero/positive counts, guarded graceful `/quit`, exact process identity, backups, vault copy, and restore rehearsal. It does not yet have an owner-installed Factorio client join, real save/restart proof, public Friend route, or valued-save acceptance. Automatic crash restart remains unavailable. Keep remote and automatic Stop off for a valued save until those real checks are recorded. Factorio is hidden from fresh-world-only staging because staging must not import a production save.
 
+## Host Terraria preview
+
+Choose **Terraria**, name the server, and use **Browse and copy world** on an existing `.wld`. The app makes a hash-verified per-profile copy and keeps the original. Choose an owner-installed `TerrariaServer.exe`. The fixed driver launches that copied world with the saved TCP port and sends only Terraria's fixed `exit` console action for a local graceful Stop. It does not download Terraria or change public network settings. A local TCP listener is reachability evidence only: the current driver cannot verify game readiness or player count. Friend and automatic Stop therefore remain blocked. Real client join, saved-world restart, and owner-installed binary checks are still required before relying on this preview for a valued world. Terraria is unavailable in fresh-world-only staging.
+
+## Updates, maintenance, and moving Hosts
+
+The Host's World Safety Center offers an offline game-update checklist, a verified backup, vault copy, and restore rehearsal. Changing a selected game executable or Java server JAR invalidates earlier owner acceptance confirmations. The maintenance guide pauses remote actions, waits for a trusted zero-player count before its Stop button, makes an offline checkpoint, then leads through restart and Connection Doctor. Friend cards include game-specific Join steps. A paired PC can receive one or eight hours of temporary helper permissions within its existing server assignments; expiry or **End now** restores its saved permissions.
+
+To move to another Host PC, stop the old server, make a fresh backup, and choose **Prepare move kit** beside it. The kit contains a verified world backup and basic server details, without game binaries, passwords, saved Friend access, or TLS keys. On the new PC choose **Inspect move kit**, copy its `payload` into a fresh offline game-server save location without overwriting an existing save, choose the locally installed game server, and pair Friend PCs again. Test a real join and recognizable saved change before retiring the old Host.
+
 ## Host another game with custom scripts
 
 Choose **Custom game** for an advanced Host-only script profile. Enter the game and server names, an existing working/save directory, the primary and any additional TCP/UDP ports, then three PowerShell actions:
@@ -151,6 +161,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1 -
 
 The script first proves that the committed NuGet lock is usable in locked mode and confirms the candidate version and SHA-256 before and after the matrix. Its dedicated **Core remote journey** launches the packaged Host and Friend as separate processes and requires authenticated connect, remote Start, occupied Stop denial, zero-player graceful Stop, typed closed-port detection, and saved-access reconnect after both apps restart. This is loopback/fixture regression evidence, not a public-network or real-game-join claim. The desktop smoke runs hidden in the tray by default so it does not take over the active screen. Pass `-SkipDesktop` only when a non-desktop environment cannot host WebView2, and run `checks/desktop-smoke.ps1 -Interactive` separately only for an attended visible check. The real replacement handoff runs for signed candidates with SHA-256 plus same-publisher verification and for ordinary unsigned candidates with SHA-256 verification.
 
-The Host lifecycle uses reviewed built-in game drivers plus one explicitly advanced local custom-script driver. Valheim, Minecraft Java, Minecraft Bedrock, and Custom game appear in setup; the synthetic driver exists only for isolated checks. See [adding a game](docs/07-ADDING-A-GAME.md) for the process, port, readiness, stop, and security contract.
+The Host lifecycle uses reviewed built-in game drivers plus one explicitly advanced local custom-script driver. Valheim, Minecraft Java, Minecraft Bedrock, Factorio, Terraria, and Custom game appear in setup; the synthetic driver exists only for isolated checks. See [adding a game](docs/07-ADDING-A-GAME.md) for the process, port, readiness, stop, and security contract.
 
 See [implementation status](docs/06-IMPLEMENTATION-STATUS.md) for the latest test evidence and remaining real-world acceptance checks.

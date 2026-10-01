@@ -382,7 +382,8 @@ public sealed class HostManager
                 device.CredentialHash is not null) &&
                 (device.AssignedProfileIds ??
                     (device.ProfileId == Guid.Empty ? [] : [device.ProfileId])).Any(profileId =>
-                    device.CanStartProfile(profileId) || device.CanStopProfile(profileId)))))
+                     device.CanStartProfile(profileId) || device.CanStopProfile(profileId) ||
+                     device.TemporaryHelperUntilUtc > clock.GetUtcNow()))))
             return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
         foreach (var run in runs)
         {
@@ -1293,6 +1294,25 @@ public sealed class HostManager
         return result;
     }
 
+    public async Task<HostMoveKitResult> PrepareMoveKitAsync(Guid profileId, Guid backupId,
+        string destinationRoot)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            if (runs.Any(run => run.ProfileId == profileId))
+                return new(false, "ServerRunning", "Stop this server before preparing a move kit.");
+            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
+                return new(false, "BackupsUnsupported", "This game does not have a reviewed backup path.");
+            return backups.PrepareMoveKit(profile, backupId, destinationRoot);
+        }
+        finally { gate.Release(); }
+    }
+
+    public HostMoveKitResult InspectMoveKit(string directory) => backups.InspectMoveKit(directory);
+
     public async Task<BackupSafetyResult> RehearseRestoreAsync(Guid profileId, Guid backupId)
     {
         ServerProfile? profile;
@@ -2045,7 +2065,7 @@ public sealed class HostManager
             backupIsConsistent &&
             trustedCountsAreConsistent;
         var gameKind = item.Kind is GameKinds.Fixture or GameKinds.Valheim or
-            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Factorio or GameKinds.Custom
+            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or GameKinds.Factorio or GameKinds.Terraria or GameKinds.Custom
                 ? item.Kind : "Unavailable";
         return new(item.ProfileId, item.OperationId, gameKind,
             complete ? item.StartedUtc : null,

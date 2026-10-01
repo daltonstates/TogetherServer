@@ -232,7 +232,14 @@ internal static class WindowsConsoleProcess
     // Minecraft servers expose a fixed `stop` console action. Send only that
     // literal to the console containing the exact managed process.
     public static void RequestStopCommand(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "stop");
+
+    public static void RequestTerrariaExit(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "exit");
+
+    private static void RequestFixedCommand(Process process, ManagedRun run, string command)
     {
+        if (command is not ("stop" or "exit")) throw new InvalidOperationException("Unsupported fixed server action.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console stop is required.");
         var previous = ConsoleMembers().FirstOrDefault(id => id != Environment.ProcessId);
         FreeConsole();
@@ -251,7 +258,7 @@ internal static class WindowsConsoleProcess
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not open the managed server console input.");
                 try
                 {
-                    var keys = "stop\r".SelectMany(character => new[]
+                    var keys = (command + "\r").SelectMany(character => new[]
                     {
                         new ConsoleInputRecord { EventType = 1, Key = new ConsoleKeyEvent
                             { KeyDown = true, RepeatCount = 1, VirtualKeyCode = character == '\r' ? (ushort)13 : (ushort)char.ToUpperInvariant(character), UnicodeChar = character } },

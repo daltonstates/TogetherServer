@@ -1,6 +1,6 @@
 # Adding a built-in game
 
-TogetherServer has built-in Valheim, Minecraft Java, Minecraft Bedrock, and Factorio drivers. Minecraft and Factorio remain fixture-tested previews whose real-game acceptance is still required. The official-support extension point remains a small, reviewed .NET game driver, not a plugin loader or a public script interface. The separate Custom game manager is an advanced local compatibility path and never counts as built-in support.
+TogetherServer has built-in Valheim, Minecraft Java, Minecraft Bedrock, Factorio, and Terraria drivers. Minecraft, Factorio, and Terraria remain previews whose real-game acceptance is still required. The official-support extension point remains a small, reviewed .NET game driver, not a plugin loader or a public script interface. The separate Custom game manager is an advanced local compatibility path and never counts as built-in support.
 
 ## Custom game versus built-in support
 
@@ -35,6 +35,8 @@ Add the smallest game-specific setup fields and discovery needed for that game. 
 The game driver declares local ports so the shared readiness row can distinguish local listeners from public evidence. It also owns player-count parsing so the shared Host/Friend cards can show one consistent count. A local port or count reply is never proof that a router, firewall, relay, or real client route works.
 
 Factorio is the copy-first example for games whose server consumes one save artifact. Setup accepts an existing `.zip` only through the native owner picker, makes and verifies a per-profile managed copy, leaves the source untouched, and refuses a later overwrite. Its RCON password is generated and Windows-protected; Friends can request only existing typed lifecycle actions and never provide RCON text or receive the password. The game and management ports must be distinct, and the management port must not be forwarded.
+
+Terraria similarly imports a hash-verified `.wld` copy and launches only an owner-installed `TerrariaServer.exe` with fixed world and port arguments. Its local TCP probe does not provide a trusted player count or real game readiness, so Friend and automatic Stop remain unavailable. A local owner can request the fixed `exit` action for the exact managed process. Real client and saved-world acceptance remain open.
 
 Display logs are a separate explicit registry, not an automatic side effect of adding a driver. An adapter may read only the app-owned path derived from the exact managed-run operation ID. It must use the shared bounded cursor reader and sanitizer, return typed missing/ended/unsupported/unavailable states, and remain completely outside readiness, player counts, Stop/replacement permits, automatic shutdown, crash recovery, and process identity. Minecraft Java and Bedrock use the reviewed same-executable console host to drain bounded stdout/stderr while leaving stdin on the isolated Windows console for the fixed `stop` action. Do not replace that with an unrestricted command channel or a parent-process pipe that disappears on Host restart. Custom remote logs remain unsupported.
 

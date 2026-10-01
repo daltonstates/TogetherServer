@@ -16,6 +16,8 @@ For Minecraft's console-capture helper, a launch failure is removable only when 
 
 Factorio preview starts only an owner-installed `factorio.exe` against the verified managed copy of the selected save ZIP. Its UDP game port and separate RCON port are declared before launch, and readiness requires an authenticated fixed RCON reply rather than process existence. TogetherServer never downloads Factorio, accepts its terms, hosts from the original save, or supplies arbitrary RCON text.
 
+Terraria preview starts only an owner-installed `TerrariaServer.exe` against a verified managed world copy. An open local TCP port is shown with an explicit unverified-readiness warning. It never supplies an occupancy count, so remote replacement, Friend Stop, and automatic shutdown cannot treat this preview as empty.
+
 An ordinary Start conflict does not stop anything. A paired device with Start permission for the requested assigned profile may separately confirm **replace empty port conflict**. Assignment or Stop permission for the conflicting profile is intentionally not required, but the response exposes only its saved name and shared ports. The Host denies replacement if remote controls are off, either profile is in maintenance, process identity is uncertain, readiness/count is unavailable, any player is online, or Host/Friend-added shutdown time remains saved for the conflicting run. It then repeats exact zero inside the lifecycle gate, gracefully stops each conflict, and launches the requested profile only after those exits are confirmed.
 
 ### Stop
@@ -28,6 +30,8 @@ An ordinary Start conflict does not stop anything. A paired device with Start pe
 Minecraft Java and Bedrock use a fixed `stop` console command sent only after exact process and isolated-console checks. Their local status replies include player counts, so Friend and automatic Stop use the same two-query zero-player gate. Disposable stop markers do not establish real save integrity.
 
 Factorio preview uses an authenticated fixed `/quit` RCON action and waits for the exact process to exit. The same two-query zero-player gate protects Friend and automatic Stop. Fixture save markers and a successful `/quit` do not establish a real Factorio client join or valued-save integrity, and automatic crash restart remains unavailable for the preview.
+
+Terraria preview uses only the fixed local `exit` console action and waits for the exact process to exit. Its unknown player count blocks Friend and automatic Stop, and automatic crash restart remains unavailable. A clean exit alone does not prove a recognizable world change survived restart.
 
 A Custom profile may show the count and player names returned by its bounded Status/players script, but that data is not an occupancy authority by default. The Host-only certification requires contract-v2 probe/run echoes, zero → positive → zero, a fresh in-gate zero recheck, graceful exit of the exact wrapper, restart of the same profile/world, another real-client join, owner confirmation that a recognizable change survived, and a final return to zero. The resulting protected fingerprint is invalidated by changes to any script, world ID, working/save directory, declared port, or contract version. While it matches, the Custom count can enter the same two-stage gate used by built-in drivers for Friend Stop, Restart, replacement, and optional idle shutdown. Positive, Unknown, stale, contradictory, or mismatched evidence always denies the action. Local owner Stop remains available without certification and never force-kills the game.
 

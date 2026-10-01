@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, parseWorldBackupList, parseWorldBackupVerificationResult, type Settings } from './contracts'
+import { ContractError, parseAcceptanceView, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseHostMoveKitResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, parseWorldBackupList, parseWorldBackupVerificationResult, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 import hostSnapshotFixture from '../../contracts/host-snapshot.v1.json'
 
@@ -22,6 +22,19 @@ const settings: Settings = {
 }
 
 describe('runtime contracts', () => {
+  it('decodes verified Host move-kit details without private access fields', () => {
+    const result = parseHostMoveKitResult({ ok: true, code: 'MoveKitVerified', message: 'Verified.',
+      kit: { version: 1, kind: 'Terraria', name: 'Friends world', worldId: 'home', gamePort: 7777,
+        backupId: 'backup', backupCreatedUtc: '2026-09-30T12:00:00Z' }, fileCount: 2, sizeBytes: 100 })
+    expect(result.kit?.kind).toBe('Terraria')
+    expect(() => parseHostMoveKitResult({ ...result, fileCount: '2' })).toThrow(ContractError)
+  })
+  it('keeps game-file change evidence explicit in acceptance responses', () => {
+    const view = { profileId: 'server', stale: true, updatedUtc: null, checks: [],
+      evidenceBoundary: 'Owner confirmations only.', gameFilesAvailable: true, gameFilesChanged: true }
+    expect(parseAcceptanceView(view).gameFilesChanged).toBe(true)
+    expect(() => parseAcceptanceView({ ...view, gameFilesChanged: 'true' })).toThrow(ContractError)
+  })
   it('accepts the shared backend and UI Host snapshot fixture', () => {
     const snapshot = parseSnapshot(hostSnapshotFixture)
     expect(snapshot.mode).toBe('Host')

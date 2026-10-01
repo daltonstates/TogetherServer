@@ -39,6 +39,9 @@ public sealed class PairedDevice
     // revokes, or deletes the renewable device credential.
     public DateTimeOffset? AccessExpiresUtc { get; set; }
     public DateTimeOffset? AccessExpiryNotifiedForUtc { get; set; }
+    // This grant overlays, but never rewrites, the owner's usual permissions.
+    // Every action checks the Host clock so expiry does not depend on a poll.
+    public DateTimeOffset? TemporaryHelperUntilUtc { get; set; }
 
     public bool CanStartProfile(Guid profileId) => ServerPermissionOverrides?
         .FirstOrDefault(item => item.ProfileId == profileId)?.CanStart ?? CanStart;
@@ -85,7 +88,8 @@ public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> Ass
     IReadOnlyList<ServerPermissionView>? ServerPermissions = null,
     string? AppVersion = null, int? ProtocolVersion = null,
     bool ApprovalPending = false, bool CanExtendTimer = false, bool CanViewLogs = false,
-    DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false);
+    DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false,
+    DateTimeOffset? TemporaryHelperUntilUtc = null, bool TemporaryHelperActive = false);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop,
     bool CanExtendTimer = false, bool CanViewLogs = false);
 
@@ -118,6 +122,10 @@ public sealed record DeviceAccessExpiryRequest(bool Clear = false,
     DateTimeOffset? AccessExpiresUtc = null, string? Duration = null);
 public sealed record DeviceAccessExpiryResult(bool Ok, string Code, string Message,
     DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record TemporaryHelperRequest(string? Duration = null, bool Clear = false);
+public sealed record TemporaryHelperResult(bool Ok, string Code, string Message,
+    DateTimeOffset? TemporaryHelperUntilUtc = null, bool Active = false);
 
 public static class DeviceAccessDurations
 {
@@ -419,6 +427,8 @@ public sealed class PairingService
     }
 
     private DateTimeOffset UtcNow => clock.GetUtcNow();
+    public bool IsTemporaryHelperActive(PairedDevice device) =>
+        device.TemporaryHelperUntilUtc is { } until && until > UtcNow;
 
     private void SaveState()
     {
@@ -820,16 +830,18 @@ public sealed class PairingService
             {
                 heartbeats.TryGetValue(device.Id, out var heartbeat);
                 var fresh = heartbeat is not null && now - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
+                var helper = IsTemporaryHelperActive(device);
                 return new DeviceView(device.Id, device.ProfileId, device.AssignedProfileIds!.ToArray(),
-                    device.Name, device.CanStart, device.CanStop, IsRevoked(device),
+                    device.Name, helper || device.CanStart, helper || device.CanStop, IsRevoked(device),
                     device.CredentialHash is not null, device.CredentialExpiresUtc,
                     fresh ? heartbeat!.ReceivedUtc : null,
                     device.AssignedProfileIds.Select(profileId => new ServerPermissionView(profileId,
-                        device.CanStartProfile(profileId), device.CanStopProfile(profileId),
-                        device.CanExtendTimerForProfile(profileId), device.CanViewLogsForProfile(profileId))).ToList(),
+                        helper || device.CanStartProfile(profileId), helper || device.CanStopProfile(profileId),
+                        helper || device.CanExtendTimerForProfile(profileId), helper || device.CanViewLogsForProfile(profileId))).ToList(),
                     fresh ? heartbeat!.AppVersion : null, fresh ? heartbeat!.ProtocolVersion : null,
-                    device.ApprovalPending, device.CanExtendTimer, device.CanViewLogs,
-                    device.AccessExpiresUtc, IsAccessExpired(device, now));
+                    device.ApprovalPending, helper || device.CanExtendTimer, helper || device.CanViewLogs,
+                    device.AccessExpiresUtc, IsAccessExpired(device, now),
+                    device.TemporaryHelperUntilUtc, helper);
             }).ToList();
         }
     }
@@ -1179,6 +1191,39 @@ public sealed class PairingService
         }
     }
 
+    public TemporaryHelperResult SetTemporaryHelper(Guid id, TemporaryHelperRequest request)
+    {
+        if (request.Clear == (request.Duration is not null) ||
+            !request.Clear && request.Duration is not (DeviceAccessDurations.OneHour or DeviceAccessDurations.EightHours))
+            return new(false, "InvalidTemporaryHelper", "Choose one hour, eight hours, or End now.");
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == id);
+            if (device is null || device.CredentialHash is null)
+                return new(false, "UnknownDevice", "Connect this Friend PC first.");
+            if (IsRevoked(device)) return new(false, "Revoked", "This PC's saved access was removed.");
+            if (device.ApprovalPending || IsAccessExpired(device, UtcNow))
+                return new(false, "AccessUnavailable", "Approve or extend this PC's access first.");
+            var until = request.Clear ? (DateTimeOffset?)null :
+                UtcNow.Add(request.Duration == DeviceAccessDurations.OneHour ? TimeSpan.FromHours(1) : TimeSpan.FromHours(8));
+            device.TemporaryHelperUntilUtc = until;
+            SaveState();
+            data.TryAudit($"temporary-helper-{(until is null ? "ended" : "granted")} {device.Id} until={until:O} {UtcNow:O}");
+            Activity("Access", "PermissionsChanged", until is null ?
+                "Temporary helper access ended for a connected PC." :
+                "Temporary helper access was granted to a connected PC.",
+                ActivitySeverity.Important, deviceId: device.Id);
+            Activity("Access", "PermissionsChanged", until is null ?
+                "Your temporary helper access ended." :
+                "The Host granted temporary helper access to this PC.",
+                ActivitySeverity.Important, deviceId: device.Id, visibility: ActivityVisibility.Device);
+            return new(true, until is null ? "TemporaryHelperEnded" : "TemporaryHelperGranted",
+                until is null ? "This PC returned to its usual permissions." :
+                    "This PC can help until the shown deadline, then its usual permissions apply automatically.",
+                until, until is not null);
+        }
+    }
+
     public PairingDecision SetServerAccess(Guid id, IReadOnlyList<Guid>? profileIds,
         IReadOnlyList<DeviceServerPermissionRequest>? permissions, IEnumerable<Guid> knownProfileIds)
     {
@@ -1250,7 +1295,8 @@ public sealed class PairingService
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
-                current.AssignedProfileIds!.Contains(profileId) && current.CanStartProfile(profileId);
+                current.AssignedProfileIds!.Contains(profileId) &&
+                (IsTemporaryHelperActive(current) || current.CanStartProfile(profileId));
         }
     }
 
@@ -1260,7 +1306,8 @@ public sealed class PairingService
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
-                current.AssignedProfileIds!.Contains(profileId) && current.CanStopProfile(profileId);
+                current.AssignedProfileIds!.Contains(profileId) &&
+                (IsTemporaryHelperActive(current) || current.CanStopProfile(profileId));
         }
     }
 
@@ -1270,7 +1317,8 @@ public sealed class PairingService
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
-                current.AssignedProfileIds!.Contains(profileId) && current.CanExtendTimerForProfile(profileId);
+                current.AssignedProfileIds!.Contains(profileId) &&
+                (IsTemporaryHelperActive(current) || current.CanExtendTimerForProfile(profileId));
         }
     }
 
@@ -1280,7 +1328,8 @@ public sealed class PairingService
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
-                current.AssignedProfileIds!.Contains(profileId) && current.CanViewLogsForProfile(profileId);
+                current.AssignedProfileIds!.Contains(profileId) &&
+                (IsTemporaryHelperActive(current) || current.CanViewLogsForProfile(profileId));
         }
     }
 
@@ -1294,7 +1343,8 @@ public sealed class PairingService
                 return new(false, "Unauthorized", "This PC's saved access was not accepted.");
             var authorization = AuthorizationDecision(current, UtcNow);
             if (!authorization.Ok) return authorization;
-            return current.AssignedProfileIds!.Contains(profileId) && current.CanViewLogsForProfile(profileId)
+            return current.AssignedProfileIds!.Contains(profileId) &&
+                (IsTemporaryHelperActive(current) || current.CanViewLogsForProfile(profileId))
                 ? new(true, "ViewLogsAllowed", "Server-log access is allowed.")
                 : new(false, "PermissionDenied",
                     "The Host has not assigned this server with View logs permission to this PC.");

@@ -22,6 +22,7 @@ A built-in driver is accepted only after fixed arguments, declared ports, real r
 | Minecraft: Java Edition | Built-in preview | Fixture-tested; owner-installed server join, player transition, and save/restart remain. |
 | Minecraft: Bedrock Edition | Built-in preview | Fixture-tested; owner-installed server join, player transition, and save/restart remain. |
 | Factorio | Built-in preview | Fixture-tested fixed RCON lifecycle and managed save copy; owner-installed client join, player transition, save/restart/restore, and intended routes remain. |
+| Terraria | Built-in preview | Verified managed world copy and fixed launch/exit paths; trusted player count, real join/save/restart, and intended routes remain. Remote and automatic Stop stay blocked. |
 
 ## Recommended built-in order
 
@@ -29,12 +30,12 @@ These give the best early coverage across common server shapes instead of adding
 
 | Wave | Games | Why this group |
 | --- | --- | --- |
-| 1 | Terraria; Project Zomboid; Palworld; Satisfactory | Covers direct executable/headless launch, configuration files, console or admin APIs, UDP/TCP status, and different save layouts. Factorio has moved into built-in preview. |
+| 1 | Project Zomboid; Palworld; Satisfactory | Covers headless launch, configuration files, console or admin APIs, UDP/TCP status, and different save layouts. Factorio and Terraria have moved into built-in preview. |
 | 2 | V Rising; 7 Days to Die; Enshrouded; Core Keeper; Don't Starve Together | Popular persistent co-op servers with Windows tooling, but authentication, query, or graceful-stop details need game-specific review. |
 | 3 | ARK: Survival Ascended; ARK: Survival Evolved; Conan Exiles; Rust; Space Engineers | High demand but larger installs, more ports/settings, longer startup, and more complicated admin/query acceptance. |
 | 4 | Source/GoldSrc family | One reviewed protocol/console foundation can cover several titles, but each game still needs explicit ports, app identity, and save/map behavior. |
 
-Terraria documents a dedicated server executable and config-file launch; Satisfactory has a Windows server plus query/HTTPS management interfaces; and V Rising publishes Windows dedicated-server and RCON instructions. Those upstream surfaces make them credible candidates, not accepted drivers. Factorio's documented headless/RCON surface now has a reviewed preview driver, but its real-game gates remain open.
+Satisfactory has a Windows server plus query/HTTPS management interfaces, and V Rising publishes Windows dedicated-server and RCON instructions. Those upstream surfaces make them credible candidates. Factorio and Terraria now have preview drivers with real-game gates still open.
 
 ## Windows-first candidate inventory
 
@@ -87,7 +88,7 @@ Every game below can use **Custom now** if the owner supplies reviewed scripts a
 | Stormworks: Build and Rescue | Candidate | Server executable lifecycle, query, and world persistence. |
 | Subsistence | Candidate | Current dedicated-server support, query, and save/stop. |
 | Sunkenland | Candidate | Verify current public server tool, player count, and graceful Stop. |
-| Terraria | Next | Console player list, `save` plus `exit`, world selection, and real restart. |
+| Terraria | Built-in preview | Trusted player count, client join, fixed `exit` save/restart, and real route acceptance remain. |
 | The Forest | Candidate | Steam query/player count, config paths, and save shutdown. |
 | Unturned | Candidate | Steam query/RCON, workshop content, and save-confirmed Stop. |
 | V Rising | Next | A2S/RCON or API count, authenticated shutdown, and persistence acceptance. |

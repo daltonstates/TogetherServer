@@ -7,6 +7,9 @@ import { Button, Input, Select } from './Controls'
 import { ConnectionDoctor } from './ConnectionDoctor'
 import { FriendConnectionDoctor } from './FriendConnectionDoctor'
 import { ConnectionDetails } from './ConnectionDetails'
+import { JoinGuide } from './JoinGuide'
+import { MaintenanceGuide } from './MaintenanceGuide'
+import { TemporaryHelperAccess } from './TemporaryHelperAccess'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
@@ -21,12 +24,12 @@ import {
   parseDataRecoveryView, parseDesktopPreferenceResult, parseDesktopPreferences,
   parseFriendSnapshot, parseGameEndpointResult, parseInternetRouteCheck, parseInviteResult,
   parseInviteState, parsePasswordResult, parsePortDiagnostics, parsePublicIpDetection, parseRouteDiscovery,
-  parseSnapshot, parseUpdateView, parseWorldBackupList, parseWorldBackupVerificationResult,
+  parseSnapshot, parseUpdateView, parseWorldBackupList, parseWorldBackupVerificationResult, parseHostMoveKitResult,
   type ActionResult, type AppInstanceView, type BasicResult, type CompanionInfo,
   type DataRecoveryView, type DesktopPreferences, type Device, type FriendIssue,
   type DeviceAccessExpiryRequest, type DeviceAccessExpiryResult,
   type FriendSnapshot, type GameEndpointResult, type PublicIpDetection, type PublicProfile, type RouteDiscovery, type Settings,
-  type Snapshot, type UpdateView, type WorldBackupList, type WorldBackupVerificationResult
+  type Snapshot, type UpdateView, type WorldBackupList, type WorldBackupVerificationResult, type HostMoveKitResult
 } from './contracts'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
@@ -261,6 +264,7 @@ function App() {
   const [gameEndpointResults, setGameEndpointResults] = useState<Record<string, GameEndpointResult>>({})
   const [backupLists, setBackupLists] = useState<Record<string, WorldBackupList>>({})
   const [backupVerifications, setBackupVerifications] = useState<Record<string, WorldBackupVerificationResult>>({})
+  const [moveKit, setMoveKit] = useState<HostMoveKitResult | null>(null)
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
   const [showPairing, setShowPairing] = useState(false)
   const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
@@ -318,7 +322,7 @@ function App() {
     showPasswords, editedProfile, setupIssues, stepIssues, customScriptsChanged, setupRef,
     sensitiveDraft, edit, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
     synchronizeHostSnapshot, resetForMode, saveSetup, updateProfile, editCustomScripts, updateCustomPort,
-    addCustomPort, removeCustomPort, browseCustomDirectory, browseFactorio, applyMinecraftInstallation, scanMinecraft,
+    addCustomPort, removeCustomPort, browseCustomDirectory, browseFactorio, browseTerraria, applyMinecraftInstallation, scanMinecraft,
     installMinecraft, changeGameKind, addProfile, removeProfile, cancelSetup, finishSetupLater, openSetup,
     continueSetup, scanValheim, importWorld, browseServer, browseMinecraft, browseWorld, setSetupStep,
     setSourceRoot, setPassword, setShowPassword, setMinecraftSetupModeFor, setMinecraftTermsFor
@@ -713,6 +717,17 @@ function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const saveTemporaryHelper = async (deviceId: string, duration?: 'OneHour' | 'EightHours') => {
+    setPending(`temporary-helper-${deviceId}`)
+    try {
+      const result = await change(`/api/local/devices/${deviceId}/temporary-helper`, 'PUT',
+        duration ? { duration } : { clear: true })
+      setNotice({ good: result.ok, text: result.message })
+      await refreshCompanion()
+      setPermissionPresetDraft(current => { const next = { ...current }; delete next[deviceId]; return next })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
   const saveDeviceAccessExpiry = async (deviceId: string, request: DeviceAccessExpiryRequest): Promise<DeviceAccessExpiryResult> => {
     setPending(`access-expiry-${deviceId}`)
     try {
@@ -950,6 +965,26 @@ function App() {
         parseBackupSafetyResult)
       if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const prepareMoveKit = async (profileId: string, backupId: string) => {
+    setPending(`move-kit-${backupId}`)
+    setNotice(null)
+    try {
+      const result = await changeJson(`/api/local/profiles/${profileId}/backups/${backupId}/move-kit`, 'POST',
+        parseHostMoveKitResult)
+      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const inspectMoveKit = async () => {
+    setPending('inspect-move-kit')
+    setNotice(null)
+    try {
+      const result = await changeJson('/api/local/move-kit/inspect', 'POST', parseHostMoveKitResult)
+      setMoveKit(result.ok ? result : null)
+      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setMoveKit(null); setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
   const rehearseBackupRestore = async (profileId: string, backupId: string) => {
@@ -1386,14 +1421,15 @@ function App() {
                   revealed: !!revealedConnections[addressKey], copying: addressActivity === 'copy', revealing: false,
                   onReveal: () => revealConnectionDetails(addressKey), onHide: () => hideConnectionDetails(addressKey),
                   onCopy: () => void copyConnectionValue(addressKey, profile.joinAddress!, 'Server IP') }]}
-                refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
-                />}
+                 refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
+                 />}
+              {profile.state === 'Ready' && profile.joinAddress && <JoinGuide kind={profile.kind} />}
               <div className="actions server-actions">
                 {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
-                {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
+                {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
                 {logAvailability.visible && <div className="friend-log-surface">
                   <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
@@ -1477,10 +1513,16 @@ function App() {
                   refreshing={pending === `players-${profile.id}`} disabled={!!pending || dirty}
                   onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></PaneErrorBoundary>}
                 {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote Start, Stop, and Restart are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
-                <details hidden={hostServerTab !== 'setup'} className="advanced-block"><summary>Friend coordination and maintenance</summary>
-                  <label>Message for assigned Friends<Input maxLength={200} value={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''} onChange={event => setMaintenanceMessages(current => ({ ...current, [profile.id]: event.target.value }))} placeholder="Updating mods until 8 PM" /><small>Up to 200 characters. Status remains visible while remote Start, Stop, Restart, replacement, and timer extension are denied.</small></label>
-                  <div className="actions"><Button className="secondary" disabled={!!pending || dirty || profile.maintenance?.enabled} onClick={() => void saveMaintenance(profile, true)}>Enable maintenance</Button>{profile.maintenance?.enabled && <Button className="text-button" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button>}</div>
-                </details>
+                <div hidden={hostServerTab !== 'setup'}><MaintenanceGuide enabled={!!profile.maintenance?.enabled}
+                  message={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''}
+                  state={status?.state ?? 'Unknown'} onlinePlayers={status?.onlinePlayers ?? null}
+                  countTrusted={!!status?.playerCountTrusted} lastBackupUtc={shownBackupStatus?.lastSuccessfulUtc ?? null}
+                  busy={!!pending || dirty} onMessage={message => setMaintenanceMessages(current => ({ ...current, [profile.id]: message }))}
+                  onToggle={enabled => void saveMaintenance(profile, enabled)}
+                  onStop={() => void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST')}
+                  onBackup={() => void createManualBackup(profile.id)}
+                  onStart={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}
+                  onOpenDoctor={() => openHostSettings('network')} /></div>
                 {hostServerTab === 'overview' && status?.state === 'Ready' && gameAddress && <ConnectionDetails fields={connectionFields}
                   refreshing={checkingPorts || detectingPublicIp} />}
                 {status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && status.playerCountTrusted && status.onlinePlayers !== null && <div className="timer-extension"><label>Add shutdown time<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Saved if players join and applied when the server next reaches 0 players.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
@@ -1528,7 +1570,7 @@ function App() {
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
-                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio'].includes(profile.kind) && <PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
+                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' || profile.kind === 'Terraria' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
                     {shownBackupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(shownBackupStatus.lastSuccessfulUtc).toLocaleString()} · {shownBackupStatus.completedCount} retained · {formatBytes(shownBackupStatus.retainedSizeBytes)} used.</small>}
                     {shownBackupStatus?.availableSpaceBytes != null && <small>{formatBytes(shownBackupStatus.availableSpaceBytes)} available on the backup drive.</small>}
                     {shownBackupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</p>}
@@ -1537,9 +1579,10 @@ function App() {
                     {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
                       const verification = backupVerifications[backup.id]
                       const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'
-                      return <div className="device backup-record" key={backup.id}><div><strong>{label}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {formatBytes(backup.sizeBytes)}</small>{verification && <small className={verification.ok ? 'verification-ok' : 'warning-text'}>{verification.ok ? 'Integrity verified' : 'Integrity check failed'} {new Date(verification.checkedUtc).toLocaleString()}. The live world was not changed.</small>}</div><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void verifyBackup(profile.id, backup.id)}>{pending === `verify-backup-${backup.id}` ? 'Verifying…' : 'Verify'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void copyBackupToVault(profile.id, backup.id)}>{pending === `vault-backup-${backup.id}` ? 'Copying…' : 'Copy to vault'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void rehearseBackupRestore(profile.id, backup.id)}>{pending === `rehearse-backup-${backup.id}` ? 'Testing…' : 'Test restore'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div></div>
+                      return <div className="device backup-record" key={backup.id}><div><strong>{label}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {formatBytes(backup.sizeBytes)}</small>{verification && <small className={verification.ok ? 'verification-ok' : 'warning-text'}>{verification.ok ? 'Integrity verified' : 'Integrity check failed'} {new Date(verification.checkedUtc).toLocaleString()}. The live world was not changed.</small>}</div><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void verifyBackup(profile.id, backup.id)}>{pending === `verify-backup-${backup.id}` ? 'Verifying…' : 'Verify'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void copyBackupToVault(profile.id, backup.id)}>{pending === `vault-backup-${backup.id}` ? 'Copying…' : 'Copy to vault'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void prepareMoveKit(profile.id, backup.id)}>{pending === `move-kit-${backup.id}` ? 'Preparing…' : 'Prepare move kit'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void rehearseBackupRestore(profile.id, backup.id)}>{pending === `rehearse-backup-${backup.id}` ? 'Testing…' : 'Test restore'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div></div>
                     })}</div>}
                   </div></PaneErrorBoundary>}
+                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <details className="advanced-block"><summary>Update the game server safely</summary><ol className="update-game-steps"><li>Stop this server, then choose Back up now while it is Offline.</li><li>Verify the backup. Copy it to another location or test restore if needed.</li><li>Use the game provider's installer or update action yourself.</li><li>Start the updated server. Test a real Friend join and a saved change, then record those checks again in Connection Doctor. Changed game files make earlier confirmations stale.</li></ol><Button className="text-button" onClick={() => openHostSettings('network')}>Open Connection Doctor</Button></details>}
                 </details>
               </article>
             })}
@@ -1551,6 +1594,15 @@ function App() {
           </div>
         </section>
         </>}
+
+        <section className="panel host-move-guide"><details><summary>Move hosting to another PC</summary>
+          <p>On the old Host, stop the server, make a new backup, then choose Prepare move kit beside that backup. Take the verified .backup folder to the new PC.</p>
+          <Button className="secondary" disabled={!!pending} onClick={() => void inspectMoveKit()}>{pending === 'inspect-move-kit' ? 'Checking…' : 'Inspect move kit on this PC'}</Button>
+          {moveKit?.kit && <div className="device"><strong>{moveKit.kit.name} · {gameLabel(moveKit.kit.kind)}</strong><small>World {moveKit.kit.worldId} · port {moveKit.kit.gamePort} · {moveKit.fileCount} verified files</small>
+            <ol><li>Install the same game server version and create a fresh server on this PC.</li><li>While it is offline, copy the kit’s payload into that server’s save location. Keep any existing save separate; do not overwrite it. Use the world name shown above.</li><li>Set up TogetherServer for that server and select its locally installed executable. Recreate game settings and passwords, then test a real join and saved change.</li><li>Give Friends a new server code and pair each PC again. Retire the old Host only after the new one passes your checks.</li></ol>
+            <small>The move kit contains world files and basic setup details. It does not contain game binaries, saved Friend access, private keys, or game passwords.</small>
+            <Button className="secondary" onClick={addProfile}>Set up new Host</Button></div>}
+        </details></section>
 
         {savedProfiles.length === 0 && !showSetup && <section className="panel welcome-panel"><div className="section-heading"><div><h2>What would you like to do?</h2><p>You can host and join at the same time. Switching pages never stops a running server.</p></div></div>
           {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><Button onClick={continueSetup}>Continue setup</Button></div> : <div className="welcome-grid">
@@ -1576,6 +1628,7 @@ function App() {
           onShowPasswordChange={setShowPassword}
           onBrowseCustomDirectory={profile => void browseCustomDirectory(profile)}
           onBrowseFactorio={(profile, target) => void browseFactorio(profile, target)}
+          onBrowseTerraria={(profile, target) => void browseTerraria(profile, target)}
           onMinecraftSetupModeChange={setMinecraftSetupModeFor}
           onBrowseMinecraft={(profile, target) => void browseMinecraft(profile, target)}
           onApplyMinecraftInstallation={applyMinecraftInstallation} onScanMinecraft={folder => void scanMinecraft(folder)}
@@ -1619,6 +1672,10 @@ function App() {
                     <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Saved access expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Remove access</Button></div></div>
                   <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}
                     onSave={request => saveDeviceAccessExpiry(device.id, request)} onRefresh={refreshCompanion} />
+                  <TemporaryHelperAccess device={device} nowMs={nowMs} busy={!!pending}
+                    onGrant={duration => void saveTemporaryHelper(device.id, duration)}
+                    onEnd={() => void saveTemporaryHelper(device.id)} />
+                  <fieldset className="usual-permissions" disabled={device.temporaryHelperActive}><legend>Usual permissions</legend>
                   {(() => {
                     const selectedPreset = permissionPresetDraft[device.id] ?? matchingPermissionPreset(device)
                     const preset = selectedPreset === 'custom' ? null : permissionPresets[selectedPreset]
@@ -1636,7 +1693,8 @@ function App() {
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStart', permissionMix(device, 'canStart').mixed ? true : event.target.checked)} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canExtendTimer', permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked)} /><span><strong>Add shutdown time</strong><small>Off by default. Friends can add only the fixed increment, including while players are online.</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canViewLogs').mixed} checked={permissionMix(device, 'canViewLogs').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canViewLogs', permissionMix(device, 'canViewLogs').mixed ? true : event.target.checked)} /><span><strong>View logs</strong><small>{permissionMix(device, 'canViewLogs').mixed ? device.canViewLogs ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canViewLogs').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}. Read-only and independent of remote controls.</small></span></label></div>
+                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canViewLogs').mixed} checked={permissionMix(device, 'canViewLogs').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canViewLogs', permissionMix(device, 'canViewLogs').mixed ? true : event.target.checked)} /><span><strong>View logs</strong><small>{permissionMix(device, 'canViewLogs').mixed ? device.canViewLogs ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canViewLogs').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}. Read-only and independent of remote controls.</small></span></label></div>
+                  </fieldset>
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs have connected yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">

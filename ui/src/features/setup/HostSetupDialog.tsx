@@ -21,6 +21,7 @@ type PlannedPort = { protocol: 'TCP' | 'UDP'; port: number; family: 'Any' | 'IPv
 
 function plannedPorts(profile: Profile, basePort = profile.gamePort): PlannedPort[] {
   if (profile.kind === 'MinecraftJava') return [{ protocol: 'TCP', port: basePort, family: 'Any' }]
+  if (profile.kind === 'Terraria') return [{ protocol: 'TCP', port: basePort, family: 'Any' }]
   if (profile.kind === 'MinecraftBedrock') return [{ protocol: 'UDP', port: basePort, family: 'IPv4' }]
   if (profile.kind === 'Factorio') return [
     { protocol: 'UDP', port: basePort, family: 'Any' },
@@ -102,6 +103,10 @@ export function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPa
     if (!profile.executablePath.trim()) issues.push('Choose owner-installed factorio.exe.')
     if ((profile.factorio?.rconPort ?? 0) < 1024 || (profile.factorio?.rconPort ?? 0) > 65535 ||
         profile.factorio?.rconPort === profile.gamePort) issues.push('Choose a separate local RCON port from 1024 to 65535.')
+  } else if (profile.kind === 'Terraria') {
+    if (!profile.name.trim()) issues.push('Name this Terraria server.')
+    if (!profile.worldId.trim() || !profile.worldDirectory.trim()) issues.push('Copy an existing Terraria world.')
+    if (!profile.executablePath.trim()) issues.push('Choose owner-installed TerrariaServer.exe.')
   } else if (profile.kind === 'Custom') {
     if (!profile.custom?.gameName.trim()) issues.push('Enter the game name.')
     if (!profile.name.trim()) issues.push('Name this server.')
@@ -134,6 +139,8 @@ export function getStepIssues(step: SetupStep, profile: Profile, hasPassword: bo
       return ['Name this server.']
     if (profile.kind === 'Factorio' && (!profile.name.trim() || !profile.worldId.trim() || !profile.worldDirectory.trim()))
       return ['Name the server, enter its existing save name, and choose the save folder.']
+    if (profile.kind === 'Terraria' && (!profile.name.trim() || !profile.worldId.trim() || !profile.worldDirectory.trim()))
+      return ['Name the server and copy an existing Terraria world.']
     if (profile.kind === 'Custom' && (!profile.name.trim() || !profile.worldId.trim() || !profile.worldDirectory.trim()))
       return ['Name the server, enter a save/world key, and choose its working directory.']
     return []
@@ -142,6 +149,7 @@ export function getStepIssues(step: SetupStep, profile: Profile, hasPassword: bo
   if ((profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && !profile.executablePath.trim())
     return ['Choose or install the game server.']
   if (profile.kind === 'Factorio' && !profile.executablePath.trim()) return ['Choose owner-installed factorio.exe.']
+  if (profile.kind === 'Terraria' && !profile.executablePath.trim()) return ['Choose owner-installed TerrariaServer.exe.']
   if (profile.kind === 'Custom' && !customScriptsSaved &&
       (!customScripts?.start.trim() || !customScripts?.status.trim() || !customScripts?.stop.trim()))
     return ['Enter Start, Status/players, and Stop scripts.']
@@ -187,6 +195,7 @@ type HostSetupDialogProps = {
   onShowPasswordChange: (profileId: string, value: boolean) => void
   onBrowseCustomDirectory: (profile: Profile) => void
   onBrowseFactorio: (profile: Profile, target: 'executable' | 'save') => void
+  onBrowseTerraria: (profile: Profile, target: 'executable' | 'world') => void
   onMinecraftSetupModeChange: (profileId: string, mode: 'existing' | 'install') => void
   onBrowseMinecraft: (profile: Profile, target: 'folder' | 'executable' | 'jar') => void
   onApplyMinecraftInstallation: (profile: Profile, installation: MinecraftInstallation) => void
@@ -208,7 +217,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
   minecraftSetupMode, minecraftTerms, customScripts, customScriptsSaved, customScriptsLoading,
   customScriptsChanged, dataRecoveryBlocked, freshWorldsOnly, onCancel, onFinishLater, onAddProfile, onStepChange,
   onChangeGameKind, onUpdateProfile, onImportWorld, onBrowseWorld, onSourceRootChange, onPasswordChange,
-  onShowPasswordChange, onBrowseCustomDirectory, onBrowseFactorio, onMinecraftSetupModeChange, onBrowseMinecraft,
+  onShowPasswordChange, onBrowseCustomDirectory, onBrowseFactorio, onBrowseTerraria, onMinecraftSetupModeChange, onBrowseMinecraft,
   onApplyMinecraftInstallation, onScanMinecraft, onInstallMinecraft, onMinecraftTermsChange, onScanValheim,
   onBrowseServer, onEditCustomScripts, onUpdateCustomPort, onAddCustomPort, onRemoveCustomPort,
   onRemoveProfile, onSave }: HostSetupDialogProps) {
@@ -227,6 +236,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         <Button aria-pressed={profile.kind === 'MinecraftJava'} className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
         <Button aria-pressed={profile.kind === 'MinecraftBedrock'} className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
         {!freshWorldsOnly && <Button aria-pressed={profile.kind === 'Factorio'} className={profile.kind === 'Factorio' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Factorio')}><strong>Factorio</strong><small>Preview · fixture-tested lifecycle</small></Button>}
+        {!freshWorldsOnly && <Button aria-pressed={profile.kind === 'Terraria'} className={profile.kind === 'Terraria' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Terraria')}><strong>Terraria</strong><small>Preview · owner-installed server</small></Button>}
         {!freshWorldsOnly && <Button aria-pressed={profile.kind === 'Custom'} className={profile.kind === 'Custom' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Custom')}><strong>Custom game</strong><small>Advanced · local PowerShell actions</small></Button>}
         {profile.kind === 'Fixture' && <Button aria-pressed="true" className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
       </div></div>}
@@ -259,6 +269,10 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
           <label>Server name<Input value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Factory night" /></label>
           <div className="wide"><strong>{profile.worldId ? `Copied save: ${profile.worldId}.zip` : 'Choose an existing Factorio save ZIP'}</strong><div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseFactorio(profile, 'save')}>{pending === profile.id ? 'Copying…' : 'Browse and copy save'}</Button></div><small>TogetherServer copies the selected ZIP once into this server's managed folder. The original is never moved, overwritten, or used for hosting.</small></div>
         </div>}
+        {profile.kind === 'Terraria' && <div className="settings-grid">
+          <label>Server name<Input value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Terraria night" /></label>
+          <div className="wide"><strong>{profile.worldId ? `Copied world: ${profile.worldId}.wld` : 'Choose an existing Terraria world'}</strong><div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseTerraria(profile, 'world')}>{pending === profile.id ? 'Copying…' : 'Browse and copy world'}</Button></div><small>The original world stays untouched. TogetherServer hosts the verified managed copy.</small></div>
+        </div>}
         {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && <><div className="choice-pills">
           {!freshWorldsOnly && <Button aria-pressed={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing'} className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'existing')}>Use an existing server</Button>}
           <Button aria-pressed={(minecraftSetupMode[profile.id] ?? (freshWorldsOnly ? 'install' : 'existing')) === 'install'} className={(minecraftSetupMode[profile.id] ?? (freshWorldsOnly ? 'install' : 'existing')) === 'install' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'install')}>Install a new official server</Button>
@@ -284,6 +298,10 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
           <div className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Factorio, accept terms, or expose RCON to Friends. The built-in driver has fixture-tested Start, authenticated local player count, /quit, and backup behavior; real-game join/save acceptance is still required.</p></div>
           <label>Factorio server executable<div className="field-with-button"><Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\Factorio\\bin\\x64\\factorio.exe" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseFactorio(profile, 'executable')}>Browse</Button></div></label>
         </div>
+        : profile.kind === 'Terraria' ? <div className="factorio-server-setup">
+          <div className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Terraria. The built-in driver can launch the copied world and request a graceful exit; a TCP listener cannot establish player count, join, or save integrity. Remote and automatic Stop stay blocked.</p></div>
+          <label>Terraria server executable<div className="field-with-button"><Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\Terraria\\TerrariaServer.exe" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseTerraria(profile, 'executable')}>Browse</Button></div></label>
+        </div>
         : profile.kind === 'Custom' ? <div className="custom-script-manager">
           <div className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></div>
           {customScriptsLoading[profile.id] && <p className="helper-text script-loading" role="status"><Icon name="loader" />Loading protected scripts…</p>}
@@ -299,16 +317,17 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
       <details className="advanced-block"><summary>Advanced server settings</summary>
         <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<Input type="number" value={profile.gamePort} onChange={event => onUpdateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<Input value={profile.serverName} onChange={event => onUpdateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<Input value={profile.worldDirectory} onChange={event => onUpdateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
         {profile.kind === 'Factorio' && <div className="settings-grid"><label>Game UDP port<Input type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => onUpdateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>RCON TCP port<Input type="number" min="1024" max="65535" value={profile.factorio?.rconPort ?? 27015} onChange={event => onUpdateProfile(profile.id, { factorio: { rconPort: Number(event.target.value) } })} /></label><label className="wide">Installed factorio.exe<Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Managed save copy<Input value={profile.worldDirectory} readOnly /></label><small className="wide">TogetherServer connects to RCON only through loopback and never gives it to Friends. Do not forward this port; Factorio may listen on network interfaces.</small></div>}
+        {profile.kind === 'Terraria' && <div className="settings-grid"><label>Game TCP port<Input type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => onUpdateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label className="wide">Installed TerrariaServer.exe<Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Managed world copy<Input value={profile.worldDirectory} readOnly /></label></div>}
         {profile.kind === 'Valheim' && <div className="device-options"><label className="check-row"><Input type="checkbox" checked={profile.crossplay} onChange={event => onUpdateProfile(profile.id, { crossplay: event.target.checked })} /> Crossplay relay</label><label className="check-row"><Input type="checkbox" checked={profile.publicListing} onChange={event => onUpdateProfile(profile.id, { publicListing: event.target.checked })} /> Show in server list</label></div>}
         {profile.kind === 'Custom' && <div className="custom-ports"><div className="settings-grid"><label>Primary protocol<Select value={profile.custom?.primaryProtocol ?? 'UDP'} onChange={event => onUpdateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: event.target.value as 'TCP' | 'UDP', shareJoinAddress: profile.custom?.shareJoinAddress ?? true, additionalPorts: profile.custom?.additionalPorts ?? [] } })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select></label><label>Primary game port<Input type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => onUpdateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label></div>
           <label className="check-row"><Input type="checkbox" checked={profile.custom?.shareJoinAddress ?? true} onChange={event => onUpdateProfile(profile.id, { custom: { gameName: profile.custom?.gameName ?? 'Custom game', primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: event.target.checked, additionalPorts: profile.custom?.additionalPorts ?? [] } })} /> Share public IP and primary port with assigned Friends</label>
           {(profile.custom?.additionalPorts ?? []).map((port, index) => <div className="custom-port-row" key={customPortKey(profile.id, index)}><Select aria-label={`Additional port ${index + 1} protocol`} value={port.protocol} onChange={event => onUpdateCustomPort(profile, index, { protocol: event.target.value as 'TCP' | 'UDP' })}><option value="UDP">UDP</option><option value="TCP">TCP</option></Select><Input aria-label={`Additional port ${index + 1}`} type="number" min="1024" max="65535" value={port.port} onChange={event => onUpdateCustomPort(profile, index, { port: Number(event.target.value) })} /><Input aria-label={`Additional port ${index + 1} label`} value={port.label} onChange={event => onUpdateCustomPort(profile, index, { label: event.target.value })} placeholder="Query or RCON" /><Select aria-label={`Additional port ${index + 1} address family`} value={port.family} onChange={event => onUpdateCustomPort(profile, index, { family: event.target.value as 'Any' | 'IPv4' | 'IPv6' })}><option value="Any">Any IP</option><option value="IPv4">IPv4</option><option value="IPv6">IPv6</option></Select><Button className="text-button" onClick={() => onRemoveCustomPort(profile, index)}>Remove</Button></div>)}
           <Button className="secondary" disabled={(profile.custom?.additionalPorts.length ?? 0) >= 15} onClick={() => onAddCustomPort(profile)}>Add another port</Button><p className="helper-text">Declared ports participate in conflict and local-listener checks. TogetherServer does not create firewall or router rules.</p></div>}
-        {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio'].includes(profile.kind) && <div className="device-options world-protection-options">
-          {profile.kind !== 'Factorio' ? <>
+        {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <div className="device-options world-protection-options">
+          {profile.kind !== 'Factorio' && profile.kind !== 'Terraria' ? <>
             <label className="check-row"><Input type="checkbox" checked={profile.crashRecovery?.enabled ?? false} onChange={event => onUpdateProfile(profile.id, { crashRecovery: { enabled: event.target.checked } })} /> Restart after an unexpected server exit</label>
             <small>Off by default. Only a previously Ready server with a definitively exited exact process is eligible. Retries wait 1, 5, and 15 minutes, then suspend.</small>
-          </> : <p className="helper-text">Automatic crash recovery stays unavailable for this preview until real Factorio save/restart acceptance is recorded.</p>}
+          </> : <p className="helper-text">Automatic crash recovery stays unavailable for this preview until real save/restart acceptance is recorded.</p>}
           <label className="check-row"><Input type="checkbox" checked={profile.backups?.enabled ?? false} onChange={event => onUpdateProfile(profile.id, { backups: { enabled: event.target.checked, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /> Back up after each confirmed graceful Stop</label>
           {(profile.backups?.enabled ?? false) && <div className="settings-grid"><label>Completed backups to keep<Input type="number" min="1" max="50" value={profile.backups?.retentionCount ?? 5} onChange={event => onUpdateProfile(profile.id, { backups: { enabled: true, retentionCount: Number(event.target.value), minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /></label><label>Free-space reserve (MB)<Input type="number" min="0" max="1048576" value={profile.backups?.minimumFreeSpaceMb ?? 1024} onChange={event => onUpdateProfile(profile.id, { backups: { enabled: true, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: Number(event.target.value) } })} /></label></div>}
           <p className="helper-text">Backups use staged, verified copies. Restore stays on this Host, requires Offline, and takes a pre-restore snapshot. Complete real-game save/restart acceptance before relying on automation for a valued world.</p>

@@ -738,7 +738,7 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
     var registry = Games(data);
     Require(registry.All.Select(driver => driver.Kind).Order().SequenceEqual(new[]
         { GameKinds.Custom, GameKinds.Factorio, GameKinds.Fixture, GameKinds.MinecraftBedrock,
-            GameKinds.MinecraftJava, GameKinds.Valheim }),
+            GameKinds.MinecraftJava, GameKinds.Terraria, GameKinds.Valheim }),
         "The built-in, custom, and fixture games were not separately registered");
     var profile = Profile("unknown-game", "unknown-game", FreePort());
     profile.Kind = "UnregisteredGame";
@@ -1753,6 +1753,78 @@ await Check("backup staging, integrity, retention, and free-space checks fail cl
         "backup ignored the configured destination free-space boundary");
 });
 
+await Check("Terraria preview copies an isolated world and treats listener evidence as player-count unknown", async () =>
+{
+    using var data = Data("terraria-preview");
+    var source = Path.Combine(root, "source-terraria-world.wld");
+    File.WriteAllText(source, "disposable Terraria world fixture");
+    var imported = TerrariaSetup.ImportCopy(data, Guid.NewGuid(), source);
+    Require(imported.Ok && imported.WorldDirectory is not null && imported.WorldId is not null &&
+        File.ReadAllText(source) == "disposable Terraria world fixture", "Terraria import changed the source world");
+    var importedDirectory = imported.WorldDirectory ?? throw new Exception("Terraria managed directory missing");
+    var importedWorldId = imported.WorldId ?? throw new Exception("Terraria world name missing");
+    var importedProfileId = Guid.Parse(Path.GetFileName(importedDirectory));
+    Require(!TerrariaSetup.ImportCopy(data, importedProfileId, source).Ok,
+        "Terraria import overwrote an existing managed world");
+    var executable = Path.Combine(root, "TerrariaServer.exe");
+    File.WriteAllText(executable, "synthetic executable name only");
+    var profile = new ServerProfile
+    {
+        Id = importedProfileId,
+        Kind = GameKinds.Terraria,
+        Name = "Terraria preview",
+        WorldId = importedWorldId,
+        WorldDirectory = importedDirectory,
+        GamePort = FreePort(),
+        ExecutablePath = executable
+    };
+    var driver = new TerrariaServerDriver(data);
+    Require(driver.ValidateForStart(profile) is null && !driver.SupportsCrashRecovery && driver.SupportsBackups &&
+        driver.Ports(profile).Single().Protocol == "TCP", "Terraria preview driver accepted the wrong managed world or port");
+    var health = driver.Health(new ManagedRun { GamePort = profile.GamePort });
+    Require(!health.Ok && !health.PlayerCountTrusted && health.OnlinePlayers is null,
+        "Terraria preview invented a trusted player count without a game response");
+    await Task.CompletedTask;
+});
+
+await Check("Host move kit verifies exported hashes and rejects a tampered world", async () =>
+{
+    using var data = Data("host-move-kit");
+    var source = Path.Combine(root, "host-move-source.wld");
+    File.WriteAllText(source, "move-kit-world");
+    var profileId = Guid.NewGuid();
+    var imported = TerrariaSetup.ImportCopy(data, profileId, source);
+    Require(imported.Ok && imported.WorldDirectory is not null && imported.WorldId is not null,
+        "fixture world import failed");
+    var importedDirectory = imported.WorldDirectory ?? throw new Exception("Move kit managed directory missing");
+    var importedWorldId = imported.WorldId ?? throw new Exception("Move kit world name missing");
+    var profile = new ServerProfile
+    {
+        Id = profileId,
+        Kind = GameKinds.Terraria,
+        Name = "Move this world",
+        WorldId = importedWorldId,
+        WorldDirectory = importedDirectory,
+        GamePort = 7777,
+        Backups = new BackupOptions { MinimumFreeSpaceMb = 0 }
+    };
+    var service = new WorldBackupService(data, TimeProvider.System);
+    var backup = service.Create(profile, BackupKinds.Manual);
+    Require(backup.Ok && backup.Backup is not null, "fixture backup failed");
+    var backupRecord = backup.Backup ?? throw new Exception("Move kit backup record missing");
+    var destination = Path.Combine(root, "move-kit-destination");
+    Directory.CreateDirectory(destination);
+    var moved = service.PrepareMoveKit(profile, backupRecord.Id, destination);
+    var kitDirectory = Path.Combine(destination, "TogetherServer Backups", profileId.ToString("N"),
+        backupRecord.Id.ToString("N") + ".backup");
+    Require(moved.Ok && moved.Kit?.Kind == GameKinds.Terraria &&
+        service.InspectMoveKit(kitDirectory).Ok, "verified Host move kit was not readable on a new PC");
+    File.WriteAllText(Path.Combine(kitDirectory, "payload", profile.WorldId + ".wld"), "changed");
+    Require(!service.InspectMoveKit(kitDirectory).Ok &&
+        File.ReadAllText(source) == "move-kit-world", "a tampered kit passed verification or changed the source");
+    await Task.CompletedTask;
+});
+
 await Check("interrupted restore journal reconciles rollback and installed replacement", async () =>
 {
     using var data = Data("restore-reconciliation");
@@ -1855,6 +1927,8 @@ await Check("acceptance confirmations are configuration-bound and persist no rou
     using var data = Data("acceptance-recorder");
     var profile = Profile("Private server name", "private-world", FreePort());
     profile.ServerName = "Private server name";
+    profile.ExecutablePath = Path.Combine(data.RootPath, "synthetic-server.exe");
+    File.WriteAllText(profile.ExecutablePath, "server build one");
     var settings = Settings(profile);
     settings.CompanionPort = 55131;
     settings.ConnectionRoute = new() { Mode = "Manual", Address = "198.51.100.44" };
@@ -1874,6 +1948,16 @@ await Check("acceptance confirmations are configuration-bound and persist no rou
     var stale = recorder.View(settings, profile.Id);
     Require(stale.Stale && stale.Checks.All(item => !item.Confirmed),
         "a changed game configuration retained current acceptance credit");
+    profile.GamePort--;
+    File.WriteAllText(profile.ExecutablePath, "server build two");
+    var changedGame = recorder.View(settings, profile.Id);
+    Require(changedGame.Stale && changedGame.GameFilesAvailable && changedGame.GameFilesChanged &&
+        changedGame.Checks.All(item => !item.Confirmed),
+        "a changed game executable retained real-game acceptance credit");
+    var reconfirmed = recorder.Change(settings, profile.Id,
+        new AcceptanceChange(AcceptanceCheckIds.RealJoin, true));
+    Require(reconfirmed.Ok && !reconfirmed.View.GameFilesChanged && !reconfirmed.View.Stale,
+        "a new real-game confirmation did not bind to the current executable");
     return Task.CompletedTask;
 });
 

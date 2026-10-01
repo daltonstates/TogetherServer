@@ -141,6 +141,7 @@ internal sealed class AcceptanceRecord
 {
     public Guid ProfileId { get; set; }
     public string ConfigurationFingerprint { get; set; } = "";
+    public string GameBinaryFingerprint { get; set; } = "";
     public DateTimeOffset UpdatedUtc { get; set; }
     public Dictionary<string, DateTimeOffset> Confirmed { get; set; } = [];
 }
@@ -148,7 +149,8 @@ internal sealed class AcceptanceRecord
 public sealed record AcceptanceCheckView(string Id, string Label, string Evidence, bool Confirmed,
     DateTimeOffset? ConfirmedUtc);
 public sealed record AcceptanceView(Guid ProfileId, bool Stale, DateTimeOffset? UpdatedUtc,
-    IReadOnlyList<AcceptanceCheckView> Checks, string EvidenceBoundary);
+    IReadOnlyList<AcceptanceCheckView> Checks, string EvidenceBoundary,
+    bool GameFilesAvailable = false, bool GameFilesChanged = false);
 public sealed record AcceptanceChange(string CheckId, bool Confirmed);
 public sealed record AcceptanceResult(bool Ok, string Code, string Message, AcceptanceView View);
 
@@ -164,10 +166,11 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return Empty(profileId);
             var record = Load().SingleOrDefault(item => item.ProfileId == profileId);
+            var binary = GameBinaryIdentity(profile);
             var stale = record is not null && !CryptographicOperations.FixedTimeEquals(
                 Encoding.ASCII.GetBytes(record.ConfigurationFingerprint),
-                Encoding.ASCII.GetBytes(Fingerprint(settings, profile)));
-            return Project(profileId, record, stale);
+                Encoding.ASCII.GetBytes(Fingerprint(settings, profile, binary.Fingerprint)));
+            return Project(profileId, record, stale, binary);
         }
     }
 
@@ -181,12 +184,18 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
             if (!AcceptanceCheckIds.All.Contains(change.CheckId, StringComparer.Ordinal))
                 return new(false, "UnknownAcceptanceCheck", "Choose one reviewed acceptance check.", View(settings, profileId));
             var records = Load();
-            var fingerprint = Fingerprint(settings, profile);
+            var binary = GameBinaryIdentity(profile);
+            var fingerprint = Fingerprint(settings, profile, binary.Fingerprint);
             var record = records.SingleOrDefault(item => item.ProfileId == profileId);
             if (record is null || !string.Equals(record.ConfigurationFingerprint, fingerprint, StringComparison.Ordinal))
             {
                 records.RemoveAll(item => item.ProfileId == profileId);
-                record = new AcceptanceRecord { ProfileId = profileId, ConfigurationFingerprint = fingerprint };
+                record = new AcceptanceRecord
+                {
+                    ProfileId = profileId,
+                    ConfigurationFingerprint = fingerprint,
+                    GameBinaryFingerprint = binary.Fingerprint
+                };
                 records.Add(record);
             }
             if (change.Confirmed) record.Confirmed[change.CheckId] = clock.GetUtcNow();
@@ -197,7 +206,7 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
             return new(true, "AcceptanceRecorded",
                 change.Confirmed ? "Owner confirmation recorded for this exact configuration." :
                     "Owner confirmation cleared for this exact configuration.",
-                Project(profileId, record, false));
+                Project(profileId, record, false, binary));
         }
     }
 
@@ -206,7 +215,9 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
         var records = data.LoadState(FileName, new List<AcceptanceRecord>());
         if (records.Count > 100 || records.Select(item => item?.ProfileId).Distinct().Count() != records.Count ||
             records.Any(item => item is null || item.ProfileId == Guid.Empty ||
-                item.ConfigurationFingerprint.Length != 64 || item.ConfigurationFingerprint.Any(character => !Uri.IsHexDigit(character)) ||
+                 item.ConfigurationFingerprint.Length != 64 || item.ConfigurationFingerprint.Any(character => !Uri.IsHexDigit(character)) ||
+                 (item.GameBinaryFingerprint.Length != 0 && (item.GameBinaryFingerprint.Length != 64 ||
+                     item.GameBinaryFingerprint.Any(character => !Uri.IsHexDigit(character)))) ||
                 item.Confirmed is null || item.Confirmed.Count > AcceptanceCheckIds.All.Count ||
                 item.Confirmed.Keys.Any(key => !AcceptanceCheckIds.All.Contains(key, StringComparer.Ordinal))))
         {
@@ -216,7 +227,8 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
         return records;
     }
 
-    private static AcceptanceView Project(Guid profileId, AcceptanceRecord? record, bool stale)
+    private static AcceptanceView Project(Guid profileId, AcceptanceRecord? record, bool stale,
+        (string Fingerprint, bool Available) binary)
     {
         var labels = new Dictionary<string, (string Label, string Evidence)>(StringComparer.Ordinal)
         {
@@ -232,12 +244,18 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
             labels[id].Evidence, !stale && record?.Confirmed.TryGetValue(id, out _) == true,
             !stale && record?.Confirmed.TryGetValue(id, out var recorded) == true ? recorded : null)).ToList();
         return new(profileId, stale, record?.UpdatedUtc, checks,
-            "These are owner confirmations, not authentication, player identity, occupancy authority, or automatic proof.");
+            "These are owner confirmations, not authentication, player identity, occupancy authority, or automatic proof.",
+            binary.Available,
+            record?.GameBinaryFingerprint is { Length: 64 } previous &&
+                !string.Equals(previous, binary.Fingerprint, StringComparison.Ordinal));
     }
 
-    private static AcceptanceView Empty(Guid profileId) => Project(profileId, null, false);
+    private static AcceptanceView Empty(Guid profileId) => Project(profileId, null, false, ("", false));
 
-    internal static string Fingerprint(HostSettings settings, ServerProfile profile)
+    internal static string Fingerprint(HostSettings settings, ServerProfile profile) =>
+        Fingerprint(settings, profile, GameBinaryIdentity(profile).Fingerprint);
+
+    private static string Fingerprint(HostSettings settings, ServerProfile profile, string gameBinaryFingerprint)
     {
         var route = ConnectionRoutes.Normalize(settings.ConnectionRoute);
         var payload = JsonSerializer.Serialize(new
@@ -249,6 +267,7 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
             WorldDirectory = Normalize(profile.WorldDirectory),
             profile.GamePort,
             ExecutablePath = Normalize(profile.ExecutablePath),
+            GameBinaryFingerprint = gameBinaryFingerprint,
             profile.Crossplay,
             profile.PublicListing,
             MinecraftJar = Normalize(profile.Minecraft?.ServerJarPath ?? ""),
@@ -264,6 +283,30 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
             RouteAddress = route.Address.Trim()
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
+    }
+
+    private static (string Fingerprint, bool Available) GameBinaryIdentity(ServerProfile profile)
+    {
+        var paths = new List<string>();
+        if (!string.IsNullOrWhiteSpace(profile.ExecutablePath)) paths.Add(profile.ExecutablePath);
+        if (profile.Kind == GameKinds.MinecraftJava && !string.IsNullOrWhiteSpace(profile.Minecraft?.ServerJarPath))
+            paths.Add(profile.Minecraft.ServerJarPath);
+        var available = paths.Count > 0;
+        var parts = new List<string>();
+        foreach (var path in paths)
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                parts.Add($"{Normalize(path)}:{Convert.ToHexString(SHA256.HashData(stream))}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                available = false;
+                parts.Add($"{Normalize(path)}:Unavailable");
+            }
+        }
+        return (Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parts)))), available);
     }
 
     private static string Normalize(string value)

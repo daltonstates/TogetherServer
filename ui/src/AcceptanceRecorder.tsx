@@ -44,6 +44,9 @@ export function AcceptanceRecorder({ profileId, visible = true }: { profileId: s
       }}>Refresh</Button></div>
     {error && <p className="warning-text" role="alert">{error}</p>}
     {!view && !error && <p className="helper-text" role="status">Loading recorded checks…</p>}
+    {view?.gameFilesChanged && <div className="notice bad" role="status"><strong>Game server files changed</strong>
+      <p>Earlier real-game checks are stale. Stop the server, make and verify an offline backup in World Safety Center, then confirm a Friend join and a saved change after the update.</p></div>}
+    {view && !view.gameFilesAvailable && <p className="warning-text" role="status">The selected game server files could not be read. Check the saved server app before relying on earlier tests.</p>}
     {view?.stale && <div className="notice bad" role="status"><strong>Configuration changed</strong>
       <p>Earlier confirmations no longer count for this setup. Confirm the checks again.</p></div>}
     {view && <div className="acceptance-checks">{view.checks.map(check => <label className="acceptance-check" key={check.id}>

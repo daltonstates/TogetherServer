@@ -129,7 +129,7 @@ function gameGuidance(game: GamePortCheck | undefined, controlPort: number | und
   const gameName = game.kind === 'Valheim' ? 'Valheim Steam' :
     game.kind === 'MinecraftJava' ? 'Minecraft Java' :
       game.kind === 'MinecraftBedrock' ? 'Minecraft Bedrock' :
-        game.kind === 'Factorio' ? 'Factorio' : 'This game'
+        game.kind === 'Factorio' ? 'Factorio' : game.kind === 'Terraria' ? 'Terraria' : 'This game'
   return `${gameName} uses direct ${game.protocol} ${game.ports.join(', ')}. These game ports are separate from Friend app HTTPS TCP ${controlPort ?? 'port'}. Local sockets do not prove outside access.`
 }
 

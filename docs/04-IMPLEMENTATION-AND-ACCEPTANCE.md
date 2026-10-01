@@ -60,3 +60,9 @@ Java and Bedrock have separate built-in drivers and explicit display-log adapter
 ## Factorio preview extension gate
 
 Factorio has a separate built-in preview driver. Fixture checks must cover owner-installed executable validation, verified copy-once ZIP import with the source unchanged, managed-path enforcement, separate UDP game/TCP RCON ports, protected RCON authentication, fixed launch arguments, zero/positive/zero player replies, final zero recheck, exact-process `/quit`, backup/vault/rehearsal behavior, and duplicate-import refusal. These checks are synthetic. Before removing the preview label, use an owner-installed Factorio server/client to prove a real join, real player transitions, recognizable save/restart and restore behavior, intended Friend/game routes, and safe idle Stop. Never forward the RCON port, and keep automatic crash restart unavailable until separately accepted.
+
+## Terraria preview and Host move gates
+
+Terraria source checks cover copy-once `.wld` import with the original unchanged, managed-path enforcement, fixed executable/port/world selection, TCP-only listener evidence, unknown player count, and disabled automatic crash recovery. An owner-installed server/client must still prove fixed launch and `exit`, real readiness, zero/positive/zero occupancy, a Friend join, recognizable saved change after restart, and the intended network route. Until a trusted count is implemented and accepted, Friend and automatic Stop stay blocked.
+
+The Host move kit must export a completed hash-verified backup without credentials or game binaries, verify all hashes again when selected on another PC, reject tampering, and leave source and existing destination worlds untouched. The owner installs the game server and copies the payload into a fresh offline save location, then pairs Friend PCs again. A real destination-PC join and saved restart remain external acceptance.

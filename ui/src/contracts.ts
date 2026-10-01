@@ -94,7 +94,7 @@ export type ServerSessionBackupResult = 'Completed' | 'Failed' | 'NotConfigured'
 export type RecentServerSession = {
   profileId: string
   operationId: string
-  gameKind: 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Custom' | 'Unavailable'
+  gameKind: 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Terraria' | 'Custom' | 'Unavailable'
   startedUtc: string | null
   endedUtc: string | null
   durationSeconds: number | null
@@ -238,6 +238,8 @@ export type Device = {
   serverPermissions: ServerPermission[]
   accessExpiresUtc: string | null
   accessExpired: boolean
+  temporaryHelperUntilUtc?: string | null
+  temporaryHelperActive?: boolean
 }
 
 export type DeviceAccessDuration = 'OneHour' | 'EightHours' | 'OneDay' | 'SevenDays' | 'ThirtyDays' | 'NinetyDays'
@@ -352,9 +354,11 @@ export type InviteState = { exists: boolean; open: boolean; canStart: boolean; r
 export type InviteResult = BasicResult & { password?: string; expiresUtc?: string | null; listenerActive?: boolean; listenerWarning?: string | null }
 export type PasswordResult = BasicResult & { password?: string }
 export type BackupSafetyResult = BasicResult & { backupId: string; completedUtc: string; fileCount: number; sizeBytes: number }
+export type HostMoveKitResult = BasicResult & { kit: { version: number; kind: string; name: string; worldId: string; gamePort: number; backupId: string; backupCreatedUtc: string } | null; fileCount: number; sizeBytes: number }
 export type FactorioImportResult = BasicResult & { worldId: string | null; worldDirectory: string | null }
+export type TerrariaImportResult = BasicResult & { worldId: string | null; worldDirectory: string | null }
 export type AcceptanceCheckView = { id: string; label: string; evidence: string; confirmed: boolean; confirmedUtc: string | null }
-export type AcceptanceView = { profileId: string; stale: boolean; updatedUtc: string | null; checks: AcceptanceCheckView[]; evidenceBoundary: string }
+export type AcceptanceView = { profileId: string; stale: boolean; updatedUtc: string | null; checks: AcceptanceCheckView[]; evidenceBoundary: string; gameFilesAvailable: boolean; gameFilesChanged: boolean }
 export type AcceptanceResult = BasicResult & { view: AcceptanceView }
 
 export type OwnerDiagnosticTone = 'Neutral' | 'Attention' | 'Error'
@@ -506,7 +510,7 @@ function dictionary<T>(value: unknown, context: string, decode: Decoder<T>): Rec
 
 export function parseProfile(value: unknown, context = 'profile'): Profile {
   const source = object(value, context)
-  const kind = literal(source.kind, ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Custom'] as const, `${context}.kind`)
+  const kind = literal(source.kind, ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria', 'Custom'] as const, `${context}.kind`)
   const worldSource = literal(source.worldSource, ['Existing', 'New'] as const, `${context}.worldSource`)
   const minecraft = source.minecraft === undefined ? undefined : source.minecraft === null ? null : (() => {
     const item = object(source.minecraft, `${context}.minecraft`)
@@ -936,7 +940,7 @@ export const parseRecentServerSessions: Decoder<RecentServerSessionsResult> = (v
       profileId: itemProfileId,
       operationId,
       gameKind: literal(item.gameKind,
-        ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Custom', 'Unavailable'] as const,
+        ['Fixture', 'Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria', 'Custom', 'Unavailable'] as const,
         `${itemContext}.gameKind`),
       startedUtc,
       endedUtc,
@@ -1170,8 +1174,14 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
   const source = object(value, context)
   const accessExpiresUtc = nullableUtcTimestamp(source.accessExpiresUtc, `${context}.accessExpiresUtc`)
   const accessExpired = flag(source.accessExpired, `${context}.accessExpired`)
+  const temporaryHelperUntilUtc = source.temporaryHelperUntilUtc === undefined ? null :
+    nullableUtcTimestamp(source.temporaryHelperUntilUtc, `${context}.temporaryHelperUntilUtc`)
+  const temporaryHelperActive = source.temporaryHelperActive === undefined ? false :
+    flag(source.temporaryHelperActive, `${context}.temporaryHelperActive`)
   if (accessExpired && accessExpiresUtc === null)
     throw new ContractError(`${context}.accessExpired requires an access deadline.`)
+  if (temporaryHelperActive && temporaryHelperUntilUtc === null)
+    throw new ContractError(`${context}.temporaryHelperActive requires a deadline.`)
   return { id: text(source.id, `${context}.id`), profileId: text(source.profileId, `${context}.profileId`),
     assignedProfileIds: textList(source.assignedProfileIds, `${context}.assignedProfileIds`), name: text(source.name, `${context}.name`),
     canStart: flag(source.canStart, `${context}.canStart`), canStop: flag(source.canStop, `${context}.canStop`),
@@ -1181,7 +1191,7 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
     credentialExpiresUtc: nullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),
     lastHeartbeatUtc: nullableText(source.lastHeartbeatUtc, `${context}.lastHeartbeatUtc`),
     serverPermissions: list(source.serverPermissions, `${context}.serverPermissions`, parseServerPermission),
-    accessExpiresUtc, accessExpired }
+    accessExpiresUtc, accessExpired, temporaryHelperUntilUtc, temporaryHelperActive }
 }
 
 export const parseDeviceAccessExpiryResult: Decoder<DeviceAccessExpiryResult> = (value, context = 'device access expiry result') => {
@@ -1283,7 +1293,23 @@ export const parseBackupSafetyResult: Decoder<BackupSafetyResult> = (value, cont
     fileCount: numeric(source.fileCount, `${context}.fileCount`), sizeBytes: numeric(source.sizeBytes, `${context}.sizeBytes`) }
 }
 
+export const parseHostMoveKitResult: Decoder<HostMoveKitResult> = (value, context = 'Host move kit') => {
+  const source = object(value, context)
+  const kit = source.kit == null ? null : object(source.kit, `${context}.kit`)
+  return { ...parseBasicResult(source, context), kit: kit && {
+    version: numeric(kit.version, `${context}.kit.version`), kind: text(kit.kind, `${context}.kit.kind`),
+    name: text(kit.name, `${context}.kit.name`), worldId: text(kit.worldId, `${context}.kit.worldId`),
+    gamePort: numeric(kit.gamePort, `${context}.kit.gamePort`), backupId: text(kit.backupId, `${context}.kit.backupId`),
+    backupCreatedUtc: utcTimestamp(kit.backupCreatedUtc, `${context}.kit.backupCreatedUtc`)
+  }, fileCount: numeric(source.fileCount, `${context}.fileCount`), sizeBytes: numeric(source.sizeBytes, `${context}.sizeBytes`) }
+}
+
 export const parseFactorioImportResult: Decoder<FactorioImportResult> = (value, context = 'Factorio import result') => {
+  const source = object(value, context)
+  return { ...parseBasicResult(source, context), worldId: nullableText(source.worldId, `${context}.worldId`),
+    worldDirectory: nullableText(source.worldDirectory, `${context}.worldDirectory`) }
+}
+export const parseTerrariaImportResult: Decoder<TerrariaImportResult> = (value, context = 'Terraria import result') => {
   const source = object(value, context)
   return { ...parseBasicResult(source, context), worldId: nullableText(source.worldId, `${context}.worldId`),
     worldDirectory: nullableText(source.worldDirectory, `${context}.worldDirectory`) }
@@ -1292,6 +1318,8 @@ export const parseFactorioImportResult: Decoder<FactorioImportResult> = (value, 
 export const parseAcceptanceView: Decoder<AcceptanceView> = (value, context = 'acceptance view') => {
   const source = object(value, context)
   return { profileId: text(source.profileId, `${context}.profileId`), stale: flag(source.stale, `${context}.stale`),
+    gameFilesAvailable: flag(source.gameFilesAvailable, `${context}.gameFilesAvailable`),
+    gameFilesChanged: flag(source.gameFilesChanged, `${context}.gameFilesChanged`),
     updatedUtc: nullableUtcTimestamp(source.updatedUtc, `${context}.updatedUtc`),
     checks: list(source.checks, `${context}.checks`, (item, itemContext) => {
       const check = object(item, itemContext ?? `${context}.checks`)

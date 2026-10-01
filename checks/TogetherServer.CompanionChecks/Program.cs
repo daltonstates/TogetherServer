@@ -413,6 +413,54 @@ try
     }
     Console.WriteLine("PASS owner access expiry is exact, persistent, reversible, and independent of credential state"); passes++;
 
+    var helperRoot = Path.Combine(root, "temporary-helper");
+    var helperProfile = Guid.NewGuid();
+    var helperClock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero));
+    using (var helperData = new LocalData(helperRoot))
+    {
+        var helperService = new PairingService(helperData, helperClock);
+        var helperInvite = helperService.IssueServer(helperProfile, false, false,
+            "https://127.0.0.1:5131", new string('D', 64), false);
+        var helperCredential = helperService.Activate(new(helperProfile, helperInvite.Code, true))
+            ?? throw new Exception("temporary-helper device did not activate");
+        Require(helperService.Authenticate(helperCredential.DeviceId, helperCredential.Credential,
+            out var helperDevice).Ok && helperDevice is not null,
+            "temporary-helper device did not authenticate");
+        Require(helperService.SetTemporaryHelper(helperCredential.DeviceId, new(Duration: "Forever")).Code ==
+                "InvalidTemporaryHelper" &&
+            helperService.SetTemporaryHelper(helperCredential.DeviceId, new(Clear: true,
+                Duration: DeviceAccessDurations.OneHour)).Code == "InvalidTemporaryHelper" &&
+            helperService.SetTemporaryHelper(Guid.NewGuid(), new(Duration: DeviceAccessDurations.OneHour)).Code ==
+                "UnknownDevice", "temporary helper accepted an invalid owner request");
+        var grant = helperService.SetTemporaryHelper(helperCredential.DeviceId,
+            new(Duration: DeviceAccessDurations.OneHour));
+        Require(grant.Ok && grant.TemporaryHelperUntilUtc == helperClock.GetUtcNow().AddHours(1) &&
+            helperService.CanStart(helperDevice!, helperProfile) &&
+            helperService.CanStop(helperDevice!, helperProfile) &&
+            helperService.CanExtendTimer(helperDevice!, helperProfile) &&
+            helperService.CanViewLogs(helperDevice!, helperProfile) &&
+            !helperService.CanStart(helperDevice!, Guid.NewGuid()),
+            "temporary helper did not grant only fixed controls on assigned servers");
+        var helperView = helperService.Views().Single(item => item.Id == helperCredential.DeviceId);
+        Require(helperView.TemporaryHelperActive && helperView.ServerPermissions!.Single().CanViewLogs,
+            "temporary helper was not shown to the owner");
+        helperClock.SetUtcNow(grant.TemporaryHelperUntilUtc!.Value);
+        Require(!helperService.CanStart(helperDevice!, helperProfile) &&
+            !helperService.CanStop(helperDevice!, helperProfile) &&
+            !helperService.CanExtendTimer(helperDevice!, helperProfile) &&
+            !helperService.CanViewLogs(helperDevice!, helperProfile) &&
+            !helperService.Views().Single(item => item.Id == helperCredential.DeviceId).TemporaryHelperActive,
+            "temporary helper permissions survived the exact Host deadline");
+        var reopenedHelper = new PairingService(helperData, helperClock);
+        Require(!reopenedHelper.CanStart(helperDevice!, helperProfile) &&
+            reopenedHelper.SetTemporaryHelper(helperCredential.DeviceId,
+                new(Duration: DeviceAccessDurations.EightHours)).Ok &&
+            reopenedHelper.SetTemporaryHelper(helperCredential.DeviceId, new(Clear: true)).Ok &&
+            !reopenedHelper.CanStop(helperDevice!, helperProfile),
+            "temporary helper expiry or End now was not durable across Host restart");
+    }
+    Console.WriteLine("PASS temporary helper grants fixed controls and restores usual permissions at exact expiry"); passes++;
+
     host = StartApp(appPath, "--host", hostPort, hostData, drainDiagnostics: false);
     DisconnectDiagnosticPipes(host);
     await WaitLocal(hostPort);

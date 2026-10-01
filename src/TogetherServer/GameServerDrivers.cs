@@ -13,6 +13,7 @@ public static class GameKinds
     public const string MinecraftJava = "MinecraftJava";
     public const string MinecraftBedrock = "MinecraftBedrock";
     public const string Factorio = "Factorio";
+    public const string Terraria = "Terraria";
     public const string Custom = "Custom";
     public const string Fixture = "Fixture";
 }
@@ -60,6 +61,7 @@ public sealed class GameServerRegistry
             new MinecraftJavaServerDriver(data),
             new MinecraftBedrockServerDriver(data),
             new FactorioServerDriver(data),
+            new TerrariaServerDriver(data),
             new CustomGameServerDriver(data)
         };
         includeFixture |= string.Equals(Environment.GetEnvironmentVariable(FixtureOptInEnvironmentVariable), "1",

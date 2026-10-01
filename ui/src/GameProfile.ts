@@ -1,4 +1,4 @@
-export type GameKind = 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Custom'
+export type GameKind = 'Fixture' | 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Terraria' | 'Custom'
 
 export type CustomPort = {
   protocol: 'TCP' | 'UDP'
@@ -37,7 +37,7 @@ export type Profile = {
 export function gameLabel(kind: string): string {
   return kind === 'MinecraftJava' ? 'Minecraft Java Edition' :
     kind === 'MinecraftBedrock' ? 'Minecraft Bedrock Edition' :
-      kind === 'Factorio' ? 'Factorio (preview)' : kind
+      kind === 'Factorio' ? 'Factorio (preview)' : kind === 'Terraria' ? 'Terraria (preview)' : kind
 }
 
 export function profileGameLabel(profile: Pick<Profile, 'kind' | 'custom'>): string {

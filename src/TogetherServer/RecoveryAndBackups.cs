@@ -120,6 +120,11 @@ public sealed record WorldBackupVerificationResult(bool Ok, string Code, string 
     Guid BackupId, DateTimeOffset CheckedUtc);
 public sealed record BackupSafetyResult(bool Ok, string Code, string Message,
     Guid BackupId, DateTimeOffset CompletedUtc, int FileCount = 0, long SizeBytes = 0);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record HostMoveKit(int Version, string Kind, string Name, string WorldId, int GamePort,
+    Guid BackupId, DateTimeOffset BackupCreatedUtc);
+public sealed record HostMoveKitResult(bool Ok, string Code, string Message, HostMoveKit? Kit = null,
+    int FileCount = 0, long SizeBytes = 0);
 public sealed record RestoreBackupRequest(Guid BackupId);
 
 internal static class WorldRestorePhases
@@ -391,6 +396,78 @@ internal sealed class WorldBackupService
                     "The backup-vault copy was not confirmed. The local backup was kept unchanged.",
                     backupId, completedUtc);
             }
+        }
+    }
+
+    public HostMoveKitResult PrepareMoveKit(ServerProfile profile, Guid backupId, string destinationRoot)
+    {
+        var copied = CopyToVault(profile, backupId, destinationRoot);
+        if (!copied.Ok) return new(false, copied.Code, copied.Message);
+        lock (sync)
+        {
+            try
+            {
+                var record = data.LoadBackupCatalog().Records.Single(item => item.ProfileId == profile.Id && item.Id == backupId);
+                var directory = Path.Combine(Path.GetFullPath(destinationRoot), "TogetherServer Backups",
+                    profile.Id.ToString("N"), backupId.ToString("N") + ".backup");
+                var kit = new HostMoveKit(1, profile.Kind, profile.Name, profile.WorldId,
+                    profile.GamePort, backupId, record.CreatedUtc);
+                var marker = Path.Combine(directory, "move.json");
+                if (File.Exists(marker))
+                {
+                    var existing = JsonSerializer.Deserialize<HostMoveKit>(File.ReadAllText(marker), Json);
+                    if (existing != kit) throw new InvalidDataException("The existing move details differ from this server.");
+                }
+                else File.WriteAllText(marker, JsonSerializer.Serialize(kit, Json));
+                var inspected = InspectMoveKit(directory);
+                if (!inspected.Ok) throw new InvalidDataException("The move kit could not be verified after export.");
+                data.TryAudit($"host-move-kit-verified {profile.Id} {backupId} {clock.GetUtcNow():O}");
+                return inspected with { Message = "Move kit copied and verified. Take its .backup folder to the new Host PC." };
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       InvalidOperationException or JsonException or ArgumentException)
+            {
+                return new(false, "MoveKitFailed", "The move kit was not confirmed. The local backup was kept unchanged.");
+            }
+        }
+    }
+
+    public HostMoveKitResult InspectMoveKit(string directory)
+    {
+        try
+        {
+            var root = Path.GetFullPath(directory);
+            if (!Directory.Exists(root) || (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("The selected move kit folder is unavailable or linked.");
+            var movePath = Path.Combine(root, "move.json");
+            var completePath = Path.Combine(root, "complete.json");
+            if (!File.Exists(movePath) || !File.Exists(completePath) ||
+                new FileInfo(movePath).Length > 16_384 || new FileInfo(completePath).Length > 10_000_000 ||
+                (File.GetAttributes(movePath) & FileAttributes.ReparsePoint) != 0 ||
+                (File.GetAttributes(completePath) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Move kit details or backup manifest are missing or invalid.");
+            var kit = JsonSerializer.Deserialize<HostMoveKit>(File.ReadAllText(movePath), Json);
+            var manifest = JsonSerializer.Deserialize<BackupManifest>(File.ReadAllText(completePath), Json);
+            if (kit is null || manifest is null || kit.Version != 1 ||
+                kit.BackupId == Guid.Empty || kit.BackupId != manifest.BackupId ||
+                !string.Equals(kit.Kind, manifest.Kind, StringComparison.Ordinal) ||
+                !string.Equals(kit.WorldId, manifest.WorldId, StringComparison.Ordinal) ||
+                kit.BackupCreatedUtc != manifest.CreatedUtc ||
+                kit.Kind is not (GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock or
+                    GameKinds.Factorio or GameKinds.Terraria) ||
+                string.IsNullOrWhiteSpace(kit.Name) || kit.Name.Length > 100 ||
+                string.IsNullOrWhiteSpace(kit.WorldId) || kit.WorldId.Length > 100 ||
+                kit.GamePort is < 1024 or > 65535 || manifest.Files is null || manifest.Files.Count > 1_000_000)
+                throw new InvalidDataException("Move kit details do not match the completed backup.");
+            VerifyTree(Path.Combine(root, "payload"), manifest.Files);
+            var bytes = manifest.Files.Aggregate(0L, (total, file) => checked(total + file.Length));
+            return new(true, "MoveKitVerified", "The world files match the saved backup hashes.",
+                kit, manifest.Files.Count, bytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   InvalidOperationException or JsonException or ArgumentException or OverflowException)
+        {
+            return new(false, "MoveKitInvalid", "The selected move kit could not be verified. No server files were changed.");
         }
     }
 

@@ -68,6 +68,7 @@ function gameLabel(kind: RecentServerSession['gameKind']) {
     case 'MinecraftJava': return 'Minecraft Java'
     case 'MinecraftBedrock': return 'Minecraft Bedrock'
     case 'Factorio': return 'Factorio preview'
+    case 'Terraria': return 'Terraria preview'
     case 'Custom': return 'Custom game'
     case 'Fixture': return 'Test fixture'
     default: return kind
