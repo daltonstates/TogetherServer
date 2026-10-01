@@ -222,7 +222,7 @@ app.MapGet("/api/local/support-report", async (HttpContext context) =>
             data.Recovery, updater.View, latestRouteDiagnostic, instance.IsStaging);
         return Results.Json(SupportReportExporter.Create(diagnostics, snapshot, instance,
             updater.View, data.LoadActivity(24), companionServer.RecentOperations(),
-            data.ReadSupportLogMetadata()));
+            data.ReadSupportLogMetadata(), data));
     }
     catch (Exception ex)
     {
@@ -531,6 +531,10 @@ app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => ma
 app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) => HostOnly(() => manager.RestartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/safe-restart", (Guid id) =>
     HostOnly(() => manager.SafeRestartAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/prepare-change", (Guid id) =>
+    HostOnly(() => manager.PrepareServerChangeAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/finish-change", (Guid id, FinishServerChangeRequest request) =>
+    HostOnly(() => manager.FinishServerChangeAsync(id, request.ConfirmedGameJoin)));
 app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, CountdownExtensionRequest request) =>
     HostOnly(() => manager.ExtendAutoShutdownAsync(id, request.Minutes)));
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
@@ -541,6 +545,65 @@ app.MapGet("/api/local/profiles/{id:guid}/files", async (HttpContext context, Gu
     if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
     return Results.Json(await manager.ServerFilesAsync(id));
+});
+app.MapGet("/api/local/profiles/{id:guid}/addons", async (HttpContext context, Guid id) =>
+{
+    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
+    return Results.Json(await manager.ServerAddOnsAsync(id));
+});
+app.MapPost("/api/local/profiles/{id:guid}/addons/import", async (Guid id, ServerAddOnImportRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
+        if (desktop is null) return Results.Conflict(new { code = "WindowUnavailable", message = "Open the TogetherServer window first." });
+        var addons = await manager.ServerAddOnsAsync(id);
+        if (!addons.Ok || addons.ImportType is not ("FactorioMod" or "BedrockPack"))
+            return Results.Conflict(new { code = "AddOnUnsupported", message = "This server has no reviewed add-on import." });
+        var bedrock = addons.ImportType == "BedrockPack";
+        var selected = await desktop.PickFileAsync(bedrock ? "Choose a Bedrock world pack" : "Choose a Factorio mod ZIP",
+            bedrock ? "Bedrock packs (*.mcpack)|*.mcpack" : "Factorio mods (*.zip)|*.zip");
+        if (selected is null) return Results.Json(new { ok = false, code = "Canceled", message = "No add-on package selected." });
+        return Results.Json(await manager.ImportServerAddOnAsync(id, selected, request));
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/profiles/{id:guid}/addons/state", async (Guid id, ServerAddOnChangeRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
+        return Results.Json(await manager.SetServerAddOnAsync(id, request));
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/profiles/{id:guid}/addons/undo", async (Guid id, ServerAddOnUndoRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
+        return Results.Json(await manager.UndoServerAddOnAsync(id, request));
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/profiles/{id:guid}/addons/review-version", async (Guid id,
+    ServerAddOnImportRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
+        return Results.Json(await manager.ReviewServerAddOnVersionAsync(id, request));
+    }
+    finally { modeGate.Release(); }
 });
 app.MapGet("/api/local/profiles/{id:guid}/files/{key}", async (HttpContext context, Guid id, string key) =>
 {
@@ -560,6 +623,32 @@ app.MapPost("/api/local/profiles/{id:guid}/folders/{key}/open", async (Guid id, 
         return Results.Json(folder is not null && desktop.OpenFolder(folder)
             ? new { ok = true, code = "FolderOpened", message = "Folder opened in File Explorer." }
             : new { ok = false, code = "FolderUnavailable", message = "This server folder is not available on this PC." });
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/profiles/{id:guid}/files/{key}/open", async (Guid id, string key) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { ok = false, code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Server files are Host-only." });
+        if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window first." });
+        var file = await manager.ServerTextFileAsync(id, key);
+        return Results.Json(file is not null && desktop.OpenTextFile(file)
+            ? new { ok = true, code = "FileOpened", message = "File opened in Notepad. Reload here after saving outside TogetherServer." }
+            : new { ok = false, code = "FileUnavailable", message = "This reviewed text file is not available on this PC." });
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/profiles/{id:guid}/files/{key}/create", async (Guid id, string key) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
+        return Results.Json(await manager.CreateServerConfigurationAsync(id, key));
     }
     finally { modeGate.Release(); }
 });
@@ -639,6 +728,10 @@ app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMod
     : Results.Json(await manager.BackupsAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>
+    HostOnly(() => manager.CreateCompleteSetupBackupAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore-setup", (Guid id, Guid backupId) =>
+    HostOnly(() => manager.RestoreCompleteSetupAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/verify", async (Guid id, Guid backupId) =>
     friendMode
         ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backup verification is local-owner-only." })

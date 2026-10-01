@@ -29,6 +29,7 @@ public sealed record PortConflictView(Guid ProfileId, string ProfileName, IReadO
 public sealed record ActionResult(bool Ok, string Code, string Message, HostSnapshot Snapshot,
     IReadOnlyList<PortConflictView>? PortConflicts = null);
 public sealed record CountdownExtensionRequest(long Minutes);
+public sealed record FinishServerChangeRequest(bool ConfirmedGameJoin);
 public sealed record HostControlPolicyChange(bool? CompanionListeningEnabled = null,
     bool? RemoteControlsEnabled = null, bool? AutoShutdownEnabled = null,
     bool? KeepAwakeWhileHosting = null);
@@ -972,6 +973,9 @@ public sealed class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (data.HasProtected(SetupRestorePendingName(profileId)))
+            return Result(false, "SetupRestoreRecoveryRequired",
+                "A complete setup restore was interrupted. Keep this server offline and retry its complete setup restore.");
         if (!games.TryGet(profile.Kind, out var driver))
             return Result(false, "UnsupportedGame", "This game type is not installed in TogetherServer.");
         if (runs.Any(r => r.ProfileId == profileId))
@@ -1259,6 +1263,122 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<ServerAddOnView> ServerAddOnsAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null
+                ? new(false, "UnknownProfile", "Choose a saved Host server.", "Unknown", "", "", [], false, false)
+                : ServerAddOns.List(data, profile);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerAddOnResult> ImportServerAddOnAsync(Guid profileId,
+        string selectedPath, ServerAddOnImportRequest request)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.",
+                new(false, "UnknownProfile", "Choose a saved Host server.", "Unknown", "", "", [], false, false));
+            if (ServerFileEditBlock(profile, "addons") is { } blocked)
+                return new(false, blocked.Code, blocked.Message, ServerAddOns.List(data, profile));
+            if (profile.Kind == GameKinds.Factorio && !FactorioSetup.IsImportedCopy(data, profile) ||
+                profile.Kind == GameKinds.MinecraftBedrock &&
+                !Directory.Exists(Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId)) ||
+                profile.Kind is not (GameKinds.Factorio or GameKinds.MinecraftBedrock))
+                return new(false, "ManagedSaveRequired", "Choose a supported saved game world first.",
+                    ServerAddOns.List(data, profile));
+            if (ServerAddOns.ValidatePackage(profile, selectedPath, out _) is { } issue)
+                return new(false, "InvalidPackage", issue, ServerAddOns.List(data, profile));
+            if (ServerAddOns.List(data, profile).StateToken != request.ExpectedStateToken)
+                return new(false, "AddOnsChanged", "The add-on folder changed. Reload before importing.",
+                    ServerAddOns.List(data, profile));
+            var backup = CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
+            if (!backup.Ok) return new(false, "CheckpointFailed", backup.Message, ServerAddOns.List(data, profile));
+            var result = profile.Kind == GameKinds.Factorio
+                ? ServerAddOns.ImportFactorio(data, profile, selectedPath, request.ExpectedStateToken)
+                : ServerAddOns.ImportBedrock(data, profile, selectedPath, request.ExpectedStateToken);
+            if (result.Ok) Activity("AddOns", "AddOnImported", "The Host imported a reviewed local add-on package.",
+                ActivitySeverity.Important, profileId);
+            return result;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerAddOnResult> SetServerAddOnAsync(Guid profileId,
+        ServerAddOnChangeRequest request)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.",
+                new(false, "UnknownProfile", "Choose a saved Host server.", "Unknown", "", "", [], false, false));
+            if (ServerFileEditBlock(profile, "addons") is { } blocked)
+                return new(false, blocked.Code, blocked.Message, ServerAddOns.List(data, profile));
+            var before = ServerAddOns.List(data, profile);
+            if (!before.Ok || before.StateToken != request.ExpectedStateToken)
+                return new(false, "AddOnsChanged", "The add-on folder changed. Reload before changing it.", before);
+            if (!before.Items.Any(item => item.Key == request.Key && item.Enabled != request.Enabled))
+                return new(false, "NoChanges", "Choose a mod with a different state.", before);
+            var backup = CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
+            if (!backup.Ok) return new(false, "CheckpointFailed", backup.Message, before);
+            var result = ServerAddOns.SetEnabled(data, profile, request);
+            if (result.Ok) Activity("AddOns", "ModStateChanged", "The Host changed a reviewed mod state.",
+                ActivitySeverity.Important, profileId);
+            return result;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerAddOnResult> UndoServerAddOnAsync(Guid profileId,
+        ServerAddOnUndoRequest request)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.",
+                new(false, "UnknownProfile", "Choose a saved Host server.", "Unknown", "", "", [], false, false));
+            if (ServerFileEditBlock(profile, "addons") is { } blocked)
+                return new(false, blocked.Code, blocked.Message, ServerAddOns.List(data, profile));
+            var before = ServerAddOns.List(data, profile);
+            if (!before.CanUndo || before.StateToken != request.ExpectedStateToken)
+                return new(false, "UndoUnavailable", "Reload before undoing the last add-on change.", before);
+            var backup = CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
+            if (!backup.Ok) return new(false, "CheckpointFailed", backup.Message, before);
+            var result = ServerAddOns.Undo(data, profile, request);
+            if (result.Ok) Activity("AddOns", "AddOnUndone", "The Host restored the previous mod state.",
+                ActivitySeverity.Important, profileId);
+            return result;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerAddOnResult> ReviewServerAddOnVersionAsync(Guid profileId,
+        ServerAddOnImportRequest request)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.",
+                new(false, "UnknownProfile", "Choose a saved Host server.", "Unknown", "", "", [], false, false));
+            if (ServerFileEditBlock(profile, "addons") is { } blocked)
+                return new(false, blocked.Code, blocked.Message, ServerAddOns.List(data, profile));
+            var result = ServerAddOns.ReviewGameVersion(data, profile, request.ExpectedStateToken);
+            if (result.Ok) Activity("AddOns", "VersionReviewed", "The Host reviewed the installed game version for its add-ons.",
+                ActivitySeverity.Important, profileId);
+            return result;
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task<string?> ServerFolderAsync(Guid profileId, string key)
     {
         await gate.WaitAsync();
@@ -1283,6 +1403,42 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<string?> ServerTextFileAsync(Guid profileId, string key)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null || ServerFileEditBlock(profile, key) is not null
+                ? null : ServerFiles.FilePath(profile, key);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ServerFileChangeResult> CreateServerConfigurationAsync(Guid profileId, string key)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved Host server.", key);
+            if (ServerFileEditBlock(profile, key) is { } blocked) return blocked;
+            if (key is not ("factorio-settings" or "terraria-config"))
+                return new(false, "FileUnsupported", "This file cannot be created by TogetherServer.", key);
+            if (ServerFiles.FilePath(profile, key) is not null)
+                return new(false, "FileExists", "Reload the existing configuration file.", key);
+            var backup = CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
+            if (!backup.Ok)
+                return new(false, "CheckpointFailed", "The offline world checkpoint failed. " + backup.Message, key);
+            var created = ServerFiles.CreateConfiguration(data, profile, key);
+            if (created.Ok)
+                Activity("Configuration", "FileCreated", "The Host created a reviewed server configuration file.",
+                    ActivitySeverity.Important, profileId);
+            return created;
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task<ServerFileChangeResult> SaveServerFileAsync(Guid profileId, string key,
         ServerFileChangeRequest request)
     {
@@ -1301,7 +1457,7 @@ public sealed class HostManager
             if (string.Equals(current.Content, request.Content, StringComparison.Ordinal))
                 return new(true, "NoChanges", "The file already matches your draft.", key,
                     current.Sha256, current.CanUndo);
-            var backup = CreateManualBackupUnderGate(profileId);
+            var backup = CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
             if (!backup.Ok)
                 return new(false, "CheckpointFailed",
                     "The offline world checkpoint failed. The file was not changed. " + backup.Message, key);
@@ -1327,7 +1483,7 @@ public sealed class HostManager
             if (!current.Ok || !current.CanUndo ||
                 !string.Equals(current.Sha256, request.ExpectedSha256, StringComparison.OrdinalIgnoreCase))
                 return new(false, "UndoUnavailable", "Reload the file before restoring its previous version.", key);
-            var backup = CreateManualBackupUnderGate(profileId);
+            var backup = CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
             if (!backup.Ok)
                 return new(false, "CheckpointFailed",
                     "The offline world checkpoint failed. The file was not changed. " + backup.Message, key);
@@ -1340,10 +1496,17 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
-    private ServerFileChangeResult? ServerFileEditBlock(ServerProfile profile, string key)
+    private static string SetupRestorePendingName(Guid profileId) =>
+        $"setup-restore-pending-{profileId:N}.protected";
+
+    private ServerFileChangeResult? ServerFileEditBlock(ServerProfile profile, string key,
+        bool allowPendingRestore = false)
     {
         if (data.Recovery.LifecycleBlocked)
             return new(false, "DataRecoveryRequired", "Resolve local data recovery before changing server files.", key);
+        if (!allowPendingRestore && data.HasProtected(SetupRestorePendingName(profile.Id)))
+            return new(false, "SetupRestoreRecoveryRequired",
+                "A complete setup restore was interrupted. Retry its complete setup restore first.", key);
         if (profile.Maintenance?.Enabled != true)
             return new(false, "MaintenanceRequired", "Begin maintenance before changing server files.", key);
         if (BlockIfSaveDirectoryActive(profile, "changing server files") is { } active)
@@ -1357,6 +1520,20 @@ public sealed class HostManager
     {
         await gate.WaitAsync();
         try { return CreateManualBackupUnderGate(profileId); }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> CreateCompleteSetupBackupAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
+            if (ServerFileEditBlock(profile, "setup") is { } blocked)
+                return Result(false, blocked.Code, blocked.Message);
+            return CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
+        }
         finally { gate.Release(); }
     }
 
@@ -1484,7 +1661,98 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
-    private ActionResult CreateManualBackupUnderGate(Guid profileId)
+    public async Task<ActionResult> PrepareServerChangeAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired", "Resolve local data recovery before changing this server.");
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
+            if (data.HasProtected(SetupRestorePendingName(profileId)))
+                return Result(false, "SetupRestoreRecoveryRequired", "Retry the interrupted complete setup restore first.");
+            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups ||
+                driver.ManagedSaveDirectory(profile) is not { } saveDirectory)
+                return Result(false, "BackupsUnsupported", "This server needs a reviewed save directory for guided changes.");
+            if (profile.Maintenance?.Enabled != true)
+            {
+                var next = CopySettings(settings);
+                var updated = next.Profiles.Single(item => item.Id == profileId);
+                updated.Maintenance.Enabled = true;
+                updated.Maintenance.Message = "The Host is changing server files. Please wait before joining.";
+                var saved = UpdateSettingsLocked(next);
+                if (!saved.Ok) return saved;
+                profile = settings.Profiles.Single(item => item.Id == profileId);
+            }
+            var run = runs.SingleOrDefault(item => item.ProfileId == profileId);
+            if (run is not null)
+            {
+                if (Identity(run) != "Matched")
+                    return Result(false, "IdentityUnknown", "Maintenance is on, but process identity is uncertain. Resolve the run before editing.");
+                var health = driver.Health(run);
+                if (!health.Ok || health.State != "Ready" || !health.PlayerCountTrusted || health.OnlinePlayers != 0)
+                    return Result(false, "PlayersOnlineOrUnknown",
+                        "Maintenance is on. Wait for a trusted zero-player count, or stop the server manually after everyone leaves.");
+                var stopped = await StopUnderGateAsync(profileId, candidate =>
+                {
+                    var fresh = driver.Health(candidate);
+                    return fresh.Ok && fresh.State == "Ready" && fresh.PlayerCountTrusted && fresh.OnlinePlayers == 0;
+                });
+                if (!stopped.Ok)
+                    return Result(false, stopped.Code, "Maintenance is on, but Stop was not confirmed. " + stopped.Message);
+            }
+            if (BlockIfSaveDirectoryActive(profile, "checkpointing this setup") is { } blocked)
+                return blocked;
+            var backup = backups.Create(profile, BackupKinds.Manual, saveDirectory);
+            if (!backup.Ok || backup.Backup?.SetupIncluded != true)
+                return Result(false, "SetupCheckpointFailed",
+                    "Maintenance is on and the server is offline, but a complete setup checkpoint did not finish. " + backup.Message);
+            Activity("Configuration", "ServerChangePrepared",
+                "Friend controls were paused, a zero-player Stop was confirmed when needed, and a complete offline setup checkpoint finished.",
+                ActivitySeverity.Important, profileId);
+            return Result(true, "ServerChangePrepared",
+                "Server is offline in maintenance with a complete setup checkpoint. Edit files, then Start and check health.");
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> FinishServerChangeAsync(Guid profileId, bool confirmedGameJoin)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
+            if (data.HasProtected(SetupRestorePendingName(profileId)))
+                return Result(false, "SetupRestoreRecoveryRequired", "Retry the interrupted complete setup restore first.");
+            if (profile.Maintenance?.Enabled != true)
+                return Result(false, "MaintenanceRequired", "This server is not in maintenance.");
+            if (!confirmedGameJoin)
+                return Result(false, "GameJoinNotConfirmed", "Confirm a real game join before ending maintenance.");
+            if (ServerAddOns.VersionWarning(data, profile) is { } warning)
+                return Result(false, "GameVersionChanged", warning);
+            var run = runs.SingleOrDefault(item => item.ProfileId == profileId);
+            if (run is null || Identity(run) != "Matched" || !games.TryGet(run.Kind, out var driver))
+                return Result(false, "ServerNotReady", "Start the exact managed server and check health first.");
+            var health = driver.Health(run);
+            if (!health.Ok || health.State != "Ready")
+                return Result(false, "ServerNotReady", "The game is not reporting Ready yet. Keep maintenance on.");
+            var next = CopySettings(settings);
+            var updated = next.Profiles.Single(item => item.Id == profileId);
+            updated.Maintenance.Enabled = false;
+            updated.Maintenance.Message = "";
+            var saved = UpdateSettingsLocked(next);
+            if (!saved.Ok) return saved;
+            Activity("Configuration", "ServerChangeCompleted",
+                "The Host confirmed a real game join after readiness and ended maintenance.",
+                ActivitySeverity.Important, profileId);
+            return Result(true, "ServerChangeCompleted", "Maintenance ended after your game-join confirmation.");
+        }
+        finally { gate.Release(); }
+    }
+
+    private ActionResult CreateManualBackupUnderGate(Guid profileId, bool requireCompleteSetup = false)
     {
         if (data.Recovery.LifecycleBlocked)
             return Result(false, "DataRecoveryRequired",
@@ -1501,6 +1769,9 @@ public sealed class HostManager
             return Result(false, "BackupsUnsupported",
                 "The selected driver does not expose a reviewed save-only directory.");
         var created = backups.Create(profile, BackupKinds.Manual, saveDirectory);
+        if (created.Ok && requireCompleteSetup && created.Backup?.SetupIncluded != true)
+            return Result(false, "SetupCheckpointFailed",
+                "The world backup completed, but a complete setup checkpoint did not. No server files were changed.");
         Activity("Backup", created.Ok ? "ManualBackupCompleted" : "ManualBackupFailed",
             created.Ok ? "A local-owner offline backup completed." :
                 "A local-owner offline backup failed. Review world protection.",
@@ -1532,6 +1803,89 @@ public sealed class HostManager
                 restored.Ok ? "A local-owner backup restore completed." : "A local-owner backup restore failed. Review details locally.",
                 restored.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
             return Result(restored.Ok, restored.Code, restored.Message);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<ActionResult> RestoreCompleteSetupAsync(Guid profileId, Guid backupId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+            if (ServerFileEditBlock(profile, "setup", allowPendingRestore: true) is { } blocked)
+                return Result(false, blocked.Code, blocked.Message);
+            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups ||
+                driver.ManagedSaveDirectory(profile) is not { } saveDirectory)
+                return Result(false, "BackupsUnsupported", "This server does not have a reviewed save directory.");
+            ServerSetupSnapshot? setup;
+            try { setup = backups.ReadSetup(profile, backupId); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       System.Security.Cryptography.CryptographicException or JsonException)
+            { return Result(false, "SetupCheckpointInvalid", "The protected setup checkpoint could not be verified."); }
+            if (setup is null)
+                return Result(false, "SetupCheckpointMissing", "This backup contains only the world. Choose a newer complete setup checkpoint.");
+            try
+            {
+                // The pre-restore checkpoint must be able to capture the current configuration too.
+                ServerSetupSnapshots.Capture(profile, data);
+                data.SaveProtected(SetupRestorePendingName(profileId),
+                    System.Text.Encoding.UTF8.GetBytes(backupId.ToString("N")));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       System.Security.Cryptography.CryptographicException or JsonException or
+                                       ArgumentException or NotSupportedException)
+            { return Result(false, "SetupCheckpointFailed", "The current setup could not be protected before restore."); }
+            var restoredWorld = backups.Restore(profile, backupId, saveDirectory);
+            if (!restoredWorld.Ok || restoredWorld.PreRestoreBackupId is not { } beforeId)
+                return Result(false, "SetupRestoreRecoveryRequired",
+                    restoredWorld.Message + " Keep this server offline and retry a complete setup restore.");
+            try
+            {
+                ServerSetupSnapshots.Restore(profile, setup);
+                ServerAddOns.RestoreRecordedVersion(data, profile, setup.GameVersion);
+                var restoredAddOns = ServerAddOns.List(data, profile);
+                if (!restoredAddOns.Ok || restoredAddOns.StateToken != setup.AddOnStateToken)
+                    throw new InvalidDataException("The restored add-on inventory differs from the checkpoint.");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                       System.Security.Cryptography.CryptographicException or JsonException or
+                                       ArgumentException or NotSupportedException)
+            {
+                try
+                {
+                    var earlier = backups.ReadSetup(profile, beforeId);
+                    var rollbackWorld = backups.Restore(profile, beforeId, saveDirectory);
+                    if (!rollbackWorld.Ok || earlier is null)
+                        return Result(false, "SetupRestoreRecoveryRequired",
+                            "Setup restore failed after the world changed. The prior checkpoint is retained for recovery.");
+                    ServerSetupSnapshots.Restore(profile, earlier);
+                    ServerAddOns.RestoreRecordedVersion(data, profile, earlier.GameVersion);
+                    data.DeleteProtected(SetupRestorePendingName(profileId));
+                    return Result(false, "SetupRestoreRolledBack",
+                        "Setup restore failed; the prior world and reviewed configuration were restored. The server remains offline.");
+                }
+                catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException or
+                                                  InvalidDataException or System.Security.Cryptography.CryptographicException or
+                                                  JsonException or ArgumentException or NotSupportedException)
+                {
+                    return Result(false, "SetupRestoreRecoveryRequired",
+                        "Setup restore failed and automatic rollback was not confirmed. Keep this server offline and inspect the retained pre-restore checkpoint.");
+                }
+            }
+            try { data.DeleteProtected(SetupRestorePendingName(profileId)); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Result(false, "SetupRestoreRecoveryRequired",
+                "World and reviewed setup were restored, but the recovery marker could not be cleared. Retry the complete setup restore before Start.");
+            }
+            Activity("Backup", "CompleteSetupRestored",
+                "The Host restored the world, reviewed configuration, and managed add-on state from one checkpoint.",
+                ActivitySeverity.Important, profileId);
+            return Result(true, "CompleteSetupRestored",
+                "World and reviewed setup restored while offline. Start the server and check a real game join. " +
+                restoredWorld.Message);
         }
         finally { gate.Release(); }
     }

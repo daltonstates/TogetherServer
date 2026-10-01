@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ServerLogViewer, friendLogAvailability, type ServerLogLoader } from './ServerLogViewer'
+import { ServerLogViewer, friendLogAvailability, serverLogProblem, type ServerLogLoader } from './ServerLogViewer'
 import type { ServerLogRecord, ServerLogResult, ServerLogSourceState } from './contracts'
 
 function record(message: string): ServerLogRecord {
@@ -22,6 +22,11 @@ afterEach(() => {
 })
 
 describe('ServerLogViewer', () => {
+  it('calls out likely add-on and settings failures in loaded logs', () => {
+    expect(serverLogProblem(record('Mod dependency missing for server launch'))).toBe('Add-on issue')
+    expect(serverLogProblem(record('Invalid server.properties configuration'))).toBe('Settings issue')
+    expect(serverLogProblem(record('Player joined'))).toBeNull()
+  })
   it('polls only while its surface is visible and supports pause/resume', async () => {
     vi.useFakeTimers()
     const loader = vi.fn(async () => result('a'.repeat(32), [], 'cursor'))

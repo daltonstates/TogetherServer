@@ -46,7 +46,7 @@ internal static class SupportReportRedactor
 
 public static class SupportReportExporter
 {
-    public const int ReportSchemaVersion = 1;
+    public const int ReportSchemaVersion = 2;
     public const int MaximumReportBytes = 128 * 1024;
     public const string FileName = "TogetherServer-support-report.json";
     public const string ContentType = "application/json; charset=utf-8";
@@ -60,14 +60,14 @@ public static class SupportReportExporter
 
     public static SupportReportExport Create(OwnerDiagnosticsView diagnostics, HostSnapshot snapshot,
         AppInstance instance, UpdateView update, IReadOnlyList<ActivityEvent> activity,
-        IReadOnlyList<RemoteOperationView> operations, SupportLogMetadata logs)
+        IReadOnlyList<RemoteOperationView> operations, SupportLogMetadata logs, LocalData? localData = null)
     {
-        var document = BuildDocument(diagnostics, snapshot, instance, update, activity, operations, logs,
+        var document = BuildDocument(diagnostics, snapshot, instance, update, activity, operations, logs, localData,
             compact: false);
         var content = Serialize(document);
         if (Encoding.UTF8.GetByteCount(content) > MaximumReportBytes)
         {
-            document = BuildDocument(diagnostics, snapshot, instance, update, activity, operations, logs,
+            document = BuildDocument(diagnostics, snapshot, instance, update, activity, operations, logs, localData,
                 compact: true);
             content = Serialize(document);
         }
@@ -80,7 +80,7 @@ public static class SupportReportExporter
     private static SupportReportDocument BuildDocument(OwnerDiagnosticsView diagnostics,
         HostSnapshot snapshot, AppInstance instance, UpdateView update,
         IReadOnlyList<ActivityEvent> activity, IReadOnlyList<RemoteOperationView> operations,
-        SupportLogMetadata logs, bool compact)
+        SupportLogMetadata logs, LocalData? localData, bool compact)
     {
         var serverLimit = compact ? 4 : MaximumServers;
         var eventLimit = compact ? 0 : MaximumEvents;
@@ -103,7 +103,8 @@ public static class SupportReportExporter
                 SupportReportRedactor.Token(profile.WorldSource, 24), profile.Crossplay,
                 profile.Maintenance?.Enabled == true, profile.CrashRecovery?.Enabled == true,
                 profile.Backups?.Enabled == true,
-                profile.Kind == GameKinds.Valheim && snapshot.PasswordConfigured.GetValueOrDefault(profile.Id)))
+                profile.Kind == GameKinds.Valheim && snapshot.PasswordConfigured.GetValueOrDefault(profile.Id),
+                SetupSummary(profile, localData, snapshot.Backups?.GetValueOrDefault(profile.Id))))
             .ToList();
         var eventSummaries = activity.OrderByDescending(item => item.OccurredUtc).Take(eventLimit)
             .Select(item => new SupportActivitySummary(item.OccurredUtc,
@@ -161,6 +162,26 @@ public static class SupportReportExporter
             SupportReportRedactor.Redact(check.Location, 100),
             SupportReportRedactor.Token(check.Tone, 16), check.ObservedUtc);
 
+    private static SupportSetupSummary SetupSummary(ServerProfile profile, LocalData? data,
+        WorldBackupStatus? backups)
+    {
+        if (data is null) return new("Unknown", 0, 0, 0, false, backups?.CompletedCount ?? 0);
+        try
+        {
+            var files = ServerFiles.List(data, profile).Files;
+            var addons = ServerAddOns.List(data, profile);
+            return new(SupportReportRedactor.Token(addons.GameVersion, 32),
+                files.Count(file => file.Available), files.Count,
+                addons.Items.Count(item => item.Enabled),
+                !addons.Ok || addons.Warning is not null || addons.Items.Any(item =>
+                    item.Compatibility.StartsWith("Requires ", StringComparison.Ordinal)),
+                backups?.CompletedCount ?? 0);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                   JsonException or ArgumentException or NotSupportedException)
+        { return new("Unknown", 0, 0, 0, true, backups?.CompletedCount ?? 0); }
+    }
+
     private static string Serialize(SupportReportDocument document) =>
         JsonSerializer.Serialize(document, Json) + "\n";
 
@@ -178,7 +199,10 @@ public static class SupportReportExporter
         IReadOnlyList<SupportProfileSummary> Profiles, bool ProfilesTruncated);
     private sealed record SupportProfileSummary(string Label, string Kind, string WorldSource,
         bool Crossplay, bool MaintenanceEnabled, bool CrashRecoveryEnabled, bool BackupsEnabled,
-        bool ProtectedGamePasswordConfigured);
+        bool ProtectedGamePasswordConfigured, SupportSetupSummary Setup);
+    private sealed record SupportSetupSummary(string GameVersion, int AvailableReviewedConfigFiles,
+        int ReviewedConfigFileCount, int EnabledAddOnCount, bool CompatibilityNeedsReview,
+        int LocalWorldBackupCount);
     private sealed record SupportDiagnosticsSummary(string EvidenceBoundary,
         IReadOnlyList<SupportServerDiagnostics> Servers,
         IReadOnlyList<SupportDiagnosticCheck> SharedChecks, bool Truncated);

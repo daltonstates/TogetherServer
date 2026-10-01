@@ -587,7 +587,7 @@ main { padding-top: 24px; }
 .server-log-state.state-unsupported, .server-log-state.state-unavailable, .server-log-state.state-error { color: var(--color-warning); }
 .server-log-actions { display: flex; gap: 6px; }
 .server-log-actions .ui-button { min-height: 31px; padding: 5px 9px; font-size: 10px; }
-.server-log-filters { display: grid; grid-template-columns: 112px 132px minmax(130px, 1fr) auto auto; align-items: end; gap: 7px; padding: 9px 11px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-field); }
+.server-log-filters { display: grid; grid-template-columns: 112px 132px minmax(130px, 1fr) auto auto auto; align-items: end; gap: 7px; padding: 9px 11px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-field); }
 .server-log-filters label { display: grid; gap: 4px; color: var(--color-text-muted); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .45px; }
 .server-log-filters .ui-input, .server-log-filters .ui-select { width: 100%; min-height: 31px; border: 1px solid var(--color-border); border-radius: 6px; padding: 5px 7px; background: #080809; color: var(--color-text-secondary); font-size: 11px; text-transform: none; letter-spacing: 0; }
 .server-log-filters .ui-button { min-height: 31px; padding: 5px 9px; font-size: 10px; }
@@ -605,6 +605,8 @@ main { padding-top: 24px; }
 .server-log-line.severity-warning .server-log-severity { color: var(--color-warning); }
 .server-log-line.severity-error { border-left-color: var(--color-danger-border); background: #180f0d; }
 .server-log-line.severity-error .server-log-severity { color: var(--color-danger); }
+.server-log-line.likely-problem { border-left-color: var(--color-warning); }
+.server-log-problem-label { grid-column: 4; color: var(--color-warning); font: 10px/1.25 var(--font-sans); }
 .server-log-category { color: var(--color-accent-text); }
 .server-log-line code { min-width: 0; color: var(--color-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
 .server-log-empty { display: grid; min-height: 145px; place-items: center; padding: 20px; background: #080809; color: var(--color-text-subtle); font-size: 11px; text-align: center; }

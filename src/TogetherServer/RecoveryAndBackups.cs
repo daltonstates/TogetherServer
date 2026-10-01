@@ -95,6 +95,7 @@ public sealed class WorldBackupRecord
     public DateTimeOffset CreatedUtc { get; set; }
     public long SizeBytes { get; set; }
     public int FileCount { get; set; }
+    public bool SetupIncluded { get; set; }
 }
 
 public sealed class BackupFailure
@@ -115,7 +116,8 @@ public sealed record WorldBackupStatus(Guid ProfileId, DateTimeOffset? LastSucce
     DateTimeOffset? LastFailureUtc, string? LastFailure, int CompletedCount,
     long RetainedSizeBytes = 0, long? AvailableSpaceBytes = null);
 public sealed record WorldBackupList(IReadOnlyList<WorldBackupRecord> Backups, WorldBackupStatus Status);
-public sealed record WorldBackupResult(bool Ok, string Code, string Message, WorldBackupRecord? Backup = null);
+public sealed record WorldBackupResult(bool Ok, string Code, string Message, WorldBackupRecord? Backup = null,
+    Guid? PreRestoreBackupId = null);
 public sealed record WorldBackupVerificationResult(bool Ok, string Code, string Message,
     Guid BackupId, DateTimeOffset CheckedUtc);
 public sealed record BackupSafetyResult(bool Ok, string Code, string Message,
@@ -157,6 +159,7 @@ internal sealed class BackupManifest
     public string BackupKind { get; set; } = "";
     public DateTimeOffset CreatedUtc { get; set; }
     public List<BackupManifestFile> Files { get; set; } = [];
+    public string? SetupSha256 { get; set; }
 }
 
 internal sealed record BackupManifestFile(string Path, long Length, string Sha256);
@@ -233,6 +236,22 @@ internal sealed class WorldBackupService
                 var payload = Path.Combine(stage, "payload");
                 Directory.CreateDirectory(payload);
                 var copied = CopyTree(source, payload);
+                string? setupSha = null;
+                string? setupWarning = null;
+                try
+                {
+                    var setupBytes = ServerSetupSnapshots.Capture(profile, data);
+                    var setupPath = Path.Combine(stage, "setup.protected");
+                    File.WriteAllBytes(setupPath, setupBytes);
+                    setupSha = Convert.ToHexString(SHA256.HashData(setupBytes));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                                           JsonException or CryptographicException or ArgumentException or NotSupportedException)
+                {
+                    var incompleteSetup = Path.Combine(stage, "setup.protected");
+                    if (File.Exists(incompleteSetup)) File.Delete(incompleteSetup);
+                    setupWarning = " The world backup completed, but configuration and add-on inventory could not be checkpointed.";
+                }
                 var created = clock.GetUtcNow();
                 var manifest = new BackupManifest
                 {
@@ -242,7 +261,8 @@ internal sealed class WorldBackupService
                     WorldId = profile.WorldId,
                     BackupKind = backupKind,
                     CreatedUtc = created,
-                    Files = copied.Files
+                    Files = copied.Files,
+                    SetupSha256 = setupSha
                 };
                 File.WriteAllText(Path.Combine(stage, "complete.json"), JsonSerializer.Serialize(manifest, Json));
                 var destination = BackupDirectory(profile.Id, id);
@@ -256,7 +276,8 @@ internal sealed class WorldBackupService
                     BackupKind = backupKind,
                     CreatedUtc = created,
                     SizeBytes = copied.SizeBytes,
-                    FileCount = copied.Files.Count
+                    FileCount = copied.Files.Count,
+                    SetupIncluded = setupSha is not null
                 };
                 var catalog = data.LoadBackupCatalog();
                 catalog.Records.Add(record);
@@ -272,7 +293,7 @@ internal sealed class WorldBackupService
                 if (!data.TryAudit($"backup-complete {profile.Id} {id} kind={backupKind} files={record.FileCount} bytes={record.SizeBytes} {created:O}"))
                     retentionWarning = (retentionWarning ?? "") + " The backup is complete, but its local audit entry could not be written.";
                 return new(true, retentionWarning is null ? "BackupCompleted" : "BackupCompletedRetentionFailed",
-                    $"Backup completed with {record.FileCount} files." + retentionWarning, record);
+                    $"Backup completed with {record.FileCount} world files." + setupWarning + retentionWarning, record);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
                                        InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception or OverflowException)
@@ -324,6 +345,20 @@ internal sealed class WorldBackupService
         }
     }
 
+    public ServerSetupSnapshot? ReadSetup(ServerProfile profile, Guid backupId)
+    {
+        lock (sync)
+        {
+            var record = data.LoadBackupCatalog().Records.SingleOrDefault(item =>
+                item.Id == backupId && item.ProfileId == profile.Id);
+            if (record is null || !record.SetupIncluded) return null;
+            var directory = BackupDirectory(profile.Id, backupId);
+            var manifest = ReadAndVerifyManifest(record, directory);
+            if (manifest.SetupSha256 is null) return null;
+            return ServerSetupSnapshots.Read(profile, File.ReadAllBytes(Path.Combine(directory, "setup.protected")));
+        }
+    }
+
     public BackupSafetyResult CopyToVault(ServerProfile profile, Guid backupId, string destinationRoot)
     {
         lock (sync)
@@ -368,6 +403,8 @@ internal sealed class WorldBackupService
                 if (!copied.Files.SequenceEqual(manifest.Files))
                     throw new CryptographicException("The vault copy did not match the completed backup manifest.");
                 File.Copy(Path.Combine(source, "complete.json"), Path.Combine(stage, "complete.json"), false);
+                if (manifest.SetupSha256 is not null)
+                    File.Copy(Path.Combine(source, "setup.protected"), Path.Combine(stage, "setup.protected"), false);
                 VerifyExportedBackup(stage, manifest);
                 Directory.Move(stage, destination);
                 stage = "";
@@ -605,7 +642,8 @@ internal sealed class WorldBackupService
                         warnings.Add("the local audit entry could not be written");
                     return new(true, warnings.Count == 0 ? "BackupRestored" : "BackupRestoredWithWarnings",
                         "Backup restored while the server was offline. A pre-restore snapshot was retained." +
-                        (warnings.Count == 0 ? "" : " Warning: " + string.Join("; ", warnings) + "."), record);
+                        (warnings.Count == 0 ? "" : " Warning: " + string.Join("; ", warnings) + "."), record,
+                        preRestore.Backup!.Id);
                 }
                 catch
                 {
@@ -659,6 +697,7 @@ internal sealed class WorldBackupService
             manifest.Files.Aggregate(0L, (total, file) => checked(total + file.Length)) != record.SizeBytes)
             throw new InvalidDataException("The backup completion marker is missing or does not match its catalog record.");
         VerifyTree(Path.Combine(directory, "payload"), manifest.Files);
+        VerifySetupFile(directory, manifest.SetupSha256, record.SetupIncluded);
         return manifest;
     }
 
@@ -670,9 +709,28 @@ internal sealed class WorldBackupService
             : null;
         if (copy is null || copy.BackupId != manifest.BackupId || copy.ProfileId != manifest.ProfileId ||
             copy.CreatedUtc != manifest.CreatedUtc || copy.Files is null ||
-            !copy.Files.SequenceEqual(manifest.Files))
+            !copy.Files.SequenceEqual(manifest.Files) || copy.SetupSha256 != manifest.SetupSha256)
             throw new InvalidDataException("The vault completion marker does not match the source backup.");
         VerifyTree(Path.Combine(directory, "payload"), manifest.Files);
+        VerifySetupFile(directory, manifest.SetupSha256, manifest.SetupSha256 is not null);
+    }
+
+    private static void VerifySetupFile(string directory, string? expectedSha, bool expected)
+    {
+        if (expected != (expectedSha is not null))
+            throw new InvalidDataException("The setup checkpoint flag does not match the backup manifest.");
+        var path = Path.Combine(directory, "setup.protected");
+        if (expectedSha is null)
+        {
+            if (File.Exists(path)) throw new InvalidDataException("An unexpected setup checkpoint was found.");
+            return;
+        }
+        if (!File.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
+            new FileInfo(path).Length > 3 * 1024 * 1024 + 512)
+            throw new InvalidDataException("The protected setup checkpoint is missing or linked.");
+        using var stream = File.OpenRead(path);
+        if (!Convert.ToHexString(SHA256.HashData(stream)).Equals(expectedSha, StringComparison.OrdinalIgnoreCase))
+            throw new CryptographicException("The setup checkpoint hash changed.");
     }
 
     private static (long SizeBytes, List<BackupManifestFile> Files) CopyTree(string source, string destination)

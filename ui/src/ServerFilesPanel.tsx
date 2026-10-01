@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
 import { ContractError, parseBasicResult, type BasicResult, type Decoder } from './contracts'
+import { ServerAddOnsPanel } from './ServerAddOnsPanel'
 
 type Location = { key: string; label: string; path: string; available: boolean }
 type FileEntry = { key: string; label: string; path: string; available: boolean }
@@ -9,6 +10,8 @@ type FilesView = { ok: boolean; code: string; message: string; locations: Locati
 type FileContent = { ok: boolean; code: string; message: string; key: string; content: string | null;
   sha256: string | null; canUndo: boolean }
 type ChangeResult = BasicResult & { key: string; sha256: string | null; canUndo: boolean }
+type SetupBackup = { id: string; createdUtc: string; setupIncluded: boolean; backupKind: string }
+type SetupBackups = { backups: SetupBackup[] }
 
 function entry(value: unknown, context: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ContractError(`${context} must be an object.`)
@@ -50,6 +53,17 @@ const parseChangeResult: Decoder<ChangeResult> = (value, context = 'file change'
     sha256: source.sha256 === null ? null : field(source.sha256, `${context}.sha256`),
     canUndo: flag(source.canUndo, `${context}.canUndo`) }
 }
+const parseSetupBackups: Decoder<SetupBackups> = (value, context = 'setup backups') => {
+  const source = entry(value, context)
+  if (!Array.isArray(source.backups) || source.backups.length > 100)
+    throw new ContractError(`${context} has invalid entries.`)
+  return { backups: source.backups.map((item, index) => {
+    const backup = entry(item, `backup ${index}`)
+    return { id: field(backup.id, 'backup.id'), createdUtc: field(backup.createdUtc, 'backup.createdUtc'),
+      backupKind: field(backup.backupKind, 'backup.backupKind'),
+      setupIncluded: flag(backup.setupIncluded, 'backup.setupIncluded') }
+  }) }
+}
 
 export function ServerFilesPanel({ profileId, state, maintenance, busy, recoveryBlocked,
   onPrepareMaintenance, onStart, onOpenDoctor }: {
@@ -67,6 +81,8 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
+  const [backups, setBackups] = useState<SetupBackup[]>([])
+  const [revision, setRevision] = useState(0)
   const base = `/api/local/profiles/${profileId}`
   useEffect(() => {
     let active = true
@@ -78,6 +94,9 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
       if (result.ok) setView(result)
       else setNotice({ good: false, text: result.message })
     }).catch(error => { if (active) setNotice({ good: false, text: errorMessage(error) }) })
+    void getLocalJson(`${base}/backups`, parseSetupBackups).then(result => {
+      if (active) setBackups(result.backups)
+    }).catch(() => { /* The Files tab still works when backup history is unavailable. */ })
     return () => { active = false }
   }, [base])
   const editAllowed = maintenance && state === 'Offline' && !busy && !pending && !recoveryBlocked
@@ -150,22 +169,126 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
     finally { setPending('') }
   }
 
+  const openTextFile = async (key: string) => {
+    if (!editAllowed || changed) return
+    setPending(`open-file-${key}`)
+    setNotice(null)
+    try {
+      const result = await changeJson(`${base}/files/${key}/open`, 'POST', parseBasicResult)
+      setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+
+  const createConfiguration = async (key: string) => {
+    if (!editAllowed) return
+    if (!window.confirm('Create this game configuration? TogetherServer will make an offline world checkpoint first.')) return
+    setPending(`create-${key}`)
+    setNotice(null)
+    try {
+      const result = await changeJson(`${base}/files/${key}/create`, 'POST', parseChangeResult)
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) await refreshFile(key)
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+
+  const refreshBackups = async () => {
+    const result = await getLocalJson(`${base}/backups`, parseSetupBackups)
+    setBackups(result.backups)
+  }
+  const createSetupCheckpoint = async () => {
+    if (!editAllowed) return
+    setPending('checkpoint')
+    try {
+      const result = await changeJson(`${base}/backups/setup`, 'POST', parseBasicResult)
+      setNotice({ good: result.ok, text: result.message })
+      await refreshBackups()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const restoreSetup = async (id: string) => {
+    if (!editAllowed || changed ||
+        !window.confirm('Restore this complete setup checkpoint? The world, reviewed configuration, and managed add-on state will change while the server stays offline. A pre-restore checkpoint will be kept.')) return
+    setPending('restore-setup')
+    try {
+      const result = await changeJson(`${base}/backups/${id}/restore-setup`, 'POST', parseBasicResult)
+      setNotice({ good: result.ok, text: result.message })
+      await refreshBackups()
+      if (result.ok) {
+        setLoaded(null)
+        setView(await getLocalJson(`${base}/files`, parseFilesView))
+        setRevision(current => current + 1)
+      }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const prepareChanges = async () => {
+    if (busy || pending || recoveryBlocked ||
+        !window.confirm('Prepare to change this server? TogetherServer will pause Friend controls, require a fresh zero-player count before any automatic Stop, and make a complete offline setup checkpoint.')) return
+    setPending('prepare')
+    try {
+      const result = await changeJson(`${base}/prepare-change`, 'POST', parseBasicResult)
+      setNotice({ good: result.ok, text: result.message })
+      await refreshBackups()
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+  const finishChanges = async () => {
+    if (busy || pending || recoveryBlocked || changed || state !== 'Ready' || !maintenance ||
+        !window.confirm('Have you joined this server from a real game client and checked the changed setup? Confirm to end maintenance and allow Friend controls again.')) return
+    setPending('finish')
+    try {
+      const result = await changeJson(`${base}/finish-change`, 'POST', parseBasicResult,
+        { confirmedGameJoin: true })
+      setNotice({ good: result.ok, text: result.message })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+
   return <section className="server-files-panel" aria-label="Server files and settings">
     <div className="section-heading"><div><h3>Files &amp; settings</h3><p>Open the folders and edit the files this server actually uses.</p></div></div>
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
+    <div className="next-action"><span>Safe change: pause Friend controls, stop at zero players, checkpoint, edit, then Start and check a real join.</span>
+      <div className="actions"><Button className="secondary" disabled={busy || !!pending || recoveryBlocked}
+        onClick={() => void prepareChanges()}>Prepare changes</Button>
+        {maintenance && state === 'Ready' && <Button className="secondary" disabled={busy || !!pending || !!changed || recoveryBlocked}
+          onClick={() => void finishChanges()}>Finish maintenance</Button>}</div></div>
     {!view && !notice && <p className="helper-text">Loading server files…</p>}
     {view && <>
       <div className="server-file-locations">{view.locations.map(location =>
         <div className="server-file-row" key={location.key}><div><strong>{location.label}</strong><code>{location.path}</code></div>
           <Button className="secondary" disabled={!location.available || !!pending || busy}
             onClick={() => void openFolder(location.key)}>Open folder</Button></div>)}</div>
-      {!view.locations.some(location => location.key === 'behavior-packs') &&
+      {!view.locations.some(location => location.key === 'behavior-packs' || location.key === 'mods') &&
         <p className="helper-text">This saved server has no reviewed mod or add-on folder assigned by its current driver.</p>}
       {view.files.length === 0 ? <p className="helper-text">This driver has no reviewed text configuration file in use. Edit its saved setup in TogetherServer.</p> :
         <div className="server-file-list"><h4>Editable files</h4>{view.files.map(file =>
           <div className="server-file-row" key={file.key}><div><strong>{file.label}</strong><code>{file.path}</code></div>
-            <Button className="secondary" disabled={!file.available || !!pending || busy}
-              onClick={() => void loadFile(file.key)}>{loaded?.key === file.key ? 'Reload file' : 'Edit file'}</Button></div>)}</div>}
+            <div className="actions">
+              {!file.available && (file.key === 'factorio-settings' || file.key === 'terraria-config') &&
+                <Button className="secondary" disabled={!editAllowed}
+                  onClick={() => void createConfiguration(file.key)}>Create config</Button>}
+              <Button className="secondary" disabled={!file.available || !!pending || busy}
+                onClick={() => void loadFile(file.key)}>{loaded?.key === file.key ? 'Reload file' : 'Edit file'}</Button>
+              <Button className="text-button" disabled={!file.available || !editAllowed || !!changed}
+                onClick={() => void openTextFile(file.key)}>Open in Notepad</Button>
+            </div></div>)}</div>}
+      <ServerAddOnsPanel key={revision} profileId={profileId} state={state} maintenance={maintenance}
+        busy={busy} recoveryBlocked={recoveryBlocked} />
+      <section className="server-setup-checkpoints" aria-label="Complete setup checkpoints">
+        <div className="section-heading"><div><h4>Setup checkpoints</h4>
+          <p>Each complete checkpoint includes the world, reviewed configuration, and managed add-on files.</p></div>
+          <Button className="secondary" disabled={!editAllowed} onClick={() => void createSetupCheckpoint()}>
+            Create checkpoint</Button></div>
+        {backups.filter(backup => backup.setupIncluded).slice(0, 5).map(backup =>
+          <div className="server-file-row" key={backup.id}><div><strong>{new Date(backup.createdUtc).toLocaleString()}</strong>
+            <small>{backup.backupKind} · Complete setup</small></div>
+            <Button className="secondary" disabled={!editAllowed || !!changed}
+              onClick={() => void restoreSetup(backup.id)}>Restore setup</Button></div>)}
+        {!backups.some(backup => backup.setupIncluded) &&
+          <p className="helper-text">No complete setup checkpoint yet. Older world-only backups remain in Maintenance.</p>}
+      </section>
       {loaded && <div className="server-file-editor"><h4>{view.files.find(file => file.key === loaded.key)?.label ?? 'Server file'}</h4>
         <p className="helper-text">Changes are saved only while maintenance is on and the server is offline. A matching on-disk version is required.</p>
         <label>File contents<TextArea rows={15} spellCheck={false} value={draft} onChange={event => setDraft(event.target.value)} /></label>

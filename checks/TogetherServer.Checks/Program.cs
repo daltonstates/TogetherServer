@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO.Compression;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
@@ -93,6 +94,8 @@ await Check("owner diagnostics reuse canonical state and support export stays bo
 {
     using var data = Data("owner-diagnostics");
     var profile = Profile("Support fixture", "support-world", FreePort());
+    profile.Kind = GameKinds.Valheim;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "adminlist.txt"), "Private player Alice\n");
     data.SaveSettings(Settings(profile));
     var games = Games(data);
     var manager = new HostManager(data, games);
@@ -162,7 +165,7 @@ await Check("owner diagnostics reuse canonical state and support export stays bo
     var export = SupportReportExporter.Create(injected, snapshot, instance,
         new UpdateView("Unavailable", "0.1.11", null,
             "Update failed at https://10.0.0.4:5131 from C:\\Users\\Owner\\app.exe"),
-        activity, operations, data.ReadSupportLogMetadata());
+        activity, operations, data.ReadSupportLogMetadata(), data);
     Require(export.FileName == SupportReportExporter.FileName &&
         export.ContentType == SupportReportExporter.ContentType,
         "support export did not use its fixed safe filename and UTF-8 content type");
@@ -179,6 +182,10 @@ await Check("owner diagnostics reuse canonical state and support export stays bo
     Require(report.RootElement.GetProperty("recentActivity").GetArrayLength() <= 24 &&
         report.RootElement.GetProperty("recentOperations").GetArrayLength() <= 24,
         "support export exceeded its recent-summary count bounds");
+    Require(report.RootElement.GetProperty("settings").GetProperty("profiles")[0]
+            .GetProperty("setup").GetProperty("availableReviewedConfigFiles").GetInt32() == 1 &&
+        !export.Content.Contains("Private player Alice", StringComparison.Ordinal),
+        "the support setup summary omitted file availability or included player-list contents");
     ValidateStringBounds(report.RootElement, 600);
 });
 
@@ -2098,7 +2105,207 @@ await Check("Minecraft file editor rejects a world or port mismatch", () =>
     Require(ServerFiles.ValidateChange(profile, "server-properties",
         new ServerFileChangeRequest("old-hash", valid + "server-port=12345\n")).Code ==
         "InvalidConfiguration", "duplicate port was accepted");
+    profile.ExecutablePath = Path.Combine(profile.WorldDirectory, "bedrock_server.exe");
+    File.WriteAllText(profile.ExecutablePath, "synthetic name only");
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "server.properties"), valid);
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "allowlist.json"), "not JSON");
+    var driver = new MinecraftBedrockServerDriver(data);
+    Require(driver.ValidateForStart(profile)?.Code == "MinecraftConfigurationInvalid",
+        "a malformed player list edited outside the app was allowed at Start");
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "allowlist.json"), "[]");
+    Require(driver.ValidateForStart(profile) is null,
+        "a valid Bedrock player list was blocked at Start");
     return Task.CompletedTask;
+});
+
+await Check("guided server changes pause Friend controls before a zero-player Stop and checkpoint", async () =>
+{
+    using var data = Data("guided-server-change");
+    var profile = Profile("guided-change-world", "guided-change-world", FreePort());
+    profile.Backups = new BackupOptions { MinimumFreeSpaceMb = 0 };
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.txt"), "recognizable save");
+    var driver = new ObservationFixtureDriver
+    {
+        HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+            OnlinePlayers: 2, MaxPlayers: 10, PlayerCountTrusted: true)
+    };
+    var manager = new HostManager(data, new GameServerRegistry([driver]));
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "guided-change profile failed to save");
+    Require((await manager.StartAsync(profile.Id)).Ok, "guided-change fixture failed to start");
+    Require((await manager.PrepareServerChangeAsync(profile.Id)).Code == "PlayersOnlineOrUnknown" &&
+        data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled &&
+        data.LoadRuns().Count == 1,
+        "guided change did not pause Friend controls or protect an occupied server");
+    driver.HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+        OnlinePlayers: 0, MaxPlayers: 10, PlayerCountTrusted: true);
+    var prepared = await manager.PrepareServerChangeAsync(profile.Id);
+    var saved = data.LoadSettings().Profiles.Single(item => item.Id == profile.Id);
+    Require(prepared.Ok && saved.Maintenance.Enabled && data.LoadRuns().Count == 0 &&
+        (await manager.BackupsAsync(profile.Id)).Backups.Single().SetupIncluded,
+        "guided change did not pause Friend controls, confirm Stop, and checkpoint the offline setup");
+    Require((await manager.FinishServerChangeAsync(profile.Id, true)).Code == "ServerNotReady",
+        "maintenance ended before the game reported Ready");
+    Require((await manager.StartAsync(profile.Id)).Ok, "guided-change fixture did not restart");
+    Require((await manager.FinishServerChangeAsync(profile.Id, false)).Code == "GameJoinNotConfirmed" &&
+        data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled,
+        "maintenance ended without an explicit real-join confirmation");
+    Require((await manager.FinishServerChangeAsync(profile.Id, true)).Ok &&
+        !data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled,
+        "guided change did not end maintenance after readiness and owner confirmation");
+    Require((await manager.StopAsync(profile.Id)).Ok, "guided-change fixture did not stop");
+});
+
+await Check("complete setup checkpoint restores reviewed configuration with the world", async () =>
+{
+    using var data = Data("complete-setup-restore");
+    var profile = Profile("complete-setup-world", "checkpoint-world", FreePort());
+    profile.Kind = GameKinds.MinecraftBedrock;
+    profile.Maintenance.Enabled = true;
+    profile.Backups = new BackupOptions { MinimumFreeSpaceMb = 0, RetentionCount = 5 };
+    var save = Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId);
+    Directory.CreateDirectory(save);
+    var world = Path.Combine(save, "recognizable-world.txt");
+    File.WriteAllText(world, "before");
+    var properties = Path.Combine(profile.WorldDirectory, "server.properties");
+    File.WriteAllText(properties, $"level-name={profile.WorldId}\nserver-port={profile.GamePort}\n");
+    var allowlist = Path.Combine(profile.WorldDirectory, "allowlist.json");
+    File.WriteAllText(allowlist, "[{\"name\":\"Player One\",\"ignoresPlayerLimit\":false}]");
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "complete setup profile failed to save");
+    var created = await manager.CreateCompleteSetupBackupAsync(profile.Id);
+    var backup = (await manager.BackupsAsync(profile.Id)).Backups.Single();
+    Require(created.Ok && backup.SetupIncluded, "complete setup checkpoint omitted reviewed config");
+    File.WriteAllText(world, "after");
+    File.WriteAllText(allowlist, "[]");
+    File.WriteAllText(properties, $"level-name={profile.WorldId}\nserver-port={profile.GamePort}\nmax-players=2\n");
+    var restored = await manager.RestoreCompleteSetupAsync(profile.Id, backup.Id);
+    Require(restored.Ok && File.ReadAllText(world) == "before" &&
+        File.ReadAllText(allowlist).Contains("Player One", StringComparison.Ordinal) &&
+        !File.ReadAllText(properties).Contains("max-players=2", StringComparison.Ordinal),
+        "complete setup restore did not return the world and active configuration together");
+    var pendingName = $"setup-restore-pending-{profile.Id:N}.protected";
+    data.SaveProtected(pendingName, Encoding.UTF8.GetBytes(backup.Id.ToString("N")));
+    Require((await manager.StartAsync(profile.Id)).Code == "SetupRestoreRecoveryRequired" &&
+        (await manager.CreateCompleteSetupBackupAsync(profile.Id)).Code == "SetupRestoreRecoveryRequired",
+        "an interrupted complete setup restore did not block Start and new checkpoints");
+    var retried = await manager.RestoreCompleteSetupAsync(profile.Id, backup.Id);
+    Require(retried.Ok && !data.HasProtected(pendingName),
+        "retrying a complete setup restore did not clear its durable recovery guard");
+    var setupPath = Path.Combine(data.BackupsRoot, profile.Id.ToString("N"),
+        backup.Id.ToString("N") + ".backup", "setup.protected");
+    File.AppendAllText(setupPath, "tampered");
+    File.WriteAllText(world, "later");
+    Require(!(await manager.RestoreCompleteSetupAsync(profile.Id, backup.Id)).Ok &&
+        File.ReadAllText(world) == "later",
+        "tampered setup checkpoint changed the live world");
+});
+
+await Check("Factorio mod import and Undo keep packages inside a managed world", async () =>
+{
+    using var data = Data("factorio-mod-import");
+    var original = Path.Combine(root, "factorio-original-" + Guid.NewGuid().ToString("N") + ".zip");
+    using (var archive = ZipFile.Open(original, ZipArchiveMode.Create))
+    using (var writer = new StreamWriter(archive.CreateEntry("save.dat").Open())) writer.Write("synthetic save");
+    var profile = new ServerProfile
+    {
+        Kind = GameKinds.Factorio,
+        Name = "Mod check",
+        GamePort = FreePort(),
+        ExecutablePath = fixture,
+        Maintenance = new MaintenanceOptions { Enabled = true },
+        Backups = new BackupOptions { MinimumFreeSpaceMb = 0 }
+    };
+    var importedSave = FactorioSetup.ImportCopy(data, profile.Id, original);
+    Require(importedSave.Ok, "synthetic Factorio save import failed");
+    profile.WorldId = importedSave.WorldId!;
+    profile.WorldDirectory = importedSave.WorldDirectory!;
+    var gameVersion = ServerAddOns.GameVersion(profile);
+    var requiredVersion = gameVersion == "Unknown" ? "2.0" :
+        string.Join('.', gameVersion.Split('.').Take(2));
+    var source = Path.Combine(root, "fixture-mod-" + Guid.NewGuid().ToString("N") + ".zip");
+    using (var archive = ZipFile.Open(source, ZipArchiveMode.Create))
+    {
+        using var writer = new StreamWriter(archive.CreateEntry("fixturemod_1.0.0/info.json").Open());
+        writer.Write(JsonSerializer.Serialize(new
+        {
+            name = "fixturemod",
+            version = "1.0.0",
+            factorio_version = requiredVersion
+        }));
+    }
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "Factorio mod profile failed to save");
+    var settingsCreated = await manager.CreateServerConfigurationAsync(profile.Id, "factorio-settings");
+    Require(settingsCreated.Ok && File.Exists(Path.Combine(profile.WorldDirectory, "server-settings.json")) &&
+        ServerFiles.ValidateChange(profile, "factorio-settings", new ServerFileChangeRequest("old",
+            "{\"visibility\":{\"public\":true}}")).Code == "InvalidConfiguration",
+        "managed Factorio settings were not created or public listing escaped the saved profile gate");
+    var initial = await manager.ServerAddOnsAsync(profile.Id);
+    var imported = await manager.ImportServerAddOnAsync(profile.Id, source,
+        new ServerAddOnImportRequest(initial.StateToken));
+    Require(imported.Ok && imported.View.Items.Single().Enabled &&
+        File.Exists(Path.Combine(profile.WorldDirectory, "mods", "fixturemod_1.0.0.zip")),
+        "Factorio mod import did not copy and enable the owner-selected package: " + imported.Code + " " + imported.Message);
+    var stale = await manager.SetServerAddOnAsync(profile.Id,
+        new ServerAddOnChangeRequest(initial.StateToken, imported.View.Items.Single().Key, false));
+    Require(!stale.Ok && stale.Code == "AddOnsChanged", "stale mod state was accepted");
+    var undo = await manager.UndoServerAddOnAsync(profile.Id,
+        new ServerAddOnUndoRequest(imported.View.StateToken));
+    Require(undo.Ok && undo.View.Items.Count == 0 &&
+        !File.Exists(Path.Combine(profile.WorldDirectory, "mods", "fixturemod_1.0.0.zip")),
+        "Factorio add-on Undo did not restore the prior package and activation state");
+    data.SaveProtected($"addon-game-version-{profile.Id:N}.protected", Encoding.UTF8.GetBytes("0.0.0"));
+    Require(ServerAddOns.VersionWarning(data, profile) is not null,
+        "a changed game version did not require add-on review");
+});
+
+await Check("Bedrock world pack import and Undo keep shared server packs untouched", async () =>
+{
+    using var data = Data("bedrock-pack-import");
+    var profile = Profile("bedrock-pack-world", "pack-world", FreePort());
+    profile.Kind = GameKinds.MinecraftBedrock;
+    profile.Maintenance.Enabled = true;
+    profile.Backups = new BackupOptions { MinimumFreeSpaceMb = 0 };
+    Directory.CreateDirectory(Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId));
+    var shared = Path.Combine(profile.WorldDirectory, "behavior_packs");
+    Directory.CreateDirectory(shared);
+    File.WriteAllText(Path.Combine(shared, "owner-file.txt"), "untouched");
+    var source = Path.Combine(root, "fixture-pack-" + Guid.NewGuid().ToString("N") + ".mcpack");
+    var packId = Guid.NewGuid();
+    using (var archive = ZipFile.Open(source, ZipArchiveMode.Create))
+    {
+        using var writer = new StreamWriter(archive.CreateEntry("manifest.json").Open());
+        writer.Write(JsonSerializer.Serialize(new
+        {
+            format_version = 2,
+            header = new
+            {
+                name = "Fixture pack",
+                uuid = packId.ToString(),
+                version = new[] { 1, 0, 0 },
+                min_engine_version = new[] { 1, 0, 0 }
+            },
+            modules = new[] { new { type = "data", uuid = Guid.NewGuid().ToString(), version = new[] { 1, 0, 0 } } }
+        }));
+    }
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "Bedrock pack profile failed to save");
+    var initial = await manager.ServerAddOnsAsync(profile.Id);
+    var imported = await manager.ImportServerAddOnAsync(profile.Id, source,
+        new ServerAddOnImportRequest(initial.StateToken));
+    Require(imported.Ok && imported.View.Items.Single().Enabled &&
+        imported.View.Items.Single().Type == "behavior pack",
+        "Bedrock world pack was not activated: " + imported.Code + " " + imported.Message);
+    var undo = await manager.UndoServerAddOnAsync(profile.Id,
+        new ServerAddOnUndoRequest(imported.View.StateToken));
+    Require(undo.Ok && undo.View.Items.Count == 0 &&
+        File.ReadAllText(Path.Combine(shared, "owner-file.txt")) == "untouched",
+        "Bedrock pack Undo changed the shared server folder or left the world pack active");
+    var malformed = Path.Combine(root, "malformed-pack-" + Guid.NewGuid().ToString("N") + ".mcpack");
+    using (var archive = ZipFile.Open(malformed, ZipArchiveMode.Create))
+    using (var writer = new StreamWriter(archive.CreateEntry("manifest.json").Open())) writer.Write("{}");
+    Require(ServerAddOns.ValidatePackage(profile, malformed, out _) is not null,
+        "a malformed pack manifest escaped typed package rejection");
 });
 
 Console.WriteLine($"Checks: {passed} passed, {failed} failed. Fixture data: {root}");

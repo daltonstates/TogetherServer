@@ -213,6 +213,27 @@ internal sealed class DesktopWindow
         { return false; }
     }
 
+    public bool OpenTextFile(string path)
+    {
+        try
+        {
+            if (!Path.IsPathFullyQualified(path) || !File.Exists(path)) return false;
+            var full = Path.GetFullPath(path);
+            if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0) return false;
+            for (var current = new DirectoryInfo(Path.GetDirectoryName(full)!); current is not null; current = current.Parent)
+                if ((current.Attributes & FileAttributes.ReparsePoint) != 0) return false;
+            var notepad = Path.Combine(Environment.SystemDirectory, "notepad.exe");
+            if (!File.Exists(notepad)) return false;
+            var start = new ProcessStartInfo(notepad) { UseShellExecute = false };
+            start.ArgumentList.Add(full);
+            using var process = Process.Start(start);
+            return process is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                                   InvalidOperationException or System.ComponentModel.Win32Exception)
+        { return false; }
+    }
+
     public void Exit()
     {
         closing = true;

@@ -74,8 +74,18 @@ internal abstract class MinecraftServerDriver(LocalData data, bool java) : IGame
             return new("MinecraftWorldMismatch", "The saved world name must match server.properties level-name exactly.");
         if (!int.TryParse(port, out var configuredPort) || configuredPort != profile.GamePort)
             return new("MinecraftPortMismatch", "The saved game port must match server.properties server-port.");
+        var reviewedFiles = java
+            ? new[] { "server-properties", "operators", "allow-list", "player-bans", "ip-bans" }
+            : new[] { "server-properties", "allow-list", "permissions" };
+        foreach (var key in reviewedFiles)
+            if (ServerFiles.CheckActiveConfiguration(data, profile, key) is { } issue)
+                return new("MinecraftConfigurationInvalid", issue);
         if (!java)
         {
+            if (ServerAddOns.VersionWarning(data, profile) is { } addOnWarning)
+                return new("GameVersionChanged", addOnWarning);
+            if (!ServerAddOns.List(data, profile).Ok)
+                return new("BedrockPacksInvalid", "Review this world's Bedrock pack list before Start.");
             var v6 = Property(root, "server.properties", "server-portv6");
             if (v6 is not null && (!int.TryParse(v6, out var v6Port) || v6Port is < 1 or > 65535))
                 return new("MinecraftIpv6PortInvalid", "Bedrock server-portv6 must be a port from 1 to 65535.");

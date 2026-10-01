@@ -42,6 +42,13 @@ internal sealed class FactorioServerDriver(LocalData data) : IGameServerDriver
         var rcon = profile.Factorio?.RconPort ?? 0;
         if (rcon is < 1024 or > 65535 || rcon == profile.GamePort)
             return new("FactorioRconPortInvalid", "Choose a separate local RCON port from 1024 to 65535.");
+        if (ServerFiles.CheckActiveConfiguration(data, profile, "factorio-settings") is { } configurationIssue)
+            return new("FactorioSettingsInvalid", configurationIssue);
+        if (ServerAddOns.VersionWarning(data, profile) is { } addOnWarning)
+            return new("GameVersionChanged", addOnWarning);
+        if (Directory.Exists(Path.Combine(profile.WorldDirectory, "mods")) &&
+            !ServerAddOns.List(data, profile).Ok)
+            return new("FactorioModsInvalid", "Review the managed Factorio mod folder before Start.");
         return null;
     }
 
@@ -56,13 +63,25 @@ internal sealed class FactorioServerDriver(LocalData data) : IGameServerDriver
         var rconPort = profile.Factorio?.RconPort ?? 27015;
         var save = Path.Combine(run.WorldDirectory, run.WorldId + ".zip");
         var password = data.LoadOrCreateFactorioRconPassword(profile.Id);
-        var arguments = new[]
+        var arguments = new List<string>
         {
             "--start-server", save,
             "--port", run.GamePort.ToString(CultureInfo.InvariantCulture),
             "--rcon-port", rconPort.ToString(CultureInfo.InvariantCulture),
             "--rcon-password", password
         };
+        var configuration = Path.Combine(run.WorldDirectory, "server-settings.json");
+        if (File.Exists(configuration))
+        {
+            arguments.Add("--server-settings");
+            arguments.Add(configuration);
+        }
+        var mods = Path.Combine(run.WorldDirectory, "mods");
+        if (Directory.Exists(mods))
+        {
+            arguments.Add("--mod-directory");
+            arguments.Add(mods);
+        }
         var processId = WindowsConsoleProcess.Start(run.ExecutablePath, arguments,
             workingDirectory: Path.GetDirectoryName(run.ExecutablePath));
         return new("FactorioStarting",

@@ -118,6 +118,8 @@ internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
             return new("TerrariaExecutableRequired", "Choose owner-installed TerrariaServer.exe.");
         if (!TerrariaSetup.IsImportedCopy(data, profile))
             return new("TerrariaImportRequired", "Copy an existing .wld world into this server's managed storage before Start.");
+        if (ServerFiles.CheckActiveConfiguration(data, profile, "terraria-config") is { } configurationIssue)
+            return new("TerrariaConfigInvalid", configurationIssue);
         return null;
     }
 
@@ -126,8 +128,17 @@ internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
     public GameLaunchResult Start(ServerProfile profile, ManagedRun run)
     {
         var world = Path.Combine(profile.WorldDirectory, profile.WorldId + ".wld");
-        var id = WindowsConsoleProcess.Start(run.ExecutablePath,
-            ["-world", world, "-port", run.GamePort.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+        var arguments = new List<string>
+        {
+            "-world", world, "-port", run.GamePort.ToString(System.Globalization.CultureInfo.InvariantCulture), "-noupnp"
+        };
+        var configuration = Path.Combine(run.WorldDirectory, "serverconfig.txt");
+        if (File.Exists(configuration))
+        {
+            arguments.Add("-config");
+            arguments.Add(configuration);
+        }
+        var id = WindowsConsoleProcess.Start(run.ExecutablePath, arguments);
         return new("TerrariaStarting", "Terraria preview process launched. Waiting for a local TCP listener; real join and save acceptance remain pending.", id);
     }
 

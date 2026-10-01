@@ -51,6 +51,18 @@ export const loadServerLogPage: ServerLogLoader = (endpoint, request, signal) =>
 
 const emptyFilters: ServerLogFilters = { severity: '', category: '', contains: '' }
 
+export function serverLogProblem(record: ServerLogRecord): string | null {
+  const message = record.message.toLocaleLowerCase()
+  if (/\b(mod|mods|addon|pack|dependency|dependencies|incompatible)\b/.test(message) &&
+      /\b(error|failed|missing|invalid|incompatible|mismatch|could not)\b/.test(message)) return 'Add-on issue'
+  if (/\b(config|configuration|properties|permission|whitelist|allowlist|json|eula)\b/.test(message) &&
+      /\b(error|failed|missing|invalid|denied|could not)\b/.test(message)) return 'Settings issue'
+  if (record.severity === 'Error' ||
+      /\b(startup|launch|bind|port|listen)\b/.test(message) &&
+      /\b(error|failed|in use|could not)\b/.test(message)) return 'Server problem'
+  return null
+}
+
 function stateLabel(state: ServerLogSourceState | 'Loading' | 'Error', paused: boolean) {
   if (paused && state === 'Active') return 'Paused'
   switch (state) {
@@ -88,6 +100,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const [loading, setLoading] = useState(false)
   const [filters, setFilters] = useState<ServerLogFilters>(emptyFilters)
   const [filterDraft, setFilterDraft] = useState<ServerLogFilters>(emptyFilters)
+  const [onlyProblems, setOnlyProblems] = useState(false)
   const [documentVisible, setDocumentVisible] = useState(() => !document.hidden)
   const [intersecting, setIntersecting] = useState(() => typeof IntersectionObserver === 'undefined')
   const rootRef = useRef<HTMLElement | null>(null)
@@ -214,11 +227,12 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     requestError ? 'Error' : result?.sourceState ?? 'Loading'
   const message = unsupported?.message ?? (requestError || result?.message ||
     'Loading recent lines from this server session.')
+  const visibleRecords = onlyProblems ? records.filter(record => serverLogProblem(record) !== null) : records
 
   return <section ref={rootRef} className="server-log-viewer" aria-label="Server logs">
     <div className="server-log-toolbar">
       <div className="server-log-heading"><span className={`server-log-state state-${sourceState.toLocaleLowerCase()}`}>{stateLabel(sourceState, paused)}</span>
-        <small>{records.length} of {safeHistoryLimit} lines shown{result?.hasMore ? ' · more available' : ''}</small></div>
+        <small>{visibleRecords.length} of {onlyProblems ? records.length : safeHistoryLimit} lines shown{result?.hasMore ? ' · more available' : ''}</small></div>
       <div className="server-log-actions"><Button className="secondary" disabled={!!unsupported} onClick={() => setPaused(value => !value)}>{paused ? <><Icon name="play" />Resume</> : <><Icon name="stop" />Pause</>}</Button>
         <Button className="secondary" disabled={loading || !!unsupported || !visible} onClick={manualRefresh}>{loading ? <><Icon name="loader" />Refreshing</> : <><Icon name="refresh" />Refresh</>}</Button></div>
     </div>
@@ -234,14 +248,17 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
       </Select></label>
       <label className="server-log-contains">Contains<Input aria-label="Log contains" maxLength={80} value={filterDraft.contains} placeholder="Find text" onChange={event => setFilterDraft(current => ({ ...current, contains: event.target.value }))} /></label>
       <Button type="submit" className="secondary">Apply</Button>
+      <Button type="button" className={onlyProblems ? '' : 'secondary'} aria-pressed={onlyProblems}
+        onClick={() => setOnlyProblems(value => !value)}>Likely problems</Button>
       <Button className="text-button" disabled={!filters.severity && !filters.category && !filters.contains && !filterDraft.severity && !filterDraft.category && !filterDraft.contains} onClick={() => { setFilterDraft(emptyFilters); setFilters(emptyFilters) }}>Clear</Button>
     </form>
     <div className={`server-log-source state-${sourceState.toLocaleLowerCase()}`} role="status"><strong>{stateLabel(sourceState, paused)}</strong><span>{message}</span></div>
-    {records.length > 0 ? <div className="server-log-console" role="log" aria-live="off" aria-label="Server log console">
-      {records.map((record, index) => <div className={`server-log-line severity-${record.severity.toLocaleLowerCase()}`} key={`${index}-${record.timestampUtc ?? ''}-${record.message}`}>
+    {visibleRecords.length > 0 ? <div className="server-log-console" role="log" aria-live="off" aria-label="Server log console">
+      {visibleRecords.map((record, index) => <div className={`server-log-line severity-${record.severity.toLocaleLowerCase()}${serverLogProblem(record) ? ' likely-problem' : ''}`} key={`${index}-${record.timestampUtc ?? ''}-${record.message}`}>
         <time dateTime={record.timestampUtc ?? undefined}>{displayTime(record.timestampUtc)}</time><span className="server-log-severity">{record.severity}</span><span className="server-log-category">{record.category}</span><code>{record.message}</code>
+        {serverLogProblem(record) && <small className="server-log-problem-label">{serverLogProblem(record)}</small>}
       </div>)}
-    </div> : <div className="server-log-empty">{sourceState === 'Active' ? 'No matching complete lines yet.' : sourceState === 'Loading' ? 'Loading recent records…' : 'No log records are available for this state.'}</div>}
+    </div> : <div className="server-log-empty">{onlyProblems && records.length > 0 ? 'No likely startup, settings, or add-on problems in the loaded lines.' : sourceState === 'Active' ? 'No matching complete lines yet.' : sourceState === 'Loading' ? 'Loading recent records…' : 'No log records are available for this state.'}</div>}
     <p className="server-log-disclaimer">Diagnostic display only. These records never determine readiness, player count, timers, Start, Stop, or recovery.</p>
   </section>
 }
