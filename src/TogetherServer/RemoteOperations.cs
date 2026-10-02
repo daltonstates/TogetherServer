@@ -82,6 +82,8 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
     public RemoteOperationSubmission Submit(Guid deviceId, Guid requestId, Guid profileId, string action,
         Func<Task<RemoteOperationOutcome>> execute)
     {
+        if (!RemoteActionPolicy.IsKnown(action))
+            return new(false, false, "UnknownAction", "The Host does not support this remote action.", null);
         RemoteOperation operation;
         lock (sync)
         {

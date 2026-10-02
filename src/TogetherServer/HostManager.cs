@@ -11,7 +11,7 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     IReadOnlyList<GamePort>? DeclaredPorts = null, int? OnlinePlayers = null, int? MaxPlayers = null,
     DateTimeOffset? AutoShutdownAtUtc = null, string? AutoShutdownReason = null,
     bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
-    bool PlayerCountTrusted = true, int FriendAddedMinutes = 0,
+    bool PlayerCountTrusted = false, int FriendAddedMinutes = 0,
     long AddedShutdownMinutes = 0, string? PlayerObservationSource = null,
     DateTimeOffset? PlayerCountObservedUtc = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
@@ -37,7 +37,7 @@ public sealed record ServerObservation(Guid ProfileId, Guid OperationId, string 
     string Source, DateTimeOffset ObservedUtc, bool Ok, int? OnlinePlayers = null,
     int? MaxPlayers = null, IReadOnlyList<string>? PlayerNames = null, bool PlayerCountTrusted = false);
 
-public sealed class HostManager
+public sealed partial class HostManager
 {
     public const int MaximumRecentSessionLimit = 20;
     internal const int CurrentSessionSummaryVersion = 1;
@@ -54,6 +54,9 @@ public sealed class HostManager
     private readonly GameServerRegistry games;
     private readonly TimeProvider clock;
     private readonly IHostingPowerGuard powerGuard;
+    private HostingPowerView hostingPowerView;
+    private HostSnapshot? lastOwnerSnapshot;
+    private HostSnapshot? lastCompanionSnapshot;
     private HostSettings settings;
     private readonly List<ManagedRun> runs;
     private readonly Dictionary<Guid, DateTimeOffset> shutdownDeadlines = [];
@@ -61,6 +64,9 @@ public sealed class HostManager
     private readonly Dictionary<Guid, int> friendAddedMinutes = [];
     private readonly Dictionary<Guid, ServerObservation> observations = [];
     private readonly HashSet<Guid> resumeRevalidationProfiles = [];
+    // Held only while an offline world copy runs outside the lifecycle gate.
+    // The backup stage and restore journal provide crash recovery on disk.
+    private readonly HashSet<Guid> worldCopyReservations = [];
     private readonly SemaphoreSlim observationRefresh = new(1, 1);
     private readonly Dictionary<Guid, CustomCertificationSession> customCertificationSessions = [];
     private readonly List<CrashRecoveryState> crashRecovery;
@@ -92,8 +98,11 @@ public sealed class HostManager
             recoveryNormalized = true;
         }
         if (recoveryNormalized) data.SaveCrashRecoveryStates(crashRecovery);
-        backups = new WorldBackupService(data, this.clock);
+        backups = new WorldBackupService(data, this.clock, games: games);
         storageHealth = new StorageHealthService(data, this.clock);
+        hostingPowerView = ReconcileHostingPower();
+        lastOwnerSnapshot = Snapshot();
+        lastCompanionSnapshot = Snapshot(includeOwnerData: false);
     }
 
     internal async Task<ManagedServerLogSource?> ResolveServerLogSourceAsync(Guid profileId)
@@ -137,9 +146,52 @@ public sealed class HostManager
 
     public async Task<HostSnapshot> SnapshotAsync()
     {
-        await gate.WaitAsync();
-        try { return Snapshot(); }
+        if (!await gate.WaitAsync(0))
+            return ExpireCachedCount(Volatile.Read(ref lastOwnerSnapshot)!);
+        try
+        {
+            var snapshot = Snapshot();
+            Volatile.Write(ref lastOwnerSnapshot, snapshot);
+            return snapshot;
+        }
         finally { gate.Release(); }
+    }
+
+    // Friend polling needs current permissions and run evidence, not the owner's
+    // backup catalog, storage scan, activity history, or protected setup state.
+    public async Task<HostSnapshot> CompanionSnapshotAsync()
+    {
+        if (!await gate.WaitAsync(0))
+            return ExpireCachedCount(Volatile.Read(ref lastCompanionSnapshot)!);
+        try
+        {
+            var snapshot = Snapshot(includeOwnerData: false);
+            Volatile.Write(ref lastCompanionSnapshot, snapshot);
+            return snapshot;
+        }
+        finally { gate.Release(); }
+    }
+
+    private HostSnapshot ExpireCachedCount(HostSnapshot snapshot)
+    {
+        var now = clock.GetUtcNow();
+        return snapshot with
+        {
+            Runs = snapshot.Runs.Select(run => run.State == "Ready" &&
+                (run.PlayerCountObservedUtc is not { } observed ||
+                 now < observed || now - observed > TimeSpan.FromSeconds(10))
+                ? run with
+                {
+                    State = "Unknown",
+                    Detail = "The last server observation is stale. Waiting for a fresh probe.",
+                    OnlinePlayers = null,
+                    MaxPlayers = null,
+                    PlayerNames = null,
+                    PlayerCountTrusted = false,
+                    AutoShutdownAtUtc = null
+                }
+                : run).ToList()
+        };
     }
 
     public async Task<RecentServerSessionsResult> RecentSessionsAsync(Guid profileId, int limit)
@@ -269,6 +321,7 @@ public sealed class HostManager
                 }
                 if (runsChanged) SaveRunsState();
                 if (recoveryChanged) data.SaveCrashRecoveryStates(crashRecovery);
+                AdvanceReadModel();
             }
             finally { gate.Release(); }
         }
@@ -392,6 +445,13 @@ public sealed class HostManager
             var newProfile = next.Profiles.SingleOrDefault(p => p.Id == run.ProfileId);
             if (oldProfile is null || newProfile is null || !SameProfile(oldProfile, newProfile))
                 return Result(false, "ProfileInUse", "Stop or resolve a managed run before changing its profile.");
+        }
+        foreach (var reservedId in worldCopyReservations)
+        {
+            var oldProfile = previous.Profiles.SingleOrDefault(p => p.Id == reservedId);
+            var newProfile = next.Profiles.SingleOrDefault(p => p.Id == reservedId);
+            if (oldProfile is null || newProfile is null || !SameProfile(oldProfile, newProfile))
+                return Result(false, "WorldCopyInProgress", "Wait for this server's world copy to finish before changing its profile.");
         }
         var retiredCustomProfileIds = previous.Profiles
             .Where(profile => profile.Kind == GameKinds.Custom &&
@@ -973,6 +1033,7 @@ public sealed class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (WorldCopyBlock(profile, "starting a server") is { } copyBlock) return copyBlock;
         if (data.HasProtected(SetupRestorePendingName(profileId)))
             return Result(false, "SetupRestoreRecoveryRequired",
                 "A complete setup restore was interrupted. Keep this server offline and retry its complete setup restore.");
@@ -1120,6 +1181,7 @@ public sealed class HostManager
                 friendAddedMinutes.Clear();
                 return [];
             }
+            AdvanceReadModel();
             var snapshot = Snapshot();
             var now = clock.GetUtcNow();
             var due = snapshot.Runs
@@ -1516,106 +1578,6 @@ public sealed class HostManager
         return null;
     }
 
-    public async Task<ActionResult> CreateManualBackupAsync(Guid profileId)
-    {
-        await gate.WaitAsync();
-        try { return CreateManualBackupUnderGate(profileId); }
-        finally { gate.Release(); }
-    }
-
-    public async Task<ActionResult> CreateCompleteSetupBackupAsync(Guid profileId)
-    {
-        await gate.WaitAsync();
-        try
-        {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
-            if (ServerFileEditBlock(profile, "setup") is { } blocked)
-                return Result(false, blocked.Code, blocked.Message);
-            return CreateManualBackupUnderGate(profileId, requireCompleteSetup: true);
-        }
-        finally { gate.Release(); }
-    }
-
-    public async Task<WorldBackupVerificationResult> VerifyBackupAsync(Guid profileId, Guid backupId)
-    {
-        await gate.WaitAsync();
-        try
-        {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null)
-                return new(false, "UnknownProfile", "Choose a saved profile.", backupId, clock.GetUtcNow());
-            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-                return new(false, "BackupsUnsupported",
-                    "Backup verification is available only for reviewed built-in game drivers.", backupId, clock.GetUtcNow());
-            var verified = backups.Verify(profile, backupId);
-            Activity("Backup", verified.Ok ? "IntegrityVerified" : "IntegrityFailed",
-                verified.Ok ? "A local-owner backup integrity check completed." :
-                    "A local-owner backup integrity check failed. The live world was not changed.",
-                verified.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
-            return verified;
-        }
-        finally { gate.Release(); }
-    }
-
-    public async Task<BackupSafetyResult> CopyBackupToVaultAsync(Guid profileId, Guid backupId,
-        string destinationRoot)
-    {
-        ServerProfile? profile;
-        await gate.WaitAsync();
-        try { profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId); }
-        finally { gate.Release(); }
-        if (profile is null)
-            return new(false, "UnknownProfile", "Choose a saved profile.", backupId, clock.GetUtcNow());
-        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-            return new(false, "BackupsUnsupported",
-                "Backup vault copies are available only for reviewed built-in game drivers.", backupId, clock.GetUtcNow());
-        var result = backups.CopyToVault(profile, backupId, destinationRoot);
-        Activity("Backup", result.Ok ? "VaultCopyVerified" : "VaultCopyFailed",
-            result.Ok ? "A completed backup was copied to the selected vault and hash-verified." :
-                "A backup-vault copy was not confirmed; the local backup was kept.",
-            result.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
-        return result;
-    }
-
-    public async Task<HostMoveKitResult> PrepareMoveKitAsync(Guid profileId, Guid backupId,
-        string destinationRoot)
-    {
-        await gate.WaitAsync();
-        try
-        {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
-            if (runs.Any(run => run.ProfileId == profileId))
-                return new(false, "ServerRunning", "Stop this server before preparing a move kit.");
-            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-                return new(false, "BackupsUnsupported", "This game does not have a reviewed backup path.");
-            return backups.PrepareMoveKit(profile, backupId, destinationRoot);
-        }
-        finally { gate.Release(); }
-    }
-
-    public HostMoveKitResult InspectMoveKit(string directory) => backups.InspectMoveKit(directory);
-
-    public async Task<BackupSafetyResult> RehearseRestoreAsync(Guid profileId, Guid backupId)
-    {
-        ServerProfile? profile;
-        await gate.WaitAsync();
-        try { profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId); }
-        finally { gate.Release(); }
-        if (profile is null)
-            return new(false, "UnknownProfile", "Choose a saved profile.", backupId, clock.GetUtcNow());
-        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-            return new(false, "BackupsUnsupported",
-                "Restore rehearsal is available only for reviewed built-in game drivers.", backupId, clock.GetUtcNow());
-        var result = backups.RehearseRestore(profile, backupId);
-        Activity("Backup", result.Ok ? "RestoreRehearsalCompleted" : "RestoreRehearsalFailed",
-            result.Ok ? "A completed backup restored into scratch storage and passed hash verification." :
-                "A disposable restore rehearsal failed; the live world was not changed.",
-            result.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
-        return result;
-    }
-
     public async Task<ActionResult> SafeRestartAsync(Guid profileId)
     {
         await gate.WaitAsync();
@@ -1750,169 +1712,6 @@ public sealed class HostManager
             return Result(true, "ServerChangeCompleted", "Maintenance ended after your game-join confirmation.");
         }
         finally { gate.Release(); }
-    }
-
-    private ActionResult CreateManualBackupUnderGate(Guid profileId, bool requireCompleteSetup = false)
-    {
-        if (data.Recovery.LifecycleBlocked)
-            return Result(false, "DataRecoveryRequired",
-                "Review and acknowledge the recovered local data before creating a backup.");
-        var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-        if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
-        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-            return Result(false, "BackupsUnsupported",
-                "Manual backups are available only for reviewed built-in game drivers.");
-        var activeSave = BlockIfSaveDirectoryActive(profile, "creating a manual backup");
-        if (activeSave is not null) return activeSave;
-        var saveDirectory = driver.ManagedSaveDirectory(profile);
-        if (saveDirectory is null)
-            return Result(false, "BackupsUnsupported",
-                "The selected driver does not expose a reviewed save-only directory.");
-        var created = backups.Create(profile, BackupKinds.Manual, saveDirectory);
-        if (created.Ok && requireCompleteSetup && created.Backup?.SetupIncluded != true)
-            return Result(false, "SetupCheckpointFailed",
-                "The world backup completed, but a complete setup checkpoint did not. No server files were changed.");
-        Activity("Backup", created.Ok ? "ManualBackupCompleted" : "ManualBackupFailed",
-            created.Ok ? "A local-owner offline backup completed." :
-                "A local-owner offline backup failed. Review world protection.",
-            created.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
-        return Result(created.Ok, created.Ok ? "ManualBackupCompleted" : created.Code, created.Message);
-    }
-
-    public async Task<ActionResult> RestoreBackupAsync(Guid profileId, Guid backupId)
-    {
-        await gate.WaitAsync();
-        try
-        {
-            if (data.Recovery.LifecycleBlocked)
-                return Result(false, "DataRecoveryRequired",
-                    "Review and acknowledge the recovered local data before restoring a backup.");
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
-            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-                return Result(false, "BackupsUnsupported", "Backups and restore are available only for reviewed built-in game drivers.");
-            var activeSave = BlockIfSaveDirectoryActive(profile, "restoring a backup");
-            if (activeSave is not null) return activeSave;
-            if (crashRecovery.RemoveAll(item => item.ProfileId == profileId) > 0)
-                data.SaveCrashRecoveryStates(crashRecovery);
-            var saveDirectory = driver.ManagedSaveDirectory(profile);
-            if (saveDirectory is null)
-                return Result(false, "BackupsUnsupported", "The selected driver does not expose a reviewed save-only directory.");
-            var restored = backups.Restore(profile, backupId, saveDirectory);
-            Activity("Backup", restored.Ok ? "RestoreCompleted" : "RestoreFailed",
-                restored.Ok ? "A local-owner backup restore completed." : "A local-owner backup restore failed. Review details locally.",
-                restored.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
-            return Result(restored.Ok, restored.Code, restored.Message);
-        }
-        finally { gate.Release(); }
-    }
-
-    public async Task<ActionResult> RestoreCompleteSetupAsync(Guid profileId, Guid backupId)
-    {
-        await gate.WaitAsync();
-        try
-        {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
-            if (ServerFileEditBlock(profile, "setup", allowPendingRestore: true) is { } blocked)
-                return Result(false, blocked.Code, blocked.Message);
-            if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups ||
-                driver.ManagedSaveDirectory(profile) is not { } saveDirectory)
-                return Result(false, "BackupsUnsupported", "This server does not have a reviewed save directory.");
-            ServerSetupSnapshot? setup;
-            try { setup = backups.ReadSetup(profile, backupId); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
-                                       System.Security.Cryptography.CryptographicException or JsonException)
-            { return Result(false, "SetupCheckpointInvalid", "The protected setup checkpoint could not be verified."); }
-            if (setup is null)
-                return Result(false, "SetupCheckpointMissing", "This backup contains only the world. Choose a newer complete setup checkpoint.");
-            try
-            {
-                // The pre-restore checkpoint must be able to capture the current configuration too.
-                ServerSetupSnapshots.Capture(profile, data);
-                data.SaveProtected(SetupRestorePendingName(profileId),
-                    System.Text.Encoding.UTF8.GetBytes(backupId.ToString("N")));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
-                                       System.Security.Cryptography.CryptographicException or JsonException or
-                                       ArgumentException or NotSupportedException)
-            { return Result(false, "SetupCheckpointFailed", "The current setup could not be protected before restore."); }
-            var restoredWorld = backups.Restore(profile, backupId, saveDirectory);
-            if (!restoredWorld.Ok || restoredWorld.PreRestoreBackupId is not { } beforeId)
-                return Result(false, "SetupRestoreRecoveryRequired",
-                    restoredWorld.Message + " Keep this server offline and retry a complete setup restore.");
-            try
-            {
-                ServerSetupSnapshots.Restore(profile, setup);
-                ServerAddOns.RestoreRecordedVersion(data, profile, setup.GameVersion);
-                var restoredAddOns = ServerAddOns.List(data, profile);
-                if (!restoredAddOns.Ok || restoredAddOns.StateToken != setup.AddOnStateToken)
-                    throw new InvalidDataException("The restored add-on inventory differs from the checkpoint.");
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
-                                       System.Security.Cryptography.CryptographicException or JsonException or
-                                       ArgumentException or NotSupportedException)
-            {
-                try
-                {
-                    var earlier = backups.ReadSetup(profile, beforeId);
-                    var rollbackWorld = backups.Restore(profile, beforeId, saveDirectory);
-                    if (!rollbackWorld.Ok || earlier is null)
-                        return Result(false, "SetupRestoreRecoveryRequired",
-                            "Setup restore failed after the world changed. The prior checkpoint is retained for recovery.");
-                    ServerSetupSnapshots.Restore(profile, earlier);
-                    ServerAddOns.RestoreRecordedVersion(data, profile, earlier.GameVersion);
-                    data.DeleteProtected(SetupRestorePendingName(profileId));
-                    return Result(false, "SetupRestoreRolledBack",
-                        "Setup restore failed; the prior world and reviewed configuration were restored. The server remains offline.");
-                }
-                catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException or
-                                                  InvalidDataException or System.Security.Cryptography.CryptographicException or
-                                                  JsonException or ArgumentException or NotSupportedException)
-                {
-                    return Result(false, "SetupRestoreRecoveryRequired",
-                        "Setup restore failed and automatic rollback was not confirmed. Keep this server offline and inspect the retained pre-restore checkpoint.");
-                }
-            }
-            try { data.DeleteProtected(SetupRestorePendingName(profileId)); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                return Result(false, "SetupRestoreRecoveryRequired",
-                "World and reviewed setup were restored, but the recovery marker could not be cleared. Retry the complete setup restore before Start.");
-            }
-            Activity("Backup", "CompleteSetupRestored",
-                "The Host restored the world, reviewed configuration, and managed add-on state from one checkpoint.",
-                ActivitySeverity.Important, profileId);
-            return Result(true, "CompleteSetupRestored",
-                "World and reviewed setup restored while offline. Start the server and check a real game join. " +
-                restoredWorld.Message);
-        }
-        finally { gate.Release(); }
-    }
-
-    private ActionResult? BlockIfSaveDirectoryActive(ServerProfile profile, string action)
-    {
-        foreach (var run in runs.Where(item => WorldConflict(item, profile)).ToList())
-        {
-            var identity = Identity(run);
-            if (identity == "Missing")
-            {
-                ArchiveDefinitivelyExitedRun(run, ServerSessionEndReason.ProcessExitedBeforeRestore);
-                continue;
-            }
-            var sameProfile = run.ProfileId == profile.Id;
-            var runningName = settings.Profiles.SingleOrDefault(item => item.Id == run.ProfileId)?.Name ?? "another server";
-            if (identity == "Matched")
-                return Result(false, sameProfile ? "ServerRunning" : "WorldRunning",
-                    sameProfile
-                        ? $"Stop the server gracefully before {action}."
-                        : $"{runningName} is using the same save directory. Stop it gracefully before {action}.");
-            return Result(false, "IdentityUnknown",
-                sameProfile
-                    ? $"Process identity is uncertain, so {action} remains blocked."
-                    : $"Process identity for {runningName} is uncertain. Resolve that run before {action}.");
-        }
-        return null;
     }
 
     public async Task<ActionResult> ExtendAutoShutdownAsync(Guid profileId, long minutes)
@@ -2183,14 +1982,24 @@ public sealed class HostManager
         finally { gate.Release(); }
     }
 
-    private HostSnapshot Snapshot()
+    private HostSnapshot Snapshot(bool includeOwnerData = true) => BuildSnapshot(includeOwnerData, advance: false);
+
+    private void AdvanceReadModel()
+    {
+        var snapshot = BuildSnapshot(includeOwnerData: false, advance: true);
+        Volatile.Write(ref lastCompanionSnapshot, snapshot);
+    }
+
+    private HostSnapshot BuildSnapshot(bool includeOwnerData, bool advance)
     {
         var now = clock.GetUtcNow();
         var recovery = data.Recovery;
         var views = settings.Profiles.Select(profile =>
         {
             var run = runs.SingleOrDefault(r => r.ProfileId == profile.Id);
-            if (run is null) return new RunView(profile.Id, "Offline", "No managed process", null);
+            if (run is null) return worldCopyReservations.Contains(profile.Id)
+                ? new RunView(profile.Id, "World copy in progress", "An offline backup or restore is in progress.", null)
+                : new RunView(profile.Id, "Offline", "No managed process", null);
             var identity = Identity(run);
             if (!games.TryGet(run.Kind, out var driver))
                 return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId, run.DeclaredPorts);
@@ -2215,20 +2024,24 @@ public sealed class HostManager
                 run.ProcessId, run.DeclaredPorts, PlayerCountTrusted: false));
         }
         var currentRunIds = runs.Select(run => run.ProfileId).ToHashSet();
-        resumeRevalidationProfiles.RemoveWhere(id => !currentRunIds.Contains(id));
+        if (advance) resumeRevalidationProfiles.RemoveWhere(id => !currentRunIds.Contains(id));
         var currentProfiles = views.Select(view => view.ProfileId).ToHashSet();
         if (recovery.LifecycleBlocked)
         {
-            shutdownDeadlines.Clear();
-            addedShutdownMinutes.Clear();
-            friendAddedMinutes.Clear();
+            if (advance)
+            {
+                shutdownDeadlines.Clear();
+                addedShutdownMinutes.Clear();
+                friendAddedMinutes.Clear();
+            }
         }
         else
         {
-            foreach (var profileId in shutdownDeadlines.Keys.Concat(addedShutdownMinutes.Keys)
-                         .Concat(friendAddedMinutes.Keys).Distinct()
-                         .Where(id => !currentProfiles.Contains(id)).ToList())
-                CancelCountdown(profileId, "The saved server is no longer available.", true);
+            if (advance)
+                foreach (var profileId in shutdownDeadlines.Keys.Concat(addedShutdownMinutes.Keys)
+                             .Concat(friendAddedMinutes.Keys).Distinct()
+                             .Where(id => !currentProfiles.Contains(id)).ToList())
+                    CancelCountdown(profileId, "The saved server is no longer available.", true);
         }
         for (var index = 0; index < views.Count; index++)
         {
@@ -2255,7 +2068,7 @@ public sealed class HostManager
             {
                 if (resumeRevalidationProfiles.Contains(view.ProfileId))
                 {
-                    CancelCountdown(view.ProfileId, "Windows resumed and a fresh server observation is pending.");
+                    if (advance) CancelCountdown(view.ProfileId, "Windows resumed and a fresh server observation is pending.");
                     views[index] = view with
                     {
                         AutoShutdownReason = WithSavedTime(view.ProfileId,
@@ -2263,13 +2076,13 @@ public sealed class HostManager
                     };
                     continue;
                 }
-                CancelCountdown(view.ProfileId, "The server is no longer Ready.", true);
+                if (advance) CancelCountdown(view.ProfileId, "The server is no longer Ready.", true);
                 views[index] = view with { HostAddedTime = false, FriendAddedMinutes = 0, AddedShutdownMinutes = 0 };
                 continue;
             }
             if (!settings.AutoShutdownEnabled)
             {
-                CancelCountdown(view.ProfileId, "Automatic shutdown was turned off.", true);
+                if (advance) CancelCountdown(view.ProfileId, "Automatic shutdown was turned off.", true);
                 views[index] = view with
                 {
                     AutoShutdownReason = "Automatic shutdown is off.",
@@ -2279,9 +2092,18 @@ public sealed class HostManager
                 };
                 continue;
             }
+            if (view.OnlinePlayers is null)
+            {
+                if (advance) CancelCountdown(view.ProfileId, "The current player count became unknown.");
+                views[index] = view with
+                {
+                    AutoShutdownReason = WithSavedTime(view.ProfileId, "Waiting for a reliable player count.")
+                };
+                continue;
+            }
             if (!view.PlayerCountTrusted)
             {
-                CancelCountdown(view.ProfileId, "The authoritative player count became unavailable.");
+                if (advance) CancelCountdown(view.ProfileId, "The authoritative player count became unavailable.");
                 var reason = view.Detail.Contains("Custom", StringComparison.OrdinalIgnoreCase)
                     ? "Owner certification and a fresh valid Custom contract-v2 player count are required for automatic shutdown."
                     : "A fresh authoritative player count is required for automatic shutdown.";
@@ -2291,18 +2113,9 @@ public sealed class HostManager
                 };
                 continue;
             }
-            if (view.OnlinePlayers is null)
-            {
-                CancelCountdown(view.ProfileId, "The current player count became unknown.");
-                views[index] = view with
-                {
-                    AutoShutdownReason = WithSavedTime(view.ProfileId, "Waiting for a reliable player count.")
-                };
-                continue;
-            }
             if (view.OnlinePlayers != 0)
             {
-                CancelCountdown(view.ProfileId, "A player joined the server.");
+                if (advance) CancelCountdown(view.ProfileId, "A player joined the server.");
                 views[index] = view with
                 {
                     AutoShutdownReason = WithSavedTime(view.ProfileId, "Waiting for the server to be empty.")
@@ -2313,20 +2126,27 @@ public sealed class HostManager
             {
                 var addedMinutes = addedShutdownMinutes.GetValueOrDefault(view.ProfileId);
                 deadline = now.AddMinutes(settings.IdleMinutes).AddMinutes(addedMinutes);
-                shutdownDeadlines[view.ProfileId] = deadline;
-                Activity("Countdown", "Started",
-                    addedMinutes > 0
-                        ? $"The empty-server countdown started for {settings.IdleMinutes} minutes plus {addedMinutes} saved added minute{(addedMinutes == 1 ? "" : "s")}."
-                        : $"The empty-server countdown started for {settings.IdleMinutes} minutes.",
-                    ActivitySeverity.Important, view.ProfileId,
-                    visibility: ActivityVisibility.AssignedFriends);
+                if (advance)
+                {
+                    shutdownDeadlines[view.ProfileId] = deadline;
+                    Activity("Countdown", "Started",
+                        addedMinutes > 0
+                            ? $"The empty-server countdown started for {settings.IdleMinutes} minutes plus {addedMinutes} saved added minute{(addedMinutes == 1 ? "" : "s")}."
+                            : $"The empty-server countdown started for {settings.IdleMinutes} minutes.",
+                        ActivitySeverity.Important, view.ProfileId,
+                        visibility: ActivityVisibility.AssignedFriends);
+                }
             }
             views[index] = view with
             {
-                AutoShutdownAtUtc = deadline
+                AutoShutdownAtUtc = advance || shutdownDeadlines.ContainsKey(view.ProfileId) ? deadline : null
             };
         }
-        var hostingPower = ReconcileHostingPower();
+        if (advance) hostingPowerView = ReconcileHostingPower();
+        if (!includeOwnerData)
+            return new HostSnapshot(settings, views,
+                "Recorded process identity and game-specific local readiness; Friend join and save unverified",
+                "Host", new Dictionary<Guid, bool>(), "");
         return new HostSnapshot(settings, views, "Recorded process identity and game-specific local readiness; Friend join and save unverified", "Host",
             settings.Profiles.Where(profile => profile.Kind == "Valheim")
                 .ToDictionary(profile => profile.Id, profile => data.HasValheimPassword(profile.Id)),
@@ -2334,10 +2154,10 @@ public sealed class HostManager
             settings.Profiles.Where(profile => profile.Kind == GameKinds.Custom)
                 .ToDictionary(profile => profile.Id, CertificationState),
             crashRecovery.ToDictionary(item => item.ProfileId, item => item),
-            settings.Profiles.ToDictionary(profile => profile.Id, profile => backups.Status(profile.Id)),
+            backups.Statuses(settings.Profiles.Select(profile => profile.Id)),
             data.LoadActivity(100),
             recovery,
-            hostingPower,
+            hostingPowerView,
             storageHealth.Read(settings),
             startupRecovery?.View(views, settings));
     }
@@ -2408,8 +2228,13 @@ public sealed class HostManager
     }
 
     private ActionResult Result(bool ok, string code, string message,
-        IReadOnlyList<PortConflictView>? portConflicts = null) =>
-        new(ok, code, message, Snapshot(), portConflicts);
+        IReadOnlyList<PortConflictView>? portConflicts = null)
+    {
+        AdvanceReadModel();
+        var snapshot = Snapshot();
+        Volatile.Write(ref lastOwnerSnapshot, snapshot);
+        return new(ok, code, message, snapshot, portConflicts);
+    }
 
     private PortConflictView PortConflict(ManagedRun run, IReadOnlyList<GamePort> sharedPorts)
     {
@@ -2462,7 +2287,8 @@ public sealed class HostManager
         if (observations.TryGetValue(run.ProfileId, out var observation) &&
             observation.OperationId == run.OperationId)
         {
-            if (now - observation.ObservedUtc <= TimeSpan.FromSeconds(10))
+            if (now >= observation.ObservedUtc &&
+                now - observation.ObservedUtc <= TimeSpan.FromSeconds(10))
                 return new(observation.Ok, observation.Source, observation.State, observation.Detail,
                     observation.OnlinePlayers, observation.MaxPlayers, observation.PlayerNames,
                     observation.PlayerCountTrusted);
@@ -2557,8 +2383,13 @@ public sealed class HostManager
         };
 
     private CustomCertificationResult CertificationResult(bool ok, string code, string message,
-        CustomCertificationState certification) =>
-        new(ok, code, message, Snapshot(), certification);
+        CustomCertificationState certification)
+    {
+        AdvanceReadModel();
+        var snapshot = Snapshot();
+        Volatile.Write(ref lastOwnerSnapshot, snapshot);
+        return new(ok, code, message, snapshot, certification);
+    }
 
     private CustomCertificationResult FailCertification(ServerProfile profile,
         CustomCertificationSession session, string code, string message)
@@ -2697,38 +2528,10 @@ public sealed class HostManager
                 return "Backup free-space reserve must be between 0 and 1048576 MB.";
             if (!ValheimSetup.ValidWorldId(profile.WorldId))
                 return "World ID must be a valid file name of at most 64 characters.";
-            if (profile.Kind == "Valheim" && profile.WorldSource is not ("Existing" or "New"))
-                return "Choose an existing imported world or explicitly create a new world.";
-            if (profile.Kind == "Valheim" && (string.IsNullOrWhiteSpace(profile.ServerName) ||
-                profile.ServerName.Length > 80 || profile.ServerName.Any(char.IsControl)))
-                return "Valheim server name must be 1 to 80 characters without control characters.";
             if (profile.GamePort < 1024 || profile.GamePort > (profile.Kind == GameKinds.Valheim ? 65534 : 65535))
                 return "Game port is outside the valid range for this game.";
-            if (profile.Kind == GameKinds.Custom)
-            {
-                var custom = profile.Custom;
-                if (custom is null || string.IsNullOrWhiteSpace(custom.GameName) || custom.GameName.Length > 80 ||
-                    custom.GameName.Any(char.IsControl))
-                    return "Custom game name must be 1 to 80 characters without control characters.";
-                if (custom.PrimaryProtocol is not ("TCP" or "UDP"))
-                    return "Custom primary protocol must be TCP or UDP.";
-                if (custom.AdditionalPorts is null || custom.AdditionalPorts.Count > 15)
-                    return "A custom game may declare at most 15 additional ports.";
-                foreach (var port in custom.AdditionalPorts)
-                {
-                    if (port.Protocol is not ("TCP" or "UDP") || port.Port is < 1024 or > 65535 ||
-                        port.Family is not ("Any" or "IPv4" or "IPv6") ||
-                        string.IsNullOrWhiteSpace(port.Label) || port.Label.Length > 64 || port.Label.Any(char.IsControl))
-                        return "Each custom port needs TCP or UDP, a port from 1024 to 65535, a valid address family, and a short label.";
-                }
-            }
-            if (profile.Kind == GameKinds.Factorio)
-            {
-                profile.Factorio ??= new FactorioOptions();
-                if (profile.Factorio.RconPort is < 1024 or > 65535 ||
-                    profile.Factorio.RconPort == profile.GamePort)
-                    return "Factorio needs a separate local RCON port from 1024 to 65535.";
-            }
+            if (profileDriver.ValidateSavedProfile(profile) is { } driverValidation)
+                return driverValidation.Message;
             if (string.IsNullOrWhiteSpace(profile.WorldDirectory))
                 return profile.Kind == "Valheim" && profile.WorldSource == "Existing"
                     ? "Choose and copy an existing world in Setup step 1."

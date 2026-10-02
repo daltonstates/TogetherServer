@@ -23,7 +23,7 @@ internal static class FactorioSetup
         {
             if (!Path.GetExtension(source).Equals(".zip", StringComparison.OrdinalIgnoreCase) ||
                 !ValheimSetup.ValidWorldId(worldId) || !File.Exists(source) ||
-                (File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
+                !ManagedImportFiles.PlainFile(source))
                 return new(false, "InvalidFactorioSave", "Choose an existing Factorio .zip save that is not a link.");
             if (AppInstance.ContainsPath(data.FactorioServersRoot, source))
                 return new(false, "ManagedFactorioSave", "Choose the original save outside TogetherServer's managed copy.");
@@ -37,37 +37,14 @@ internal static class FactorioSetup
         var stage = Path.Combine(data.FactorioServersRoot, ".import-" + Guid.NewGuid().ToString("N"));
         try
         {
-            EnsurePlainDirectory(data.FactorioServersRoot, "The managed Factorio root");
-            EnsurePlainDirectory(profileRoot, "The managed Factorio profile folder");
+            ManagedImportFiles.EnsurePlainDirectory(data.FactorioServersRoot, "The managed Factorio root");
+            ManagedImportFiles.EnsurePlainDirectory(profileRoot, "The managed Factorio profile folder");
             if (Directory.Exists(destination))
                 return new(false, "AlreadyImported",
                     "This save name already has a managed copy for this server. The existing copy was not overwritten.");
-            EnsurePlainDirectory(stage, "The Factorio import staging folder");
+            ManagedImportFiles.EnsurePlainDirectory(stage, "The Factorio import staging folder");
             var target = Path.Combine(stage, worldId + ".zip");
-            long length;
-            string sourceHash;
-            using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read,
-                       1024 * 1024, FileOptions.SequentialScan))
-            using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                       1024 * 1024, FileOptions.SequentialScan))
-            using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
-            {
-                var buffer = new byte[1024 * 1024];
-                length = 0;
-                int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    output.Write(buffer, 0, read);
-                    hash.AppendData(buffer, 0, read);
-                    length = checked(length + read);
-                }
-                output.Flush(true);
-                sourceHash = Convert.ToHexString(hash.GetHashAndReset());
-            }
-            using (var copied = File.OpenRead(target))
-                if (copied.Length != length ||
-                    !CryptographicOperations.FixedTimeEquals(Convert.FromHexString(sourceHash), SHA256.HashData(copied)))
-                    throw new CryptographicException("The managed Factorio save copy did not verify.");
+            var length = ManagedImportFiles.CopyVerified(source, target);
             using (var archive = ZipFile.OpenRead(target))
                 if (archive.Entries.Count == 0)
                     throw new InvalidDataException("The selected Factorio save archive is empty.");
@@ -105,24 +82,14 @@ internal static class FactorioSetup
             var expected = Path.Combine(data.FactorioServersRoot, profile.Id.ToString("N"), profile.WorldId);
             return Path.GetFullPath(profile.WorldDirectory).Equals(Path.GetFullPath(expected),
                        StringComparison.OrdinalIgnoreCase) &&
-                   PlainDirectory(data.FactorioServersRoot) &&
-                   PlainDirectory(Path.GetDirectoryName(expected)!) && PlainDirectory(expected) &&
-                   PlainFile(Path.Combine(expected, profile.WorldId + ".zip"));
+                   ManagedImportFiles.PlainDirectory(data.FactorioServersRoot) &&
+                   ManagedImportFiles.PlainDirectory(Path.GetDirectoryName(expected)!) &&
+                   ManagedImportFiles.PlainDirectory(expected) &&
+                   ManagedImportFiles.PlainFile(Path.Combine(expected, profile.WorldId + ".zip"));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
                                    NotSupportedException or PathTooLongException or System.Security.SecurityException)
         { return false; }
     }
 
-    private static void EnsurePlainDirectory(string path, string description)
-    {
-        Directory.CreateDirectory(path);
-        if (!PlainDirectory(path)) throw new InvalidDataException(description + " cannot be a link or reparse point.");
-    }
-
-    private static bool PlainDirectory(string path) => Directory.Exists(path) &&
-        (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0;
-
-    private static bool PlainFile(string path) => File.Exists(path) &&
-        (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0;
 }

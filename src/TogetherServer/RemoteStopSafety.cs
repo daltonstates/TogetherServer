@@ -8,7 +8,7 @@ namespace TogetherServer;
 public static class RemoteStopSafety
 {
     public static StopPermit TryAcquire(HostSnapshot snapshot, Guid profileId, LocalData data,
-        GameServerRegistry games)
+        GameServerRegistry games, IReadOnlyList<ManagedRun>? recordedRuns = null)
     {
         var profile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
         if (profile is null) return StopPermit.Denied("InvalidProfile", "The saved server is unavailable.");
@@ -20,17 +20,17 @@ public static class RemoteStopSafety
         var view = snapshot.Runs.SingleOrDefault(item => item.ProfileId == profileId);
         if (view?.State != "Ready")
             return StopPermit.Denied("ServerNotReady", "Remote Stop needs a running, ready server.");
-        if (!view.PlayerCountTrusted)
-            return StopPermit.Denied("PlayerCountUntrusted",
-                "This server does not have a fresh authoritative player count. Custom profiles need a matching owner certification and contract-v2 proof. Remote Stop is blocked; the Host can stop it locally.");
         if (view.OnlinePlayers is null)
             return StopPermit.Denied("PlayerCountUnknown",
                 "The server did not report a current online-player count. Remote Stop is blocked; the Host can stop it locally.");
+        if (!view.PlayerCountTrusted)
+            return StopPermit.Denied("PlayerCountUntrusted",
+                "This server does not have a fresh authoritative player count. Custom profiles need a matching owner certification and contract-v2 proof. Remote Stop is blocked; the Host can stop it locally.");
         if (view.OnlinePlayers > 0)
             return StopPermit.Denied("PlayersOnline",
                 $"Remote Stop is blocked while {view.OnlinePlayers} {PlayerWord(view.OnlinePlayers.Value)} online. The Host can stop it locally.");
 
-        var recorded = data.LoadRuns().SingleOrDefault(item => item.ProfileId == profileId);
+        var recorded = (recordedRuns ?? data.LoadRuns()).SingleOrDefault(item => item.ProfileId == profileId);
         if (recorded is null || recorded.OperationId == Guid.Empty || recorded.Kind != profile.Kind ||
             !games.TryGet(recorded.Kind, out var driver))
             return StopPermit.Denied("PlayerCountUnknown",

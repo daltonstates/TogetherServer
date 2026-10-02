@@ -127,7 +127,7 @@ function FriendStopBlockers({ snapshot, profile }: { snapshot: FriendSnapshot; p
 function statusTone(state: string) {
   if (['Ready', 'Connected', 'Process running'].includes(state)) return 'running'
   if (['Failed', 'Revoked'].includes(state)) return 'error'
-  if (['Disabled', 'Starting', 'Stopping', 'Access expired'].includes(state)) return 'paused'
+  if (['Disabled', 'Starting', 'Listening', 'World copy in progress', 'Stopping', 'Access expired'].includes(state)) return 'paused'
   if (state === 'Offline') return 'offline'
   return 'unknown'
 }
@@ -1212,7 +1212,7 @@ function App() {
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
     `${profile.name} ${profileGameLabel(profile)}`.toLocaleLowerCase().includes(normalizedServerSearch))
   const activeRuns = snapshot?.mode === 'Host'
-    ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Ready'].includes(run.state)).length : 0
+    ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Listening', 'Ready'].includes(run.state)).length : 0
   const currentRouteResult = !dirty && companion?.listenerActive
     ? currentOutsideResult(portDiagnostics?.control, internetRouteCheck) : null
   const previousRouteVerdict = !currentRouteResult &&
@@ -1417,20 +1417,22 @@ function App() {
                 onRefresh={() => void friendAction(profile.id, 'refresh')} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
               {profile.operation && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
               {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
-              {profile.state === 'Ready' && profile.joinAddress && <ConnectionDetails
+              {['Ready', 'Listening'].includes(profile.state) && profile.joinAddress && <ConnectionDetails
                 fields={[{ id: addressKey, label: 'Server IP', value: profile.joinAddress,
                   revealed: !!revealedConnections[addressKey], copying: addressActivity === 'copy', revealing: false,
                   onReveal: () => revealConnectionDetails(addressKey), onHide: () => hideConnectionDetails(addressKey),
                   onCopy: () => void copyConnectionValue(addressKey, profile.joinAddress!, 'Server IP') }]}
-                 refreshing={pending === 'poll'} note={profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
+                 refreshing={pending === 'poll'} note={profile.state === 'Listening'
+                   ? 'Only the local listener was detected. A real join and saved change still need checking.'
+                   : profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                  />}
-              {profile.state === 'Ready' && profile.joinAddress && <JoinGuide kind={profile.kind} />}
+              {['Ready', 'Listening'].includes(profile.state) && profile.joinAddress && <JoinGuide kind={profile.kind} />}
               <div className="actions server-actions">
                 {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
-                {profile.state === 'Ready' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
+                {['Ready', 'Listening'].includes(profile.state) && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
                 {logAvailability.visible && <div className="friend-log-surface">
                   <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
@@ -1448,7 +1450,7 @@ function App() {
                   : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
               <FriendStopBlockers snapshot={snapshot} profile={profile} />
               {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
-              {profile.state === 'Ready' && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
+              {['Ready', 'Listening'].includes(profile.state) && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
             </article>
           })}
           </div>}
@@ -1530,12 +1532,13 @@ function App() {
                   onBackup={() => void createManualBackup(profile.id)}
                   onStart={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}
                   onOpenDoctor={() => openHostSettings('network')} /></div>
-                {hostServerTab === 'overview' && status?.state === 'Ready' && gameAddress && <ConnectionDetails fields={connectionFields}
-                  refreshing={checkingPorts || detectingPublicIp} />}
+                {hostServerTab === 'overview' && ['Ready', 'Listening'].includes(status?.state ?? '') && gameAddress && <ConnectionDetails fields={connectionFields}
+                  refreshing={checkingPorts || detectingPublicIp}
+                  note={status?.state === 'Listening' ? 'Only the local listener was detected. A real join and saved change still need checking.' : undefined} />}
                 {status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && status.playerCountTrusted && status.onlinePlayers !== null && <div className="timer-extension"><label>Add shutdown time<Input type="number" min="1" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Saved if players join and applied when the server next reaches 0 players.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
                 <div hidden={hostServerTab !== 'overview'} className="actions server-actions">
                   {status?.state === 'Offline' && <Button disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
-                  {['Process running', 'Starting', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
+                  {['Process running', 'Starting', 'Listening', 'Ready'].includes(status?.state ?? '') && <Button disabled={!!pending || dirty} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
                   {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => { hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}>{pending === `restart-${profile.id}` ? <><Icon name="loader" /><span>Restarting…</span></> : <><Icon name="refresh" /><span>Restart server</span></>}</Button>}
                   <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
                 </div>

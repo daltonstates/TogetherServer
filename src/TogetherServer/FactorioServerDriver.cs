@@ -24,6 +24,14 @@ internal sealed class FactorioServerDriver(LocalData data) : IGameServerDriver
     public string? JoinAddress(ServerProfile profile, string? publicIp) =>
         GameConnection.IsPublicIpv4(publicIp) ? $"{IPAddress.Parse(publicIp!)}:{profile.GamePort}" : null;
 
+    public GameValidation? ValidateSavedProfile(ServerProfile profile)
+    {
+        profile.Factorio ??= new FactorioOptions();
+        return profile.Factorio.RconPort is < 1024 or > 65535 || profile.Factorio.RconPort == profile.GamePort
+            ? new("FactorioRconPortInvalid", "Factorio needs a separate local RCON port from 1024 to 65535.")
+            : null;
+    }
+
     public GameValidation? ValidateForStart(ServerProfile profile)
     {
         if (!Path.GetFileName(profile.ExecutablePath).Equals("factorio.exe", StringComparison.OrdinalIgnoreCase) ||
@@ -110,7 +118,7 @@ internal sealed class FactorioServerDriver(LocalData data) : IGameServerDriver
                     "Factorio answered authenticated local RCON, but the player count was invalid; remote Stop stays blocked.");
             return new(true, "FactorioRconReady", "Ready",
                 $"Factorio authenticated local RCON and reports {players} player{(players == 1 ? "" : "s")} online. Real Friend join and save acceptance remain pending.",
-                players);
+                players, PlayerCountTrusted: true);
         }
         catch (Exception ex) when (ex is SocketException or IOException or TimeoutException or
                                    InvalidDataException or UnauthorizedAccessException)

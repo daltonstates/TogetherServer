@@ -21,23 +21,23 @@ internal static class TerrariaSetup
             var source = Path.GetFullPath(sourcePath);
             var worldId = Path.GetFileNameWithoutExtension(source);
             if (!Path.GetExtension(source).Equals(".wld", StringComparison.OrdinalIgnoreCase) ||
-                !ValheimSetup.ValidWorldId(worldId) || !PlainFile(source) ||
+                !ValheimSetup.ValidWorldId(worldId) || !ManagedImportFiles.PlainFile(source) ||
                 AppInstance.ContainsPath(data.ManagedWorldsRoot, source))
                 return new(false, "InvalidTerrariaWorld", "Choose an original Terraria .wld file outside managed storage.");
             var destination = data.NewWorldDirectory(profileId);
             if (Directory.Exists(destination))
                 return new(false, "AlreadyImported", "This server already has managed world storage. No files were replaced.");
             Directory.CreateDirectory(data.ManagedWorldsRoot);
-            if (!PlainDirectory(data.ManagedWorldsRoot))
+            if (!ManagedImportFiles.PlainDirectory(data.ManagedWorldsRoot))
                 throw new InvalidDataException("Managed world storage cannot be a filesystem link.");
             stage = Path.Combine(data.ManagedWorldsRoot, ".terraria-import-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(stage);
-            CopyVerified(source, Path.Combine(stage, worldId + ".wld"));
+            ManagedImportFiles.CopyVerified(source, Path.Combine(stage, worldId + ".wld"));
             var backup = source + ".bak";
             if (File.Exists(backup))
             {
-                if (!PlainFile(backup)) throw new InvalidDataException("The Terraria world backup is linked.");
-                CopyVerified(backup, Path.Combine(stage, worldId + ".wld.bak"));
+                if (!ManagedImportFiles.PlainFile(backup)) throw new InvalidDataException("The Terraria world backup is linked.");
+                ManagedImportFiles.CopyVerified(backup, Path.Combine(stage, worldId + ".wld.bak"));
             }
             Directory.Move(stage, destination);
             stage = "";
@@ -68,34 +68,14 @@ internal static class TerrariaSetup
         {
             var expected = data.NewWorldDirectory(profile.Id);
             return Path.GetFullPath(profile.WorldDirectory).Equals(Path.GetFullPath(expected),
-                       StringComparison.OrdinalIgnoreCase) && PlainDirectory(data.ManagedWorldsRoot) &&
-                   PlainDirectory(expected) && PlainFile(Path.Combine(expected, profile.WorldId + ".wld"));
+                       StringComparison.OrdinalIgnoreCase) && ManagedImportFiles.PlainDirectory(data.ManagedWorldsRoot) &&
+                   ManagedImportFiles.PlainDirectory(expected) &&
+                   ManagedImportFiles.PlainFile(Path.Combine(expected, profile.WorldId + ".wld"));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         { return false; }
     }
 
-    private static void CopyVerified(string source, string destination)
-    {
-        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read,
-                   1024 * 1024, FileOptions.SequentialScan))
-        using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                   1024 * 1024, FileOptions.SequentialScan))
-        {
-            input.CopyTo(output);
-            output.Flush(true);
-        }
-        using var original = File.OpenRead(source);
-        using var copy = File.OpenRead(destination);
-        if (original.Length != copy.Length ||
-            !CryptographicOperations.FixedTimeEquals(SHA256.HashData(original), SHA256.HashData(copy)))
-            throw new CryptographicException("The copied Terraria world did not match its source.");
-    }
-
-    private static bool PlainFile(string path) => File.Exists(path) &&
-        (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0;
-    private static bool PlainDirectory(string path) => Directory.Exists(path) &&
-        (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0;
 }
 
 internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
@@ -149,7 +129,7 @@ internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
             using var client = new TcpClient(AddressFamily.InterNetwork);
             using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
             client.ConnectAsync(IPAddress.Loopback, run.GamePort, timeout.Token).GetAwaiter().GetResult();
-            return new(true, "TerrariaTcpOpen", "Ready",
+            return new(true, "TerrariaTcpOpen", "Listening",
                 "A local TCP listener is open. Terraria readiness, player count, Friend join, and save integrity are unverified; remote Stop stays blocked.",
                 PlayerCountTrusted: false);
         }

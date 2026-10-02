@@ -28,6 +28,24 @@ internal sealed class CustomGameServerDriver(LocalData data) : IGameServerDriver
         profile.Custom?.ShareJoinAddress == true && GameConnection.IsPublicIpv4(publicIp)
             ? $"{IPAddress.Parse(publicIp!)}:{profile.GamePort}" : null;
 
+    public GameValidation? ValidateSavedProfile(ServerProfile profile)
+    {
+        var custom = profile.Custom;
+        if (custom is null || string.IsNullOrWhiteSpace(custom.GameName) || custom.GameName.Length > 80 ||
+            custom.GameName.Any(char.IsControl))
+            return new("CustomGameNameInvalid", "Custom game name must be 1 to 80 characters without control characters.");
+        if (custom.PrimaryProtocol is not ("TCP" or "UDP"))
+            return new("CustomPrimaryProtocolInvalid", "Custom primary protocol must be TCP or UDP.");
+        if (custom.AdditionalPorts is null || custom.AdditionalPorts.Count > 15)
+            return new("CustomPortCountInvalid", "A custom game may declare at most 15 additional ports.");
+        foreach (var port in custom.AdditionalPorts)
+            if (port.Protocol is not ("TCP" or "UDP") || port.Port is < 1024 or > 65535 ||
+                port.Family is not ("Any" or "IPv4" or "IPv6") ||
+                string.IsNullOrWhiteSpace(port.Label) || port.Label.Length > 64 || port.Label.Any(char.IsControl))
+                return new("CustomPortInvalid", "Each custom port needs TCP or UDP, a port from 1024 to 65535, a valid address family, and a short label.");
+        return null;
+    }
+
     public GameValidation? ValidateForStart(ServerProfile profile)
     {
         if (!OperatingSystem.IsWindows() || !File.Exists(CustomPowerShell.Path))

@@ -169,13 +169,16 @@ internal sealed class WorldBackupService
     private const string RestoreTransactionsFile = "restore-transactions.json";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly LocalData data;
+    private readonly GameServerRegistry games;
     private readonly TimeProvider clock;
     private readonly Func<string, long> availableSpace;
     private readonly object sync = new();
 
-    public WorldBackupService(LocalData data, TimeProvider clock, Func<string, long>? availableSpace = null)
+    public WorldBackupService(LocalData data, TimeProvider clock, Func<string, long>? availableSpace = null,
+        GameServerRegistry? games = null)
     {
         this.data = data;
+        this.games = games ?? new GameServerRegistry(data);
         this.clock = clock;
         this.availableSpace = availableSpace ?? (path => new DriveInfo(path).AvailableFreeSpace);
         Directory.CreateDirectory(data.BackupsRoot);
@@ -185,30 +188,37 @@ internal sealed class WorldBackupService
 
     public IReadOnlyList<WorldBackupRecord> List(Guid profileId)
     {
-        lock (sync)
-            return data.LoadBackupCatalog().Records.Where(item => item.ProfileId == profileId)
-                .OrderByDescending(item => item.CreatedUtc).ToList();
+        return data.LoadBackupCatalog().Records.Where(item => item.ProfileId == profileId)
+            .OrderByDescending(item => item.CreatedUtc).ToList();
     }
 
-    public WorldBackupStatus Status(Guid profileId)
+    public WorldBackupStatus Status(Guid profileId) => Statuses([profileId])[profileId];
+
+    public IReadOnlyDictionary<Guid, WorldBackupStatus> Statuses(IEnumerable<Guid> profileIds)
     {
-        lock (sync)
+        var ids = profileIds.Distinct().ToList();
+        var catalog = data.LoadBackupCatalog();
+        long? freeSpace = null;
+        try { freeSpace = availableSpace(data.BackupsRoot); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or
+            NotSupportedException or System.ComponentModel.Win32Exception)
+        { }
+        var records = catalog.Records.GroupBy(item => item.ProfileId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+        var failures = catalog.Failures.GroupBy(item => item.ProfileId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.FailedUtc).First());
+        var result = new Dictionary<Guid, WorldBackupStatus>(ids.Count);
+        foreach (var profileId in ids)
         {
-            var catalog = data.LoadBackupCatalog();
-            var completed = catalog.Records.Where(item => item.ProfileId == profileId).ToList();
-            var failure = catalog.Failures.Where(item => item.ProfileId == profileId)
-                .OrderByDescending(item => item.FailedUtc).FirstOrDefault();
+            var completed = records.GetValueOrDefault(profileId) ?? [];
+            var failure = failures.GetValueOrDefault(profileId);
             long retainedSize;
             try { retainedSize = completed.Aggregate(0L, (total, item) => checked(total + item.SizeBytes)); }
             catch (OverflowException) { retainedSize = long.MaxValue; }
-            long? freeSpace = null;
-            try { freeSpace = availableSpace(data.BackupsRoot); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or
-                NotSupportedException or System.ComponentModel.Win32Exception)
-            { }
-            return new(profileId, completed.Count == 0 ? null : completed.Max(item => item.CreatedUtc),
+            result[profileId] = new(profileId, completed.Count == 0 ? null : completed.Max(item => item.CreatedUtc),
                 failure?.FailedUtc, failure?.Message, completed.Count, retainedSize, freeSpace);
         }
+        return result;
     }
 
     public WorldBackupResult Create(ServerProfile profile, string backupKind) =>
@@ -935,7 +945,7 @@ internal sealed class WorldBackupService
         catch (Exception ex) when (StateWriteFailure(ex)) { return false; }
     }
 
-    private static WorldRestorePaths AuthorizeRestoreTransaction(WorldRestoreTransaction transaction,
+    private WorldRestorePaths AuthorizeRestoreTransaction(WorldRestoreTransaction transaction,
         HostSettings settings, BackupCatalog catalog)
     {
         if (transaction.Id == Guid.Empty || transaction.ProfileId == Guid.Empty || transaction.BackupId == Guid.Empty ||
@@ -948,10 +958,12 @@ internal sealed class WorldBackupService
             throw new InvalidDataException("An interrupted restore journal entry is invalid.");
         var profile = settings.Profiles.SingleOrDefault(item => item is not null && item.Id == transaction.ProfileId)
             ?? throw new InvalidDataException("An interrupted restore no longer has a saved server profile.");
-        if (!string.Equals(profile.Kind, transaction.Kind, StringComparison.Ordinal) ||
+        if (!games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups ||
+            driver.ManagedSaveDirectory(profile) is not { } expectedSaveDirectory ||
+            !string.Equals(profile.Kind, transaction.Kind, StringComparison.Ordinal) ||
             !string.Equals(profile.WorldId, transaction.WorldId, StringComparison.Ordinal) ||
             !SamePath(profile.WorldDirectory, transaction.ProfileWorldDirectory) ||
-            !SamePath(ExpectedSaveDirectory(profile), transaction.WorldDirectory))
+            !SamePath(expectedSaveDirectory, transaction.WorldDirectory))
             throw new InvalidDataException("An interrupted restore does not match its saved server profile.");
         var backup = catalog.Records.SingleOrDefault(item => item is not null && item.Id == transaction.BackupId &&
             item.ProfileId == transaction.ProfileId);
@@ -1002,13 +1014,6 @@ internal sealed class WorldBackupService
         }
         throw new InvalidDataException("Interrupted restore journal has no live, staged, or rollback directory.");
     }
-
-    private static string ExpectedSaveDirectory(ServerProfile profile) => profile.Kind switch
-    {
-        GameKinds.MinecraftJava => Path.Combine(profile.WorldDirectory, profile.WorldId),
-        GameKinds.MinecraftBedrock => Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId),
-        _ => profile.WorldDirectory
-    };
 
     private static bool SamePath(string left, string right) =>
         NormalizeRestoreWorld(left).Equals(NormalizeRestoreWorld(right), StringComparison.OrdinalIgnoreCase);

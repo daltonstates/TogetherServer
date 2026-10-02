@@ -116,7 +116,7 @@ internal abstract class MinecraftServerDriver(LocalData data, bool java) : IGame
         return status.Players is { } players
             ? new(true, "MinecraftLocalStatus", "Ready",
                 $"Minecraft reports {players.Online} of {players.Capacity?.ToString() ?? "?"} players online. Friend join and save are unverified.",
-                players.Online, players.Capacity)
+                players.Online, players.Capacity, PlayerCountTrusted: true)
             : new(true, "MinecraftLocalStatus", "Ready",
                 "Minecraft answered its local status request, but its player count was invalid or unavailable; remote Stop is blocked.");
     }

@@ -378,7 +378,7 @@ app.MapPost("/api/local/update/install", async (HttpContext context) =>
 app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
     ? Results.Json(new { ok = true, code = "WindowShown" })
     : Results.Conflict(new { ok = false, code = "WindowUnavailable" }));
-async Task<IResult> HostOnly(Func<Task<ActionResult>> action)
+async Task<IResult> HostOnly<T>(Func<Task<T>> action)
 {
     await modeGate.WaitAsync();
     try
@@ -389,16 +389,11 @@ async Task<IResult> HostOnly(Func<Task<ActionResult>> action)
     }
     finally { modeGate.Release(); }
 }
-async Task<IResult> HostOnlyCertification(Func<Task<CustomCertificationResult>> action)
+async Task<IResult> OwnerGet<T>(HttpContext context, Func<Task<T>> action, string area)
 {
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
-        return Results.Json(await action());
-    }
-    finally { modeGate.Release(); }
+    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = $"{area} are Host-only." });
+    return Results.Json(await action());
 }
 app.MapPut("/api/local/settings", async (HostSettings settings) =>
 {
@@ -540,18 +535,10 @@ app.MapPost("/api/local/profiles/{id:guid}/countdown/extend", (Guid id, Countdow
 app.MapPost("/api/local/profiles/{id:guid}/health", (Guid id) => HostOnly(() => manager.HealthAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/players/refresh", (Guid id) =>
     HostOnly(() => manager.RefreshPlayerCountAsync(id)));
-app.MapGet("/api/local/profiles/{id:guid}/files", async (HttpContext context, Guid id) =>
-{
-    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
-    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
-    return Results.Json(await manager.ServerFilesAsync(id));
-});
-app.MapGet("/api/local/profiles/{id:guid}/addons", async (HttpContext context, Guid id) =>
-{
-    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
-    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
-    return Results.Json(await manager.ServerAddOnsAsync(id));
-});
+app.MapGet("/api/local/profiles/{id:guid}/files", (HttpContext context, Guid id) =>
+    OwnerGet(context, () => manager.ServerFilesAsync(id), "Server files"));
+app.MapGet("/api/local/profiles/{id:guid}/addons", (HttpContext context, Guid id) =>
+    OwnerGet(context, () => manager.ServerAddOnsAsync(id), "Server add-ons"));
 app.MapPost("/api/local/profiles/{id:guid}/addons/import", async (Guid id, ServerAddOnImportRequest request) =>
 {
     await modeGate.WaitAsync();
@@ -571,46 +558,14 @@ app.MapPost("/api/local/profiles/{id:guid}/addons/import", async (Guid id, Serve
     }
     finally { modeGate.Release(); }
 });
-app.MapPost("/api/local/profiles/{id:guid}/addons/state", async (Guid id, ServerAddOnChangeRequest request) =>
-{
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
-        return Results.Json(await manager.SetServerAddOnAsync(id, request));
-    }
-    finally { modeGate.Release(); }
-});
-app.MapPost("/api/local/profiles/{id:guid}/addons/undo", async (Guid id, ServerAddOnUndoRequest request) =>
-{
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
-        return Results.Json(await manager.UndoServerAddOnAsync(id, request));
-    }
-    finally { modeGate.Release(); }
-});
-app.MapPost("/api/local/profiles/{id:guid}/addons/review-version", async (Guid id,
-    ServerAddOnImportRequest request) =>
-{
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server add-ons are Host-only." });
-        return Results.Json(await manager.ReviewServerAddOnVersionAsync(id, request));
-    }
-    finally { modeGate.Release(); }
-});
-app.MapGet("/api/local/profiles/{id:guid}/files/{key}", async (HttpContext context, Guid id, string key) =>
-{
-    if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
-    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
-    return Results.Json(await manager.ReadServerFileAsync(id, key));
-});
+app.MapPost("/api/local/profiles/{id:guid}/addons/state", (Guid id, ServerAddOnChangeRequest request) =>
+    HostOnly(() => manager.SetServerAddOnAsync(id, request)));
+app.MapPost("/api/local/profiles/{id:guid}/addons/undo", (Guid id, ServerAddOnUndoRequest request) =>
+    HostOnly(() => manager.UndoServerAddOnAsync(id, request)));
+app.MapPost("/api/local/profiles/{id:guid}/addons/review-version", (Guid id, ServerAddOnImportRequest request) =>
+    HostOnly(() => manager.ReviewServerAddOnVersionAsync(id, request)));
+app.MapGet("/api/local/profiles/{id:guid}/files/{key}", (HttpContext context, Guid id, string key) =>
+    OwnerGet(context, () => manager.ReadServerFileAsync(id, key), "Server files"));
 app.MapPost("/api/local/profiles/{id:guid}/folders/{key}/open", async (Guid id, string key) =>
 {
     await modeGate.WaitAsync();
@@ -641,41 +596,12 @@ app.MapPost("/api/local/profiles/{id:guid}/files/{key}/open", async (Guid id, st
     }
     finally { modeGate.Release(); }
 });
-app.MapPost("/api/local/profiles/{id:guid}/files/{key}/create", async (Guid id, string key) =>
-{
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
-        return Results.Json(await manager.CreateServerConfigurationAsync(id, key));
-    }
-    finally { modeGate.Release(); }
-});
-app.MapPut("/api/local/profiles/{id:guid}/files/{key}", async (Guid id, string key,
-    ServerFileChangeRequest request) =>
-{
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
-        return Results.Json(await manager.SaveServerFileAsync(id, key, request));
-    }
-    finally { modeGate.Release(); }
-});
-app.MapPost("/api/local/profiles/{id:guid}/files/{key}/undo", async (Guid id, string key,
-    ServerFileUndoRequest request) =>
-{
-    await modeGate.WaitAsync();
-    try
-    {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Server files are Host-only." });
-        return Results.Json(await manager.UndoServerFileAsync(id, key, request));
-    }
-    finally { modeGate.Release(); }
-});
+app.MapPost("/api/local/profiles/{id:guid}/files/{key}/create", (Guid id, string key) =>
+    HostOnly(() => manager.CreateServerConfigurationAsync(id, key)));
+app.MapPut("/api/local/profiles/{id:guid}/files/{key}", (Guid id, string key, ServerFileChangeRequest request) =>
+    HostOnly(() => manager.SaveServerFileAsync(id, key, request)));
+app.MapPost("/api/local/profiles/{id:guid}/files/{key}/undo", (Guid id, string key, ServerFileUndoRequest request) =>
+    HostOnly(() => manager.UndoServerFileAsync(id, key, request)));
 app.MapGet("/api/local/profiles/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {
     if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -815,15 +741,15 @@ app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordR
 app.MapPut("/api/local/profiles/{id:guid}/custom-scripts", (Guid id, CustomScriptBundle scripts) =>
     HostOnly(() => manager.SetCustomScriptsAsync(id, scripts)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-certification/begin", (Guid id) =>
-    HostOnlyCertification(() => manager.BeginCustomCertificationAsync(id)));
+    HostOnly(() => manager.BeginCustomCertificationAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-certification/status", (Guid id) =>
-    HostOnlyCertification(() => manager.CheckCustomCertificationAsync(id)));
+    HostOnly(() => manager.CheckCustomCertificationAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-certification/confirm", (Guid id) =>
-    HostOnlyCertification(() => manager.ConfirmCustomCertificationAsync(id)));
+    HostOnly(() => manager.ConfirmCustomCertificationAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-certification/cancel", (Guid id) =>
-    HostOnlyCertification(() => manager.CancelCustomCertificationAsync(id)));
+    HostOnly(() => manager.CancelCustomCertificationAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-certification/revoke", (Guid id) =>
-    HostOnlyCertification(() => manager.RevokeCustomCertificationAsync(id)));
+    HostOnly(() => manager.RevokeCustomCertificationAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/custom-scripts/reveal", async (Guid id) =>
 {
     await modeGate.WaitAsync();
@@ -1421,84 +1347,9 @@ app.MapGet("/{**path}", async (HttpContext context, string? path) =>
 
 DiagnosticOutput.WriteLine($"{instance.DisplayName} {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
 await companionServer.SyncAsync();
-using var pollStop = new CancellationTokenSource();
-var friendPollTask = Task.Run(async () =>
-{
-    while (!pollStop.IsCancellationRequested)
-    {
-        try { await friend.PollAsync(); }
-        catch (Exception ex) { DiagnosticOutput.WriteError("Friend poll failed: " + ex.GetType().Name); }
-        try { await Task.Delay(TimeSpan.FromSeconds(5), pollStop.Token); }
-        catch (OperationCanceledException) { break; }
-    }
-});
-var idleShutdownTask = Task.Run(async () =>
-{
-    var previousCycleUtc = DateTimeOffset.UtcNow;
-    while (!pollStop.IsCancellationRequested)
-    {
-        var cycleUtc = DateTimeOffset.UtcNow;
-        var pollingGap = cycleUtc - previousCycleUtc;
-        previousCycleUtc = cycleUtc;
-        if (pollingGap > TimeSpan.FromSeconds(30) || pollingGap < TimeSpan.Zero)
-        {
-            try
-            {
-                await manager.HandleSystemResumeAsync();
-                await companionServer.SyncAsync();
-            }
-            catch (Exception ex) { DiagnosticOutput.WriteError("Resume revalidation failed: " + ex.GetType().Name); }
-        }
-        try { await manager.RefreshObservationsAsync(); }
-        catch (Exception ex) { DiagnosticOutput.WriteError("Server observation failed: " + ex.GetType().Name); }
-        try { await manager.MaintainIdleShutdownAsync(); }
-        catch (Exception ex) { DiagnosticOutput.WriteError("Empty-server timer failed: " + ex.GetType().Name); }
-        try { await manager.MaintainCrashRecoveryAsync(); }
-        catch (Exception ex) { DiagnosticOutput.WriteError("Crash recovery failed: " + ex.GetType().Name); }
-        try { await Task.Delay(TimeSpan.FromSeconds(3), pollStop.Token); }
-        catch (OperationCanceledException) { break; }
-    }
-});
-var updateCheckTask = instance.UpdatesAvailable ? Task.Run(async () =>
-{
-    while (!pollStop.IsCancellationRequested)
-    {
-        try { await updater.CheckAsync(); }
-        catch (Exception ex) { DiagnosticOutput.WriteError("Update check failed: " + ex.GetType().Name); }
-        try { await Task.Delay(AppUpdater.AutomaticCheckInterval, pollStop.Token); }
-        catch (OperationCanceledException) { break; }
-    }
-}) : Task.CompletedTask;
-var notificationStartedUtc = DateTimeOffset.UtcNow;
-var notifiedActivity = new HashSet<Guid>();
-var notificationTask = Task.Run(async () =>
-{
-    while (!pollStop.IsCancellationRequested)
-    {
-        if (desktop is not null)
-        {
-            try
-            {
-                var visible = (friendMode
-                        ? friend.View().Activity ?? []
-                        : data.LoadActivity(100).Where(item => item.Visibility != ActivityVisibility.Device))
-                    .Where(item => item.OccurredUtc >= notificationStartedUtc &&
-                        item.Severity is ActivitySeverity.Important or ActivitySeverity.Warning)
-                    .DistinctBy(item => item.Id)
-                    .OrderBy(item => item.OccurredUtc)
-                    .ToList();
-                foreach (var item in visible.Where(item => notifiedActivity.Add(item.Id)))
-                    desktop.Notify($"{instance.DisplayName} - {item.Category}", item.Message,
-                        item.Severity == ActivitySeverity.Warning);
-                if (notifiedActivity.Count > 1000)
-                    notifiedActivity.IntersectWith(visible.Select(item => item.Id));
-            }
-            catch (Exception ex) { DiagnosticOutput.WriteError("Tray notification check failed: " + ex.GetType().Name); }
-        }
-        try { await Task.Delay(TimeSpan.FromSeconds(5), pollStop.Token); }
-        catch (OperationCanceledException) { break; }
-    }
-});
+var background = new AppBackgroundTasks(friend, manager, companionServer, updater,
+    instance, data, desktop, () => friendMode);
+background.Start();
 if (desktop is not null)
 {
     app.Lifetime.ApplicationStarted.Register(desktop.Start);
@@ -1511,4 +1362,4 @@ catch (Exception ex) when (openWindow)
     DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
     Environment.ExitCode = 1;
 }
-finally { pollStop.Cancel(); await Task.WhenAll(friendPollTask, idleShutdownTask, updateCheckTask, notificationTask); await companionServer.StopAsync(); }
+finally { await background.DisposeAsync(); await companionServer.StopAsync(); }

@@ -42,7 +42,7 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
       {orphanedRuns.map(run => <div className="recovery-run" key={run.profileId}>
         <div><strong>{run.profileId}</strong><span>{run.state} - {run.detail}</span></div>
         <div className="actions">
-          {['Process running', 'Starting', 'Ready'].includes(run.state) && <Button disabled={!!pending}
+          {['Process running', 'Starting', 'Listening', 'Ready'].includes(run.state) && <Button disabled={!!pending}
             onClick={() => onStopRecordedRun(run.profileId)}>
             {pending === `recovery-stop-${run.profileId}` ? 'Stopping...' : 'Stop recorded server'}
           </Button>}

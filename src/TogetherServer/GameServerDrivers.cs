@@ -24,7 +24,7 @@ public sealed record GameLaunchResult(string Code, string Message, int ProcessId
 public sealed record GamePlayerCount(int Online, int? Capacity = null);
 public sealed record GameHealthResult(bool Ok, string Code, string State, string Detail,
     int? OnlinePlayers = null, int? MaxPlayers = null, IReadOnlyList<string>? PlayerNames = null,
-    bool PlayerCountTrusted = true);
+    bool PlayerCountTrusted = false);
 public sealed record GameStopResult(string Code, string Message, uint ExitCode);
 
 // A game driver owns only game-specific validation, launch, readiness, ports, and
@@ -41,6 +41,7 @@ public interface IGameServerDriver
     string ManagedExecutablePath(ServerProfile profile);
     IReadOnlyList<GamePort> Ports(ServerProfile profile);
     string? JoinAddress(ServerProfile profile, string? publicIp);
+    GameValidation? ValidateSavedProfile(ServerProfile profile) => null;
     GameValidation? ValidateForStart(ServerProfile profile);
     void PrepareStart(ServerProfile profile, ManagedRun run);
     GameLaunchResult Start(ServerProfile profile, ManagedRun run);
@@ -118,6 +119,16 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
     ];
     public string? JoinAddress(ServerProfile profile, string? publicIp) => GameConnection.JoinAddress(profile, publicIp);
 
+    public GameValidation? ValidateSavedProfile(ServerProfile profile)
+    {
+        if (profile.WorldSource is not ("Existing" or "New"))
+            return new("ValheimWorldSourceInvalid", "Choose an existing imported world or explicitly create a new world.");
+        if (string.IsNullOrWhiteSpace(profile.ServerName) || profile.ServerName.Length > 80 ||
+            profile.ServerName.Any(char.IsControl))
+            return new("ValheimServerNameInvalid", "Valheim server name must be 1 to 80 characters without control characters.");
+        return null;
+    }
+
     public GameValidation? ValidateForStart(ServerProfile profile)
     {
         if (!Path.GetFileName(profile.ExecutablePath).Equals("valheim_server.exe", StringComparison.OrdinalIgnoreCase))
@@ -172,13 +183,13 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
         if (query.Players is { } players)
             return new(true, "ValheimLogReady", "Ready",
                 $"Valheim reports {players.Online} of {players.Capacity?.ToString() ?? "?"} players online; client join and save remain unverified",
-                players.Online, players.Capacity);
+                players.Online, players.Capacity, PlayerCountTrusted: true);
 
         var nonCrossplay = IsNonCrossplay(run);
         if (query.NoReply && nonCrossplay && log.Players is { } loggedPlayers)
             return new(true, "ValheimLogReady", "Ready",
                 $"Valheim's local server log reports {loggedPlayers.Online} of {loggedPlayers.Capacity} players online; client join and save remain unverified",
-                loggedPlayers.Online, loggedPlayers.Capacity);
+                loggedPlayers.Online, loggedPlayers.Capacity, PlayerCountTrusted: true);
 
         return new(true, "ValheimLogReady", "Ready",
             !query.NoReply

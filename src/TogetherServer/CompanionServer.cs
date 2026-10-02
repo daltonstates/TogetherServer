@@ -209,10 +209,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
 
         async Task<CompanionStatus> PublicStatus(Guid deviceId)
         {
-            var snapshot = await manager.SnapshotAsync();
+            var snapshot = await manager.CompanionSnapshotAsync();
             var address = ConnectionRoutes.GameAddress(snapshot.Settings);
             var own = pairing.Views().SingleOrDefault(view => view.Id == deviceId);
             var recentOperations = operations.RecentFor(deviceId);
+            var recordedRuns = data.LoadRuns();
             var profiles = snapshot.Settings.Profiles.Where(profile =>
                 own?.AssignedProfileIds.Contains(profile.Id) == true).Select(profile =>
             {
@@ -224,7 +225,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var canViewLogs = permission?.CanViewLogs ?? own?.CanViewLogs == true;
                 var canAddShutdownTime = canExtendTimer && snapshot.Settings.AutoShutdownEnabled &&
                     run.State == "Ready" && run.PlayerCountTrusted && run.OnlinePlayers is not null;
-                using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
+                using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games, recordedRuns);
                 return new PublicProfile(profile.Id, profile.Name,
                     run.State,
                     games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
@@ -394,7 +395,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute)));
         });
 
-        async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, string action,
+        async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, RemoteActionKind action,
             int clientProtocol)
         {
             if (!CompanionProtocol.IsCompatible(clientProtocol))
@@ -420,11 +421,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     return new(false, "MaintenanceMode", string.IsNullOrWhiteSpace(profile.Maintenance.Message)
                         ? "The Host has placed this server in maintenance mode. Remote actions are paused."
                         : "Maintenance: " + profile.Maintenance.Message);
-                if (!pairing.CanAccess(device, profileId) ||
-                    action is "start" or "replace" && !pairing.CanStart(device, profileId) ||
-                    action == "stop" && !pairing.CanStop(device, profileId) ||
-                    action == "restart" && (!pairing.CanStart(device, profileId) || !pairing.CanStop(device, profileId)) ||
-                    action == "extend" && !pairing.CanExtendTimer(device, profileId))
+                if (!RemoteActionPolicy.Allowed(pairing, device, profileId, action))
                 {
                     authorization = pairing.AuthorizeActiveDevice(deviceId, out _);
                     if (!authorization.Ok)
@@ -433,28 +430,30 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 }
 
                 ActionResult result;
-                if (action is "stop" or "restart")
+                if (action is RemoteActionKind.Stop or RemoteActionKind.Restart)
                 {
                     using var permit = RemoteStopSafety.TryAcquire(snapshot, profileId, data, games);
                     if (!permit.Allowed)
                         return new(false, permit.Code, permit.Reason);
-                    result = action == "stop"
+                    result = action == RemoteActionKind.Stop
                         ? await manager.StopAsync(profileId, permit.StillSafe)
                         : await manager.RestartAsync(profileId, permit.StillSafe);
                 }
-                else if (action == "replace")
-                    result = await manager.ReplaceEmptyPortConflictsAndStartAsync(profileId);
-                else if (action == "extend")
-                    result = await manager.ExtendAutoShutdownForFriendAsync(profileId);
                 else
-                    result = await manager.StartAsync(profileId);
-                data.TryAudit($"remote-{action} {deviceId} {profileId} {result.Code} {DateTimeOffset.UtcNow:O}");
+                    result = action switch
+                    {
+                        RemoteActionKind.Replace => await manager.ReplaceEmptyPortConflictsAndStartAsync(profileId),
+                        RemoteActionKind.Extend => await manager.ExtendAutoShutdownForFriendAsync(profileId),
+                        RemoteActionKind.Start => await manager.StartAsync(profileId),
+                        _ => throw new ArgumentOutOfRangeException(nameof(action))
+                    };
+                data.TryAudit($"remote-{RemoteActionPolicy.Name(action)} {deviceId} {profileId} {result.Code} {DateTimeOffset.UtcNow:O}");
                 return new(result.Ok, result.Code, result.Message, result.PortConflicts);
             }
             finally { modeGate.Release(); }
         }
 
-        async Task<IResult> RemoteAction(HttpContext context, RemoteActionRequest request, string action)
+        async Task<IResult> RemoteAction(HttpContext context, RemoteActionRequest request, RemoteActionKind action)
         {
             if (isUpdating?.Invoke() == true)
                 return Results.Json(new FriendActionResult(false, "UpdatePending", "The Host is restarting for an update.", null),
@@ -488,7 +487,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             }
             if (!Guid.TryParse(context.Request.Headers["Idempotency-Key"], out var key) || key == Guid.Empty)
                 return Results.BadRequest(new FriendActionResult(false, "IdempotencyKeyRequired", "A request ID is required.", null));
-            var prior = operations.Lookup(device.Id, key, request.ProfileId, action);
+            var actionName = RemoteActionPolicy.Name(action);
+            var prior = operations.Lookup(device.Id, key, request.ProfileId, actionName);
             if (prior is not null)
             {
                 if (!Reauthorize(device, out _, out decision))
@@ -511,10 +511,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     statusCode: StatusCodes.Status409Conflict);
             if (manager.RemoteMaintenanceBlocker(request.ProfileId) is { } maintenanceBlocker)
                 return Results.Json(new FriendActionResult(false, "MaintenanceMode", maintenanceBlocker, null), statusCode: 403);
-            if (action is "start" or "replace" && !pairing.CanStart(device, request.ProfileId) ||
-                action == "stop" && !pairing.CanStop(device, request.ProfileId) ||
-                action == "restart" && (!pairing.CanStart(device, request.ProfileId) || !pairing.CanStop(device, request.ProfileId)) ||
-                action == "extend" && !pairing.CanExtendTimer(device, request.ProfileId))
+            if (!RemoteActionPolicy.Allowed(pairing, device, request.ProfileId, action))
             {
                 if (!Reauthorize(device, out _, out decision))
                     return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
@@ -522,7 +519,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(new FriendActionResult(false, "PermissionDenied",
                     "The Host has not granted this action for this server to this PC.", null), statusCode: 403);
             }
-            var submission = operations.Submit(device.Id, key, request.ProfileId, action,
+            var submission = operations.Submit(device.Id, key, request.ProfileId, actionName,
                 () => ExecuteRemoteAction(device.Id, request.ProfileId, action, clientProtocol));
             if (!submission.Accepted)
                 return Results.Conflict(new FriendActionResult(false, submission.Code, submission.Message, null));
@@ -544,11 +541,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return operation is null ? Results.NotFound(new { code = "UnknownOperation" }) : Results.Json(operation);
         });
-        companion.MapPost("/start", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "start"));
-        companion.MapPost("/stop", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "stop"));
-        companion.MapPost("/restart", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "restart"));
-        companion.MapPost("/replace", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "replace"));
-        companion.MapPost("/extend", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, "extend"));
+        companion.MapPost("/start", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, RemoteActionKind.Start));
+        companion.MapPost("/stop", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, RemoteActionKind.Stop));
+        companion.MapPost("/restart", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, RemoteActionKind.Restart));
+        companion.MapPost("/replace", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, RemoteActionKind.Replace));
+        companion.MapPost("/extend", (HttpContext context, RemoteActionRequest request) => RemoteAction(context, request, RemoteActionKind.Extend));
     }
 }
 

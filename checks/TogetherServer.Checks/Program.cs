@@ -568,6 +568,8 @@ await Check("duplicate start is serialized", async () =>
 
 await Check("snapshots consume the observation supervisor cache", async () =>
 {
+    Require(!new GameHealthResult(true, "Probe", "Ready", "No count proof", OnlinePlayers: 0).PlayerCountTrusted,
+        "a new driver result must not authorize Stop by default");
     using var data = Data("observation-cache");
     var manager = Manager(data);
     var profile = Profile("observation-cache", "observation-cache", FreePort());
@@ -582,13 +584,59 @@ await Check("snapshots consume the observation supervisor cache", async () =>
             "a UI snapshot probed the game instead of waiting for the shared observation cache");
         await manager.RefreshObservationsAsync();
         var observed = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
-        Require(observed is { State: "Process running", PlayerCountTrusted: true },
+        Require(observed is { State: "Process running", PlayerCountTrusted: false },
             "the observation supervisor did not populate the shared cache");
     }
     finally
     {
         var cleanup = await manager.StopAsync(profile.Id);
         Require(cleanup.Ok, $"fixture cleanup failed: {cleanup.Code} {cleanup.Message}");
+    }
+});
+
+await Check("status stays responsive and expires trusted counts while lifecycle work holds the gate", async () =>
+{
+    using var data = Data("cached-status-gate");
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var profile = Profile("cached-status-gate", "cached-status-gate", FreePort());
+    var settings = Settings(profile);
+    settings.KeepAwakeWhileHosting = true;
+    var driver = new ObservationFixtureDriver
+    {
+        HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
+            OnlinePlayers: 0, PlayerCountTrusted: true)
+    };
+    using var power = new BlockingPowerGuard();
+    var manager = new HostManager(data, new GameServerRegistry([driver]), clock, power);
+    Require((await manager.UpdateSettingsAsync(settings)).Ok, "settings failed");
+    Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
+    try
+    {
+        await manager.RefreshObservationsAsync();
+        Require((await manager.SnapshotAsync()).Runs.Single().PlayerCountTrusted,
+            "the fixture did not publish a trusted observation");
+        power.Arm();
+        var blocked = Task.Run(() => manager.UpdateSettingsAsync(settings));
+        try
+        {
+            Require(power.Entered.Wait(TimeSpan.FromSeconds(5)), "the lifecycle gate did not enter the held operation");
+            clock.Advance(TimeSpan.FromSeconds(11));
+            var owner = await manager.SnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            var companion = await manager.CompanionSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            Require(owner.Runs.Single() is { State: "Unknown", PlayerCountTrusted: false, OnlinePlayers: null } &&
+                companion.Runs.Single() is { State: "Unknown", PlayerCountTrusted: false, OnlinePlayers: null },
+                "a cached status exposed stale zero-player evidence while the lifecycle gate was held");
+            clock.Advance(TimeSpan.FromSeconds(-20));
+            Require((await manager.CompanionSnapshotAsync()).Runs.Single().PlayerCountTrusted == false,
+                "a clock rollback made cached zero-player evidence authoritative again");
+        }
+        finally { power.ReleaseBlock(); }
+        Require((await blocked).Ok, "held settings operation failed");
+    }
+    finally
+    {
+        power.ReleaseBlock();
+        Require((await manager.StopAsync(profile.Id)).Ok, "fixture cleanup failed");
     }
 });
 
@@ -1156,6 +1204,10 @@ await Check("remote operations persist idempotency and interrupt unfinished work
             @"Restart completed using C:\private\world and secret script output.");
     });
     Require(submitted.Accepted && submitted.Operation is not null, "operation was not accepted");
+    var unknown = coordinator.Submit(deviceId, Guid.NewGuid(), profileId, "arbitrary-action", () =>
+        Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "must not execute")));
+    Require(!unknown.Accepted && unknown.Code == "UnknownAction",
+        "an unsupported remote action entered the durable queue");
     var submittedOperation = submitted.Operation ?? throw new Exception("accepted operation had no view");
     var retry = coordinator.Submit(deviceId, requestId, profileId, "restart", () =>
         Task.FromResult(new RemoteOperationOutcome(false, "Duplicate", "must not execute")));
@@ -1592,6 +1644,12 @@ await Check("hosting power request and resume revalidation stay scoped and fail 
     Require(beforeResume.Runs.Single().AutoShutdownAtUtc is not null &&
         beforeResume.Runs.Single().AddedShutdownMinutes == 5,
         "the trusted zero-player observation did not start the fixture countdown");
+    var activityCount = data.LoadActivity(100).Count;
+    var powerRequestCount = power.Requests.Count;
+    _ = await manager.SnapshotAsync();
+    _ = await manager.CompanionSnapshotAsync();
+    Require(data.LoadActivity(100).Count == activityCount && power.Requests.Count == powerRequestCount,
+        "a status read changed countdown activity or the scoped power request");
 
     clock.Advance(TimeSpan.FromMinutes(10));
     var resumed = await manager.HandleSystemResumeAsync();
@@ -1607,6 +1665,61 @@ await Check("hosting power request and resume revalidation stay scoped and fail 
         "the scoped power request was not cleared after confirmed fixture Stop");
     Require(power.Requests.Contains(true) && power.Requests.Last() == false,
         "the power guard did not receive a scoped activate-then-clear lifecycle");
+});
+
+await Check("offline backup reserves its world while Host and Friend status stay responsive", async () =>
+{
+    using var data = Data("world-copy-reservation");
+    var profile = Profile("reserved-world-source", "reserved-world", FreePort());
+    profile.Backups = new BackupOptions { Enabled = false, RetentionCount = 5, MinimumFreeSpaceMb = 0 };
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.txt"), "unchanged source");
+    var manager = Manager(data);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
+    var service = typeof(HostManager).GetField("backups", System.Reflection.BindingFlags.Instance |
+        System.Reflection.BindingFlags.NonPublic)?.GetValue(manager)
+        ?? throw new Exception("backup service not found");
+    var sync = service.GetType().GetField("sync", System.Reflection.BindingFlags.Instance |
+        System.Reflection.BindingFlags.NonPublic)?.GetValue(service)
+        ?? throw new Exception("backup synchronization boundary not found");
+    using var entered = new ManualResetEventSlim(false);
+    using var released = new ManualResetEventSlim(false);
+    var holder = Task.Run(() =>
+    {
+        lock (sync)
+        {
+            entered.Set();
+            released.Wait();
+        }
+    });
+    Task<ActionResult>? backup = null;
+    try
+    {
+        Require(entered.Wait(TimeSpan.FromSeconds(5)), "backup service lock was not held");
+        backup = manager.CreateManualBackupAsync(profile.Id);
+        HostSnapshot? during = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            during = await manager.CompanionSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            if (during.Runs.Single().State == "World copy in progress") break;
+            await Task.Delay(10);
+        }
+        Require(during?.Runs.Single().State == "World copy in progress",
+            "the offline world copy did not publish its reservation");
+        Require((await manager.SnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2))).Runs.Single().State ==
+            "World copy in progress", "owner status stalled or hid the world copy");
+        var denied = await manager.StartAsync(profile.Id).WaitAsync(TimeSpan.FromSeconds(2));
+        Require(!denied.Ok && denied.Code == "WorldCopyInProgress",
+            "Start was allowed to race an offline world copy");
+    }
+    finally
+    {
+        released.Set();
+        await holder;
+    }
+    var completed = backup is null ? throw new Exception("backup request was not started") : await backup;
+    Require(completed.Ok &&
+        File.ReadAllText(Path.Combine(profile.WorldDirectory, "world.txt")) == "unchanged source",
+        $"the isolated backup failed or changed the live world: {completed.Code} {completed.Message}");
 });
 
 await Check("manual backup verification and Safe restart protect the live world", async () =>
@@ -1751,7 +1864,7 @@ await Check("backup staging, integrity, retention, and free-space checks fail cl
     var abandoned = Path.Combine(stageRoot, Guid.NewGuid().ToString("N") + ".staging");
     Directory.CreateDirectory(abandoned);
     File.WriteAllText(Path.Combine(abandoned, "partial"), "partial copy");
-    _ = new WorldBackupService(data, clock);
+    _ = new WorldBackupService(data, clock, games: Games(data));
     Require(!Directory.Exists(abandoned), "interrupted staging directory was not cleaned safely");
 
     var noSpace = new WorldBackupService(data, clock, _ => 0);
@@ -1791,6 +1904,13 @@ await Check("Terraria preview copies an isolated world and treats listener evide
     var health = driver.Health(new ManagedRun { GamePort = profile.GamePort });
     Require(!health.Ok && !health.PlayerCountTrusted && health.OnlinePlayers is null,
         "Terraria preview invented a trusted player count without a game response");
+    using (var listener = new TcpListener(IPAddress.Loopback, profile.GamePort))
+    {
+        listener.Start();
+        var listening = driver.Health(new ManagedRun { GamePort = profile.GamePort });
+        Require(listening is { Ok: true, State: "Listening", PlayerCountTrusted: false },
+            "a Terraria TCP listener was presented as verified game readiness");
+    }
     await Task.CompletedTask;
 });
 
@@ -1881,7 +2001,7 @@ await Check("interrupted restore journal reconciles rollback and installed repla
             ProfileWorldDirectory = installedProfile.WorldDirectory, WorldDirectory = installedWorld,
             Phase = WorldRestorePhases.ReplacementInstalled }
     });
-    _ = new WorldBackupService(data, clock);
+    _ = new WorldBackupService(data, clock, games: Games(data));
     Require(File.ReadAllText(Path.Combine(rollbackWorld, "world.txt")) == "original" &&
         !Directory.Exists(rollback) && !Directory.Exists(stage),
         "an interrupted live-directory move did not restore the original world");
@@ -2400,4 +2520,35 @@ sealed class RecordingPowerGuard : IHostingPowerGuard
         IsActive = required;
     }
     public void Dispose() => SetRequired(false);
+}
+
+sealed class BlockingPowerGuard : IHostingPowerGuard
+{
+    private int blockNext;
+    private readonly ManualResetEventSlim released = new(true);
+    public ManualResetEventSlim Entered { get; } = new(false);
+    public bool IsActive { get; private set; }
+    public string? LastError => null;
+    public void Arm()
+    {
+        Entered.Reset();
+        released.Reset();
+        Interlocked.Exchange(ref blockNext, 1);
+    }
+    public void ReleaseBlock() => released.Set();
+    public void SetRequired(bool required)
+    {
+        if (required && Interlocked.Exchange(ref blockNext, 0) == 1)
+        {
+            Entered.Set();
+            released.Wait();
+        }
+        IsActive = required;
+    }
+    public void Dispose()
+    {
+        released.Set();
+        released.Dispose();
+        Entered.Dispose();
+    }
 }
