@@ -598,6 +598,33 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
     return Task.CompletedTask;
 });
 
+await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
+{
+    using var data = Data("shared-roster-missing-before-save");
+    var profile = Profile("roster-missing", "roster-missing", FreePort());
+    profile.SharedSavesEnabled = true;
+    var service = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
+    var bindingPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), "source.json");
+    RequireThrows<InvalidDataException>(() => service.PublishRoster(profile,
+        [new SharedWorldRosterMember(Guid.Empty, "invalid", new(), false)]),
+        "invalid first roster did not fail");
+    Require(!File.Exists(bindingPath), "a failed first roster published its binding");
+    var first = service.PublishRoster(profile, []);
+    Require(File.Exists(bindingPath) && first.Revision == 1 && service.Status(profile).Latest is null,
+        "the fixture unexpectedly published a save");
+    var rosterPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        first.GroupId.ToString("N") + ".roster.json");
+    File.Delete(rosterPath);
+    RequireThrows<InvalidDataException>(() => service.PublishRoster(profile, []),
+        "same-source publication reset a possibly distributed roster revision");
+    profile.WorldDirectory = Path.Combine(data.RootPath, "changed-world");
+    Directory.CreateDirectory(profile.WorldDirectory);
+    RequireThrows<InvalidDataException>(() => service.PublishRoster(profile, [], reviewSourceChange: true),
+        "source review reset a possibly distributed roster revision");
+    Require(!File.Exists(rosterPath), "a missing roster was silently recreated");
+    return Task.CompletedTask;
+});
+
 await Check("control policy remains fail closed when audit logging is unavailable", async () =>
 {
     using var data = Data("control-policy-audit");
@@ -2031,6 +2058,8 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     var driver = new ObservationFixtureDriver();
     var manager = new HostManager(data, new GameServerRegistry([driver]));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture settings were rejected");
+    new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System))
+        .PublishRoster(profile, []);
     Require((await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
         "a save was published before a graceful Stop");
     Require((await manager.StartAsync(profile.Id)).Ok, "fixture Start failed");
@@ -2491,11 +2520,11 @@ await Check("shared save source changes hide old publication and rotate the grou
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first source");
     var backups = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backups);
+    var firstRoster = shares.PublishRoster(profile, []);
     var firstBackup = backups.Create(profile, BackupKinds.Rolling);
     Require(firstBackup.Ok && firstBackup.Backup is not null, "first source backup failed");
     var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id);
     Require(first.Ok && first.Version is not null, "first source publication failed");
-    var firstRoster = shares.PublishRoster(profile, []);
     var oldDirectory = profile.WorldDirectory;
     profile.WorldDirectory = Path.Combine(data.RootPath, "replacement-world");
     Directory.CreateDirectory(profile.WorldDirectory);
@@ -2655,6 +2684,7 @@ await Check("shared save authorization is rechecked after asynchronous read", as
     var backup = backupService.Create(profile, BackupKinds.Rolling);
     Require(backup.Ok && backup.Backup is not null, "fixture backup failed");
     var shares = new SharedWorldService(data, backupService);
+    shares.PublishRoster(profile, []);
     var published = shares.PublishAfterStop(profile, backup.Backup!.Id);
     Require(published.Ok && published.Version is not null, "fixture publication failed");
     var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,

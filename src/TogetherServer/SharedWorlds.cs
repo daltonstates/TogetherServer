@@ -165,11 +165,16 @@ internal sealed class SharedWorldService
                 throw new InvalidDataException("The shared save source changed. Review the new source before signing a new group.");
             // Read the old signed head while its binding still verifies. Never reset the rollback clock.
             var prior = oldBinding is null ? null : ReadRosterForBinding(profile, oldBinding);
-            if (sourceChanged && prior is null && File.Exists(LatestPath(profile.Id)))
-                throw new InvalidDataException("The previous signed roster is missing; source history cannot be advanced safely.");
-            var binding = sourceChanged
+            // A roster can reach Friends before the first save. An existing binding
+            // without its signed roster has an unknown distributed revision, so
+            // neither same-source publication nor source review may reset it.
+            if (oldBinding is not null && prior is null)
+                throw new InvalidDataException("The previous signed roster is missing; sharing history cannot be advanced safely.");
+            // Publish the signed roster before its first binding. If that write
+            // fails, retry may choose a fresh group because none was exposed.
+            var binding = sourceChanged || oldBinding is null
                 ? new SourceBinding(SourceDirectory(profile), profile.Kind, profile.WorldId, Guid.NewGuid())
-                : oldBinding ?? BindSource(profile);
+                : oldBinding;
             if (members.Count > 128 || members.Any(member => member.DeviceId == Guid.Empty ||
                 member.Grants is null || !SharedWorldRosterTrust.ValidKey(member.PublicKey)) ||
                 members.Select(member => member.DeviceId).Distinct().Count() != members.Count)
@@ -191,7 +196,7 @@ internal sealed class SharedWorldService
             var stage = path + ".new";
             File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
             File.Move(stage, path, true);
-            if (sourceChanged)
+            if (sourceChanged || oldBinding is null)
             {
                 var bindingPath = BindingPath(profile.Id);
                 var bindingStage = bindingPath + ".new";
