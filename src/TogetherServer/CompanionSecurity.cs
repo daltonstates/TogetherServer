@@ -427,17 +427,37 @@ public sealed class PairingService
         devices = persisted.Devices;
         serverInvites = persisted.ServerInvites;
         renewalReceipts = persisted.CredentialRenewals;
-        var normalized = NormalizeAssignments() | NormalizeServerCodes();
-        normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
-            devices.All(device => device.Id != receipt.DeviceId)) > 0;
-        if (normalized)
+        // A successor cannot re-sign the inherited roster. Its pairing state is
+        // kept as loaded; authorization still enforces revocation and expiry.
+        lock (SharedWorldMutationGate.For(data.RootPath))
         {
-            MarkSharedRostersDirty();
-            SaveState();
+            if (!HasSuccessorSharedProfile())
+            {
+                var normalized = NormalizeAssignments() | NormalizeServerCodes();
+                normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
+                    devices.All(device => device.Id != receipt.DeviceId)) > 0;
+                if (normalized)
+                {
+                    MarkSharedRostersDirty();
+                    SaveState();
+                }
+            }
         }
     }
 
     private DateTimeOffset UtcNow => clock.GetUtcNow();
+    private bool HasSuccessorSharedProfile() => data.LoadSettings().Profiles.Any(profile =>
+        profile.SharedSavesEnabled && new WorldAuthorityStore(data).HasState(profile.Id));
+    private IEnumerable<Guid> SharedProfileIds() => data.LoadSettings().Profiles
+        .Where(profile => profile.SharedSavesEnabled).Select(profile => profile.Id);
+    private bool CanChangeSharedRoster(IEnumerable<Guid> affected) =>
+        !data.LoadSettings().Profiles.Any(profile => profile.SharedSavesEnabled &&
+            affected.Contains(profile.Id) && new WorldAuthorityStore(data).HasState(profile.Id));
+    private static IEnumerable<Guid> AffectedProfiles(PairedDevice device) =>
+        (device.AssignedProfileIds ?? []).Concat(device.SharedWorldGrants?.Keys.AsEnumerable() ??
+            Enumerable.Empty<Guid>()).Append(device.ProfileId).Where(id => id != Guid.Empty);
+    private static PairingDecision SuccessorRosterDenied() => new(false, "SuccessorRosterReadOnly",
+        "Only the original owner can change this shared world's signed membership.");
     private string RosterDirtyPath(Guid profileId) => Path.Combine(data.RootPath,
         "shared-worlds", profileId.ToString("N"), "roster-dirty");
 
@@ -445,22 +465,31 @@ public sealed class PairingService
 
     public void RequireSharedRosterPublication(Guid profileId)
     {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+        {
+        if (!CanChangeSharedRoster([profileId]))
+            throw new InvalidDataException("This successor PC cannot publish signed membership.");
         var path = RosterDirtyPath(profileId);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, "Publication required");
+        }
     }
 
-    private void MarkSharedRostersDirty()
+    private void MarkSharedRostersDirty(IEnumerable<Guid>? affected = null)
     {
-        foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled))
+        var selected = affected?.ToHashSet();
+        foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled &&
+            (selected is null || selected.Contains(item.Id))))
         {
-            RequireSharedRosterPublication(profile.Id);
+            var path = RosterDirtyPath(profile.Id);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "Signed membership review required");
         }
     }
 
     public void ConfirmSharedRosterPublished(Guid profileId, SharedWorldRoster roster)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             if (!SharedWorldRosterTrust.Verify(roster) ||
                 !roster.Members.SequenceEqual(SharedRosterMembers(profileId).OrderBy(item => item.DeviceId)))
@@ -675,7 +704,7 @@ public sealed class PairingService
 
     public ServerInviteView? CurrentServerInvite(Guid profileId, string? endpoint = null, string? fingerprint = null)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             if (state is null) return null;
@@ -700,8 +729,9 @@ public sealed class PairingService
     public void ReconcileProfiles(IEnumerable<Guid> profileIds)
     {
         var known = profileIds.ToHashSet();
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
+            if (HasSuccessorSharedProfile()) return;
             var removed = serverInvites.RemoveAll(invite => !known.Contains(invite.ProfileId));
             var changedDevices = false;
             foreach (var device in devices)
@@ -735,8 +765,10 @@ public sealed class PairingService
         if (profileId == Guid.Empty) throw new ArgumentException("Choose a saved server.");
         // Keep the old request fields in the local API for compatibility. A server
         // code no longer uses either value and remains available until replacement.
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
+            if (refresh && !CanChangeSharedRoster(SharedProfileIds()))
+                throw new InvalidOperationException("This successor PC cannot replace a shared world server code.");
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             var now = UtcNow;
             if (state is not null && !refresh)
@@ -819,7 +851,7 @@ public sealed class PairingService
 
     public PairingDecision ClosePairing(Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             if (state is null) return new(false, "UnknownServerCode", "This server does not have a server code yet.");
@@ -836,10 +868,11 @@ public sealed class PairingService
 
     public PairingDecision EmergencyRevoke(Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             if (state is null) return new(false, "UnknownServerCode", "This server does not have a server code yet.");
+            var successor = !CanChangeSharedRoster([profileId]);
             var previousGeneration = state.Generation;
             state.Generation = Guid.NewGuid();
             state.Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -866,14 +899,15 @@ public sealed class PairingService
             Activity("Connections", "CodeAccessRemoved",
                 $"The server code was turned off and access was removed from {revoked} PC{(revoked == 1 ? "" : "s")}.",
                 ActivitySeverity.Warning, profileId);
-            return new(true, "ServerCodeAccessRemoved",
-                $"The server code is off and access was removed from {revoked} PC{(revoked == 1 ? "" : "s")}.");
+            return new(true, "ServerCodeAccessRemoved", successor
+                ? "Access was removed. Signed membership needs review; sharing and recovery are paused on this PC."
+                : $"The server code is off and access was removed from {revoked} PC{(revoked == 1 ? "" : "s")}.");
         }
     }
 
     public IReadOnlyList<DeviceView> Views()
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var now = UtcNow;
             var expiryNoticesChanged = false;
@@ -924,7 +958,7 @@ public sealed class PairingService
 
     public bool HasInviteOrCredential()
     {
-        lock (sync) return serverInvites.Any(invite => !invite.Closed) ||
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync) return serverInvites.Any(invite => !invite.Closed) ||
             devices.Any(d => !IsRevoked(d) && (d.InviteHash is not null || d.CredentialHash is not null));
     }
 
@@ -933,7 +967,7 @@ public sealed class PairingService
         if (string.IsNullOrWhiteSpace(name) || name.Length > 80) throw new ArgumentException("Enter a device name up to 80 characters.");
         var code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         var expires = UtcNow.AddMinutes(30);
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             PairedDevice device;
             if (rotatingId is { } id)
@@ -969,7 +1003,7 @@ public sealed class PairingService
     public PairingCredential? Activate(PairingActivation request)
     {
         if (request.Code is null || request.Code.Length > 128) return null;
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             if (request.ServerScope)
             {
@@ -1029,7 +1063,7 @@ public sealed class PairingService
     public PairingDecision Authenticate(Guid id, string? bearer, out PairedDevice? device,
         out bool usedPreviousCredential)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             usedPreviousCredential = false;
             device = devices.SingleOrDefault(d => d.Id == id);
@@ -1051,7 +1085,7 @@ public sealed class PairingService
 
     public PairingDecision AuthorizeActiveDevice(Guid id, out PairedDevice? device)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             device = devices.SingleOrDefault(item => item.Id == id && item.CredentialHash is not null);
             return device is null
@@ -1064,7 +1098,7 @@ public sealed class PairingService
         bool authenticatedWithPreviousCredential)
     {
         if (request.DeviceId != authenticatedDevice.Id || request.RequestId == Guid.Empty) return null;
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(item => item.Id == authenticatedDevice.Id);
             if (device is null || device.CredentialHash is null ||
@@ -1112,7 +1146,7 @@ public sealed class PairingService
     {
         if (request.InstanceId == Guid.Empty || request.Sequence < 1 || request.Version is null || request.Version.Length > 32)
             return new PairingDecision(false, "InvalidHeartbeat", "Heartbeat fields are invalid.");
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             if (current is null)
@@ -1160,17 +1194,19 @@ public sealed class PairingService
                 return new(false, "AccessExpiryTooDistant", "Choose an access deadline no more than 365 days away.");
         }
 
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(item => item.Id == id && item.CredentialHash is not null);
             if (device is null)
                 return new(false, "UnknownDevice", "Connect this Friend PC first.");
             if (IsRevoked(device))
                 return new(false, "Revoked", "A Friend PC whose access was removed cannot receive an end date.");
+            if (!CanChangeSharedRoster(AffectedProfiles(device)))
+                return new(false, "SuccessorRosterReadOnly", SuccessorRosterDenied().Message);
 
             device.AccessExpiresUtc = deadline;
             device.AccessExpiryNotifiedForUtc = null;
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             if (deadline is null)
             {
@@ -1189,10 +1225,12 @@ public sealed class PairingService
 
     public PairingDecision Revoke(Guid id)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Device was not found.");
+            var affected = AffectedProfiles(device).ToArray();
+            var successor = !CanChangeSharedRoster(affected);
             device.Revoked = true;
             device.InviteHash = null;
             device.InviteExpiresUtc = null;
@@ -1200,24 +1238,27 @@ public sealed class PairingService
             device.PreviousCredentialExpiresUtc = null;
             ForgetRenewalReceipt(device.Id);
             heartbeats.TryRemove(id, out _);
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(affected);
             SaveState();
             data.TryAudit($"revoke {device.Id} {UtcNow:O}");
             Activity("Access", "DeviceRevoked", "The Host removed access from a connected PC.", ActivitySeverity.Warning,
                 device.ProfileId == Guid.Empty ? null : device.ProfileId, device.Id);
-            return new PairingDecision(true, "Revoked", "Access removed from this PC.");
+            return new PairingDecision(true, "Revoked", successor
+                ? "Access removed. Signed membership needs review; sharing and recovery are paused on this PC."
+                : "Access removed from this PC.");
         }
     }
 
     public PairingDecision Approve(Guid id)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new(false, "UnknownDevice", "Connected PC was not found.");
             if (!device.ApprovalPending) return new(true, "AlreadyApproved", "This PC is already approved.");
+            if (!CanChangeSharedRoster(AffectedProfiles(device))) return SuccessorRosterDenied();
             device.ApprovalPending = false;
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             data.TryAudit($"device-approve {device.Id} {UtcNow:O}");
             Activity("Connections", "DeviceApproved", "A waiting PC was approved locally.",
@@ -1234,7 +1275,7 @@ public sealed class PairingService
     {
         if (scope is not (null or "start" or "stop" or "extend" or "logs"))
             return new PairingDecision(false, "InvalidPermissionScope", "Choose Start, Stop, Add shutdown time, or View logs permissions.");
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Connect this Friend PC first.");
@@ -1275,7 +1316,7 @@ public sealed class PairingService
         if (request.Clear == (request.Duration is not null) ||
             !request.Clear && request.Duration is not (DeviceAccessDurations.OneHour or DeviceAccessDurations.EightHours))
             return new(false, "InvalidTemporaryHelper", "Choose one hour, eight hours, or End now.");
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(item => item.Id == id);
             if (device is null || device.CredentialHash is null)
@@ -1317,17 +1358,20 @@ public sealed class PairingService
             permissions.Select(permission => permission.ProfileId).Distinct().Count() != permissions.Count))
             return new PairingDecision(false, "InvalidServerPermissions",
                 "Save at most one Start and Stop permission for each selected server.");
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Connect this Friend PC first.");
+            var affected = AffectedProfiles(device).Concat(profileIds).ToArray();
+            if (!CanChangeSharedRoster(affected))
+                return SuccessorRosterDenied();
             device.AssignedProfileIds = profileIds.ToList();
             device.SaveReceiveProfileIds = (device.SaveReceiveProfileIds ?? [])
                 .Where(device.AssignedProfileIds.Contains).ToList();
             device.SharedWorldGrants = (device.SharedWorldGrants ?? [])
                 .Where(item => device.AssignedProfileIds.Contains(item.Key))
                 .ToDictionary(item => item.Key, item => item.Value);
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(affected);
             if (permissions is null)
             {
                 device.ServerPermissionOverrides = device.ServerPermissionOverrides!
@@ -1361,7 +1405,7 @@ public sealed class PairingService
 
     public bool CanAccess(PairedDevice device, Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
@@ -1376,7 +1420,7 @@ public sealed class PairingService
 
     public bool CanStart(PairedDevice device, Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
@@ -1387,7 +1431,7 @@ public sealed class PairingService
 
     public bool CanStop(PairedDevice device, Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
@@ -1398,7 +1442,7 @@ public sealed class PairingService
 
     public bool CanExtendTimer(PairedDevice device, Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
@@ -1409,7 +1453,7 @@ public sealed class PairingService
 
     public bool CanViewLogs(PairedDevice device, Guid profileId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
@@ -1421,7 +1465,7 @@ public sealed class PairingService
     public PairingDecision AuthorizeViewLogs(PairedDevice device, Guid profileId,
         out PairedDevice? current)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             if (current is null)
@@ -1439,7 +1483,7 @@ public sealed class PairingService
     public PairingDecision AuthorizeReceiveSaves(PairedDevice device, Guid profileId,
         out PairedDevice? current)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             if (current is null) return new(false, "Unauthorized", "This PC's saved access was not accepted.");
@@ -1455,8 +1499,9 @@ public sealed class PairingService
 
     public PairingDecision SetReceiveSaves(Guid deviceId, Guid profileId, bool enabled)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
+            if (!CanChangeSharedRoster([profileId])) return SuccessorRosterDenied();
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
                 item.CredentialHash is not null);
             if (device is null) return new(false, "UnknownDevice", "Connect and approve this PC first.");
@@ -1468,7 +1513,7 @@ public sealed class PairingService
             device.SaveReceiveProfileIds ??= [];
             device.SaveReceiveProfileIds.Remove(profileId);
             if (enabled) device.SaveReceiveProfileIds.Add(profileId);
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty([profileId]);
             SaveState();
             data.TryAudit($"save-receive-grant {deviceId} {profileId} enabled={enabled} {UtcNow:O}");
             Activity("Access", enabled ? "SaveReceiveGranted" : "SaveReceiveRemoved",
@@ -1483,8 +1528,9 @@ public sealed class PairingService
     public PairingDecision SetSharedWorldGrants(Guid deviceId, Guid profileId, SharedWorldGrants grants)
     {
         if (grants is null) return new(false, "InvalidGrants", "Choose the reviewed shared world grants.");
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
+            if (!CanChangeSharedRoster([profileId])) return SuccessorRosterDenied();
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
                 item.CredentialHash is not null && !item.ApprovalPending &&
                 item.AssignedProfileIds?.Contains(profileId) == true);
@@ -1494,7 +1540,7 @@ public sealed class PairingService
             device.SaveReceiveProfileIds ??= [];
             device.SaveReceiveProfileIds.Remove(profileId);
             if (grants.Receive) device.SaveReceiveProfileIds.Add(profileId);
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty([profileId]);
             SaveState();
             return new(true, "SharedGrantsSaved", "Shared world grants saved.");
         }
@@ -1502,12 +1548,13 @@ public sealed class PairingService
 
     public PairingDecision BindSharedWorldKey(Guid deviceId, SharedWorldEnrollmentRequest request)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
                 item.CredentialHash is not null && !item.ApprovalPending);
             if (device is null || !SharedWorldRosterTrust.VerifyEnrollment(deviceId, request))
                 return new(false, "EnrollmentRejected", "This PC could not prove its signing identity.");
+            if (!CanChangeSharedRoster(AffectedProfiles(device))) return SuccessorRosterDenied();
             if (device.SharedWorldPublicKey is not null && device.SharedWorldPublicKey != request.PublicKey)
                 return new(false, "KeyReviewRequired", "The owner must reset this PC's shared world identity first.");
             if (devices.Any(item => item.Id != deviceId && item.SharedWorldPublicKey == request.PublicKey))
@@ -1515,7 +1562,7 @@ public sealed class PairingService
             if (device.SharedWorldPublicKey == request.PublicKey)
                 return new(true, "IdentityAlreadyEnrolled", "This PC's signing identity is already bound.");
             device.SharedWorldPublicKey = request.PublicKey;
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             return new(true, "IdentityEnrolled", "This PC's signing identity is bound to its device ID.");
         }
@@ -1523,14 +1570,17 @@ public sealed class PairingService
 
     public PairingDecision ResetSharedWorldKey(Guid deviceId)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item));
             if (device is null) return new(false, "UnknownDevice", "This PC was not found.");
+            var affected = AffectedProfiles(device).ToArray();
+            if (!CanChangeSharedRoster(affected))
+                return SuccessorRosterDenied();
             device.SharedWorldPublicKey = null;
             device.SharedWorldGrants?.Clear();
             device.SaveReceiveProfileIds?.Clear();
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(affected);
             SaveState();
             return new(true, "IdentityReset", "Shared world identity reset. Review grants after this PC enrolls again.");
         }
@@ -1538,7 +1588,7 @@ public sealed class PairingService
 
     public IReadOnlyList<SharedWorldRosterMember> SharedRosterMembers(Guid profileId)
     {
-        lock (sync) return devices.Where(item => item.SharedWorldPublicKey is not null &&
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync) return devices.Where(item => item.SharedWorldPublicKey is not null &&
                 (item.AssignedProfileIds?.Contains(profileId) == true ||
                  item.SharedWorldGrants?.ContainsKey(profileId) == true))
             .Select(item => new SharedWorldRosterMember(item.Id, item.SharedWorldPublicKey!,
@@ -1553,7 +1603,7 @@ public sealed class PairingService
         var value = name?.Trim() ?? "";
         if (value.Length is < 1 or > 48 || value.Any(char.IsControl))
             return new PairingDecision(false, "InvalidDeviceName", "Use a name between 1 and 48 characters without line breaks.");
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d));
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Friend PC was not found.");

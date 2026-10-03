@@ -166,6 +166,7 @@ internal sealed partial class SharedWorldService
         IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
         bool reviewSourceChange = false)
     {
+        lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
         {
             // A successor owns the game/save signing key, not the original owner's
@@ -284,6 +285,8 @@ internal sealed partial class SharedWorldService
             try
             {
                 var successor = Authority.LocalAuthorizedHead(profile.Id);
+                if (Authority.HasState(profile.Id) && Authority.GovernanceUnresolved(profile.Id))
+                    throw new InvalidDataException("Signed membership is unresolved; this PC cannot publish another shared save.");
                 if (Authority.HasState(profile.Id) && successor is null)
                     throw new InvalidDataException("This PC has no valid successor authority binding.");
                 if (successor is not null && !AuthorizedPublishedLineage(profile))

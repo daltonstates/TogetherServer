@@ -196,6 +196,16 @@ internal static class WorldAuthorityTrust
     }
 }
 
+// Pairing membership writes and authority publication share one in-process gate.
+// The first authority append is the point at which a PC loses owner roster writes.
+internal static class SharedWorldMutationGate
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> Gates =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    internal static object For(string root) => Gates.GetOrAdd(Path.GetFullPath(root), _ => new object());
+}
+
 internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = null)
 {
     private sealed record Floor(int Schema, int Count, string LogHash);
@@ -219,6 +229,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     private string VotePath(Guid profileId) => Path.Combine(Root(profileId), "local-votes.jsonl");
     internal bool HasState(Guid profileId) => data.HasProtected(FloorName(profileId)) ||
         File.Exists(LogPath(profileId)) || File.Exists(PendingPath(profileId));
+    internal bool GovernanceUnresolved(Guid profileId) => File.Exists(Path.Combine(
+        data.RootPath, "shared-worlds", profileId.ToString("N"), "roster-dirty"));
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     private void RecoverPending(Guid profileId)
     {
@@ -417,8 +429,11 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     internal void Append(WorldAuthorityRecord record, bool stopAfterLogForChecks = false,
         bool stopAfterJournalForChecks = false, bool enforceCurrentGrants = true)
     {
+        lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
         {
+            if (enforceCurrentGrants && GovernanceUnresolved(record.Proposal.ProfileId))
+                throw new InvalidDataException("Signed membership is unresolved; local takeover authority is blocked.");
             if (!WorldAuthorityTrust.Verify(record)) throw new InvalidDataException("Authority proof is invalid.");
             var existing = Read(record.Proposal.ProfileId);
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
@@ -473,8 +488,11 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     internal WorldAuthorityVote SignLocalVote(Guid profileId, WorldAuthorityProposal proposal,
         SharedWorldRoster roster, Guid voterId, ECDsa signer)
     {
+        lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
         {
+            if (GovernanceUnresolved(profileId))
+                throw new InvalidDataException("Signed membership is unresolved; this PC cannot vote on a takeover.");
             if (!SharedWorldRosterTrust.Verify(roster) || !WorldAuthorityTrust.VerifyProposal(proposal, roster) ||
                 proposal.Kind != "Quorum" || proposal.ProfileId != profileId)
                 throw new InvalidDataException("Vote roster or group is invalid.");

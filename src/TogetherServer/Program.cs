@@ -90,7 +90,10 @@ async Task RepairDirtyRostersAsync()
 {
     foreach (var profile in data.LoadSettings().Profiles.Where(item =>
         item.SharedSavesEnabled && pairing.SharedRosterDirty(item.Id)))
+    {
+        if (!await manager.SharedRosterManagementAvailableAsync(profile.Id)) continue;
         await PublishRosterAndConfirmAsync(profile.Id);
+    }
 }
 object SuccessorRosterReadOnly() => new { ok = false, code = "SuccessorRosterReadOnly",
     message = "Sharing permissions stay with the original owner. This successor PC can host and share verified saves, but cannot change the signed member list." };
@@ -1320,6 +1323,11 @@ app.MapPost("/api/local/shared-world/repair-rosters", async () =>
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
         await RepairDirtyRostersAsync();
+        foreach (var shared in data.LoadSettings().Profiles.Where(profile =>
+            profile.SharedSavesEnabled && pairing.SharedRosterDirty(profile.Id)))
+            if (!await manager.SharedRosterManagementAvailableAsync(shared.Id))
+                return Results.Conflict(new { ok = false, code = "SuccessorGovernanceUnresolved",
+                    message = "Signed membership needs review before this PC can share or vote again." });
         return Results.Json(new { ok = true, code = "RostersRepaired" });
     }
     finally { modeGate.Release(); }

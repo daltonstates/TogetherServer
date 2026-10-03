@@ -8,6 +8,11 @@ public sealed partial class HostManager
         try
         {
             if (!authority.HasState(profileId)) return false;
+            if (authority.GovernanceUnresolved(profileId))
+            {
+                reason = "Signed sharing membership is unresolved after a local access change. Keep this world offline and review group authority before sharing or voting.";
+                return true;
+            }
             if (authority.Fenced(profileId, sharedWorlds.LocalAuthorityPublicKey(), out reason))
                 return true;
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
@@ -66,8 +71,12 @@ public sealed partial class HostManager
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            return profile is null ? new(false, null, "Server not found.") :
-                sharedWorlds.Status(profile) with { CanManageSharing = !authority.HasState(profileId) };
+            if (profile is null) return new(false, null, "Server not found.");
+            var status = sharedWorlds.Status(profile) with
+            { CanManageSharing = !authority.HasState(profileId) };
+            return authority.HasState(profileId) && authority.GovernanceUnresolved(profileId)
+                ? status with { Error = "Signed membership needs review. Sharing and recovery are paused on this PC." }
+                : status;
         }
         finally { gate.Release(); }
     }
