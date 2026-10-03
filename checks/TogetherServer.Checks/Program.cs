@@ -3161,6 +3161,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
         "retry did not capture a fresh final save and hold Start");
     var version = prepared.Version!;
+    var earlierVersion = version;
     var receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
         version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
     var receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
@@ -3278,6 +3279,14 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(stagedStatus.Staged && !stagedStatus.Restored &&
         stagedStatus.RecordHash == completed.Authority.RecordHash,
         "staged handoff was not available after receiving the signed offer");
+    File.WriteAllBytes(Path.Combine(vault, "latest.json"),
+        JsonSerializer.SerializeToUtf8Bytes(earlierVersion,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    Require(!(await receiver.RestoreSharedSuccessorAsync(profile.Id, restoreRequest)).Ok &&
+        !Directory.Exists(destination), "a behind verified save became the current authority copy");
+    File.WriteAllBytes(Path.Combine(vault, "latest.json"),
+        JsonSerializer.SerializeToUtf8Bytes(version,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     var wrongPort = await receiver.RestoreSharedSuccessorAsync(profile.Id,
         restoreRequest with { Setup = setup with { ControlPort = receiverControlPort + 1 } });
     Require(wrongPort.Code == "ControlPortMismatch" && !Directory.Exists(destination),
@@ -3309,11 +3318,29 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "DestinationExists" && File.Exists(Path.Combine(destination, "unrelated.txt")),
         "restore overwrote an occupied world destination");
     Directory.Delete(destination, true); // Disposable test-only folder created above.
-    var restored = await receiver.RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
+    var interruptedCopy = Path.Combine(Path.GetDirectoryName(destination)!,
+        ".successor-" + completed.Authority.RecordHash);
+    receivingData.SaveProtected($"successor-restore-{profile.Id:N}.protected",
+        JsonSerializer.SerializeToUtf8Bytes(new SuccessorRestoreState(1, version.GroupId,
+            completed.Authority.RecordHash, version.VersionHash, destination)));
+    Directory.CreateDirectory(interruptedCopy); // Simulated crash after the journal but before file copy.
+    foreach (var file in version.Files)
+    {
+        var copied = SharedWorldService.SafeChild(interruptedCopy, file.Path);
+        Directory.CreateDirectory(Path.GetDirectoryName(copied)!);
+        File.Copy(SharedWorldService.SafeChild(Path.Combine(receivingData.RootPath,
+            "shared-world-staged", profile.Id.ToString("N"), completed.Authority.RecordHash,
+            SharedWorldService.PayloadDirectory), file.Path), copied);
+    }
+    var restored = await new HostManager(receivingData,
+        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+        .RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
     Require(restored.Ok && restored.Code == "RestoredPendingChecks" &&
         File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
         receivingData.LoadSettings().Profiles.Single().WorldDirectory == destination &&
-        (await receiver.StartAsync(profile.Id)).Code == "SuccessorChecksPending" &&
+        (await new HostManager(receivingData,
+            new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+            .StartAsync(profile.Id)).Code == "SuccessorChecksPending" &&
         (await new HostManager(receivingData,
             new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
             .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
@@ -3333,22 +3360,63 @@ await Check("planned handoff requires exact final save receipt before durable ol
     receivingData.SaveSettings(routeSettings);
     var routeManager = new HostManager(receivingData,
         new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+    using var receivingCertificate = new HostIdentity(receivingData).Ensure(routeSettings.CompanionEndpoint);
+    var receivingPin = HostIdentity.Fingerprint(receivingCertificate);
     var observedProof = await routeManager.SignSuccessorRouteProofAsync(profile.Id,
-        completed.Authority.RecordHash, routeChallenge, new string('A', 64));
+        completed.Authority.RecordHash, routeChallenge, receivingPin);
     Require(SharedWorldRouteTrust.Verify(observedProof, completed.Authority,
-        routeNonce, new string('A', 64)) &&
+        routeNonce, receivingPin) &&
         await routeManager.SignSuccessorRouteProofAsync(profile.Id,
             completed.Authority.RecordHash, routeChallenge with { Signature = "bad" },
-            new string('A', 64)) is null,
+            receivingPin) is null,
         "successor route signer accepted a forged observer or failed a valid signed challenge");
+    Require((await routeManager.FinishSharedSuccessorAsync(profile.Id,
+        new SuccessorFinishRequest(completed.Authority.RecordHash, setup))).Code ==
+        "SuccessorChecksPending" &&
+        await routeManager.ConfirmSuccessorRouteAsync(profile.Id, completed.Authority.RecordHash,
+            new SharedWorldRouteConfirmation(routeChallenge, observedProof!), receivingPin),
+        "a route challenge alone counted as a completed Friend round trip");
+    Require((await routeManager.StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+        "a signed control route alone bypassed the finish action");
+    var wrongFinish = await routeManager.FinishSharedSuccessorAsync(profile.Id,
+        new SuccessorFinishRequest(completed.Authority.RecordHash,
+            setup with { GamePort = setup.GamePort + 1 }));
+    Require(!wrongFinish.Ok && (await routeManager.StartAsync(profile.Id)).Code ==
+        "SuccessorChecksPending", "changed game port completed restore checks");
+    var finished = await routeManager.FinishSharedSuccessorAsync(profile.Id,
+        new SuccessorFinishRequest(completed.Authority.RecordHash, setup));
+    Require(finished.Code == "ReadyForManualStart" &&
+        (await routeManager.SuccessorRestoreStatusAsync(profile.Id)).ReadyForManualStart,
+        $"planned successor could not finish reviewed setup: {finished.Code} {finished.Message}");
+    var savedSetup = receivingData.LoadSettings();
+    var changedSetup = receivingData.LoadSettings();
+    changedSetup.Profiles.Single().GamePort = FreePort();
+    receivingData.SaveSettings(changedSetup);
+    Require((await new HostManager(receivingData,
+        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+        .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+        "a changed local setup identity bypassed manual Start checks");
+    receivingData.SaveSettings(savedSetup);
+    var manualStart = await routeManager.StartAsync(profile.Id);
+    Require(manualStart.Ok, $"planned successor manual Start failed: {manualStart.Code} {manualStart.Message}");
+    File.WriteAllText(Path.Combine(destination, "world.dat"), "successor saved change");
+    Require((await routeManager.StopAsync(profile.Id)).Ok,
+        "planned successor fixture could not stop gracefully");
+    var plannedLatest = (await routeManager.SharedWorldReadAsync(profile.Id)).Status.Latest;
+    var plannedRestart = await routeManager.StartAsync(profile.Id);
+    Require(plannedLatest is { Number: 4 } && plannedRestart.Ok,
+        $"successor Stop did not continue the signed save sequence or allow a later manual Start: version={plannedLatest?.Number}, {plannedRestart.Code} {plannedRestart.Message}");
+    Require((await routeManager.StopAsync(profile.Id)).Ok,
+        "successor could not stop the later manual fixture run");
     receivingData.SaveSettings(new HostSettings { CompanionPort = receiverControlPort });
     var interrupted = new HostManager(receivingData,
         new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
-    Require((await interrupted.RestoreSharedSuccessorAsync(profile.Id, restoreRequest)).Code ==
-        "RestoredPendingChecks" &&
-        File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
-        receivingData.LoadSettings().Profiles.Single().Id == profile.Id,
-        "interrupted settings commit could not safely resume without replacing the verified world");
+    var oldJournal = await interrupted.RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
+    Require(oldJournal.Code ==
+        "RestoreVerificationFailed" &&
+        File.ReadAllText(Path.Combine(destination, "world.dat")) == "successor saved change" &&
+        receivingData.LoadSettings().Profiles.Count == 0,
+        $"an old restore journal replaced a later signed save after settings loss: {oldJournal.Code} {oldJournal.Message}");
 });
 
 await Check("Minecraft successor requires owner-prepared local server roots", () =>
@@ -4118,19 +4186,19 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var offer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
             ids[0], keys[0], candidateAddress, candidatePin,
             new WorldAuthorityStore(pcs[0]));
-        var directOffer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
+        var routeOffer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
             ids[0], keys[0], $"https://192.0.2.10:{candidatePort}", candidatePin,
             new WorldAuthorityStore(pcs[0]));
-        var directBranch = SharedWorldSeparateCopyStore.Sign(directOffer, keys[0]);
-        var routeChallenge = SharedWorldSeparateRoute.SignChallenge(directBranch, ids[1], keys[1]);
-        var routeProof = SharedWorldSeparateRoute.SignProof(directBranch, routeChallenge, keys[0]);
-        Require(SharedWorldSeparateRoute.VerifyChallenge(routeChallenge, directBranch,
+        var routeBranch = SharedWorldSeparateCopyStore.Sign(routeOffer, keys[0]);
+        var routeChallenge = SharedWorldSeparateRoute.SignChallenge(routeBranch, ids[1], keys[1]);
+        var routeProof = SharedWorldSeparateRoute.SignProof(routeBranch, routeChallenge, keys[0]);
+        Require(SharedWorldSeparateRoute.VerifyChallenge(routeChallenge, routeBranch,
                 DateTimeOffset.UtcNow) &&
-            SharedWorldSeparateRoute.VerifyProof(routeProof, routeChallenge, directBranch) &&
+            SharedWorldSeparateRoute.VerifyProof(routeProof, routeChallenge, routeBranch) &&
             !SharedWorldSeparateRoute.VerifyProof(routeProof with { Endpoint = candidateAddress },
-                routeChallenge, directBranch) &&
+                routeChallenge, routeBranch) &&
             !SharedWorldSeparateRoute.VerifyChallenge(routeChallenge with
-                { ObserverDeviceId = ids[0] }, directBranch, DateTimeOffset.UtcNow),
+                { ObserverDeviceId = ids[0] }, routeBranch, DateTimeOffset.UtcNow),
             "a separate-copy route proof did not bind a different enrolled PC and exact direct IP");
         var separate = new SharedWorldSeparateCopyStore(pcs[0]);
         RequireThrows<InvalidDataException>(() => separate.Declare(losses[0], offer,
@@ -4142,6 +4210,98 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 separateBranch.BranchHash &&
             new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 0,
             "warned separate copy changed authority or lost its preserved branch");
+        using (var separatePc = CloneRecoveryPc(pcs[0], 3))
+        {
+            var separateVault = Path.Combine(separatePc.RootPath, "received-shared-worlds",
+                ids[0].ToString("N"), profile.Id.ToString("N"));
+            var separatePort = FreePort();
+            var separateAddress = $"https://192.0.2.11:{separatePort}";
+            using var separateCertificate = new HostIdentity(separatePc).Ensure(separateAddress);
+            var separatePin = HostIdentity.Fingerprint(separateCertificate);
+            var separateOffer = SharedWorldElection.PrepareOffer(losses[0], separateVault,
+                roster, floor, ids[0], keys[0], separateAddress, separatePin,
+                new WorldAuthorityStore(separatePc));
+            var separateFork = new SharedWorldSeparateCopyStore(separatePc).Declare(
+                losses[0], separateOffer, separateVault, keys[0], true);
+            separatePc.SaveProtected($"shared-world-pc-signing-{ids[0]:N}.protected",
+                keys[0].ExportPkcs8PrivateKey());
+            new SharedWorldVoteInbox(separatePc).Arm(separateOffer, separateVault);
+            var separateSettings = separatePc.LoadSettings();
+            separateSettings.CompanionEndpoint = separateAddress;
+            separateSettings.CompanionPort = separatePort;
+            separateSettings.CompanionListeningEnabled = true;
+            separatePc.SaveSettings(separateSettings);
+            var separateManager = Manager(separatePc);
+            var separateSetup = new TakeoverLocalSetup(fixture,
+                version.PortableSetup.GameVersion, [], true, separatePort, FreePort());
+            var separateRequest = new SeparateCopyHostRestoreRequest(separateFork.BranchHash,
+                separateSetup, "Warned fixture", "Warned fixture");
+            var separateFile = SharedWorldService.SafeChild(Path.Combine(separateVault,
+                version.VersionHash, SharedWorldService.PayloadDirectory), version.Files[0].Path);
+            var preservedBytes = File.ReadAllBytes(separateFile);
+            File.WriteAllText(separateFile, "tampered separate vault");
+            Require(!(await separateManager.RestoreSeparateCopyAsync(profile.Id,
+                separateRequest)).Ok, "a warned copy restored tampered save files");
+            File.WriteAllBytes(separateFile, preservedBytes);
+            Require((await separateManager.RestoreSeparateCopyAsync(profile.Id,
+                separateRequest, freeBytes: _ => 0)).Code == "LocalSetupIncomplete",
+                "a warned copy ignored the 1 GiB space reserve");
+            var separateRestored = await separateManager.RestoreSeparateCopyAsync(profile.Id,
+                separateRequest);
+            Require(separateRestored.Ok && separateRestored.ProfileId is { } separateLocalId &&
+                (await separateManager.StartAsync(separateLocalId)).Code ==
+                    "SeparateCopyManualStartRequired",
+                $"warned copy was not restored with an ordinary Start fence: {separateRestored.Code} {separateRestored.Message}");
+            var restoredId = separateRestored.ProfileId!.Value;
+            Require((await separateManager.SetSharedSavesAsync(restoredId, true)).Code ==
+                "SeparateCopyCannotShare" &&
+                (await separateManager.StartSeparateCopyAsync(restoredId,
+                    new string('A', 64))).Code == "SeparateCopyMissing",
+                "warned copy gained authority sharing or accepted the wrong signed branch");
+            Require((await separateManager.FinishSeparateCopyAsync(profile.Id,
+                new SeparateCopyHostFinishRequest(separateFork.BranchHash,
+                    separateSetup))).Code == "SeparateChecksPending",
+                "warned copy finished without a second-PC route round trip");
+            var separateChallenge = SharedWorldSeparateRoute.SignChallenge(separateFork,
+                ids[1], keys[1]);
+            var separateProof = await separateManager.SignSeparateRouteProofAsync(profile.Id,
+                separateFork.BranchHash, separateChallenge, separatePin);
+            Require(SharedWorldSeparateRoute.VerifyProof(separateProof,
+                separateChallenge, separateFork) &&
+                (await separateManager.FinishSeparateCopyAsync(profile.Id,
+                    new SeparateCopyHostFinishRequest(separateFork.BranchHash,
+                        separateSetup))).Code == "SeparateChecksPending" &&
+                await separateManager.ConfirmSeparateRouteAsync(profile.Id,
+                    separateFork.BranchHash,
+                    new SeparateCopyRouteConfirmation(separateChallenge, separateProof!),
+                    separatePin),
+                "warned copy accepted a self-route or omitted the second-PC return confirmation");
+            var separateFinished = await separateManager.FinishSeparateCopyAsync(profile.Id,
+                new SeparateCopyHostFinishRequest(separateFork.BranchHash, separateSetup));
+            Require(separateFinished.Code == "SeparateReadyForManualStart" &&
+                new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0,
+                $"warned copy became authoritative or could not finish: {separateFinished.Code} {separateFinished.Message}");
+            var separateStarted = await separateManager.StartSeparateCopyAsync(restoredId,
+                separateFork.BranchHash);
+            Require(separateStarted.Ok, $"manual warned Start failed: {separateStarted.Code} {separateStarted.Message}");
+            File.WriteAllText(Path.Combine(separatePc.NewWorldDirectory(restoredId), "world.dat"),
+                "warned branch saved change");
+            Require((await separateManager.StopAsync(restoredId)).Ok,
+                "warned copy could not stop its exact managed fixture run");
+            Require((await separateManager.StartSeparateCopyAsync(restoredId,
+                separateFork.BranchHash)).Ok,
+                "a verified post-Stop warned save could not resume manually");
+            Require((await separateManager.StopAsync(restoredId)).Ok,
+                "warned copy could not stop after a later manual Start");
+            new SharedWorldSeparateCopyStore(separatePc).MarkHostReturned(profile.Id);
+            Require((await separateManager.StartSeparateCopyAsync(restoredId,
+                    separateFork.BranchHash)).Code == "SeparateCopyReviewRequired" &&
+                (await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                    separateFork.BranchHash)).ReviewRequired &&
+                new SharedWorldSeparateCopyStore(separatePc).Read(profile.Id).Count == 2 &&
+                new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0,
+                "returning Host did not fence the warned branch or preserve both signed forks");
+        }
         var branchName = $"shared-world-separate-{profile.Id:N}.protected";
         var branchBytes = pcs[0].LoadProtected(branchName)!;
         pcs[0].DeleteProtected(branchName);
@@ -4382,6 +4542,31 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         RequireThrows<InvalidDataException>(() => SharedWorldElection.Vote(losses[2], vaults[2],
             floor, roster.OwnerPublicKey, offer, ids[2], keys[2],
             new WorldAuthorityStore(pcs[2])), "a tampered local copy could vote");
+        LocalData CloneRecoveryPc(LocalData source, int index)
+        {
+            var clone = Data("quorum-restore-pc-" + index);
+            foreach (var directory in Directory.EnumerateDirectories(source.RootPath, "*",
+                         SearchOption.AllDirectories))
+                Directory.CreateDirectory(Path.Combine(clone.RootPath,
+                    Path.GetRelativePath(source.RootPath, directory)));
+            foreach (var file in Directory.EnumerateFiles(source.RootPath, "*",
+                         SearchOption.AllDirectories))
+            {
+                if (Path.GetFileName(file).Equals("host.lock", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var target = Path.Combine(clone.RootPath,
+                    Path.GetRelativePath(source.RootPath, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(file, target, true);
+            }
+            return clone;
+        }
+        using var quorumPc0 = CloneRecoveryPc(pcs[0], 0);
+        using var quorumPc1 = CloneRecoveryPc(pcs[1], 1);
+        using var quorumPc2 = CloneRecoveryPc(pcs[2], 2);
+        var quorumCopies = new[] { quorumPc0, quorumPc1, quorumPc2 };
+        var quorumVaults = quorumCopies.Select((pc, index) => Path.Combine(pc.RootPath,
+            "received-shared-worlds", ids[index].ToString("N"), profile.Id.ToString("N"))).ToArray();
 
         // A different signed child can advance the head while the first PC's
         // child offer and companion listener remain armed. Keep both histories.
@@ -4468,6 +4653,128 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 "competing verified heads were reduced to a current majority or erased");
         }
         finally { await staleListener.StopAsync(); }
+        new WorldAuthorityStore(quorumCopies[1]).AppendReceived(accepted, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        var directAddress = $"https://192.0.2.10:{candidatePort}";
+        using var directCertificate = new HostIdentity(quorumCopies[0]).Ensure(directAddress);
+        var directPin = HostIdentity.Fingerprint(directCertificate);
+        var directOffer = SharedWorldElection.PrepareOffer(losses[0], quorumVaults[0], roster, floor,
+            ids[0], keys[0], directAddress, directPin, new WorldAuthorityStore(quorumCopies[0]));
+        var directInbox = new SharedWorldVoteInbox(quorumCopies[0]);
+        directInbox.Arm(directOffer, quorumVaults[0]);
+        var directHash = WorldAuthorityTrust.ProposalHash(directOffer.Proposal);
+        var directVote0 = SharedWorldElection.Vote(losses[0], quorumVaults[0], floor,
+            roster.OwnerPublicKey, directOffer, ids[0], keys[0], new WorldAuthorityStore(quorumCopies[0]));
+        var directVote1 = SharedWorldElection.Vote(losses[1], quorumVaults[1], floor,
+            roster.OwnerPublicKey, directOffer, ids[1], keys[1], new WorldAuthorityStore(quorumCopies[1]));
+        Require(directInbox.AcceptVote(profile.Id, directHash, directVote0).Code == "VoteRecorded",
+            "new direct-IP candidate lost the first vote");
+        var directDecision = directInbox.AcceptVote(profile.Id, directHash, directVote1).Decision
+            ?? throw new Exception("direct-IP majority did not sign the candidate");
+        var directSettings = quorumCopies[0].LoadSettings();
+        directSettings.CompanionEndpoint = directAddress;
+        directSettings.CompanionPort = candidatePort;
+        directSettings.CompanionListeningEnabled = true;
+        quorumCopies[0].SaveSettings(directSettings);
+        var successorManager = Manager(quorumCopies[0]);
+        var successorSetup = new TakeoverLocalSetup(fixture, version.PortableSetup.GameVersion,
+            [], true, candidatePort, FreePort());
+        var successorRequest = new SuccessorRestoreRequest(directDecision.RecordHash,
+            successorSetup, "Quorum fixture", "Quorum fixture");
+        Require((await successorManager.SuccessorRestoreStatusAsync(profile.Id)).Staged,
+            "signed majority was not available as a verified restore candidate");
+        var exactFile = SharedWorldService.SafeChild(Path.Combine(quorumVaults[0], version.VersionHash,
+            SharedWorldService.PayloadDirectory), version.Files[0].Path);
+        var exactBytes = File.ReadAllBytes(exactFile);
+        File.WriteAllText(exactFile, "tampered candidate copy");
+        Require(!(await successorManager.RestoreSharedSuccessorAsync(profile.Id,
+            successorRequest)).Ok, "candidate restored a tampered vault copy");
+        File.WriteAllBytes(exactFile, exactBytes);
+        Require((await successorManager.RestoreSharedSuccessorAsync(profile.Id,
+            successorRequest, freeBytes: _ => 0)).Code == "LocalSetupIncomplete",
+            "candidate ignored the 1 GiB free-space reserve");
+        Require((await successorManager.RestoreSharedSuccessorAsync(profile.Id,
+            successorRequest with { Setup = successorSetup with { NewPasswordConfigured = false } })).Code ==
+            "LocalSetupIncomplete", "candidate accepted an unset new password");
+        Require((await successorManager.RestoreSharedSuccessorAsync(profile.Id,
+            successorRequest with { Setup = successorSetup with { EnabledAddOns =
+                [new SharedWorldPortableAddOn("wrong", "1", "1", "Factorio mod")] } })).Code ==
+            "LocalSetupIncomplete", "candidate accepted wrong add-ons");
+        Require((await successorManager.RestoreSharedSuccessorAsync(profile.Id,
+            successorRequest with { Setup = successorSetup with { ControlPort = candidatePort + 1 } })).Code ==
+            "ControlPortMismatch", "candidate accepted a wrong control port");
+        var quorumRestored = await successorManager.RestoreSharedSuccessorAsync(profile.Id,
+            successorRequest);
+        Require(quorumRestored.Ok && (await successorManager.StartAsync(profile.Id)).Code ==
+            "SuccessorChecksPending", $"majority copy did not restore fenced: {quorumRestored.Code} {quorumRestored.Message}");
+        Require((await successorManager.FinishSharedSuccessorAsync(profile.Id,
+            new SuccessorFinishRequest(directDecision.RecordHash, successorSetup))).Code ==
+            "SuccessorChecksPending", "candidate finished without a second PC control route check");
+        var routeNonce2 = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var challenge2 = SharedWorldRouteTrust.SignChallenge(directDecision,
+            routeNonce2, ids[1], keys[1]);
+        var routeProof2 = await successorManager.SignSuccessorRouteProofAsync(profile.Id,
+            directDecision.RecordHash, challenge2, directPin);
+        Require(SharedWorldRouteTrust.Verify(routeProof2, directDecision,
+            routeNonce2, directPin), "schema-2 hosting key could not prove the control route");
+        Require((await successorManager.FinishSharedSuccessorAsync(profile.Id,
+            new SuccessorFinishRequest(directDecision.RecordHash, successorSetup))).Code ==
+            "SuccessorChecksPending" &&
+            await successorManager.ConfirmSuccessorRouteAsync(profile.Id,
+                directDecision.RecordHash,
+                new SharedWorldRouteConfirmation(challenge2, routeProof2!), directPin),
+            "schema-2 route challenge was accepted without the Friend return confirmation");
+        var quorumFinished = await successorManager.FinishSharedSuccessorAsync(profile.Id,
+            new SuccessorFinishRequest(directDecision.RecordHash, successorSetup));
+        Require(quorumFinished.Code == "ReadyForManualStart",
+            $"majority successor finish failed: {quorumFinished.Code} {quorumFinished.Message}");
+        var routeObservationName = $"successor-route-{profile.Id:N}.protected";
+        var currentRouteBytes = quorumCopies[0].LoadProtected(routeObservationName)!;
+        var currentRoute = JsonSerializer.Deserialize<SuccessorRouteObservation>(currentRouteBytes)!;
+        quorumCopies[0].SaveProtected(routeObservationName, JsonSerializer.SerializeToUtf8Bytes(
+            currentRoute with { ObservedUtc = DateTimeOffset.UtcNow.AddHours(-2) }));
+        Require((await successorManager.StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+            "an expired control route observation authorized Start");
+        quorumCopies[0].SaveProtected(routeObservationName, currentRouteBytes);
+        var quorumStarted = await successorManager.StartAsync(profile.Id);
+        Require(quorumStarted.Ok,
+            $"majority successor manual Start failed: {quorumStarted.Code} {quorumStarted.Message}");
+        File.WriteAllText(Path.Combine(quorumCopies[0].NewWorldDirectory(profile.Id), "world.dat"),
+            "majority saved change");
+        Require((await successorManager.StopAsync(profile.Id)).Ok,
+            "majority successor failed graceful Stop");
+        var majorityLatest = (await successorManager.SharedWorldReadAsync(profile.Id)).Status.Latest;
+        var majorityRestart = await successorManager.StartAsync(profile.Id);
+        Require(majorityLatest is { Number: 2 } && majorityRestart.Ok,
+            $"majority successor failed signed save continuity or later Start: version={majorityLatest?.Number}, {majorityRestart.Code} {majorityRestart.Message}");
+        Require((await successorManager.StopAsync(profile.Id)).Ok,
+            "majority successor could not stop its later manual fixture run");
+        host.SaveSettings(Settings(profile));
+        new WorldAuthorityStore(host).AppendReceived(accepted, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        new WorldAuthorityStore(host).AppendReceived(directDecision, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        Require((await Manager(host).StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
+            "old Host return escaped the signed authority fence");
+        new WorldAuthorityStore(quorumCopies[1]).AppendReceived(directDecision, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        var newerOffer = SharedWorldElection.PrepareOffer(losses[0], quorumVaults[0], roster,
+            floor, ids[0], keys[0], directAddress, directPin,
+            new WorldAuthorityStore(quorumCopies[0]));
+        directInbox.Arm(newerOffer, quorumVaults[0]);
+        var newerHash = WorldAuthorityTrust.ProposalHash(newerOffer.Proposal);
+        var newerVote0 = SharedWorldElection.Vote(losses[0], quorumVaults[0], floor,
+            roster.OwnerPublicKey, newerOffer, ids[0], keys[0],
+            new WorldAuthorityStore(quorumCopies[0]));
+        var newerVote1 = SharedWorldElection.Vote(losses[1], quorumVaults[1], floor,
+            roster.OwnerPublicKey, newerOffer, ids[1], keys[1],
+            new WorldAuthorityStore(quorumCopies[1]));
+        directInbox.AcceptVote(profile.Id, newerHash, newerVote0);
+        Require(directInbox.AcceptVote(profile.Id, newerHash, newerVote1).Code ==
+            "MajorityRecorded" &&
+            (await Manager(quorumCopies[0]).StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+            "a new signed authority head did not re-fence the old restore marker");
     }
     finally
     {

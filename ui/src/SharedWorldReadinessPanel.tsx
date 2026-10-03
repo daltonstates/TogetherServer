@@ -5,8 +5,12 @@ import { Button, Input } from './Controls'
 type Readiness = { ready: boolean; reasons: string[]; version: number | null;
   versionHash: string | null; rehearsalPassed: boolean; managedProcessRehearsalPassed?: boolean }
 type RouteCheck = { controlRouteObserved: boolean; code: string; message: string }
+type RequiredAddOn = { name: string; version: string; requiredGameVersion: string;
+  type: string; id: string | null }
 type RestoreStatus = { staged: boolean; restored: boolean; recordHash: string | null;
-  message: string; pendingChecks: string[]; preparedServerRoot: string | null }
+  message: string; pendingChecks: string[]; preparedServerRoot: string | null;
+  readyForManualStart: boolean; requiredAddOns: RequiredAddOn[];
+  controlRouteFingerprint: string | null }
 type RestoreResult = { ok: boolean; code: string; message: string;
   pendingChecks: string[] | null }
 
@@ -14,12 +18,22 @@ function parseRestoreStatus(value: unknown): RestoreStatus {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Handoff status is invalid.')
   const item = value as Record<string, unknown>
   if (typeof item.staged !== 'boolean' || typeof item.restored !== 'boolean' ||
+    typeof item.readyForManualStart !== 'boolean' ||
     (item.recordHash !== null && (typeof item.recordHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.recordHash))) ||
     typeof item.message !== 'string' || !Array.isArray(item.pendingChecks) ||
     item.pendingChecks.some(check => typeof check !== 'string') ||
+    (item.requiredAddOns !== null && (!Array.isArray(item.requiredAddOns) ||
+      item.requiredAddOns.length > 128 ||
+      item.requiredAddOns.some(addOn => !addOn || typeof addOn !== 'object' ||
+      typeof addOn.name !== 'string' || typeof addOn.version !== 'string' ||
+      typeof addOn.requiredGameVersion !== 'string' || typeof addOn.type !== 'string' ||
+      (addOn.id !== null && typeof addOn.id !== 'string')))) ||
     (item.preparedServerRoot !== null && item.preparedServerRoot !== undefined &&
-      typeof item.preparedServerRoot !== 'string')) throw new Error('Handoff status is invalid.')
-  return item as RestoreStatus
+      typeof item.preparedServerRoot !== 'string') ||
+    (item.controlRouteFingerprint !== null && item.controlRouteFingerprint !== undefined &&
+      (typeof item.controlRouteFingerprint !== 'string' ||
+        !/^[0-9A-F]{64}$/.test(item.controlRouteFingerprint)))) throw new Error('Handoff status is invalid.')
+  return { ...item, requiredAddOns: item.requiredAddOns ?? [] } as RestoreStatus
 }
 
 function parseRestoreResult(value: unknown): RestoreResult {
@@ -84,12 +98,16 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
   useEffect(() => {
     let active = true
     void getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus)
-      .then(status => { if (active) { setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '') } })
+      .then(status => { if (active) {
+        setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
+        setRouteRecordHash(status.recordHash ?? '')
+        setRouteFingerprint(status.controlRouteFingerprint ?? '')
+      } })
       .catch(() => {})
     return () => { active = false }
   }, [profileId])
   const setup = () => ({ serverFile: serverFile || null, gameVersion: gameVersion || null,
-    enabledAddOns: [], newPasswordConfigured: passwordSet,
+    enabledAddOns: handoff?.requiredAddOns ?? [], newPasswordConfigured: passwordSet,
     controlPort: Number(controlPort), gamePort: Number(gamePort) })
   const run = async (action: 'readiness' | 'rehearse') => {
     setBusy(true); setError('')
@@ -108,6 +126,8 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
       const status = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
         parseRestoreStatus)
       setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
+      setRouteRecordHash(status.recordHash ?? '')
+      setRouteFingerprint(status.controlRouteFingerprint ?? '')
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
@@ -126,6 +146,19 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
+  const finish = async () => {
+    if (!handoff?.recordHash) return
+    setBusy(true); setError('')
+    try {
+      const value = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/finish`,
+        'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
+          executablePath: executable || null, preparedServerRoot: preparedServerRoot || null })
+      setRestoreResult(value)
+      setHandoff(await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
+        parseRestoreStatus))
+    } catch (cause) { setError(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
   const probeRoute = async () => {
     setBusy(true); setError(''); setRouteResult(null)
     try {
@@ -136,7 +169,7 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
     finally { setBusy(false) }
   }
   return <details><summary>Check this PC for future hosting</summary>
-    <p>Check local files and make a disposable copy. A signed planned handoff can be restored into fresh managed storage; hosting still needs a real Friend route and game test.</p>
+    <p>Restore the exact signed planned handoff or recovery majority into a fresh managed world. Finish local and control route checks, then switch to Host for manual Start.</p>
     <label>Installed game server file<Input value={serverFile} onChange={event => setServerFile(event.target.value)}
       placeholder="Path to installed server file" /></label>
     <label>Installed game version<Input value={gameVersion} onChange={event => setGameVersion(event.target.value)} /></label>
@@ -146,12 +179,23 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
       onChange={event => setGamePort(event.target.value)} /></label>
     <label><Input type="checkbox" checked={passwordSet} onChange={event => setPasswordSet(event.target.checked)} />
       I have set a new game password locally</label>
+    {handoff?.requiredAddOns.length ? <details><summary>Required add-ons</summary>
+      <ul>{handoff.requiredAddOns.map(addOn => <li key={`${addOn.type}:${addOn.id ?? addOn.name}`}>
+        {addOn.name} {addOn.version} ({addOn.type})</li>)}</ul>
+      <p className="helper-text">Install these reviewed packages in this managed server folder before restoring. The app checks the installed set.</p>
+    </details> : null}
     <p className="helper-text">Matching add-ons, a fresh managed location, real game load, and direct-IP routes still need confirmation before hosting.</p>
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
       Check this PC</Button><Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
       Rehearse disposable copy</Button></div>
     <details><summary>Test successor's control route from another Friend PC</summary>
-      <p>Use the signed handoff hash and the successor's certificate fingerprint. This checks pinned HTTPS from this PC. A real game join is a separate check.</p>
+      <p>On another Friend PC, use the signed authority hash and successor certificate fingerprint. This checks pinned HTTPS. Test the game route after Start.</p>
+      {handoff?.recordHash && <p className="helper-text">Current signed authority: <code style={{ overflowWrap: 'anywhere' }}>{handoff.recordHash}</code></p>}
+      {handoff?.controlRouteFingerprint && <p className="helper-text">This PC's TLS fingerprint: <code style={{ overflowWrap: 'anywhere' }}>{handoff.controlRouteFingerprint}</code></p>}
+      {handoff?.recordHash && handoff.controlRouteFingerprint && <Button className="text-button"
+        onClick={() => void navigator.clipboard.writeText(
+          `${handoff.recordHash}\n${handoff.controlRouteFingerprint}`).catch(cause => setError(errorMessage(cause)))}>
+        Copy route details</Button>}
       <label>Signed handoff hash<Input value={routeRecordHash}
         onChange={event => setRouteRecordHash(event.target.value)} /></label>
       <label>Successor certificate fingerprint<Input value={routeFingerprint}
@@ -173,10 +217,13 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
           onChange={event => setFactorioRconPort(event.target.value)} /></label>
         <label>New game password, if this game uses one<Input type="password" value={gamePassword}
           onChange={event => setGamePassword(event.target.value)} /></label>
-        <Button disabled={busy} onClick={() => void restore()}>Create separate Host copy</Button></>}
+        <Button disabled={busy} onClick={() => void restore()}>Restore verified copy</Button></>}
+      {handoff.restored && !handoff.readyForManualStart && <Button disabled={busy}
+        onClick={() => void finish()}>Finish setup and checks</Button>}
+      {handoff.readyForManualStart && <p role="status">Ready for manual Start. Switch to Host, start this server, then test a real game join and saved Stop.</p>}
       <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul></div>}
     {!handoff?.staged && <Button className="secondary" disabled={busy} onClick={() => void stage()}>
-      Stage signed handoff</Button>}
+      Check planned handoff</Button>}
     {restoreResult && <div role="status"><p>{restoreResult.message}</p>
       {restoreResult.pendingChecks && <ul>{restoreResult.pendingChecks.map(check =>
         <li key={check}>{check}</li>)}</ul>}</div>}

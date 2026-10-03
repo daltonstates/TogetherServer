@@ -82,7 +82,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 endpoint.Port != settings.CompanionPort || !IPAddress.TryParse(settings.CompanionBindAddress, out var bind) ||
                 settings.CompanionPort < 1024 || settings.CompanionPort == localPort)
                 throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
-            if (!pairing.HasInviteOrCredential() && !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint))
+            if (!pairing.HasInviteOrCredential() &&
+                !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint) &&
+                !manager.HasSuccessorRouteCandidate(settings))
             {
                 await StopCoreAsync();
                 Warning = null;
@@ -353,6 +355,16 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             return confirmation is not null && await manager.ConfirmSeparateRouteAsync(profileId,
                 branchHash, confirmation, HostIdentity.Fingerprint(certificate)) ?
                 Results.Ok(new { code = "SeparateRouteObserved" }) : Results.NotFound();
+        }).RequireRateLimiting("pairing");
+        companion.MapPost("/servers/{profileId:guid}/shared-world/route-confirm/{recordHash}",
+            async (Guid profileId, string recordHash, SharedWorldRouteConfirmation confirmation) =>
+        {
+            if (certificate is null || recordHash.Length != 64 ||
+                !recordHash.All(Uri.IsHexDigit) || confirmation is null)
+                return Results.NotFound();
+            return await manager.ConfirmSuccessorRouteAsync(profileId, recordHash,
+                confirmation, HostIdentity.Fingerprint(certificate)) ?
+                Results.Ok(new { code = "ControlRouteConfirmed" }) : Results.NotFound();
         }).RequireRateLimiting("pairing");
         async Task<bool> CandidateOfferMatchesListener(Guid profileId, string proposalHash)
         {

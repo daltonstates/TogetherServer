@@ -11,6 +11,10 @@ const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 
 it('shares a signed fork and sends an exact proof only after local review', async () => {
   const sent: unknown[] = []
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (_url.includes('/hosting/')) return reply({ recorded: true, restored: false,
+      readyForManualStart: false, reviewRequired: false, running: false,
+      message: 'The signed separate copy is recorded.', localProfileId: profile,
+      branchHash: proof.branchHash, preparedServerRoot: null, requiredAddOns: [] })
     if (init?.method === 'POST') {
       sent.push(JSON.parse(String(init.body)) as unknown)
       return reply({ controlRouteObserved: true, code: 'SeparateRouteObserved',
@@ -22,16 +26,20 @@ it('shares a signed fork and sends an exact proof only after local review', asyn
   fireEvent.click(screen.getByText('Separate-copy route check'))
   expect(screen.getByText(/does not settle the split/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Show this PC’s signed separate-copy proofs' }))
-  fireEvent.click(await screen.findByRole('button', { name: 'Show proof code' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Review separate copy and show proof code' }))
   expect(screen.getByLabelText('Signed separate-copy proof code')).toHaveValue(JSON.stringify(proof))
+  expect(screen.queryByRole('button', { name: 'Start warned separate copy' })).not.toBeInTheDocument()
+  const checkRoute = screen.getByRole('button', { name: 'Check candidate control route from this PC' })
+  await waitFor(() => expect(screen.getByText('The signed separate copy is recorded.')).toBeInTheDocument())
   fireEvent.change(screen.getByLabelText('Proof code from candidate PC'),
     { target: { value: '{bad' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Check candidate control route from this PC' }))
+  await waitFor(() => expect(checkRoute).not.toBeDisabled())
+  fireEvent.click(checkRoute)
   expect(await screen.findByRole('alert')).toHaveTextContent('Separate-copy proof')
   expect(sent).toHaveLength(0)
   fireEvent.change(screen.getByLabelText('Proof code from candidate PC'),
     { target: { value: JSON.stringify(proof) } })
-  fireEvent.click(screen.getByRole('button', { name: 'Check candidate control route from this PC' }))
+  fireEvent.click(checkRoute)
   await waitFor(() => expect(sent).toEqual([{ branch: proof }]))
   expect(await screen.findByText(/second approved PC reached/)).toBeInTheDocument()
   vi.unstubAllGlobals()

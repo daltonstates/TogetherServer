@@ -1507,8 +1507,17 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/handoff/restore", async (Ht
     Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/restore",
     async (HttpContext context, Guid id, SuccessorRestoreRequest request) =>
-    friendMode ? Results.Json(await manager.RestoreSharedSuccessorAsync(id,
-        request, context.RequestAborted)) : Results.Conflict(new { code = "HostMode" }));
+    {
+        if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+        var result = await manager.RestoreSharedSuccessorAsync(id,
+            request, context.RequestAborted);
+        if (result.Ok) await companionServer.SyncAsync();
+        return Results.Json(result);
+    });
+app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/finish",
+    async (Guid id, SuccessorFinishRequest request) =>
+    friendMode ? Results.Json(await manager.FinishSharedSuccessorAsync(id, request)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext context, Guid id) =>
     friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
@@ -1551,6 +1560,47 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/separate",
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Json(friend.SeparateCopyBranches(id)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/separate/hosting/{branchHash}",
+    async (HttpContext context, Guid id, string branchHash) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    !friendMode ? Results.Conflict(new { code = "HostMode" }) :
+    !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == branchHash) ?
+        Results.NotFound() :
+        Results.Json(await manager.SeparateCopyHostStatusAsync(id, branchHash)));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/restore",
+    async (HttpContext context, Guid id, SeparateCopyHostRestoreRequest request) =>
+    !friendMode ? Results.Conflict(new { code = "HostMode" }) :
+    !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == request.BranchHash) ?
+        Results.Json(new SuccessorRestoreResult(false, "SeparateProofRejected",
+            "Choose this PC's recorded signed separate copy.")) :
+    !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
+        Results.Json(new SuccessorRestoreResult(false, "HostLossNotConfirmed",
+            "This PC must still confirm two minutes without reaching the old Host.")) :
+        Results.Json(await manager.RestoreSeparateCopyAsync(id, request,
+            context.RequestAborted)));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/finish",
+    async (HttpContext context, Guid id, SeparateCopyHostFinishRequest request) =>
+    !friendMode ? Results.Conflict(new { code = "HostMode" }) :
+    !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == request.BranchHash) ?
+        Results.Json(new SuccessorRestoreResult(false, "SeparateProofRejected",
+            "Choose this PC's recorded signed separate copy.")) :
+    !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
+        Results.Json(new SuccessorRestoreResult(false, "HostLossNotConfirmed",
+            "This PC must still confirm two minutes without reaching the old Host.")) :
+        Results.Json(await manager.FinishSeparateCopyAsync(id, request)));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/start",
+    async (HttpContext context, Guid id, SeparateCopyHostStartRequest request) =>
+    !friendMode ? Results.Conflict(new { code = "HostMode" }) :
+    !request.AcceptSplitWarning ? Results.Json(new { ok = false,
+        code = "SplitWarningRequired", message = "Confirm that another game server may still be running and both histories need review." }) :
+    !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == request.BranchHash) ?
+        Results.Json(new { ok = false, code = "SeparateProofRejected",
+            message = "Choose this PC's recorded signed separate copy." }) :
+    !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
+        Results.Json(new { ok = false, code = "HostLossNotConfirmed",
+            message = "This PC must still confirm two minutes without reaching the old Host." }) :
+        Results.Json(await manager.StartSeparateCopyAsync(request.LocalProfileId,
+            request.BranchHash)));
 app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {
     if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);

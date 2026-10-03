@@ -130,7 +130,8 @@ internal sealed partial class FriendLink : IDisposable
             foreach (var profileId in config.ApprovedSharedWorldGroups?.Keys.AsEnumerable() ??
                      Enumerable.Empty<Guid>())
             {
-                separate.MarkHostReturned(profileId);
+                lock (SharedWorldMutationGate.For(data.RootPath))
+                    separate.MarkHostReturned(profileId);
                 inbox.Retire(profileId);
             }
         }

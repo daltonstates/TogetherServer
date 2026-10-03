@@ -8,7 +8,8 @@ public sealed record SeparateCopyHostStatus(bool Recorded, bool Restored,
     bool ReadyForManualStart, bool ReviewRequired, string Message,
     Guid? LocalProfileId = null, string? BranchHash = null,
     string? PreparedServerRoot = null,
-    IReadOnlyList<SharedWorldPortableAddOn>? RequiredAddOns = null);
+    IReadOnlyList<SharedWorldPortableAddOn>? RequiredAddOns = null,
+    bool Running = false);
 public sealed record SeparateCopyHostRestoreRequest(string BranchHash,
     TakeoverLocalSetup Setup, string Name, string ServerName,
     string? GamePassword = null, string? ExecutablePath = null,
@@ -16,6 +17,8 @@ public sealed record SeparateCopyHostRestoreRequest(string BranchHash,
 public sealed record SeparateCopyHostFinishRequest(string BranchHash,
     TakeoverLocalSetup Setup, string? ExecutablePath = null,
     string? PreparedServerRoot = null);
+public sealed record SeparateCopyHostStartRequest(string BranchHash,
+    Guid LocalProfileId, bool AcceptSplitWarning);
 
 internal sealed record SeparateCopyHostState(int Schema, Guid SourceProfileId,
     Guid LocalProfileId, Guid GroupId, string BranchHash, string VersionHash,
@@ -226,7 +229,7 @@ public sealed partial class HostManager
                     profile.SeparateCopyBranchHash != branchHash);
             var running = runs.Any(item => item.ProfileId == localId &&
                 Identity(item) == "Matched");
-            return new(true, profile is not null, state?.Ready == true && !review,
+            return new(true, profile is not null, state?.Ready == true && !review && !running,
                 review, review ?
                     "The old Host returned or signed authority changed. Keep both histories, gracefully stop any running separate server, and ask the group to review." :
                     running ? "This warned separate copy is running. Another server may also be running; keep both histories for group review." :
@@ -236,7 +239,7 @@ public sealed partial class HostManager
                 localId, branchHash,
                 branch.Offer.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock ?
                     SeparateWorldRoot(data, branch.Offer.Version, localId) : null,
-                branch.Offer.Version.PortableSetup.AddOns);
+                branch.Offer.Version.PortableSetup.AddOns, running);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
             CryptographicException or UnauthorizedAccessException or ArgumentException)

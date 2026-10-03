@@ -247,6 +247,9 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            if (profile.SeparateCopySourceProfileId is not null)
+                return new(false, "SeparateCopyCannotShare",
+                    "This warned separate copy cannot share as the group's authoritative world. Keep both histories for review.");
             if (data.HasProtected(PlannedHandoffName(profileId)))
                 return new(false, "PlannedHandoffPending", "Complete or review the pending handoff first.");
             if (enabled && authority.HasState(profileId) && !profile.SharedSavesEnabled)
@@ -283,7 +286,10 @@ public sealed partial class HostManager
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, null, "Server not found.");
             var status = sharedWorlds.Status(profile) with
-            { CanManageSharing = !authority.HasState(profileId) };
+            { CanManageSharing = profile.SeparateCopySourceProfileId is null &&
+                !authority.HasState(profileId) };
+            if (profile.SeparateCopySourceProfileId is not null)
+                return status with { Error = "This is a warned separate copy. Sharing awaits group conflict review." };
             return authority.HasState(profileId) && authority.GovernanceUnresolved(profileId)
                 ? status with { Error = "Signed membership needs review. Sharing and recovery are paused on this PC." }
                 : status;
@@ -296,7 +302,8 @@ public sealed partial class HostManager
         await gate.WaitAsync();
         try
         {
-            return settings.Profiles.Any(item => item.Id == profileId) &&
+            return settings.Profiles.Any(item => item.Id == profileId &&
+                item.SeparateCopySourceProfileId is null) &&
                 !authority.HasState(profileId) && !SharedAuthorityBlocked(profileId, out _);
         }
         finally { gate.Release(); }
@@ -309,6 +316,8 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return (new(false, null), null);
+            if (profile.SeparateCopySourceProfileId is not null)
+                return (new(false, null, "A warned separate copy cannot publish as the group's authoritative world."), null);
             if (SharedAuthorityBlocked(profileId, out var reason))
                 return (new(false, null, reason), null);
             return (sharedWorlds.Status(profile), profile);
@@ -426,6 +435,8 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
                 throw new InvalidDataException("Server not found.");
+            if (profile.SeparateCopySourceProfileId is not null)
+                throw new InvalidDataException("A warned separate copy cannot publish the group's signed membership.");
             if ((!profile.SharedSavesEnabled && !reviewSourceChange) || profile.Kind == GameKinds.Custom)
                 throw new InvalidDataException("Shared saves are not enabled for this server.");
             if (data.HasProtected(PlannedHandoffName(profileId)))
