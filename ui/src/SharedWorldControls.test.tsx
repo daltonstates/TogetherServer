@@ -282,6 +282,98 @@ describe('Shared saves controls', () => {
     expect(screen.queryByText(/Handoff signed/)).not.toBeInTheDocument()
   })
 
+  it('shows the verified old-Host fence and labels the retained save as this PC\'s copy', async () => {
+    const head = { groupId: profile, epoch: 2, recordHash: 'B'.repeat(64),
+      versionHash: 'C'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
+      hostAddress: 'https://192.0.2.10:5131' }
+    let state = 'NoTakeover'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
+        reply({ enabled: true, canManageSharing: state === 'NoTakeover', confirmedCopies: 1,
+          latest: { number: 3, versionHash: 'A'.repeat(64), createdUtc: '2026-10-03T12:00:00Z' },
+          error: null, authority: { state, message: state === 'OldHostFenced'
+            ? 'Another PC now hosts this world. This PC cannot start or share this world.' :
+              'No takeover is recorded for this world.',
+          head: state === 'OldHostFenced' ? head : null, competingHeads: null,
+          exactManagedProcessRunning: state === 'OldHostFenced' } })))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    await screen.findByText(/No pending handoff/)
+    state = 'OldHostFenced'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
+    expect(await screen.findByRole('heading', { name: 'Another PC now hosts this world' })).toBeInTheDocument()
+    expect(screen.getByText(/Preserved version 3 on this PC/)).toBeInTheDocument()
+    expect(screen.queryByText(/latest saved version 3/)).not.toBeInTheDocument()
+    expect(screen.getByText(/exact game process managed by this PC is still running/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
+    expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
+    const technical = screen.getAllByText('Technical details').at(-1)!.closest('details')!
+    expect(technical).not.toHaveAttribute('open')
+    expect(technical).toHaveTextContent(head.hostAddress)
+    expect(technical).toHaveTextContent(head.versionHash)
+  })
+
+  it('reserves latest for the verified current local Host', async () => {
+    const head = { groupId: profile, epoch: 2, recordHash: 'B'.repeat(64),
+      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
+      hostAddress: 'https://192.0.2.10:5131' }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
+        reply({ enabled: true, latest: { number: 4, versionHash: head.versionHash,
+          createdUtc: '2026-10-03T12:00:00Z' }, confirmedCopies: 2,
+          canManageSharing: false, error: null, authority: { state: 'ThisPcHost',
+            message: 'This PC holds hosting authority for this world.', head,
+            competingHeads: null, exactManagedProcessRunning: false } })))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByText(/Copied to 2 PCs · latest saved version 4/)).toBeInTheDocument()
+    expect(screen.getByText('This PC holds the verified current hosting decision.')).toBeInTheDocument()
+    expect(screen.queryByText(/Preserved version/)).not.toBeInTheDocument()
+  })
+
+  it('keeps competing verified heads and damaged history in review', async () => {
+    const head = { groupId: profile, epoch: 1, recordHash: 'B'.repeat(64),
+      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
+      hostAddress: 'https://192.0.2.10:5131' }
+    let state: 'CompetingHistories' | 'ReviewRequired' = 'CompetingHistories'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
+        reply({ enabled: true, latest: null, canManageSharing: false, error: null,
+          authority: { state, message: 'Keep this world offline.', head: null,
+            competingHeads: state === 'CompetingHistories' ? [head, { ...head, recordHash: 'C'.repeat(64) }] : null,
+            exactManagedProcessRunning: false } })))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByText('Competing hosting histories need review')).toBeInTheDocument()
+    expect(screen.getByText(/Preserved local copy on this PC/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
+    state = 'ReviewRequired'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
+    expect(await screen.findByText('Hosting decision needs review')).toBeInTheDocument()
+    expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
+  })
+
+  it('rechecks authority while the Host panel stays open', async () => {
+    let reads = 0
+    const head = { groupId: profile, epoch: 1, recordHash: 'B'.repeat(64),
+      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
+      hostAddress: 'https://192.0.2.10:5131' }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) : (() => {
+        reads++
+        const fenced = reads > 2
+        return reply({ enabled: true, latest: null, canManageSharing: !fenced, error: null,
+          authority: { state: fenced ? 'OldHostFenced' : 'NoTakeover',
+            message: fenced ? 'Another PC now hosts this world.' : 'No takeover is recorded.',
+            head: fenced ? head : null, competingHeads: null, exactManagedProcessRunning: false } })
+      })()))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByRole('heading', { name: 'Another PC now hosts this world' },
+      { timeout: 4000 })).toBeInTheDocument()
+    expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
+  })
+
   it('restores an armed recovery offer, rejects malformed code, and submits the reviewed vote', async () => {
     const calls: { url: string; body?: unknown }[] = []
     let voteAttempts = 0

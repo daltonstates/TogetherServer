@@ -45,7 +45,8 @@ public sealed record SharedWorldVersion(int Schema, Guid GroupId, long Number, s
     string SigningPublicKey, string VersionHash, string Signature);
 public sealed record SharedWorldStatus(bool Enabled, SharedWorldVersion? Latest,
     string? Error = null, int ConfirmedCopies = 0,
-    SharedWorldLiveSaveStatus? LiveSave = null, bool CanManageSharing = true);
+    SharedWorldLiveSaveStatus? LiveSave = null, bool CanManageSharing = true,
+    SharedWorldAuthorityStatus? Authority = null);
 public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);

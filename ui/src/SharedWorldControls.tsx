@@ -5,7 +5,11 @@ import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number;
-  liveSave: { available: boolean; message: string }; canManageSharing: boolean }
+  liveSave: { available: boolean; message: string }; canManageSharing: boolean; authority: AuthorityStatus | null }
+type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versionHash: string;
+  hostDeviceId: string; hostPublicKey: string; hostAddress: string }
+type AuthorityStatus = { state: 'NoTakeover' | 'OldHostFenced' | 'ThisPcHost' | 'CompetingHistories' | 'ReviewRequired';
+  message: string; head: AuthorityHead | null; competingHeads: AuthorityHead[]; exactManagedProcessRunning: boolean }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
@@ -130,8 +134,34 @@ export function parseHostSharedWorldStatus(value: unknown): HostStatus {
       throw new Error('Published version is invalid.')
     latest = { number, versionHash: item.versionHash, createdUtc: item.createdUtc }
   }
+  const authority = source.authority == null ? null : parseAuthorityStatus(source.authority)
   return { enabled: boolean(source.enabled, 'Sharing switch'), latest, error: textOrNull(source.error, 'Shared save error'),
-    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0, liveSave, canManageSharing: boolean(source.canManageSharing ?? true, 'Sharing management') }
+    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0, liveSave,
+    canManageSharing: boolean(source.canManageSharing ?? true, 'Sharing management'), authority }
+}
+function parseAuthorityHead(value: unknown): AuthorityHead {
+  const head = record(value, 'Hosting decision')
+  const epoch = numberOrNull(head.epoch, 'Hosting epoch')
+  if (epoch === null || epoch < 1) throw new Error('Hosting epoch is invalid.')
+  return { groupId: guid(head.groupId, 'Group ID'), epoch, recordHash: hash(head.recordHash, 'Decision hash'),
+    versionHash: hash(head.versionHash, 'Save hash'), hostDeviceId: guid(head.hostDeviceId, 'Host PC ID'),
+    hostPublicKey: shortText(head.hostPublicKey, 'Hosting key', 500),
+    hostAddress: shortText(head.hostAddress, 'Host address', 255) }
+}
+function parseAuthorityStatus(value: unknown): AuthorityStatus {
+  const source = record(value, 'Hosting authority')
+  const state = source.state
+  if (state !== 'NoTakeover' && state !== 'OldHostFenced' && state !== 'ThisPcHost' &&
+    state !== 'CompetingHistories' && state !== 'ReviewRequired') throw new Error('Hosting authority state is invalid.')
+  const competingHeads = source.competingHeads == null ? [] : source.competingHeads
+  if (!Array.isArray(competingHeads) || competingHeads.length > 128) throw new Error('Hosting histories are invalid.')
+  const head = source.head == null ? null : parseAuthorityHead(source.head)
+  if ((state === 'OldHostFenced' || state === 'ThisPcHost') !== (head !== null) ||
+    (state === 'CompetingHistories') !== (competingHeads.length > 1))
+    throw new Error('Hosting authority decision is invalid.')
+  return { state, message: shortText(source.message, 'Hosting message'), head,
+    competingHeads: competingHeads.map(parseAuthorityHead),
+    exactManagedProcessRunning: boolean(source.exactManagedProcessRunning, 'Running game') }
 }
 export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
   const source = record(value, 'Received save status')
@@ -175,6 +205,7 @@ function parseVoteResult(value: unknown): BasicResult & { votes: number; require
 export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGrantChanged }:
   { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; onGrantChanged: () => Promise<void> }) {
   const [status, setStatus] = useState<HostStatus | null>(null)
+  const [open, setOpen] = useState(false)
   const [roster, setRoster] = useState<Roster | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
@@ -203,6 +234,21 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
       .catch(error => { if (active) setHandoffMessage(errorMessage(error)) })
     return () => { active = false }
   }, [profileId])
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    const refresh = async () => {
+      try {
+        const next = await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus)
+        if (active) { setStatus(next); setMessage('') }
+      } catch (error) {
+        if (active) { setStatus(null); setMessage(errorMessage(error)) }
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 2000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [open, profileId])
   const changeSharing = async (enabled: boolean) => {
     setBusy(true); setMessage('')
     try {
@@ -276,15 +322,28 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     } catch (error) { setHandoffMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  return <details className="advanced-block"><summary>Shared saves</summary>
-    <p>After a graceful Stop, send hash-verified world files to approved PCs. Game load and playability have not been checked. Live save capture and automatic takeover are unavailable.</p>
-    <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p>
-    <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false}
+  const authority = status?.authority
+  const fenced = authority?.state === 'OldHostFenced'
+  const review = authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
+  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared saves</summary>
+    {(fenced || review) && <section role="alert" aria-label="Hosting authority">
+      <h4>{fenced ? 'Another PC now hosts this world' :
+        authority?.state === 'CompetingHistories' ? 'Competing hosting histories need review' : 'Hosting decision needs review'}</h4>
+      <p>{authority?.message}</p>
+      <p>This PC keeps its preserved local copy. Do not start or share this world here.</p>
+      {authority?.exactManagedProcessRunning && <p>The exact game process managed by this PC is still running. Stop it gracefully, then review the saved histories.</p>}
+    </section>}
+    {authority?.state === 'ThisPcHost' && <p role="status">This PC holds the verified current hosting decision.</p>}
+    {!fenced && !review && <><p>After a graceful Stop, send hash-verified world files to approved PCs. Game load and playability have not been checked. Live save capture and automatic takeover are unavailable.</p>
+      <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p></>}
+    <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false || fenced || review}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
-    {status?.canManageSharing === false && <p className="helper-text">This PC may host and share hash-verified post-Stop file copies after its local setup and route checks pass. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
+    {status?.canManageSharing === false && !fenced && !review && <p className="helper-text">This PC may host and share hash-verified post-Stop file copies after its local setup and route checks pass. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
-    {status?.latest ? <p>Copied to {status.confirmedCopies} PCs · latest post-Stop file copy {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
-      <p>No post-Stop save has been published yet.</p>}
+    {status?.latest ? <p>{fenced || review ?
+      `Preserved version ${status.latest.number} on this PC` :
+      `Copied to ${status.confirmedCopies} PCs · latest post-Stop file copy ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
+      <p>{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' : 'No post-Stop save has been published yet.'}</p>}
     {status?.enabled && <details><summary>Technical details and PC permissions</summary>
     <label><Input type="checkbox" disabled={busy || !roster || !status.canManageSharing}
       checked={roster?.ownerOverride ?? true} onChange={event => void changeOverride(event.target.checked)} />
@@ -330,11 +389,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
           <Button className="text-button" disabled={busy || !handoff.canCancel} onClick={() => void runHandoff('cancel')}>Cancel pending handoff</Button></div></>}
       {handoffMessage && <p role="status">{handoffMessage}</p>}
     </section>}
-    {status?.enabled && !status.canManageSharing && <p className="helper-text">Manage sharing grants are recorded for future delegated updates. Only the original owner can change signed membership today.</p>}
+    {status?.enabled && !status.canManageSharing && !fenced && !review && <p className="helper-text">Manage sharing grants are recorded for future delegated updates. Only the original owner can change signed membership today.</p>}
     {status?.error && <p role="alert">{status.error}</p>}
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void refreshHost().catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
     <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash-verified post-Stop backup files are sent over the existing paired HTTPS connection. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
+      {authority?.head && <p>Verified head: epoch {authority.head.epoch} · PC {authority.head.hostDeviceId} · address {authority.head.hostAddress} · decision hash {authority.head.recordHash} · save hash {authority.head.versionHash}</p>}
+      {authority?.competingHeads.map(head => <p key={head.recordHash}>Competing head: epoch {head.epoch} · PC {head.hostDeviceId} · address {head.hostAddress} · decision hash {head.recordHash} · save hash {head.versionHash}</p>)}
       {status?.canManageSharing && <div className="actions"><Button className="secondary" disabled={busy || !status.enabled}
         onClick={() => void repairRoster(false)}>Retry signed permissions</Button>
         <Button className="secondary" disabled={busy}

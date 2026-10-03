@@ -3254,6 +3254,20 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require((await restarted.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked" &&
         (await restarted.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
         "old Host resumed Start or sharing after restart");
+    var oldHostStatus = await restarted.SharedWorldStatusAsync(profile.Id);
+    Require((await restarted.PlannedHandoffStatusAsync(profile.Id)).Code == "NoPendingHandoff" &&
+        oldHostStatus.Authority is
+        {
+            State: "OldHostFenced", ExactManagedProcessRunning: false,
+            Head: { Epoch: 1 }
+        } &&
+        oldHostStatus.Authority.Head.RecordHash == completed.Authority!.RecordHash &&
+        oldHostStatus.Authority.Head.VersionHash == completed.Authority.Version.VersionHash &&
+        oldHostStatus.Authority.Head.HostDeviceId == successorId &&
+        oldHostStatus.Authority.Head.HostPublicKey == successorKey &&
+        oldHostStatus.Authority.Head.HostAddress == "https://192.0.2.1:5132" &&
+        oldHostStatus.Authority.Message.Contains("cannot start or share", StringComparison.OrdinalIgnoreCase),
+        "restarted old Host did not show the signed successor and durable fence after pending handoff was cleared");
     using var receivingData = Data("planned-receiver");
     receivingData.SaveProtected($"shared-world-pc-signing-{successorId:N}.protected",
         successor.ExportPkcs8PrivateKey());
@@ -3765,6 +3779,10 @@ await Check("shared world authority requires signed majority, fences old Host, a
             !File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
                 "authority", "append.pending")),
             "a journal-only crash did not finish the signed successor authority");
+        var competingStatus = await new HostManager(data, Games(data)).SharedWorldStatusAsync(profile.Id);
+        Require(competingStatus.Authority is
+        { State: "CompetingHistories", Head: null, CompetingHeads.Count: 3 },
+            "local status silently chose one competing authority head");
         var longLineage = new List<SharedWorldVersion>();
         var predecessor = successorVersion;
         for (var index = 0; index < 70; index++)
@@ -4274,6 +4292,9 @@ await Check("shared world authority requires signed majority, fences old Host, a
         Require(store.Fenced(profile.Id, candidateKey, out _), "tampered log opened authority");
         File.WriteAllBytes(log, intactLog[..(Array.IndexOf(intactLog, (byte)'\n') + 1)]);
         Require(store.Fenced(profile.Id, candidateKey, out _), "rolled-back log opened authority");
+        var damagedStatus = await new HostManager(data, Games(data)).SharedWorldStatusAsync(profile.Id);
+        Require(damagedStatus.Authority is { State: "ReviewRequired", Head: null },
+            "local status treated a rolled-back authority log as a valid handoff");
     }
     finally { foreach (var voter in voters) voter.Key.Dispose(); }
 });
@@ -5168,6 +5189,21 @@ await Check("successor hosting key continues exact save lineage and stays bound 
         restartedPairing.SharedRosterDirty(owner.Id) &&
         !restartedPairing.AuthorizeReceiveSaves(candidatePairing, owner.Id, out _).Ok,
         "emergency revocation allowed further receiver authorization");
+    using (var oldStatusData = Data("schema2-old-host-status"))
+    {
+        oldStatusData.SaveSettings(Settings(owner));
+        new WorldAuthorityStore(oldStatusData).AppendReceived(record, owner.Id, roster.GroupId,
+            roster.OwnerPublicKey);
+        var oldQuorumStatus = await new HostManager(oldStatusData, Games(oldStatusData))
+            .SharedWorldStatusAsync(owner.Id);
+        Require(oldQuorumStatus.Authority is { State: "OldHostFenced", Head: { Epoch: 1 } } &&
+            oldQuorumStatus.Authority.Head.HostDeviceId == deviceId &&
+            oldQuorumStatus.Authority.Head.HostPublicKey == hostKey &&
+            oldQuorumStatus.Authority.Head.RecordHash == record.RecordHash &&
+            !oldQuorumStatus.CanManageSharing,
+            "restarted old Host did not identify the schema-2 PC through its signed binding: " +
+            oldQuorumStatus.Authority?.State);
+    }
     new WorldAuthorityStore(ownerData).AppendReceived(record, owner.Id, roster.GroupId,
         roster.OwnerPublicKey);
     Require(new WorldAuthorityStore(ownerData).Fenced(owner.Id,

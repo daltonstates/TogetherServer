@@ -8,6 +8,12 @@ public sealed record PlannedHandoffStatus(bool Pending, string Code, string Mess
     Guid? SuccessorDeviceId = null, long? FinalVersion = null,
     string? FinalVersionHash = null, bool ReceiptConfirmed = false,
     bool CanComplete = false, bool CanCancel = false);
+public sealed record SharedWorldAuthorityHead(Guid GroupId, long Epoch, string RecordHash,
+    string VersionHash, Guid HostDeviceId, string HostPublicKey, string HostAddress);
+public sealed record SharedWorldAuthorityStatus(string State, string Message,
+    SharedWorldAuthorityHead? Head = null,
+    IReadOnlyList<SharedWorldAuthorityHead>? CompetingHeads = null,
+    bool ExactManagedProcessRunning = false);
 public sealed record PreparePlannedHandoffRequest(Guid SuccessorDeviceId, string SuccessorAddress);
 
 internal sealed record PendingPlannedHandoff(int Schema, Guid ProfileId, Guid GroupId,
@@ -282,11 +288,10 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, null, "Server not found.");
-            var status = sharedWorlds.Status(profile) with
-            { CanManageSharing = !authority.HasState(profileId) };
-            return authority.HasState(profileId) && authority.GovernanceUnresolved(profileId)
-                ? status with { Error = "Signed membership needs review. Sharing and recovery are paused on this PC." }
-                : status;
+            var authorityStatus = SharedAuthorityStatusUnderGate(profile);
+            var status = sharedWorlds.Status(profile);
+            return status with { CanManageSharing = authorityStatus.State == "NoTakeover",
+                Authority = authorityStatus };
         }
         finally { gate.Release(); }
     }
@@ -300,6 +305,58 @@ public sealed partial class HostManager
                 !authority.HasState(profileId) && !SharedAuthorityBlocked(profileId, out _);
         }
         finally { gate.Release(); }
+    }
+
+    private SharedWorldAuthorityStatus SharedAuthorityStatusUnderGate(ServerProfile profile)
+    {
+        var exactRun = false;
+        try
+        {
+            exactRun = runs.SingleOrDefault(run => run.ProfileId == profile.Id) is { } active &&
+                Identity(active) == "Matched";
+            if (!authority.HasState(profile.Id))
+                return new("NoTakeover", "No takeover is recorded for this world.");
+            var records = authority.Read(profile.Id);
+            var heads = records.Where(record => !records.Any(child =>
+                child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+            if (heads.Length == 0)
+                return new("ReviewRequired", "The hosting decision could not be verified. Keep this world offline.");
+            SharedWorldAuthorityHead View(WorldAuthorityRecord record) => new(
+                record.Proposal.GroupId, record.Proposal.Epoch, record.RecordHash,
+                record.Version.VersionHash,
+                record.Proposal.SuccessorBinding?.DeviceId ??
+                    record.SuccessorReceipt?.DeviceId ??
+                    record.Roster.Members.Single(member =>
+                        member.PublicKey == record.Proposal.CandidatePublicKey).DeviceId,
+                record.Proposal.CandidatePublicKey, record.Proposal.CandidateAddress);
+            if (heads.Length > 1)
+                return new("CompetingHistories",
+                    "Competing hosting histories need review. Keep this world offline.",
+                    CompetingHeads: heads.Select(View).ToArray(),
+                    ExactManagedProcessRunning: exactRun);
+            var head = View(heads[0]);
+            if (authority.GovernanceUnresolved(profile.Id))
+                return new("ReviewRequired", "Signed sharing membership needs review. Keep this world offline.",
+                    ExactManagedProcessRunning: exactRun);
+            if (authority.LocalAuthorizedHead(profile.Id) is null)
+                return new("OldHostFenced", exactRun
+                    ? "Another PC now hosts this world. The game is still running here; stop it gracefully and review the world history."
+                    : "Another PC now hosts this world. This PC cannot start or share this world.",
+                    head, ExactManagedProcessRunning: exactRun);
+            if (SharedAuthorityBlocked(profile.Id, out _))
+                return new("ReviewRequired", "The hosting decision or saved history needs review. Keep this world offline.",
+                    ExactManagedProcessRunning: exactRun);
+            return new("ThisPcHost", "This PC holds hosting authority for this world.", head,
+                ExactManagedProcessRunning: exactRun);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                   UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or
+                                   InvalidOperationException or ArgumentException)
+        {
+            return new("ReviewRequired",
+                "The hosting decision could not be verified. Keep this world offline.",
+                ExactManagedProcessRunning: exactRun);
+        }
     }
 
     internal async Task<(SharedWorldStatus Status, ServerProfile? Profile)> SharedWorldReadAsync(Guid profileId)
