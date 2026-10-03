@@ -125,6 +125,21 @@ describe('Shared saves controls', () => {
     expect(toggle).not.toBeChecked()
   })
 
+  it('shows successor sharing permissions as read only', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/governance')
+      ? reply({ revision: 3, ownerOverride: true })
+      : reply({ enabled: true, latest: null, error: null, canManageSharing: false })))
+    render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByText(/successor management is not available yet/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
+    expect(screen.getByLabelText('Owner recovery override (future recovery only)')).toBeDisabled()
+    expect(screen.getByLabelText('Receive for Friend PC')).toBeDisabled()
+    fireEvent.click(screen.getByText('Technical details'))
+    expect(screen.queryByRole('button', { name: 'Retry signed permissions' })).not.toBeInTheDocument()
+  })
+
   it('lets the owner review a changed source without changing the override choice', async () => {
     const bodies: unknown[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {

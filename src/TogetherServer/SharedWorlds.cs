@@ -45,7 +45,7 @@ public sealed record SharedWorldVersion(int Schema, Guid GroupId, long Number, s
     string SigningPublicKey, string VersionHash, string Signature);
 public sealed record SharedWorldStatus(bool Enabled, SharedWorldVersion? Latest,
     string? Error = null, int ConfirmedCopies = 0,
-    SharedWorldLiveSaveStatus? LiveSave = null);
+    SharedWorldLiveSaveStatus? LiveSave = null, bool CanManageSharing = true);
 public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);
@@ -67,6 +67,8 @@ internal sealed partial class SharedWorldService
     private readonly ISharedWorldCaptureAdapter capture;
     private WorldAuthorityStore Authority => new(data);
     private readonly object sync = new();
+    // Invoked only by deterministic core checks while the publication gates are held.
+    internal Action? AfterGovernanceCheckForChecks { get; set; }
     private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
 
     internal string LocalAuthorityPublicKey()
@@ -202,8 +204,14 @@ internal sealed partial class SharedWorldService
         IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
         bool reviewSourceChange = false)
     {
+        lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
         {
+            // A successor owns the game/save signing key, not the original owner's
+            // roster key. Until a verified delegated revision chain exists, never
+            // replace the inherited roster or create a new group from this PC.
+            if (Authority.HasState(profile.Id))
+                throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
             var oldBinding = ReadBinding(profile.Id);
             var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
             if (sourceChanged && !reviewSourceChange)
@@ -313,12 +321,16 @@ internal sealed partial class SharedWorldService
     {
         if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
             return new(false, "SharingOff", "Shared saves are off for this server.");
+        lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
         {
             string? stage = null;
             try
             {
                 var successor = Authority.LocalAuthorizedHead(profile.Id);
+                if (Authority.GovernanceUnresolved(profile.Id))
+                    throw new InvalidDataException("Signed membership is unresolved; this PC cannot publish another shared save.");
+                AfterGovernanceCheckForChecks?.Invoke();
                 if (Authority.HasState(profile.Id) && successor is null)
                     throw new InvalidDataException("This PC has no valid successor authority binding.");
                 if (successor is not null && !AuthorizedPublishedLineage(profile))

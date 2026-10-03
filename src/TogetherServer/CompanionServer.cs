@@ -477,6 +477,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!pairing.CanAccess(device!, profileId) ||
                 !sharedEnrollment.Consume(device!.Id, profileId, request.Nonce))
                 return Results.StatusCode(403);
+            // Enrollment changes the signed membership. A successor can host
+            // under the inherited roster but cannot re-sign it as the owner.
+            if (!await manager.SharedRosterManagementAvailableAsync(profileId))
+                return Results.Conflict(new { code = "SuccessorRosterReadOnly",
+                    message = "This successor PC cannot change signed sharing membership." });
             decision = pairing.BindSharedWorldKey(device.Id, request);
             if (!decision.Ok) return Results.Json(decision, statusCode: 403);
             try

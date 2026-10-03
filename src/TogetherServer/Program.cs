@@ -90,8 +90,13 @@ async Task RepairDirtyRostersAsync()
 {
     foreach (var profile in data.LoadSettings().Profiles.Where(item =>
         item.SharedSavesEnabled && pairing.SharedRosterDirty(item.Id)))
+    {
+        if (!await manager.SharedRosterManagementAvailableAsync(profile.Id)) continue;
         await PublishRosterAndConfirmAsync(profile.Id);
+    }
 }
+object SuccessorRosterReadOnly() => new { ok = false, code = "SuccessorRosterReadOnly",
+    message = "Sharing permissions stay with the original owner. This successor PC can host and share verified saves, but cannot change the signed member list." };
 try { if (!friendMode) await RepairDirtyRostersAsync(); }
 catch (Exception ex) when (ex is IOException or InvalidDataException or System.Security.Cryptography.CryptographicException)
 { data.TryAudit($"shared-roster-repair-pending {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
@@ -677,6 +682,8 @@ app.MapGet("/api/local/profiles/{id:guid}/shared-world", async (HttpContext cont
 app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedWorldConsentRequest request) =>
 {
     if (friendMode) return Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first."));
+    if (request.Enabled && !await manager.SharedRosterManagementAvailableAsync(id))
+        return Results.Conflict(SuccessorRosterReadOnly());
     if (request.Enabled) pairing.RequireSharedRosterPublication(id);
     var result = await manager.SetSharedSavesAsync(id, request.Enabled);
     if (result.Ok && request.Enabled)
@@ -1289,6 +1296,8 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}",
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        if (!await manager.SharedRosterManagementAvailableAsync(profileId))
+            return Results.Conflict(SuccessorRosterReadOnly());
         var status = await manager.SharedWorldStatusAsync(profileId);
         if (request.Enabled && !status.Enabled)
             return Results.Conflict(new { code = "SharingOff", message = "Enable sharing for this server first." });
@@ -1310,6 +1319,8 @@ app.MapPut("/api/local/profiles/{profileId:guid}/shared-world/governance",
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        if (!await manager.SharedRosterManagementAvailableAsync(profileId))
+            return Results.Conflict(SuccessorRosterReadOnly());
         pairing.RequireSharedRosterPublication(profileId);
         return Results.Json(await PublishRosterAndConfirmAsync(profileId,
             request.OwnerOverride, request.ReviewSourceChange));
@@ -1323,6 +1334,11 @@ app.MapPost("/api/local/shared-world/repair-rosters", async () =>
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
         await RepairDirtyRostersAsync();
+        foreach (var shared in data.LoadSettings().Profiles.Where(profile =>
+            profile.SharedSavesEnabled && pairing.SharedRosterDirty(profile.Id)))
+            if (!await manager.SharedRosterManagementAvailableAsync(shared.Id))
+                return Results.Conflict(new { ok = false, code = "SuccessorGovernanceUnresolved",
+                    message = "Signed membership needs review before this PC can share or vote again." });
         return Results.Json(new { ok = true, code = "RostersRepaired" });
     }
     finally { modeGate.Release(); }
@@ -1334,6 +1350,8 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}/grants",
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        if (!await manager.SharedRosterManagementAvailableAsync(profileId))
+            return Results.Conflict(SuccessorRosterReadOnly());
         if (!(await manager.SharedWorldStatusAsync(profileId)).Enabled)
             return Results.Conflict(new { code = "SharingOff" });
         var result = pairing.SetSharedWorldGrants(id, profileId, request.Grants);
@@ -1348,6 +1366,9 @@ app.MapPost("/api/local/devices/{id:guid}/shared-world/re-enroll", async (Guid i
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        foreach (var shared in data.LoadSettings().Profiles.Where(profile => profile.SharedSavesEnabled))
+            if (!await manager.SharedRosterManagementAvailableAsync(shared.Id))
+                return Results.Conflict(SuccessorRosterReadOnly());
         var result = pairing.ResetSharedWorldKey(id);
         if (result.Ok) await RepairDirtyRostersAsync();
         return Results.Json(result);

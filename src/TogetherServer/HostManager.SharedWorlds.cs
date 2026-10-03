@@ -205,13 +205,23 @@ public sealed partial class HostManager
         }
         finally { gate.Release(); }
     }
+    private string LocalAuthorityComparisonKey(Guid profileId) =>
+        authority.LocalAuthorizedHead(profileId) is null
+            ? sharedWorlds.LocalAuthorityPublicKey()
+            : string.Empty; // Schema-2 successor proof uses its enrolled hosting key.
+
     private bool SharedAuthorityBlocked(Guid profileId, out string reason)
     {
         reason = "";
         try
         {
             if (!authority.HasState(profileId)) return false;
-            if (authority.Fenced(profileId, sharedWorlds.LocalAuthorityPublicKey(), out reason))
+            if (authority.GovernanceUnresolved(profileId))
+            {
+                reason = "Signed sharing membership is unresolved after a local access change. Keep this world offline and review group authority before sharing or voting.";
+                return true;
+            }
+            if (authority.Fenced(profileId, LocalAuthorityComparisonKey(profileId), out reason))
                 return true;
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null || !sharedWorlds.AuthorizedPublishedLineage(profile))
@@ -239,6 +249,9 @@ public sealed partial class HostManager
             if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
             if (data.HasProtected(PlannedHandoffName(profileId)))
                 return new(false, "PlannedHandoffPending", "Complete or review the pending handoff first.");
+            if (enabled && authority.HasState(profileId) && !profile.SharedSavesEnabled)
+                return new(false, "SuccessorRosterReadOnly",
+                    "This successor PC cannot re-enable sharing without a signed membership update from the original owner.");
             if (enabled && SharedAuthorityBlocked(profileId, out var reason))
                 return new(false, "SharedWorldAuthorityBlocked", reason);
             if (profile.Kind == GameKinds.Custom || !games.TryGet(profile.Kind, out var driver) ||
@@ -268,7 +281,23 @@ public sealed partial class HostManager
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            return profile is null ? new(false, null, "Server not found.") : sharedWorlds.Status(profile);
+            if (profile is null) return new(false, null, "Server not found.");
+            var status = sharedWorlds.Status(profile) with
+            { CanManageSharing = !authority.HasState(profileId) };
+            return authority.HasState(profileId) && authority.GovernanceUnresolved(profileId)
+                ? status with { Error = "Signed membership needs review. Sharing and recovery are paused on this PC." }
+                : status;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<bool> SharedRosterManagementAvailableAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            return settings.Profiles.Any(item => item.Id == profileId) &&
+                !authority.HasState(profileId) && !SharedAuthorityBlocked(profileId, out _);
         }
         finally { gate.Release(); }
     }
