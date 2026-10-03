@@ -454,6 +454,42 @@ public sealed class PairingService
     private static IEnumerable<Guid> AffectedProfiles(PairedDevice device) =>
         (device.AssignedProfileIds ?? []).Concat(device.SharedWorldGrants?.Keys.AsEnumerable() ??
             Enumerable.Empty<Guid>()).Append(device.ProfileId).Where(id => id != Guid.Empty);
+    // Transport assignment alone is not signed membership. In particular,
+    // Activate creates an assigned PC without a shared-world signing key.
+    private IReadOnlyCollection<Guid> SignedRosterProfiles(PairedDevice device)
+    {
+        var assigned = AffectedProfiles(device).ToHashSet();
+        var affected = new HashSet<Guid>();
+        var authority = new WorldAuthorityStore(data);
+        foreach (var profile in data.LoadSettings().Profiles)
+        {
+            if (!authority.HasState(profile.Id))
+            {
+                // On the original Host, an enrolled PC in the local roster
+                // projection is a membership change even before publication.
+                if (device.SharedWorldPublicKey is not null && assigned.Contains(profile.Id))
+                    affected.Add(profile.Id);
+                continue;
+            }
+            try
+            {
+                var records = authority.Read(profile.Id);
+                var heads = records.Where(record => !records.Any(child =>
+                    child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+                if (heads.Length != 1 || heads[0].Roster.Members.Any(member =>
+                    member.DeviceId == device.Id))
+                    affected.Add(profile.Id);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                InvalidDataException or JsonException or CryptographicException)
+            {
+                // Damaged authority cannot establish nonmembership. Keep its
+                // existing fail-closed behavior without blocking credential removal.
+                affected.Add(profile.Id);
+            }
+        }
+        return affected;
+    }
     private static PairingDecision SuccessorRosterDenied() => new(false, "SuccessorRosterReadOnly",
         "Only the original owner can change this shared world's signed membership.");
     private string RosterDirtyPath(Guid profileId) => Path.Combine(data.RootPath,
@@ -766,11 +802,11 @@ public sealed class PairingService
         // code no longer uses either value and remains available until replacement.
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
-            var affected = new HashSet<Guid> { profileId };
+            var affected = new HashSet<Guid>();
             if (refresh)
                 affected.UnionWith(devices.Where(device => device.ProfileId == profileId && !device.Revoked)
-                    .SelectMany(AffectedProfiles));
-            if (refresh && !CanChangeSharedRoster(affected))
+                    .SelectMany(SignedRosterProfiles));
+            if (refresh && !CanChangeSharedRoster(affected.Append(profileId)))
                 throw new InvalidOperationException("This successor PC cannot replace a shared world server code.");
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             var now = UtcNow;
@@ -875,7 +911,6 @@ public sealed class PairingService
         {
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             if (state is null) return new(false, "UnknownServerCode", "This server does not have a server code yet.");
-            var successor = !CanChangeSharedRoster([profileId]);
             var previousGeneration = state.Generation;
             state.Generation = Guid.NewGuid();
             state.Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -884,11 +919,11 @@ public sealed class PairingService
             state.ActivatedDevices = 0;
             state.Rotated = true;
             var revoked = 0;
-            var affected = new HashSet<Guid> { profileId };
+            var affected = new HashSet<Guid>();
             foreach (var device in devices.Where(device => device.ProfileId == profileId &&
                 device.InviteGeneration == previousGeneration && !device.Revoked))
             {
-                affected.UnionWith(AffectedProfiles(device));
+                affected.UnionWith(SignedRosterProfiles(device));
                 device.Revoked = true;
                 device.InviteHash = null;
                 device.InviteExpiresUtc = null;
@@ -899,6 +934,7 @@ public sealed class PairingService
                 revoked++;
             }
             MarkSharedRostersDirty(affected);
+            var successor = !CanChangeSharedRoster(affected);
             SaveState();
             data.TryAudit($"pairing-emergency-revoke {profileId} devices={revoked} {UtcNow:O}");
             Activity("Connections", "CodeAccessRemoved",
@@ -1234,7 +1270,7 @@ public sealed class PairingService
         {
             var device = devices.SingleOrDefault(d => d.Id == id);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Device was not found.");
-            var affected = AffectedProfiles(device).ToArray();
+            var affected = SignedRosterProfiles(device);
             var successor = !CanChangeSharedRoster(affected);
             device.Revoked = true;
             device.InviteHash = null;
