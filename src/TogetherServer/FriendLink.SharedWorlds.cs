@@ -150,9 +150,20 @@ internal sealed partial class FriendLink
 
     public ReceivedSharedWorldStatus SharedWorldStatus(Guid profileId)
     {
-        if (config is null) return new(false, null, null, "Not paired");
-        return sharedTransfers.TryGetValue(profileId, out var active) &&
-            config?.ConsentedSharedWorldProfiles?.Contains(profileId) == true ? active : LocalSharedWorldStatus(profileId);
+        if (!TryRetain()) return new(false, null, null, "Not paired");
+        try
+        {
+            gate.Wait();
+            try
+            {
+                if (config is null) return new(false, null, null, "Not paired");
+                if (sharedTransfers.TryGetValue(profileId, out var active) &&
+                    config.ConsentedSharedWorldProfiles?.Contains(profileId) == true) return active;
+            }
+            finally { gate.Release(); }
+            return LocalSharedWorldStatus(profileId);
+        }
+        finally { ReleaseRetained(); }
     }
 
     public async Task<ReceivedSharedWorldResult> CheckSharedWorldAsync(Guid profileId,
@@ -209,10 +220,15 @@ internal sealed partial class FriendLink
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             config.LastSharedHostVersions ??= [];
             config.LastSharedHostVersions[profileId] = version.Number;
+            config.LastSharedHostHashes ??= [];
+            config.LastSharedHostHashes[profileId] = version.VersionHash;
             RememberSourceReview(profileId, version, old);
+            var conflict = ObserveHistory(profileId, old, version);
             SaveConfig();
             gate.Release();
             entered = false;
+            if (conflict)
+                return SharedFailure("VersionConflict", "The Host and this PC have competing signed save histories. Review them before receiving another save.");
             return new(true, "SharedWorldChecked", "Latest Host version checked securely.",
                 LocalSharedWorldStatus(profileId));
         }
@@ -225,23 +241,64 @@ internal sealed partial class FriendLink
 
     private ReceivedSharedWorldStatus LocalSharedWorldStatus(Guid profileId)
     {
-        var consent = config?.ConsentedSharedWorldProfiles?.Contains(profileId) == true;
+        bool consent;
+        bool review;
+        bool conflict;
+        long? hostVersion;
+        string? hostHash;
+        string? root;
+        gate.Wait();
+        try
+        {
+            consent = config?.ConsentedSharedWorldProfiles?.Contains(profileId) == true;
+            review = config?.PendingSharedWorldGroups?.ContainsKey(profileId) == true;
+            conflict = config?.SharedWorldConflicts?.Contains(profileId) == true;
+            hostVersion = config?.LastSharedHostVersions?.GetValueOrDefault(profileId);
+            hostHash = config?.LastSharedHostHashes?.GetValueOrDefault(profileId);
+            root = config is null ? null : ReceivedRoot(profileId);
+        }
+        finally { gate.Release(); }
+        if (root is null) return new(false, null, null, "Not paired");
         long? received = null;
+        string? receivedHash = null;
         string? error = null;
         try
         {
-            received = ReadReceivedLatest(ReceivedRoot(profileId))?.Number;
+            var latest = ReadReceivedLatest(root);
+            received = latest?.Number;
+            receivedHash = latest?.VersionHash;
         }
         catch (Exception ex) when (ex is IOException or JsonException or CryptographicException or InvalidDataException)
         { error = "The stored save failed verification. The live world was not changed."; }
-        var hostVersion = config?.LastSharedHostVersions?.GetValueOrDefault(profileId);
-        var review = config?.PendingSharedWorldGroups?.ContainsKey(profileId) == true;
         return new(consent, hostVersion, received,
-            !consent ? "Consent off" : error is not null ? "Error" :
-            review ? "Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here." :
-            hostVersion is null ? "Host version not checked" :
-            hostVersion == received ? "Up to date when last checked" : "Ready to pull", error);
+            DescribeReceivedHistory(consent, error, review, conflict,
+                hostVersion, hostHash, received, receivedHash), error);
     }
+
+    internal static string DescribeReceivedHistory(bool consent, string? error, bool review,
+        bool conflict, long? hostVersion, string? hostHash, long? receivedVersion, string? receivedHash) =>
+        !consent ? "Consent off" : error is not null ? "Error" :
+        review ? "Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here." :
+        conflict || hostVersion == receivedVersion && hostVersion is not null && hostHash is not null &&
+            receivedHash is not null && hostHash != receivedHash ? "Competing save histories. Review before receiving another save." :
+        hostVersion is null ? "Host version not checked" :
+        hostVersion == receivedVersion && hostHash is not null && hostHash == receivedHash ?
+            "Up to date when last checked" : "Ready to pull";
+
+    private bool ObserveHistory(Guid profileId, SharedWorldVersion? old, SharedWorldVersion version)
+    {
+        config!.SharedWorldConflicts ??= [];
+        var conflict = IsReceivedHistoryConflict(old, version);
+        if (conflict) config.SharedWorldConflicts.Add(profileId);
+        else if (old?.VersionHash == version.VersionHash) config.SharedWorldConflicts.Remove(profileId);
+        return conflict;
+    }
+
+    internal static bool IsReceivedHistoryConflict(SharedWorldVersion? old, SharedWorldVersion version) =>
+        old is not null && old.GroupId == version.GroupId &&
+        (old.Number > version.Number ||
+         old.Number == version.Number && old.VersionHash != version.VersionHash ||
+         old.Number + 1 == version.Number && version.ParentHash != old.VersionHash);
 
     private void RememberSourceReview(Guid profileId, SharedWorldVersion version,
         SharedWorldVersion? old)
@@ -321,13 +378,16 @@ internal sealed partial class FriendLink
                 config.DeviceId != deviceId || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
                 !AcceptedPins().SequenceEqual(pins))
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed during transfer.");
-            config.LastSharedHostVersions ??= [];
-            config.LastSharedHostVersions[profileId] = version.Number;
-            RememberSourceReview(profileId, version, old);
             config.SharedWorldSigningKeys ??= [];
             if (config.SharedWorldSigningKeys.TryGetValue(profileId, out var pinnedKey) &&
                 pinnedKey != version.SigningPublicKey)
                 return SharedFailure("SigningIdentityChanged", "The Host's world signing identity changed. Ask the owner to review it.");
+            config.LastSharedHostVersions ??= [];
+            config.LastSharedHostVersions[profileId] = version.Number;
+            config.LastSharedHostHashes ??= [];
+            config.LastSharedHostHashes[profileId] = version.VersionHash;
+            RememberSourceReview(profileId, version, old);
+            var conflict = ObserveHistory(profileId, old, version);
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             var approvedGroup = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
             SaveConfig();
@@ -339,10 +399,7 @@ internal sealed partial class FriendLink
             if (old is not null && old.GroupId != version.GroupId && !newWorldGroup)
                 return SharedFailure("SourceReviewRequired",
                     "The Host changed this save source. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here.");
-            if (old is not null && !newWorldGroup && (old.GroupId != version.GroupId ||
-                old.Number > version.Number ||
-                old.Number == version.Number && old.VersionHash != version.VersionHash ||
-                old.Number + 1 == version.Number && version.ParentHash != old.VersionHash))
+            if (old is not null && !newWorldGroup && (old.GroupId != version.GroupId || conflict))
                 return SharedFailure("VersionConflict", "The published version does not continue this PC's verified world history.");
             if (old?.VersionHash == version.VersionHash)
                 return new(true, "AlreadyReceived", "This PC already has the latest verified save.",
@@ -469,6 +526,7 @@ internal sealed partial class FriendLink
             if (!CommitSharedReceipt(profileId, stage, destination, root, manifestBytes, transferToken))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
+            config.SharedWorldConflicts?.Remove(profileId);
             SaveConfig();
             gate.Release();
             entered = false;

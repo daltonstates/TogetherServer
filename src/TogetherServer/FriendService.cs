@@ -28,6 +28,8 @@ public sealed class FriendConfiguration
     public List<Guid> ConsentedSharedWorldProfiles { get; set; } = [];
     public Dictionary<Guid, string> SharedWorldSigningKeys { get; set; } = [];
     public Dictionary<Guid, long> LastSharedHostVersions { get; set; } = [];
+    public Dictionary<Guid, string> LastSharedHostHashes { get; set; } = [];
+    public HashSet<Guid> SharedWorldConflicts { get; set; } = [];
     public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];
     public Dictionary<Guid, Guid> ApprovedSharedWorldGroups { get; set; } = [];
 }

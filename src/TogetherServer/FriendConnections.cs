@@ -195,9 +195,9 @@ public sealed class FriendService : IDisposable
 
     public ReceivedSharedWorldStatus SharedWorldStatus(Guid profileId)
     {
-        lock (sync)
-            return links.FirstOrDefault(item => item.Id == selectedId).Link?.SharedWorldStatus(profileId)
-                ?? new(false, null, null, "Not paired");
+        FriendLink? link;
+        lock (sync) link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+        return link?.SharedWorldStatus(profileId) ?? new(false, null, null, "Not paired");
     }
 
     public Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
