@@ -27,6 +27,9 @@ internal sealed record SuccessorRouteObservation(int Schema, string RecordHash,
 
 public sealed partial class HostManager
 {
+    // Deterministic storage readings for the isolated core checks.
+    internal Func<string, long>? SuccessorFreeBytesForChecks { get; set; }
+
     private static string SuccessorRestoreName(Guid profileId) =>
         $"successor-restore-{profileId:N}.protected";
     private static string SuccessorRouteName(Guid profileId) =>
@@ -188,7 +191,7 @@ public sealed partial class HostManager
                 record.Version.PortableSetup.AddOns, routeFingerprint);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
-                                   CryptographicException or UnauthorizedAccessException or ArgumentException)
+                                   CryptographicException or UnauthorizedAccessException or ArgumentException or OverflowException)
         {
             return new(false, false, null,
                 "The staged handoff could not be verified. Keep this world offline and review its history.", []);
@@ -266,10 +269,12 @@ public sealed partial class HostManager
                 return new(false, "InvalidGamePort", "Choose a game port supported by this Host game.");
             var local = SharedWorldReadiness.Check(vault, worldRoot, setup,
                 new TakeoverAuthority(true, true, true, true, true, true),
-                record.Roster.OwnerPublicKey, record.Proposal.GroupId, freeBytes,
+                record.Roster.OwnerPublicKey, record.Proposal.GroupId,
+                freeBytes ?? SuccessorFreeBytesForChecks,
                 settings.CompanionListeningEnabled &&
                 settings.CompanionEndpoint == record.Proposal.CandidateAddress &&
-                authority.LocalAuthorizedHead(profileId)?.RecordHash == record.RecordHash);
+                authority.LocalAuthorizedHead(profileId)?.RecordHash == record.RecordHash,
+                requiredCopies: 3);
             if (local.Reasons.Count > 0)
                 return new(false, "LocalSetupIncomplete", "Finish the local game, add-on, password, port, and space checks before restoring.",
                     PendingChecks: local.Reasons);
@@ -368,6 +373,9 @@ public sealed partial class HostManager
             }
             if (!VerifiedSuccessorCopy(destination, record.Version))
                 return new(false, "RestoreReviewRequired", "The restored world differs from the signed final copy. No files were replaced.");
+            if (SuccessorStorageIssue(pending, record,
+                    freeBytes ?? SuccessorFreeBytesForChecks) is { } storageIssue)
+                return new(false, "LocalSetupIncomplete", storageIssue, PendingChecks: [storageIssue]);
             var installedAddOns = ServerAddOns.List(data, profile);
             if (record.Version.PortableSetup.AddOns?.Count > 0 &&
                 (!installedAddOns.Ok || record.Version.PortableSetup.AddOns.Any(required =>
@@ -395,7 +403,7 @@ public sealed partial class HostManager
                  "Confirm a recognizable change survives a graceful restart."]);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
-                                   CryptographicException or UnauthorizedAccessException or ArgumentException)
+                                   CryptographicException or UnauthorizedAccessException or ArgumentException or OverflowException)
         {
             return new(false, "RestoreVerificationFailed",
                 "The staged proof, local setup, or copied files did not pass verification: " + ex.Message);
@@ -425,15 +433,26 @@ public sealed partial class HostManager
         return vault;
     }
 
-    private static string SetupHash(ServerProfile profile, TakeoverLocalSetup setup) =>
+    private string SetupHash(ServerProfile profile, TakeoverLocalSetup setup,
+        WorldAuthorityRecord record) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
-            profile.Id, profile.Kind, profile.WorldId, profile.WorldDirectory,
-            ProfileGamePort = profile.GamePort, profile.ExecutablePath, profile.ServerName,
-            profile.Minecraft?.ServerJarPath, profile.Factorio?.RconPort,
-            setup.ServerFile, setup.GameVersion, setup.EnabledAddOns,
-            setup.ControlPort, setup.GamePort
+            record.RecordHash, record.Version.VersionHash, record.Version.PortableSetup,
+            profile, setup,
+            settings.CompanionEndpoint, settings.CompanionPort,
+            settings.CompanionListeningEnabled
         })));
+
+    private string? SuccessorStorageIssue(SuccessorRestoreState state,
+        WorldAuthorityRecord record, Func<string, long>? freeBytes = null)
+    {
+        // The restored payload is already present. Its first graceful Stop needs
+        // one rolling backup and one published copy on the managed volume.
+        var size = SharedWorldService.BoundedTotalBytes(record.Version.Files);
+        return SharedWorldReadiness.HasSpaceForCopies(state.WorldDirectory, size, 2,
+            freeBytes ?? SuccessorFreeBytesForChecks) ? null :
+            "Free space for a rolling backup and shared publication of this save, plus 1 GiB, before Start.";
+    }
 
     private string? SuccessorPreStartIssue(Guid profileId, SuccessorRestoreState state,
         WorldAuthorityRecord record, ServerProfile profile, TakeoverLocalSetup setup,
@@ -452,6 +471,9 @@ public sealed partial class HostManager
             return "This PC's hosting access ended.";
         if (profile.WorldDirectory != state.WorldDirectory || profile.Kind != record.Version.Game ||
             profile.WorldId != record.Version.WorldId || profile.GamePort != setup.GamePort ||
+            profile.Crossplay != record.Version.PortableSetup.Crossplay ||
+            profile.PublicListing && !record.Version.PortableSetup.PublicListing ||
+            !profile.Backups.Enabled ||
             setup.ControlPort != settings.CompanionPort ||
             setup.ControlPort == setup.GamePort || !setup.NewPasswordConfigured ||
             profile.ExecutablePath != (record.Version.Game == GameKinds.MinecraftJava ?
@@ -470,9 +492,8 @@ public sealed partial class HostManager
              latest.Number <= record.Version.Number ||
              !sharedWorlds.AuthorizedPublishedLineage(profile)))
             return "The restored world differs from the signed save and has no newer signed Stop save.";
-        if (new DriveInfo(Path.GetPathRoot(Path.GetFullPath(state.WorldDirectory))!)
-                .AvailableFreeSpace < 1024L * 1024 * 1024)
-            return "Keep at least 1 GiB free after restoring this save.";
+        if (SuccessorStorageIssue(state, record) is { } storageIssue)
+            return storageIssue;
         if (record.Version.Game == GameKinds.Valheim &&
             data.LoadValheimPassword(profileId) is not { Length: >= 5 and <= 64 })
             return "A new game password is missing.";
@@ -553,7 +574,7 @@ public sealed partial class HostManager
                 try { data.SaveSettings(settings); }
                 catch { profile.SharedSavesEnabled = previousSharing; throw; }
                 var ready = state with { Ready = true,
-                    SetupHash = SetupHash(profile, request.Setup) };
+                    SetupHash = SetupHash(profile, request.Setup, record) };
                 data.SaveProtected(SuccessorRestoreName(profileId),
                     JsonSerializer.SerializeToUtf8Bytes(ready));
                 return new(true, "ReadyForManualStart",
@@ -562,7 +583,7 @@ public sealed partial class HostManager
             }
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
-            CryptographicException or UnauthorizedAccessException or ArgumentException)
+            CryptographicException or UnauthorizedAccessException or ArgumentException or OverflowException)
         { return new(false, "SuccessorChecksPending", "The signed copy or local checks could not be verified."); }
         finally { gate.Release(); }
     }
@@ -578,7 +599,7 @@ public sealed partial class HostManager
             profile.Minecraft?.ServerJarPath : profile.ExecutablePath,
             record.Version.PortableSetup.GameVersion, record.Version.PortableSetup.AddOns,
             true, settings.CompanionPort, profile.GamePort);
-        if (state.SetupHash != SetupHash(profile, setup))
+        if (state.SetupHash != SetupHash(profile, setup, record))
             return "Local setup changed after approval. Finish the checks again.";
         if (!profile.SharedSavesEnabled)
             return "Signed save continuity is disabled on this Host.";

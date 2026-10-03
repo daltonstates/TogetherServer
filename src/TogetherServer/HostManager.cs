@@ -1087,7 +1087,7 @@ public sealed partial class HostManager
             try { issue = SuccessorStartIssue(profileId, profile); }
             catch (Exception ex) when (ex is IOException or InvalidDataException or
                 System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or
-                UnauthorizedAccessException or ArgumentException)
+                UnauthorizedAccessException or ArgumentException or OverflowException)
             { issue = "The signed restore or local checks could not be verified."; }
             if (issue is not null)
                 return Result(false, "SuccessorChecksPending", issue);

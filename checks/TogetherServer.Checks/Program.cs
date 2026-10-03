@@ -3203,6 +3203,26 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(prepared.Ok && prepared.Version is { Number: 3 },
         "reviewed retry did not publish another final save");
     version = prepared.Version!;
+    using (var largeSigner = ECDsa.Create(ECCurve.NamedCurves.nistP256))
+    {
+        var largeBytes = 5L * 1024 * 1024 * 1024;
+        var largeSigned = SharedWorldService.SignVersion(version with
+        {
+            Files = [version.Files[0] with { Length = largeBytes }]
+        }, largeSigner);
+        var signedBytes = SharedWorldService.BoundedTotalBytes(largeSigned.Files);
+        var reserve = 1024L * 1024 * 1024;
+        Require(SharedWorldService.VerifySignature(largeSigned) &&
+            !SharedWorldReadiness.HasSpaceForCopies(data.RootPath, signedBytes, 3,
+                _ => checked(reserve + 3 * signedBytes - 1)) &&
+            SharedWorldReadiness.HasSpaceForCopies(data.RootPath, signedBytes, 3,
+                _ => checked(reserve + 3 * signedBytes)) &&
+            !SharedWorldReadiness.HasSpaceForCopies(data.RootPath, signedBytes, 2,
+                _ => checked(reserve + 2 * signedBytes - 1)) &&
+            SharedWorldReadiness.HasSpaceForCopies(data.RootPath, signedBytes, 2,
+                _ => checked(reserve + 2 * signedBytes)),
+            "a large signed world crossed the restore or first Stop space boundary");
+    }
     receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
         version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
     receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
@@ -3304,6 +3324,12 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(lowSpace.Code == "LocalSetupIncomplete" &&
         lowSpace.PendingChecks!.Any(item => item.Contains("disk space", StringComparison.OrdinalIgnoreCase)) &&
         !Directory.Exists(destination), "restore accepted insufficient free space");
+    var signedWorldBytes = SharedWorldService.BoundedTotalBytes(version.Files);
+    var restoreFreeBytes = checked(1024L * 1024 * 1024 + 3 * signedWorldBytes);
+    Require((await receiver.RestoreSharedSuccessorAsync(profile.Id, restoreRequest,
+        freeBytes: _ => restoreFreeBytes - 1)).Code == "LocalSetupIncomplete" &&
+        !Directory.Exists(destination),
+        "restore accepted space for the world without both first Stop copies");
     var stagedProof = Path.Combine(receivingData.RootPath, "shared-world-staged",
         profile.Id.ToString("N"), completed.Authority.RecordHash, "authority.json");
     var originalProof = File.ReadAllBytes(stagedProof);
@@ -3332,9 +3358,20 @@ await Check("planned handoff requires exact final save receipt before durable ol
             "shared-world-staged", profile.Id.ToString("N"), completed.Authority.RecordHash,
             SharedWorldService.PayloadDirectory), file.Path), copied);
     }
-    var restored = await new HostManager(receivingData,
+    var restoreManager = new HostManager(receivingData,
         new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
-        .RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
+    { SuccessorFreeBytesForChecks = _ => restoreFreeBytes };
+    var spaceReads = 0;
+    restoreManager.SuccessorFreeBytesForChecks = _ =>
+        spaceReads++ == 0 ? restoreFreeBytes :
+            checked(1024L * 1024 * 1024 + 2 * signedWorldBytes - 1);
+    var postCopyLow = await restoreManager.RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
+    Require(postCopyLow.Code == "LocalSetupIncomplete" &&
+        File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
+        receivingData.LoadSettings().Profiles.Count == 0,
+        "space loss after copying removed the verified copy or allowed Host setup");
+    restoreManager.SuccessorFreeBytesForChecks = _ => restoreFreeBytes;
+    var restored = await restoreManager.RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
     Require(restored.Ok && restored.Code == "RestoredPendingChecks" &&
         File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
         receivingData.LoadSettings().Profiles.Single().WorldDirectory == destination &&
@@ -3383,6 +3420,12 @@ await Check("planned handoff requires exact final save receipt before durable ol
             setup with { GamePort = setup.GamePort + 1 }));
     Require(!wrongFinish.Ok && (await routeManager.StartAsync(profile.Id)).Code ==
         "SuccessorChecksPending", "changed game port completed restore checks");
+    var stopFreeBytes = checked(1024L * 1024 * 1024 + 2 * signedWorldBytes);
+    routeManager.SuccessorFreeBytesForChecks = _ => stopFreeBytes - 1;
+    Require((await routeManager.FinishSharedSuccessorAsync(profile.Id,
+        new SuccessorFinishRequest(completed.Authority.RecordHash, setup))).Code ==
+        "SuccessorChecksPending", "Finish accepted space below the first Stop copy boundary");
+    routeManager.SuccessorFreeBytesForChecks = _ => stopFreeBytes;
     var finished = await routeManager.FinishSharedSuccessorAsync(profile.Id,
         new SuccessorFinishRequest(completed.Authority.RecordHash, setup));
     Require(finished.Code == "ReadyForManualStart" &&
@@ -3397,6 +3440,23 @@ await Check("planned handoff requires exact final save receipt before durable ol
         .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
         "a changed local setup identity bypassed manual Start checks");
     receivingData.SaveSettings(savedSetup);
+    routeManager.SuccessorFreeBytesForChecks = _ => stopFreeBytes - 1;
+    Require((await routeManager.StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+        "manual Start accepted space below the backup and publication boundary");
+    routeManager.SuccessorFreeBytesForChecks = _ => stopFreeBytes;
+    foreach (var changedFlag in new[] { "Crossplay", "PublicListing", "Backups" })
+    {
+        var changed = receivingData.LoadSettings();
+        if (changedFlag == "Crossplay") changed.Profiles.Single().Crossplay = true;
+        else if (changedFlag == "PublicListing") changed.Profiles.Single().PublicListing = true;
+        else changed.Profiles.Single().Backups.Enabled = false;
+        receivingData.SaveSettings(changed);
+        Require((await new HostManager(receivingData,
+            new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+            .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+            $"{changedFlag} changed after Finish but manual Start was allowed");
+        receivingData.SaveSettings(savedSetup);
+    }
     var manualStart = await routeManager.StartAsync(profile.Id);
     Require(manualStart.Ok, $"planned successor manual Start failed: {manualStart.Code} {manualStart.Message}");
     File.WriteAllText(Path.Combine(destination, "world.dat"), "successor saved change");

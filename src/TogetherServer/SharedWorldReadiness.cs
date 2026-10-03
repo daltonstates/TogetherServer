@@ -23,7 +23,8 @@ internal static class SharedWorldReadiness
 
     internal static TakeoverReadiness Check(string vaultRoot, string rehearsalRoot,
         TakeoverLocalSetup setup, TakeoverAuthority authority, string? pinnedKey, Guid? approvedGroup,
-        Func<string, long>? freeBytes = null, bool ownedControlListener = false)
+        Func<string, long>? freeBytes = null, bool ownedControlListener = false,
+        int requiredCopies = 1)
     {
         var reasons = new List<string>();
         SharedWorldVersion? version = null;
@@ -104,12 +105,10 @@ internal static class SharedWorldReadiness
             try
             {
                 var bytes = SharedWorldService.BoundedTotalBytes(version.Files);
-                var available = freeBytes?.Invoke(rehearsalRoot) ??
-                    new DriveInfo(Path.GetPathRoot(Path.GetFullPath(rehearsalRoot))!).AvailableFreeSpace;
-                if (available < bytes + ReserveBytes)
-                    reasons.Add("Free more disk space before copying this save; keep at least 1 GiB free.");
+                if (!HasSpaceForCopies(rehearsalRoot, bytes, requiredCopies, freeBytes))
+                    reasons.Add("Free more disk space for the managed world copies and keep at least 1 GiB free.");
             }
-            catch (Exception ex) when (ex is IOException or ArgumentException or InvalidDataException)
+            catch (Exception ex) when (ex is IOException or ArgumentException or InvalidDataException or OverflowException)
             { reasons.Add("Available disk space could not be checked."); }
         }
         if (!authority.Eligible) reasons.Add("The owner has not granted this PC takeover permission.");
@@ -118,6 +117,16 @@ internal static class SharedWorldReadiness
         if (!authority.GameRouteVerified) reasons.Add("Test the future Host's game route with a real Friend join.");
         if (!authority.GameLoadVerified) reasons.Add("Confirm this save loads and survives a restart in the real game.");
         return new(reasons.Count == 0, reasons, version?.Number, version?.VersionHash);
+    }
+
+    internal static bool HasSpaceForCopies(string managedRoot, long copyBytes, int copies,
+        Func<string, long>? freeBytes = null)
+    {
+        if (copyBytes < 0 || copies < 1) throw new ArgumentOutOfRangeException();
+        var required = checked(ReserveBytes + checked(copyBytes * copies));
+        var available = freeBytes?.Invoke(managedRoot) ??
+            new DriveInfo(Path.GetPathRoot(Path.GetFullPath(managedRoot))!).AvailableFreeSpace;
+        return available >= required;
     }
 
     internal static TakeoverReadiness Rehearse(string dataRoot, string vaultRoot,
