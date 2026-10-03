@@ -3030,6 +3030,55 @@ await Check("planned handoff requires exact final save receipt before durable ol
         new WorldAuthorityStore(receivingData).Fenced(profile.Id,
             Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo()), out _),
         $"receiver did not preserve proof and remain fenced before local setup: {staged.Code} {staged.Message}");
+    var receiver = new HostManager(receivingData,
+        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+    var setup = new TakeoverLocalSetup(fixture, version.PortableSetup.GameVersion,
+        [], true, FreePort(), FreePort());
+    var restoreRequest = new SuccessorRestoreRequest(completed.Authority!.RecordHash,
+        setup, "Recovered fixture", "Recovered fixture");
+    var destination = receivingData.NewWorldDirectory(profile.Id);
+    var stagedStatus = await receiver.SuccessorRestoreStatusAsync(profile.Id);
+    Require(stagedStatus.Staged && !stagedStatus.Restored &&
+        stagedStatus.RecordHash == completed.Authority.RecordHash,
+        "staged handoff was not available after receiving the signed offer");
+    var missing = await receiver.RestoreSharedSuccessorAsync(profile.Id,
+        restoreRequest with { Setup = setup with { ServerFile = null } });
+    Require(missing.Code == "LocalSetupIncomplete" && !Directory.Exists(destination),
+        "restore accepted missing installed game files");
+    var lowSpace = await receiver.RestoreSharedSuccessorAsync(profile.Id,
+        restoreRequest, freeBytes: _ => 0);
+    Require(lowSpace.Code == "LocalSetupIncomplete" &&
+        lowSpace.PendingChecks!.Any(item => item.Contains("disk space", StringComparison.OrdinalIgnoreCase)) &&
+        !Directory.Exists(destination), "restore accepted insufficient free space");
+    var stagedProof = Path.Combine(receivingData.RootPath, "shared-world-staged",
+        profile.Id.ToString("N"), completed.Authority.RecordHash, "authority.json");
+    var originalProof = File.ReadAllBytes(stagedProof);
+    File.WriteAllText(stagedProof, "{}");
+    Require((await receiver.RestoreSharedSuccessorAsync(profile.Id, restoreRequest)).Code ==
+        "RestoreVerificationFailed" && !Directory.Exists(destination),
+        "restore accepted changed signed handoff proof");
+    File.WriteAllBytes(stagedProof, originalProof);
+    Directory.CreateDirectory(destination);
+    File.WriteAllText(Path.Combine(destination, "unrelated.txt"), "keep this world");
+    Require((await receiver.RestoreSharedSuccessorAsync(profile.Id, restoreRequest)).Code ==
+        "DestinationExists" && File.Exists(Path.Combine(destination, "unrelated.txt")),
+        "restore overwrote an occupied world destination");
+    Directory.Delete(destination, true); // Disposable test-only folder created above.
+    var restored = await receiver.RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
+    Require(restored.Ok && restored.Code == "RestoredPendingChecks" &&
+        File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
+        receivingData.LoadSettings().Profiles.Single().WorldDirectory == destination &&
+        (await receiver.StartAsync(profile.Id)).Code == "SuccessorChecksPending" &&
+        (await new HostManager(receivingData,
+            new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+            .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
+        $"fresh restore was not verified, imported, or durably fenced: {restored.Code} {restored.Message}");
+    var resumedStatus = await new HostManager(receivingData,
+        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+        .SuccessorRestoreStatusAsync(profile.Id);
+    Require(resumedStatus.Staged && resumedStatus.Restored &&
+        resumedStatus.RecordHash == completed.Authority.RecordHash,
+        "restored successor status did not survive app restart");
 });
 
 await Check("shared world authority requires signed majority, fences old Host, and survives restart", async () =>

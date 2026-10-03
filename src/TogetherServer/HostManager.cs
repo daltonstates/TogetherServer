@@ -1044,6 +1044,9 @@ public sealed partial class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (data.HasProtected(SuccessorRestoreName(profileId)))
+            return Result(false, "SuccessorChecksPending",
+                "This restored shared world needs a verified disposable game rehearsal and direct-IP Friend route checks before Start.");
         if (data.HasProtected(PlannedHandoffName(profileId)))
             return Result(false, "PlannedHandoffPending",
                 "A planned handoff is waiting for the successor's verified copy. Complete or review it before starting this world.");
