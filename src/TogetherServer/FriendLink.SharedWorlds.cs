@@ -830,7 +830,7 @@ internal sealed partial class FriendLink
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed while checking.");
             if (config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != version.GroupId)
                 return SharedFailure("GroupMismatch", "The save version does not match the verified shared roster.");
-            if ((resolvedAnchor ?? NewestTrustedAnchor(config, profileId, old,
+            if ((ResolvedAuthorityAnchor(profileId, version) ?? NewestTrustedAnchor(config, profileId, old,
                     version.GroupId))?.VersionHash !=
                 chainAnchor?.VersionHash)
                 return SharedFailure("ConnectionChanged", "The checked Host save changed while verifying ancestry. Check again.");
@@ -1019,11 +1019,25 @@ internal sealed partial class FriendLink
 
     private SharedWorldVersion? ResolvedAuthorityAnchor(Guid profileId, SharedWorldVersion version)
     {
-        var heads = WorldAuthorityTrust.EffectiveHeads(new WorldAuthorityStore(data).Read(profileId));
-        if (heads.Length != 1 || heads[0].Schema != 2 ||
-            !AuthorizedVersionSignerForRecords(config?.SharedWorldSigningKeys?.GetValueOrDefault(profileId),
-                version, new WorldAuthorityStore(data).Read(profileId))) return null;
-        return heads[0].Version;
+        return ResolvedAuthorityAnchorForRecords(
+            config?.SharedWorldSigningKeys?.GetValueOrDefault(profileId), version,
+            new WorldAuthorityStore(data).Read(profileId));
+    }
+
+    internal static SharedWorldVersion? ResolvedAuthorityAnchorForRecords(string? pinnedOwner,
+        SharedWorldVersion version, IReadOnlyList<WorldAuthorityRecord> records)
+    {
+        if (!AuthorizedVersionSignerForRecords(pinnedOwner, version, records)) return null;
+        var heads = WorldAuthorityTrust.EffectiveHeads(records);
+        if (heads.Length != 1) return null;
+        for (WorldAuthorityRecord? current = heads[0]; current is not null;
+             current = records.SingleOrDefault(record =>
+                 record.RecordHash == current.Proposal.ParentAuthorityHash))
+        {
+            if (current.Schema == 2 && version.Number >= current.Version.Number)
+                return current.Version;
+        }
+        return null;
     }
 
     private static void AcceptResolvedHistory(FriendConfiguration config, Guid profileId,
@@ -1133,7 +1147,7 @@ internal sealed partial class FriendLink
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed during transfer.");
             if (config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != version.GroupId)
                 return SharedFailure("GroupMismatch", "The save version does not match the verified shared roster.");
-            if ((resolvedAnchor ?? NewestTrustedAnchor(config, profileId, old,
+            if ((ResolvedAuthorityAnchor(profileId, version) ?? NewestTrustedAnchor(config, profileId, old,
                     version.GroupId))?.VersionHash !=
                 chainAnchor?.VersionHash)
                 return SharedFailure("ConnectionChanged", "The checked Host save changed while verifying ancestry. Try again.");

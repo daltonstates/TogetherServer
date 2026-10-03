@@ -855,9 +855,12 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     {
         var records = Read(profileId);
         var effective = WorldAuthorityTrust.EffectiveHeads(records);
-        if (effective.Length == 1)
+        if (effective.Length != 1) return null;
+        // Follow the selected authority parent chain. Other records remain in
+        // the log as evidence, but a resolution retires their save ancestry.
+        for (WorldAuthorityRecord? head = effective[0]; head is not null; head = records.SingleOrDefault(item =>
+                 item.RecordHash == head.Proposal.ParentAuthorityHash))
         {
-            var head = effective[0];
             if (head.Version.Number == number) return head.Version;
             var parent = records.SingleOrDefault(item =>
                 item.RecordHash == head.Proposal.ParentAuthorityHash);
@@ -865,16 +868,6 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 ReadProof(head, parent);
             var chosen = proof?.FirstOrDefault(item => item.Number == number);
             if (chosen is not null) return chosen;
-        }
-        foreach (var record in records)
-        {
-            if (record.Version.Number == number) return record.Version;
-            var parent = records.SingleOrDefault(item =>
-                item.RecordHash == record.Proposal.ParentAuthorityHash);
-            var lineage = record.VersionLineageDigest is null ? record.VersionLineage :
-                ReadProof(record, parent);
-            var version = lineage?.FirstOrDefault(item => item.Number == number);
-            if (version is not null) return version;
         }
         return null;
     }

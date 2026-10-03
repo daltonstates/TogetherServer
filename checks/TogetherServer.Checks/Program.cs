@@ -3908,6 +3908,127 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     losingVersion.VersionHash,
                     "authority pages returned the losing same-number version after selection");
             }
+            using (var lineageData = Data("selected-lineage-after-child"))
+            {
+                var lineageStore = new WorldAuthorityStore(lineageData);
+                lineageStore.Append(accepted);
+                var lineageHostingKey = lineageStore.PrepareLocalHostingKey(profile.Id);
+                var a = new List<SharedWorldVersion>();
+                var b = new List<SharedWorldVersion>();
+                var aPrior = version;
+                var bPrior = version;
+                for (var number = 2; number <= 6; number++)
+                {
+                    if (number <= 5)
+                    {
+                        aPrior = SharedWorldService.SignVersion(aPrior with
+                        { Number = number, ParentHash = aPrior.VersionHash, BackupId = Guid.NewGuid() },
+                            voters[0].Key);
+                        a.Add(aPrior);
+                    }
+                    bPrior = SharedWorldService.SignVersion(bPrior with
+                    { Number = number, ParentHash = bPrior.VersionHash, BackupId = Guid.NewGuid() },
+                        voters[0].Key);
+                    b.Add(bPrior);
+                }
+                var aFive = a[^1];
+                var bFive = b[^2];
+                var bSix = b[^1];
+                WorldAuthorityRecord LineageRecord(WorldAuthorityRecord parent,
+                    SharedWorldVersion head, IReadOnlyList<SharedWorldVersion>? proof,
+                    int schema, string kind, IReadOnlyList<string>? competingHeads = null)
+                {
+                    var draft = new WorldAuthorityProposal(schema, roster.GroupId, profile.Id,
+                        parent.Proposal.Epoch + 1, parent.RecordHash,
+                        WorldAuthorityTrust.RosterHash(roster), head.VersionHash, lineageHostingKey,
+                        "https://127.0.0.1:5132", kind, voters[0].Id, selectedDevice, "",
+                        CompetingHeadHashes: competingHeads);
+                    var bindingDraft = new WorldSuccessorBinding(voters[0].Id, selectedDevice,
+                        lineageHostingKey, "");
+                    var binding = bindingDraft with { Signature = Convert.ToBase64String(
+                        voters[0].Key.SignData(WorldAuthorityTrust.BindingBasis(draft, bindingDraft),
+                            HashAlgorithmName.SHA256)) };
+                    draft = draft with { SuccessorBinding = binding };
+                    var proposal = draft with { Signature = Convert.ToBase64String(
+                        voters[0].Key.SignData(WorldAuthorityTrust.ProposalBasis(draft),
+                            HashAlgorithmName.SHA256)) };
+                    var recordDraft = new WorldAuthorityRecord(schema == 3 ? 2 : 1,
+                        proposal, roster, head,
+                        [ResolutionVote(proposal, 0), ResolutionVote(proposal, 1)], null, "",
+                        VersionLineage: proof);
+                    return recordDraft with { RecordHash = WorldAuthorityTrust.Hash(
+                        WorldAuthorityTrust.RecordBasis(recordDraft)) };
+                }
+                var aRecord = LineageRecord(accepted, aFive, a, 2, "Quorum");
+                var bRecord = LineageRecord(accepted, bSix, b, 2, "Quorum");
+                lineageStore.Append(aRecord);
+                lineageStore.Append(bRecord);
+                var competingLineageHeads = new[] { aRecord.RecordHash, bRecord.RecordHash }
+                    .Order(StringComparer.Ordinal).ToArray();
+                var decision = LineageRecord(aRecord, aFive, null, 3,
+                    "ResolutionQuorum", competingLineageHeads);
+                lineageStore.Append(decision);
+                Require(lineageStore.FindProvenVersion(profile.Id, 5)?.VersionHash == aFive.VersionHash &&
+                    lineageStore.FindProvenVersion(profile.Id, 6) is null &&
+                    lineageStore.Read(profile.Id).Any(record => record.RecordHash == bRecord.RecordHash),
+                    "resolution served the retired B6 or discarded its signed evidence");
+                lineageData.SaveProtected($"shared-world-pc-signing-{voters[0].Id:N}.protected",
+                    voters[0].Key.ExportPkcs8PrivateKey());
+                lineageStore.BindLocalSuccessor(profile.Id, decision.RecordHash, voters[0].Id);
+                using var lineageSigner = ECDsa.Create();
+                lineageSigner.ImportPkcs8PrivateKey(lineageData.LoadProtected(
+                    WorldAuthorityStore.HostingKeyName(profile.Id))!, out _);
+                var aSix = SharedWorldService.SignVersion(aFive with
+                { Number = 6, ParentHash = aFive.VersionHash, BackupId = Guid.NewGuid() },
+                    lineageSigner);
+                var aSeven = SharedWorldService.SignVersion(aSix with
+                { Number = 7, ParentHash = aSix.VersionHash, BackupId = Guid.NewGuid() },
+                    lineageSigner);
+                var sharedRoot = Path.Combine(lineageData.RootPath, "shared-worlds", profile.Id.ToString("N"));
+                var sixRoot = Path.Combine(sharedRoot, version.GroupId.ToString("N"), "6");
+                Directory.CreateDirectory(sixRoot);
+                File.WriteAllBytes(Path.Combine(sharedRoot, "latest.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(aSeven));
+                File.WriteAllBytes(Path.Combine(sixRoot, "version.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(bSix));
+                var lineageShares = new SharedWorldService(lineageData,
+                    new WorldBackupService(lineageData, TimeProvider.System));
+                RequireThrows<InvalidDataException>(() => lineageShares.ReadEarlierVersion(aSeven, 6),
+                    "transfer served retained B6 as the selected A6");
+                File.WriteAllBytes(Path.Combine(sixRoot, "version.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(aSix));
+                Require(lineageShares.ReadEarlierVersion(aSeven, 6).VersionHash == aSix.VersionHash &&
+                    lineageShares.ReadEarlierVersion(aSeven, 5).VersionHash == aFive.VersionHash,
+                    "transfer could not serve A5/A6 to a catching-up Friend");
+                var child = LineageRecord(decision, aSix, [aSix], 2, "Quorum");
+                lineageStore.Append(child);
+                lineageStore.BindLocalSuccessor(profile.Id, child.RecordHash, voters[0].Id);
+                var restartedRecords = new WorldAuthorityStore(lineageData).Read(profile.Id);
+                var persistedFriend = JsonSerializer.Deserialize<FriendConfiguration>(
+                    JsonSerializer.Serialize(new FriendConfiguration
+                    {
+                        SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey }
+                    }))!;
+                var anchor = FriendLink.ResolvedAuthorityAnchorForRecords(
+                    persistedFriend.SharedWorldSigningKeys[profile.Id], aSeven, restartedRecords);
+                Require(anchor?.VersionHash == aFive.VersionHash &&
+                    FriendLink.VerifySharedChain(anchor, aSeven, [aSix], restartedRecords) &&
+                    !FriendLink.VerifySharedChain(bFive, aSeven, [aSix], restartedRecords) &&
+                    !FriendLink.VerifySharedChain(bSix, aSeven, [], restartedRecords) &&
+                    lineageStore.FindProvenVersion(profile.Id, 6)?.VersionHash == aSix.VersionHash &&
+                    lineageShares.ReadEarlierVersion(aSeven, 6).VersionHash == aSix.VersionHash,
+                    "restarted Friend did not recover the chosen A5 after an authority child");
+                var forgedSeven = SharedWorldService.SignVersion(aSeven with
+                { ParentHash = bSix.VersionHash, BackupId = Guid.NewGuid() }, lineageSigner);
+                Require(!FriendLink.VerifySharedChain(anchor!, forgedSeven, [aSix], restartedRecords),
+                    "a forked descendant passed the selected anchor");
+                var authorityLog = Path.Combine(sharedRoot, "authority", "records.jsonl");
+                var originalLog = File.ReadAllBytes(authorityLog);
+                File.AppendAllText(authorityLog, "tampered\n");
+                RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(lineageData)
+                    .Read(profile.Id), "restart accepted a tampered authority child");
+                File.WriteAllBytes(authorityLog, originalLog);
+            }
             using (var ownerData = Data("authority-owner-resolution"))
             {
                 var ownerStore = new WorldAuthorityStore(ownerData);
