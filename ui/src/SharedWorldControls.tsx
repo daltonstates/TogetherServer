@@ -3,7 +3,7 @@ import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 
-type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null }
+type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
@@ -38,7 +38,8 @@ export function parseHostSharedWorldStatus(value: unknown): HostStatus {
       throw new Error('Published version is invalid.')
     latest = { number, versionHash: item.versionHash, createdUtc: item.createdUtc }
   }
-  return { enabled: boolean(source.enabled, 'Sharing switch'), latest, error: textOrNull(source.error, 'Shared save error') }
+  return { enabled: boolean(source.enabled, 'Sharing switch'), latest, error: textOrNull(source.error, 'Shared save error'),
+    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0 }
 }
 export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
   const source = record(value, 'Received save status')
@@ -130,7 +131,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
-    {status?.latest ? <p>Latest Host version: {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
+    {status?.latest ? <p>Copied to {status.confirmedCopies} PCs · latest saved version {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p>No post-Stop save has been published yet.</p>}
     {status?.enabled && <label><Input type="checkbox" disabled={busy || !roster}
       checked={roster?.ownerOverride ?? true} onChange={event => void changeOverride(event.target.checked)} />
@@ -155,7 +156,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void getLocalJson(
       `/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus).then(setStatus).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
-    <details><summary>Technical details</summary><p>Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p></details>
+    <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p></details>
   </details>
 }
 

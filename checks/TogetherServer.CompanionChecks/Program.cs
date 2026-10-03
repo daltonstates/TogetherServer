@@ -847,6 +847,9 @@ try
     Require(receivedShared.Ok && receivedStatus.ThisPcVersion == 1 &&
         receivedStatus.HostVersion == 1,
         $"pinned HTTPS receipt failed: {receivedShared.Code} {receivedShared.Message}");
+    Require((await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 1,
+        "Host did not count the signed copy confirmation over pinned HTTPS");
     var receiverRoot = Path.Combine(friendAData, "received-shared-worlds",
         deviceAId.ToString("N"), profile.Id.ToString("N"));
     Require(File.ReadAllText(Path.Combine(receiverRoot,
@@ -866,6 +869,9 @@ try
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
     Require(rereadShared.Ok && rereadShared.Code == "AlreadyReceived",
         "Friend could not re-verify the collision-named payload files");
+    Require((await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 1,
+        "receipt retry counted one PC twice");
     var rotatedWorld = Path.Combine(root, "rotated-world");
     Directory.CreateDirectory(rotatedWorld);
     File.WriteAllText(Path.Combine(rotatedWorld, "world.dat"), "same WorldId, replacement source");
@@ -888,6 +894,7 @@ try
         rotatedShared.Latest.WorldId == publishedShared.Latest.WorldId,
         "same-WorldId source rotation did not create a separate signed group: " +
         JsonSerializer.Serialize(rotatedShared, webJson));
+    Require(rotatedShared.ConfirmedCopies == 0, "an old source receipt counted for the new group");
     var blockedRotation = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
     Require(!blockedRotation.Ok && blockedRotation.Code == "SourceReviewRequired" &&
@@ -905,6 +912,9 @@ try
             "payload", "world.dat")) == "same WorldId, replacement source" &&
         File.Exists(Path.Combine(receiverRoot, publishedShared.Latest!.VersionHash, "payload", "world.dat")),
         $"reviewed source rotation did not preserve both verified groups: {acceptedRotation.Code}");
+    Require((await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 1,
+        "new source did not receive a fresh copy confirmation");
     var consentB = await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(bLocal,
         $"/api/local/friend/{profile.Id}/shared-world/consent", new(true));
     var deniedB = await OwnerPost<object, ReceivedSharedWorldResult>(bLocal,

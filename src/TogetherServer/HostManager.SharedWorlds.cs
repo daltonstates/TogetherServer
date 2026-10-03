@@ -58,6 +58,19 @@ public sealed partial class HostManager
     internal SharedWorldVersion ReadEarlierSharedVersion(SharedWorldVersion latest, long number) =>
         sharedWorlds.ReadEarlierVersion(latest, number);
 
+    internal async Task<SharedWorldReceiptResult> ConfirmSharedWorldReceiptAsync(Guid profileId,
+        Guid deviceId, SharedWorldReceipt receipt)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null ? new(false, "UnknownProfile") :
+                sharedWorlds.ConfirmReceipt(profile, deviceId, receipt);
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task<SharedWorldRoster?> SharedWorldRosterAsync(Guid profileId)
     {
         await gate.WaitAsync();

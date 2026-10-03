@@ -185,6 +185,9 @@ internal sealed partial class FriendLink
             config.LastSharedHostGroups[profileId] = version.GroupId;
             RememberSourceReview(profileId, version);
             SaveConfig();
+            var held = ReadReceivedLatest(ReceivedRoot(profileId));
+            if (held?.VersionHash == version.VersionHash)
+                await SendSharedReceiptAsync(profileId, held, cancellationToken);
             return new(true, "SharedWorldChecked", "Latest Host version checked securely.",
                 LocalSharedWorldStatus(profileId));
         }
@@ -296,8 +299,11 @@ internal sealed partial class FriendLink
                 old.Number + 1 == version.Number && version.ParentHash != old.VersionHash))
                 return SharedFailure("VersionConflict", "The published version does not continue this PC's verified world history.");
             if (old?.VersionHash == version.VersionHash)
+            {
+                await SendSharedReceiptAsync(profileId, old, cancellationToken);
                 return new(true, "AlreadyReceived", "This PC already has the latest verified save.",
                     LocalSharedWorldStatus(profileId));
+            }
             if (old is not null && !newWorldGroup && version.Number - old.Number > 1 &&
                 !await VerifySharedChainAsync(profileId, old, version, cancellationToken))
                 return SharedFailure("VersionChainInvalid", "This PC could not verify every missed version's parent hash.");
@@ -380,10 +386,13 @@ internal sealed partial class FriendLink
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             SaveConfig();
+            var copyConfirmed = await SendSharedReceiptAsync(profileId, version, cancellationToken);
             try { PruneReceived(root, version.VersionHash); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             { /* A verified receipt is kept even if old-version cleanup fails. */ }
-            return new(true, "SaveReceived", "A completed save was verified in this PC's non-live vault.",
+            return new(true, "SaveReceived", copyConfirmed ?
+                    "A completed save was verified here and confirmed to the Host." :
+                    "A completed save was verified here. Host confirmation is pending; retry when connected.",
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -487,6 +496,50 @@ internal sealed partial class FriendLink
     internal static FileStream OpenPartialOutput(string path, long offset) =>
         new(path, offset == 0 ? FileMode.Create : FileMode.Open, FileAccess.Write,
             FileShare.None, SharedWorldService.ChunkBytes, FileOptions.WriteThrough);
+
+    private async Task<bool> SendSharedReceiptAsync(Guid profileId, SharedWorldVersion version,
+        CancellationToken cancellationToken)
+    {
+        if (config is null || config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
+            withdrawnSharedConsent.ContainsKey(profileId)) return false;
+        var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
+        if (floor is null || floor.GroupId != version.GroupId) return false;
+        // ReadReceivedLatest verifies every payload hash immediately before attesting.
+        if (ReadReceivedLatest(ReceivedRoot(profileId))?.VersionHash != version.VersionHash) return false;
+        using var key = LoadPcSigningKey();
+        var receiptFile = Path.Combine(ReceivedRoot(profileId), version.VersionHash, "receipt.json");
+        SharedWorldReceipt? receipt = null;
+        if (File.Exists(receiptFile))
+        {
+            if (new FileInfo(receiptFile).Length > 4096 ||
+                (File.GetAttributes(receiptFile) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Stored copy receipt is invalid or linked.");
+            receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(File.ReadAllBytes(receiptFile), Json);
+            if (receipt is not null && (!SharedWorldReceiptTrust.Verify(receipt,
+                    Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) ||
+                receipt.DeviceId != config.DeviceId || receipt.ProfileId != profileId ||
+                receipt.VersionHash != version.VersionHash || receipt.GroupId != version.GroupId))
+                throw new InvalidDataException("Stored copy receipt failed verification.");
+        }
+        if (receipt is null || receipt.RosterEpoch != floor.Epoch || receipt.RosterRevision != floor.Revision)
+        {
+            var draft = new SharedWorldReceipt(1, version.GroupId, profileId, version.VersionHash,
+                config.DeviceId, floor.Epoch, floor.Revision, Guid.NewGuid(), "");
+            receipt = draft with { Signature = Convert.ToBase64String(key.SignData(
+                SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            var stage = receiptFile + ".new";
+            File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
+            File.Move(stage, receiptFile, true);
+        }
+        try
+        {
+            using var response = await HostClient().PostAsJsonAsync(
+                $"api/companion/servers/{profileId}/shared-world/receipts", receipt, Json, cancellationToken);
+            return response.IsSuccessStatusCode && !withdrawnSharedConsent.ContainsKey(profileId);
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException)
+        { return false; }
+    }
 
     private ECDsa LoadPcSigningKey()
     {

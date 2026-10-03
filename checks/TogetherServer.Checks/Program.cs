@@ -2617,6 +2617,83 @@ await Check("shared save proxy bounds declared and streamed bytes before receipt
         "exact bounded chunk was rejected");
 });
 
+await Check("signed copy receipts count only the exact latest verified version", () =>
+{
+    using var data = Data("signed-copy-receipts");
+    var profile = Profile("receipt-world", "receipt-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    var worldFile = Path.Combine(profile.WorldDirectory, "world.dat");
+    File.WriteAllText(worldFile, "first save");
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var shares = new SharedWorldService(data, backups);
+    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
+    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version!;
+    var device = Guid.NewGuid();
+    using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var fake = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var key = Convert.ToBase64String(pc.ExportSubjectPublicKeyInfo());
+    var roster = shares.PublishRoster(profile, [new SharedWorldRosterMember(device, key,
+        new SharedWorldGrants(Receive: true), false)]);
+    SharedWorldReceipt Sign(SharedWorldVersion version, ECDsa signer, Guid deviceId,
+        long epoch, long revision) {
+        var draft = new SharedWorldReceipt(1, version.GroupId, profile.Id, version.VersionHash,
+            deviceId, epoch, revision, Guid.NewGuid(), "");
+        return draft with { Signature = Convert.ToBase64String(signer.SignData(
+            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    }
+    var receipt = Sign(first, pc, device, roster.Epoch, roster.Revision);
+    Require(!shares.ConfirmReceipt(profile, device, Sign(first, fake, device,
+        roster.Epoch, roster.Revision)).Ok, "fake key confirmed a copy");
+    Require(!shares.ConfirmReceipt(profile, Guid.NewGuid(), receipt).Ok,
+        "different transport device confirmed a copy");
+    Require(!shares.ConfirmReceipt(profile, device, receipt with { VersionHash = new string('A', 64) }).Ok,
+        "altered hash confirmed a copy");
+    Require(shares.Status(profile).ConfirmedCopies == 0, "unverified copy was counted");
+    Require(shares.ConfirmReceipt(profile, device, receipt).Ok &&
+        shares.ConfirmReceipt(profile, device, receipt).Code == "AlreadyConfirmed",
+        "valid receipt or network retry failed");
+    Require(!shares.ConfirmReceipt(profile, device, Sign(first, pc, device,
+        roster.Epoch, roster.Revision)).Ok, "replay with a fresh nonce was accepted");
+    Require(shares.Status(profile).ConfirmedCopies == 1, "confirmed copy was not counted");
+    var receiptsFile = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), "receipts.json");
+    var originalReceipts = File.ReadAllBytes(receiptsFile);
+    File.WriteAllBytes(receiptsFile, JsonSerializer.SerializeToUtf8Bytes(new {
+        schema = 1, groupId = first.GroupId, profileId = profile.Id,
+        versionHash = first.VersionHash, receipts = new[] { receipt with { ReceiptId = Guid.NewGuid() } }
+    }));
+    Require(shares.Status(profile).ConfirmedCopies == 0, "tampered persisted receipt inflated the count");
+    File.WriteAllBytes(receiptsFile, originalReceipts);
+    Require(shares.Status(profile).ConfirmedCopies == 1, "valid persisted receipt was not restored");
+    File.WriteAllText(worldFile, "second save");
+    var nextBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(nextBackup.Ok && nextBackup.Backup is not null, "second backup failed");
+    var next = shares.PublishAfterStop(profile, nextBackup.Backup!.Id).Version!;
+    Require(shares.Status(profile).ConfirmedCopies == 0 &&
+        !shares.ConfirmReceipt(profile, device, receipt).Ok,
+        "old head was counted or accepted after a new save");
+    roster = shares.PublishRoster(profile, [new SharedWorldRosterMember(device, key,
+        new SharedWorldGrants(), false)]);
+    Require(!shares.ConfirmReceipt(profile, device, Sign(next, pc, device,
+        roster.Epoch, roster.Revision)).Ok, "revoked Receive grant confirmed a copy");
+    return Task.CompletedTask;
+});
+
+await Check("copy receipt requests reject oversized declared and chunked bodies", async () =>
+{
+    using var declared = new MemoryStream(new byte[1]);
+    Require(await SharedWorldReceiptTrust.ReadBoundedAsync(declared, 4097, CancellationToken.None) is null,
+        "oversized declared receipt was read");
+    using var chunked = new MemoryStream(new byte[4097]);
+    Require(await SharedWorldReceiptTrust.ReadBoundedAsync(chunked, null, CancellationToken.None) is null,
+        "oversized chunked receipt was accepted");
+    using var exact = new MemoryStream(new byte[4096]);
+    Require((await SharedWorldReceiptTrust.ReadBoundedAsync(exact, null, CancellationToken.None))?.Length == 4096,
+        "bounded chunked receipt was rejected");
+});
+
 await Check("Terraria preview copies an isolated world and treats listener evidence as player-count unknown", async () =>
 {
     using var data = Data("terraria-preview");
