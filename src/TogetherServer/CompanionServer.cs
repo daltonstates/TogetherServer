@@ -359,9 +359,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var body = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
                 context.Request.ContentLength, context.RequestAborted);
             if (body is null) return Results.BadRequest(new { code = "InvalidSharedWorldRequest" });
-            SharedWorldReceipt? receipt;
-            try { receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(body); }
-            catch (JsonException) { return Results.BadRequest(new { code = "InvalidSharedWorldRequest" }); }
+            var receipt = SharedWorldReceiptTrust.Parse(body);
             if (receipt is null) return Results.BadRequest(new { code = "InvalidSharedWorldRequest" });
             var auth = await AuthorizeShared(device!, profileId);
             if (!auth.Decision.Ok || auth.Current is null)

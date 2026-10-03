@@ -2692,6 +2692,19 @@ await Check("copy receipt requests reject oversized declared and chunked bodies"
     using var exact = new MemoryStream(new byte[4096]);
     Require((await SharedWorldReceiptTrust.ReadBoundedAsync(exact, null, CancellationToken.None))?.Length == 4096,
         "bounded chunked receipt was rejected");
+    using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var draft = new SharedWorldReceipt(1, Guid.NewGuid(), Guid.NewGuid(), new string('A', 64),
+        Guid.NewGuid(), 2, 3, Guid.NewGuid(), "");
+    var signed = draft with { Signature = Convert.ToBase64String(pc.SignData(
+        SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    var friendWire = JsonSerializer.SerializeToUtf8Bytes(signed,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    using var wireStream = new MemoryStream(friendWire);
+    var parsed = SharedWorldReceiptTrust.Parse((await SharedWorldReceiptTrust.ReadBoundedAsync(
+        wireStream, null, CancellationToken.None))!);
+    Require(parsed == signed && SharedWorldReceiptTrust.Verify(parsed,
+        Convert.ToBase64String(pc.ExportSubjectPublicKeyInfo())),
+        "the Host could not parse and verify the Friend's camel-case signed receipt");
 });
 
 await Check("Terraria preview copies an isolated world and treats listener evidence as player-count unknown", async () =>

@@ -12,6 +12,13 @@ public sealed record SharedWorldReceiptResult(bool Ok, string Code);
 internal static class SharedWorldReceiptTrust
 {
     internal const int MaximumRequestBytes = 4096;
+    private static readonly JsonSerializerOptions WireJson = new(JsonSerializerDefaults.Web);
+
+    internal static SharedWorldReceipt? Parse(byte[] body)
+    {
+        try { return JsonSerializer.Deserialize<SharedWorldReceipt>(body, WireJson); }
+        catch (JsonException) { return null; }
+    }
 
     internal static async Task<byte[]?> ReadBoundedAsync(Stream body, long? declaredLength,
         CancellationToken cancellationToken)
