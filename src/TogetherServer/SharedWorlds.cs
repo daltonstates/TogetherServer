@@ -176,6 +176,8 @@ internal sealed partial class SharedWorldService
             // replace the inherited roster or create a new group from this PC.
             if (Authority.HasState(profile.Id))
                 throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
+            if (new SharedWorldRosterChainStore(data).HasState(profile.Id))
+                throw new InvalidDataException("Signed roster revisions require review before changing sharing permissions.");
             var oldBinding = ReadBinding(profile.Id);
             var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
             if (sourceChanged && !reviewSourceChange)

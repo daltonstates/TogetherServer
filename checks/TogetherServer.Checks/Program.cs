@@ -602,6 +602,155 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
     return Task.CompletedTask;
 });
 
+await Check("delegated roster chain enforces owner root, limited grants, and conflict fence", () =>
+{
+    using var data = Data("delegated-roster-chain");
+    using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var delegateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var targetKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var ownerPublic = Convert.ToBase64String(owner.ExportSubjectPublicKeyInfo());
+    var delegatePublic = Convert.ToBase64String(delegateKey.ExportSubjectPublicKeyInfo());
+    var targetPublic = Convert.ToBase64String(targetKey.ExportSubjectPublicKeyInfo());
+    var profileId = Guid.NewGuid();
+    var groupId = Guid.NewGuid();
+    var delegateId = Guid.NewGuid();
+    var targetId = Guid.NewGuid();
+    SharedWorldRoster Sign(SharedWorldRoster draft, ECDsa signer) => draft with
+    { Signature = Convert.ToBase64String(signer.SignData(
+        SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    var initialMembers = new SharedWorldRosterMember[]
+    {
+        new(delegateId, delegatePublic, new SharedWorldGrants(ManageSharing: true), false),
+        new(targetId, targetPublic, new SharedWorldGrants(), false)
+    };
+    var legacy = Sign(new SharedWorldRoster(2, groupId, profileId, 1, 1, true,
+        ownerPublic, initialMembers, ""), owner);
+    Require(SharedWorldRosterTrust.Verify(legacy), "schema2 owner root stopped verifying");
+    var legacyV1 = Sign(new SharedWorldRoster(1, Guid.NewGuid(), Guid.NewGuid(), 1, 1,
+        true, ownerPublic, initialMembers, ""), owner);
+    using (var olderData = Data("delegated-roster-v1-root"))
+    {
+        var olderStore = new SharedWorldRosterChainStore(olderData);
+        olderStore.Append(legacyV1, ownerPublic);
+        Require(SharedWorldRosterTrust.Verify(legacyV1) &&
+            new SharedWorldRosterChainStore(olderData).Heads(legacyV1.ProfileId).Single().Schema == 1,
+            "schema1 signed roster stopped reading as a trusted owner root");
+    }
+    var chain = new SharedWorldRosterChainStore(data);
+    chain.Append(legacy, ownerPublic);
+    var changed = initialMembers.Select(member => member.DeviceId == targetId
+        ? member with { Grants = new SharedWorldGrants(Receive: true, EligibleHost: true,
+            RecoveryVoter: true) } : member).ToArray();
+    var delegated = Sign(new SharedWorldRoster(3, groupId, profileId, 2, 2, true,
+        ownerPublic, changed, "", SharedWorldRosterTrust.Hash(legacy), delegateId,
+        delegatePublic), delegateKey);
+    Require(!SharedWorldRosterTrust.Verify(delegated) &&
+        SharedWorldRosterTrust.VerifyRevision(delegated, legacy, ownerPublic,
+            DateTimeOffset.UtcNow, true),
+        "delegated revision was independently trusted or exact parent was rejected");
+    var wrongParent = Sign(delegated with
+    { PreviousRosterHash = new string('0', 64), Signature = "" }, delegateKey);
+    Require(!SharedWorldRosterTrust.VerifyRevision(wrongParent, legacy, ownerPublic,
+        DateTimeOffset.UtcNow, true), "delegated revision accepted a changed parent hash");
+    chain.Append(delegated, ownerPublic);
+    Require(new SharedWorldRosterChainStore(data).Heads(profileId).Single().Signature ==
+        delegated.Signature, "restart lost the delegated signed head");
+    var selfChange = Sign(delegated with
+    {
+        Epoch = 3, Revision = 3, PreviousRosterHash = SharedWorldRosterTrust.Hash(delegated),
+        Members = [changed[0] with { Revoked = true }, changed[1]], Signature = ""
+    }, delegateKey);
+    RequireThrows<InvalidDataException>(() => chain.Append(selfChange, ownerPublic),
+        "delegate revoked its own authority");
+    var overrideChange = Sign(delegated with
+    {
+        Epoch = 3, Revision = 3, PreviousRosterHash = SharedWorldRosterTrust.Hash(delegated),
+        OwnerOverride = false, Signature = ""
+    }, delegateKey);
+    RequireThrows<InvalidDataException>(() => chain.Append(overrideChange, ownerPublic),
+        "delegate changed owner override");
+    var manageChange = Sign(delegated with
+    {
+        Epoch = 3, Revision = 3, PreviousRosterHash = SharedWorldRosterTrust.Hash(delegated),
+        Members = [changed[0], changed[1] with
+        { Grants = changed[1].Grants with { ManageSharing = true } }], Signature = ""
+    }, delegateKey);
+    RequireThrows<InvalidDataException>(() => chain.Append(manageChange, ownerPublic),
+        "delegate granted sharing management");
+    var revoked = Sign(delegated with
+    {
+        Epoch = 3, Revision = 3, PreviousRosterHash = SharedWorldRosterTrust.Hash(delegated),
+        Members = [changed[0] with { Revoked = true }, changed[1]],
+        SignerDeviceId = Guid.Empty, SignerPublicKey = ownerPublic, Signature = ""
+    }, owner);
+    var ownerControls = Sign(revoked with
+    {
+        OwnerOverride = false,
+        Members = [changed[0] with { Revoked = true }, changed[1] with
+        { Grants = changed[1].Grants with { ManageSharing = true } }], Signature = ""
+    }, owner);
+    Require(SharedWorldRosterTrust.VerifyRevision(ownerControls, delegated, ownerPublic,
+        DateTimeOffset.UtcNow, true), "owner could not change owner-only sharing controls");
+    chain.Append(revoked, ownerPublic, stopAfterPendingForChecks: true);
+    Require(new SharedWorldRosterChainStore(data).Heads(profileId).Single().Signature ==
+        revoked.Signature, "restart did not finish a protected pending roster revision");
+    var revokedDelegate = Sign(delegated with
+    {
+        Epoch = 4, Revision = 4, PreviousRosterHash = SharedWorldRosterTrust.Hash(revoked),
+        Signature = ""
+    }, delegateKey);
+    RequireThrows<InvalidDataException>(() => chain.Append(revokedDelegate, ownerPublic),
+        "revoked delegate signed a new revision");
+    using (var expiredData = Data("delegated-roster-expired"))
+    {
+        var expiredRoot = Sign(legacy with
+        {
+            GroupId = Guid.NewGuid(), ProfileId = Guid.NewGuid(), Signature = "",
+            Members = [initialMembers[0] with
+            { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }, initialMembers[1]]
+        }, owner);
+        var expiredStore = new SharedWorldRosterChainStore(expiredData);
+        expiredStore.Append(expiredRoot, ownerPublic);
+        var expiredChild = Sign(delegated with
+        {
+            GroupId = expiredRoot.GroupId, ProfileId = expiredRoot.ProfileId,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(expiredRoot),
+            Members = [expiredRoot.Members[0], changed[1]], Signature = ""
+        }, delegateKey);
+        RequireThrows<InvalidDataException>(() => expiredStore.Append(expiredChild, ownerPublic),
+            "expired sharing manager advanced the roster");
+    }
+    SharedWorldRoster OwnerSibling(bool overrideValue) => Sign(revoked with
+    {
+        Epoch = 4, Revision = 4, PreviousRosterHash = SharedWorldRosterTrust.Hash(revoked),
+        OwnerOverride = overrideValue, Signature = ""
+    }, owner);
+    var firstSibling = OwnerSibling(false);
+    var secondSibling = OwnerSibling(true);
+    chain.Append(firstSibling, ownerPublic, stopAfterFileForChecks: true);
+    Require(new SharedWorldRosterChainStore(data).Heads(profileId).Single().Signature ==
+        firstSibling.Signature, "restart did not finish a written roster revision");
+    chain.Append(secondSibling, ownerPublic);
+    Require(new SharedWorldRosterChainStore(data).Heads(profileId).Count == 2,
+        "competing same-revision signed rosters were silently selected");
+    var afterConflict = Sign(firstSibling with
+    { Epoch = 5, Revision = 5, PreviousRosterHash = SharedWorldRosterTrust.Hash(firstSibling),
+        Signature = "" }, owner);
+    RequireThrows<InvalidDataException>(() => chain.Append(afterConflict, ownerPublic),
+        "governance advanced past competing sibling revisions");
+    var ownerProfile = Profile("delegated-roster-owner", "delegated-world", FreePort());
+    ownerProfile.Id = profileId;
+    var ownerShares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
+    RequireThrows<InvalidDataException>(() => ownerShares.PublishRoster(ownerProfile, initialMembers),
+        "legacy owner publication bypassed the roster chain conflict");
+    var revisionPath = Path.Combine(data.RootPath, "shared-worlds", profileId.ToString("N"),
+        "roster-chain", SharedWorldRosterTrust.Hash(delegated) + ".json");
+    File.AppendAllText(revisionPath, "tampered");
+    RequireThrows<InvalidDataException>(() => new SharedWorldRosterChainStore(data).Read(profileId),
+        "tampered delegated history survived restart");
+    return Task.CompletedTask;
+});
+
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
 {
     using var data = Data("shared-roster-missing-before-save");

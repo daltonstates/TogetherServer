@@ -12,7 +12,13 @@ public sealed record SharedWorldRosterMember(Guid DeviceId, string PublicKey,
     SharedWorldGrants Grants, bool Revoked, DateTimeOffset? AccessExpiresUtc = null);
 public sealed record SharedWorldRoster(int Schema, Guid GroupId, Guid ProfileId,
     long Epoch, long Revision, bool OwnerOverride, string OwnerPublicKey,
-    IReadOnlyList<SharedWorldRosterMember> Members, string Signature);
+    IReadOnlyList<SharedWorldRosterMember> Members, string Signature,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PreviousRosterHash = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    Guid? SignerDeviceId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SignerPublicKey = null);
 public sealed record SharedWorldEnrollmentChallenge(string Nonce);
 public sealed record SharedWorldEnrollmentRequest(
     [property: JsonRequired] string Nonce, [property: JsonRequired] string PublicKey,
@@ -33,31 +39,87 @@ internal static class SharedWorldRosterTrust
             Members = roster.Members.Select(member => new
             { member.DeviceId, member.PublicKey, member.Grants, member.Revoked }).ToArray()
         }, Json)
-        : JsonSerializer.SerializeToUtf8Bytes(new
+        : roster.Schema == 2 ? JsonSerializer.SerializeToUtf8Bytes(new
         {
             roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
             roster.OwnerOverride, roster.OwnerPublicKey, roster.Members
+        }, Json) : JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer shared roster revision v3", roster.Schema,
+            roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
+            roster.OwnerOverride, roster.OwnerPublicKey, roster.Members,
+            roster.PreviousRosterHash, roster.SignerDeviceId, roster.SignerPublicKey
         }, Json);
 
-    internal static bool Verify(SharedWorldRoster? roster)
+    internal static string Hash(SharedWorldRoster roster) => Convert.ToHexString(
+        SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(roster, Json)));
+
+    internal static bool Verify(SharedWorldRoster? roster) => VerifySignature(roster) &&
+        (roster!.Schema < 3 || roster.SignerDeviceId == Guid.Empty &&
+            roster.SignerPublicKey == roster.OwnerPublicKey);
+
+    internal static bool VerifySignature(SharedWorldRoster? roster)
     {
         try
         {
-            if (roster is null || roster.Schema is not (1 or 2) || roster.GroupId == Guid.Empty ||
+            if (roster is null || roster.Schema is not (1 or 2 or 3) || roster.GroupId == Guid.Empty ||
                 roster.ProfileId == Guid.Empty || roster.Epoch < 1 || roster.Revision < 1 ||
                 roster.Members.Count > 128 || roster.Members.Any(member => member.DeviceId == Guid.Empty ||
                     member.Grants is null || !ValidKey(member.PublicKey)) ||
                 roster.Members.Select(member => member.DeviceId).Distinct().Count() != roster.Members.Count ||
                 roster.Members.Select(member => member.PublicKey).Distinct(StringComparer.Ordinal).Count() !=
-                    roster.Members.Count)
+                    roster.Members.Count ||
+                roster.Schema == 3 && (roster.SignerDeviceId is null ||
+                    !ValidKey(roster.SignerPublicKey) ||
+                    roster.PreviousRosterHash is not null &&
+                    (roster.PreviousRosterHash.Length != 64 ||
+                     !roster.PreviousRosterHash.All(Uri.IsHexDigit))))
                 return false;
             using var key = ECDsa.Create();
-            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(roster.OwnerPublicKey), out var read);
-            return read == Convert.FromBase64String(roster.OwnerPublicKey).Length && key.KeySize == 256 &&
+            var signer = roster.Schema == 3 ? roster.SignerPublicKey! : roster.OwnerPublicKey;
+            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(signer), out var read);
+            return ValidKey(roster.OwnerPublicKey) &&
+                read == Convert.FromBase64String(signer).Length && key.KeySize == 256 &&
                 key.VerifyData(Basis(roster), Convert.FromBase64String(roster.Signature), HashAlgorithmName.SHA256);
         }
         catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException or NullReferenceException)
         { return false; }
+    }
+
+    internal static bool VerifyRevision(SharedWorldRoster roster, SharedWorldRoster? parent,
+        string pinnedOwnerPublicKey, DateTimeOffset acceptedUtc, bool firstAcceptance)
+    {
+        if (!ValidKey(pinnedOwnerPublicKey) || !VerifySignature(roster) ||
+            roster.OwnerPublicKey != pinnedOwnerPublicKey ||
+            parent is not null && !VerifySignature(parent)) return false;
+        if (parent is null)
+            return roster.Schema == 3 && roster.PreviousRosterHash is null &&
+                roster.Epoch == 1 && roster.Revision == 1 &&
+                roster.SignerDeviceId == Guid.Empty && roster.SignerPublicKey == pinnedOwnerPublicKey;
+        if (roster.Schema != 3 || roster.PreviousRosterHash != Hash(parent) ||
+            roster.GroupId != parent.GroupId || roster.ProfileId != parent.ProfileId ||
+            roster.OwnerPublicKey != parent.OwnerPublicKey ||
+            roster.Epoch != parent.Epoch + 1 || roster.Revision != parent.Revision + 1)
+            return false;
+        if (roster.SignerDeviceId == Guid.Empty)
+            return roster.SignerPublicKey == pinnedOwnerPublicKey;
+        var signer = parent.Members.SingleOrDefault(member => member.DeviceId == roster.SignerDeviceId);
+        if (signer is null || signer.Revoked || !signer.Grants.ManageSharing ||
+            signer.PublicKey != roster.SignerPublicKey ||
+            firstAcceptance && signer.AccessExpiresUtc is { } expiry && expiry <= acceptedUtc ||
+            roster.OwnerOverride != parent.OwnerOverride ||
+            roster.Members.Count != parent.Members.Count) return false;
+        var before = parent.Members.ToDictionary(member => member.DeviceId);
+        foreach (var member in roster.Members)
+        {
+            if (!before.TryGetValue(member.DeviceId, out var old) ||
+                member.PublicKey != old.PublicKey ||
+                member.AccessExpiresUtc != old.AccessExpiresUtc ||
+                member.Grants.ManageSharing != old.Grants.ManageSharing ||
+                member.DeviceId == signer.DeviceId && member != old)
+                return false;
+        }
+        return true;
     }
 
     internal static bool ValidKey(string? value)
