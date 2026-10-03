@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>TogetherServer</AssemblyName>
+    <Title>TogetherServer</Title>
+    <Product>TogetherServer</Product>
+    <Description>Host and join game servers with friends</Description>
     <Version>0.3.0</Version>
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>

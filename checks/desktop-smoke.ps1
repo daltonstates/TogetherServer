@@ -133,8 +133,8 @@ function Get-FreeUdpPair {
         try {
             $one.ExclusiveAddressUse = $true
             $two.ExclusiveAddressUse = $true
-            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate))
-            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate + 1))
+            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate))
+            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate + 1))
             return $candidate
         }
         catch [Net.Sockets.SocketException] { }

@@ -487,7 +487,7 @@ try
         idlePorts?.Control.State == "Idle" && idlePorts.Control.RemoteState == "Not needed",
         "an enabled listener with no invite or usable credential was reported as a failure");
     Console.WriteLine("PASS no active invite or paired PC is a normal idle Friend state"); passes++;
-    using (var occupiedCompanionPort = new TcpListener(IPAddress.Any, companionPort))
+    using (var occupiedCompanionPort = new TcpListener(IPAddress.Loopback, companionPort))
     {
         occupiedCompanionPort.Server.ExclusiveAddressUse = true;
         occupiedCompanionPort.Start();
@@ -923,6 +923,7 @@ try
         Console.WriteLine($"Shared-world HTTPS checks: {passes} groups passed, 0 failed. Data: {root}");
         return 0;
     }
+    settings.Profiles.Single(item => item.Id == profile.Id).SharedSavesEnabled = false;
     settings.Profiles.Single(item => item.Id == profile.Id).Backups = new BackupOptions();
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "companion fixture settings could not be restored after shared-world coverage");
@@ -1532,7 +1533,7 @@ try
 
     var recoveredEndpoint = $"https://127.0.0.2:{companionPort}";
     settings.CompanionEndpoint = recoveredEndpoint;
-    settings.CompanionBindAddress = "0.0.0.0";
+    settings.CompanionBindAddress = "127.0.0.2";
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "the owner could not deliberately change the advertised endpoint while retaining Host identity");
     aView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });

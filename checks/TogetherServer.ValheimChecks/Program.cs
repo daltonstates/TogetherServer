@@ -737,8 +737,8 @@ static int FreePort()
         {
             using var first = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
             using var second = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            first.Bind(new IPEndPoint(IPAddress.Any, port));
-            second.Bind(new IPEndPoint(IPAddress.Any, port + 1));
+            first.Bind(new IPEndPoint(IPAddress.Loopback, port));
+            second.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
             return port;
         }
         catch (SocketException) { }

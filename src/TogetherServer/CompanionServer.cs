@@ -1,6 +1,6 @@
 using System.Net;
-using System.Text.Json;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -315,8 +315,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!decision.Ok || current is null)
                 return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
             SharedWorldMembership membership;
-            try { membership = await manager.IssueSharedWorldMembershipAsync(profileId, device!.Id,
-                request.DevicePublicKey); }
+            try
+            {
+                membership = await manager.IssueSharedWorldMembershipAsync(profileId, device!.Id,
+                request.DevicePublicKey);
+            }
             catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or
                 System.Security.Cryptography.CryptographicException or FormatException)
             { return Results.BadRequest(new { code = "MembershipUnavailable" }); }
@@ -336,8 +339,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!status.Enabled || status.Latest is null || number < 1 || number >= status.Latest.Number)
                 return Results.NotFound(new { code = "SharedVersionUnavailable" });
             SharedWorldVersion prior;
-            try { prior = await Task.Run(() => manager.ReadEarlierSharedVersion(status.Latest, number),
-                context.RequestAborted); }
+            try
+            {
+                prior = await Task.Run(() => manager.ReadEarlierSharedVersion(status.Latest, number),
+                context.RequestAborted);
+            }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
             { return Results.NotFound(new { code = "SharedVersionUnavailable" }); }
             var (latest, _) = await manager.SharedWorldReadAsync(profileId);
@@ -364,8 +370,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!status.Enabled || status.Latest?.VersionHash != versionHash)
                 return Results.NotFound(new { code = "SharedVersionUnavailable" });
             byte[] chunk;
-            try { chunk = await Task.Run(() => manager.ReadSharedChunk(status.Latest, fileIndex, offset),
-                context.RequestAborted); }
+            try
+            {
+                chunk = await Task.Run(() => manager.ReadSharedChunk(status.Latest, fileIndex, offset),
+                context.RequestAborted);
+            }
             catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException)
             { return Results.BadRequest(new { code = "SharedChunkUnavailable" }); }
             var (latest, _) = await manager.SharedWorldReadAsync(profileId);

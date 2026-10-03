@@ -49,8 +49,8 @@ int FreePort()
         {
             using var one = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
             using var two = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            one.Bind(new IPEndPoint(IPAddress.Any, port));
-            two.Bind(new IPEndPoint(IPAddress.Any, port + 1));
+            one.Bind(new IPEndPoint(IPAddress.Loopback, port));
+            two.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
             return port;
         }
         catch (SocketException) { }
@@ -728,7 +728,7 @@ await Check("occupied local UDP port", async () =>
     var profile = Profile("bound-port", "bound-port", port);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    socket.Bind(new IPEndPoint(IPAddress.Any, port));
+    socket.Bind(new IPEndPoint(IPAddress.Loopback, port));
     Require((await manager.StartAsync(profile.Id)).Code == "PortInUse", "occupied port was allowed");
 });
 
@@ -1002,8 +1002,8 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     var gamePort = FreePort();
     using var game = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
     using var query = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    game.Bind(new IPEndPoint(IPAddress.Any, gamePort));
-    query.Bind(new IPEndPoint(IPAddress.Any, gamePort + 1));
+    game.Bind(new IPEndPoint(IPAddress.Loopback, gamePort));
+    query.Bind(new IPEndPoint(IPAddress.Loopback, gamePort + 1));
     using var control = new TcpListener(IPAddress.Loopback, 0);
     control.Start();
     var controlPort = ((IPEndPoint)control.LocalEndpoint).Port;
@@ -1028,9 +1028,9 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     var device = new DeviceView(Guid.NewGuid(), profile.Id, [profile.Id], "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow);
     var diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
-    Require(diagnostics.Games.Single().State == "Open on PC" &&
+    Require(diagnostics.Games.Single().State == "Loopback only" &&
         diagnostics.Games.Single().RouteKind == "Direct" && diagnostics.Games.Single().Kind == GameKinds.Valheim,
-        "open Valheim Steam UDP ports or their direct route were not reported");
+        "loopback-only fixture ports or their direct route were not reported");
     Require(diagnostics.Control.State == "Open on PC" && diagnostics.Control.BindScope == "Loopback only" &&
         diagnostics.Control.EndpointState == "Address hint" && diagnostics.Control.RemoteState == "Friend connected" &&
         diagnostics.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
@@ -1922,9 +1922,14 @@ await Check("shared save grant is separate and revoked at access deadline or una
 {
     using var data = Data("shared-world-access");
     var profileId = Guid.NewGuid();
-    var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,
-        AssignedProfileIds = [profileId], CredentialHash = new string('A', 64),
-        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10) };
+    var device = new PairedDevice
+    {
+        Id = Guid.NewGuid(),
+        ProfileId = Guid.Empty,
+        AssignedProfileIds = [profileId],
+        CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10)
+    };
     data.SavePairingState(new PairingPersistentState { Devices = [device] });
     var pairing = new PairingService(data);
     Require(!pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
@@ -1954,8 +1959,12 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
     using var data = Data("shared-world-receipt");
     var profile = Profile("shared-receipt", "received-world", FreePort());
     profile.Kind = "Fixture";
-    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0,
-        RetentionCount = 5 };
+    profile.Backups = new BackupOptions
+    {
+        Enabled = true,
+        MinimumFreeSpaceMb = 0,
+        RetentionCount = 5
+    };
     profile.SharedSavesEnabled = true;
     var backupService = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backupService);
@@ -1973,7 +1982,7 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
         Require(published.Ok && published.Version is not null &&
             published.Version.Number == number, "signed version chain failed");
         Require(!SharedWorldService.VerifySignature(published.Version! with
-            { CreatedUtc = published.Version.CreatedUtc.AddSeconds(1) }),
+        { CreatedUtc = published.Version.CreatedUtc.AddSeconds(1) }),
             "displayed save completion time was not signed");
         if (number == 2)
         {
@@ -2236,9 +2245,14 @@ await Check("shared save authorization is rechecked after asynchronous read and 
     var shares = new SharedWorldService(data, backupService);
     var published = shares.PublishAfterStop(profile, backup.Backup!.Id);
     Require(published.Ok && published.Version is not null, "fixture publication failed");
-    var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,
-        AssignedProfileIds = [profile.Id], CredentialHash = new string('A', 64),
-        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10) };
+    var device = new PairedDevice
+    {
+        Id = Guid.NewGuid(),
+        ProfileId = Guid.Empty,
+        AssignedProfileIds = [profile.Id],
+        CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10)
+    };
     data.SavePairingState(new PairingPersistentState { Devices = [device] });
     var pairing = new PairingService(data);
     Require(pairing.SetReceiveSaves(device.Id, profile.Id, true).Ok,

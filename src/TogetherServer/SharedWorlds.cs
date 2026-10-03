@@ -350,8 +350,17 @@ internal sealed class SharedWorldService
 
     private static string MembershipBasis(Guid groupId, Guid profileId, Guid deviceId,
         string role, string devicePublicKey, string ownerPublicKey, DateTimeOffset signedUtc) =>
-        JsonSerializer.Serialize(new { schema = 1, groupId, profileId, deviceId,
-            role, devicePublicKey, ownerPublicKey, signedUtc }, Json);
+        JsonSerializer.Serialize(new
+        {
+            schema = 1,
+            groupId,
+            profileId,
+            deviceId,
+            role,
+            devicePublicKey,
+            ownerPublicKey,
+            signedUtc
+        }, Json);
 
     internal static bool VerifySignature(SharedWorldVersion value)
     {
@@ -402,8 +411,22 @@ internal sealed class SharedWorldService
     private static string VersionBasis(Guid group, long number, string? parent, Guid profile,
         string game, string world, DateTimeOffset createdUtc, string captureKind, Guid backup,
         SharedWorldPortableSetup portableSetup, IReadOnlyList<SharedWorldFile> files, string publicKey) =>
-        JsonSerializer.Serialize(new { schema = 1, group, number, parent, profile, game, world,
-            createdUtc, captureKind, backup, portableSetup, files, publicKey }, Json);
+        JsonSerializer.Serialize(new
+        {
+            schema = 1,
+            group,
+            number,
+            parent,
+            profile,
+            game,
+            world,
+            createdUtc,
+            captureKind,
+            backup,
+            portableSetup,
+            files,
+            publicKey
+        }, Json);
 
     internal static bool SafePath(string path) => !string.IsNullOrWhiteSpace(path) && path.Length <= 240 &&
         !Path.IsPathRooted(path) && !path.Contains('\\') &&
