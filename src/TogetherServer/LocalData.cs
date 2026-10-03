@@ -140,7 +140,7 @@ internal sealed class PairingPersistentState
 public sealed class LocalData : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    internal const int CurrentStorageSchemaVersion = 3;
+    internal const int CurrentStorageSchemaVersion = 4;
     internal const int CurrentPairingSchemaVersion = 3;
     private const string PairingStateFile = "pairing-state.protected";
     private const string StorageSchemaFile = "storage-schema.json";
@@ -668,7 +668,7 @@ public sealed class LocalData : IDisposable
         }
         while (schema.Version < supportedStorageSchemaVersion)
         {
-            if (schema.Version is not (1 or 2))
+            if (schema.Version is not (1 or 2 or 3))
                 throw new InvalidDataException(
                     $"Storage schema {schema.Version} cannot be migrated safely by this TogetherServer build.");
 

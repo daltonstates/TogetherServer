@@ -58,7 +58,9 @@ internal static class SharedWorldRosterTrust
                 roster.ProfileId == Guid.Empty || roster.Epoch < 1 || roster.Revision < 1 ||
                 roster.Members.Count > 128 || roster.Members.Any(member => member.DeviceId == Guid.Empty ||
                     member.Grants is null || !ValidKey(member.PublicKey)) ||
-                roster.Members.Select(member => member.DeviceId).Distinct().Count() != roster.Members.Count)
+                roster.Members.Select(member => member.DeviceId).Distinct().Count() != roster.Members.Count ||
+                roster.Members.Select(member => member.PublicKey).Distinct(StringComparer.Ordinal).Count() !=
+                    roster.Members.Count)
                 return false;
             using var key = ECDsa.Create();
             key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(roster.OwnerPublicKey), out var read);
@@ -77,7 +79,8 @@ internal static class SharedWorldRosterTrust
             var bytes = Convert.FromBase64String(value);
             using var key = ECDsa.Create();
             key.ImportSubjectPublicKeyInfo(bytes, out var read);
-            return read == bytes.Length && key.KeySize == 256;
+            return read == bytes.Length && key.KeySize == 256 &&
+                value == Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         }
         catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
         { return false; }

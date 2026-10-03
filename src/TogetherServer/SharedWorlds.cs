@@ -68,6 +68,47 @@ internal sealed partial class SharedWorldService
     private readonly object sync = new();
     private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
 
+    internal string LocalAuthorityPublicKey()
+    {
+        using var key = LoadSigningKey();
+        return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    }
+
+    internal WorldAuthorityRecord SignPlannedHandoff(SharedWorldRoster roster,
+        SharedWorldVersion version, SharedWorldReceipt receipt, Guid successorId,
+        string successorAddress, long epoch, string? parentHash)
+    {
+        lock (sync)
+        {
+            using var key = LoadSigningKey();
+            var localKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            var member = roster.Members.SingleOrDefault(item => item.DeviceId == successorId);
+            if (!SharedWorldRosterTrust.Verify(roster) || !VerifySignature(version) ||
+                roster.OwnerPublicKey != localKey || version.SigningPublicKey != localKey ||
+                roster.GroupId != version.GroupId || roster.ProfileId != version.ProfileId ||
+                member is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
+                receipt.DeviceId != successorId || receipt.VersionHash != version.VersionHash ||
+                receipt.GroupId != version.GroupId || receipt.ProfileId != version.ProfileId ||
+                receipt.RosterEpoch != roster.Epoch || receipt.RosterRevision != roster.Revision ||
+                !SharedWorldReceiptTrust.Verify(receipt, member.PublicKey))
+                throw new InvalidDataException("The successor has not confirmed the exact verified save under the current roster.");
+            var draft = new WorldAuthorityProposal(1, roster.GroupId, version.ProfileId,
+                epoch, parentHash, WorldAuthorityTrust.RosterHash(roster), version.VersionHash,
+                member.PublicKey, successorAddress, "Planned", Guid.Empty, localKey, "");
+            var proposal = draft with { Signature = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            var approval = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.OwnerBasis(proposal), HashAlgorithmName.SHA256));
+            var unsignedRecord = new WorldAuthorityRecord(1, proposal, roster, version, [],
+                approval, "", receipt);
+            var record = unsignedRecord with { RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(unsignedRecord)) };
+            if (!WorldAuthorityTrust.Verify(record))
+                throw new InvalidDataException("The planned handoff proof failed verification.");
+            return record;
+        }
+    }
+
     public SharedWorldService(LocalData data, WorldBackupService backups)
     {
         this.data = data;
@@ -178,7 +219,8 @@ internal sealed partial class SharedWorldService
                 : oldBinding;
             if (members.Count > 128 || members.Any(member => member.DeviceId == Guid.Empty ||
                 member.Grants is null || !SharedWorldRosterTrust.ValidKey(member.PublicKey)) ||
-                members.Select(member => member.DeviceId).Distinct().Count() != members.Count)
+                members.Select(member => member.DeviceId).Distinct().Count() != members.Count ||
+                members.Select(member => member.PublicKey).Distinct(StringComparer.Ordinal).Count() != members.Count)
                 throw new InvalidDataException("Shared roster members are invalid.");
             using var key = LoadSigningKey();
             var ordered = members.OrderBy(member => member.DeviceId).ToArray();
@@ -458,6 +500,21 @@ internal sealed partial class SharedWorldService
         }
         catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException or NullReferenceException)
         { return false; }
+    }
+
+    internal static SharedWorldVersion SignVersion(SharedWorldVersion draft, ECDsa signer)
+    {
+        var publicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+        var unsigned = draft with { SigningPublicKey = publicKey, VersionHash = "", Signature = "" };
+        var basis = VersionBasis(unsigned.GroupId, unsigned.Number, unsigned.ParentHash,
+            unsigned.ProfileId, unsigned.Game, unsigned.WorldId, unsigned.CreatedUtc,
+            unsigned.CaptureKind, unsigned.BackupId, unsigned.PortableSetup, unsigned.Files,
+            unsigned.SigningPublicKey, unsigned.Schema);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(basis));
+        var signed = unsigned with { VersionHash = Convert.ToHexString(hash),
+            Signature = Convert.ToBase64String(signer.SignHash(hash)) };
+        if (!VerifySignature(signed)) throw new InvalidDataException("Shared save signature is invalid.");
+        return signed;
     }
 
     private ECDsa LoadSigningKey()

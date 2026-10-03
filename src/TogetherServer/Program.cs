@@ -77,7 +77,7 @@ var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 using var hostingPower = new WindowsHostingPowerGuard();
 var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
-var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery);
+var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery, pairing);
 async Task<SharedWorldRoster> PublishRosterAndConfirmAsync(Guid profileId,
     bool? ownerOverride = null, bool reviewSourceChange = false)
 {
@@ -682,6 +682,13 @@ app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedW
         await PublishRosterAndConfirmAsync(id);
     return Results.Json(result);
 });
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/prepare",
+    (Guid id, PreparePlannedHandoffRequest request) => HostOnly(() =>
+        manager.PreparePlannedHandoffAsync(id, request.SuccessorDeviceId, request.SuccessorAddress)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/complete",
+    (Guid id) => HostOnly(() => manager.CompletePlannedHandoffAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/cancel",
+    (Guid id) => HostOnly(() => manager.CancelPlannedHandoffAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>
@@ -1442,6 +1449,10 @@ app.MapPut("/api/local/friend/{id:guid}/shared-world/consent", async (Guid id, S
     Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/pull", async (HttpContext context, Guid id) =>
     friendMode ? Results.Json(await friend.PullSharedWorldAsync(id, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/stage",
+    async (HttpContext context, Guid id) =>
+    friendMode ? Results.Json(await friend.StagePlannedHandoffAsync(id, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext context, Guid id) =>
     friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :

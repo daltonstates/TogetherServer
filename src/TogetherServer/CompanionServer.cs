@@ -379,6 +379,29 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!recheck.Decision.Ok) return Results.Json(recheck.Decision, statusCode: 403);
             return Results.Json(result, statusCode: result.Ok ? 200 : 409);
         });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/handoff/offer",
+            async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol))
+                return Results.Conflict(new { code = "SharedWorldsUpdateRequired" });
+            decision = pairing.AuthorizeReceiveSaves(device!, profileId, out var current);
+            if (!decision.Ok || current?.SharedWorldPublicKey is null)
+                return Results.Json(decision, statusCode: 403);
+            WorldAuthorityRecord? offer;
+            try { offer = await manager.ReadPlannedHandoffOfferAsync(profileId, current.Id); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { return Results.Conflict(new { code = "HandoffUnavailable" }); }
+            decision = pairing.AuthorizeReceiveSaves(current, profileId, out var refreshed);
+            if (!decision.Ok || refreshed?.SharedWorldPublicKey is null)
+                return Results.Json(decision, statusCode: 403);
+            if (offer is null || offer.Proposal.CandidatePublicKey != refreshed.SharedWorldPublicKey ||
+                offer.SuccessorReceipt?.DeviceId != refreshed.Id)
+                return Results.NotFound(new { code = "HandoffUnavailable" });
+            return Results.Json(offer);
+        });
         companion.MapGet("/servers/{profileId:guid}/shared-world", async (HttpContext context, Guid profileId) =>
         {
             if (!Authenticate(context, out var device, out var decision))
