@@ -43,17 +43,26 @@ internal static class SharedWorldElection
             CompetingHeadHashes: namedHeads);
         var unsignedBinding = new WorldSuccessorBinding(candidateId, candidatePublicKey,
             hostingPublicKey, "");
-        draft = draft with { SuccessorBinding = unsignedBinding with
+        draft = draft with
+        {
+            SuccessorBinding = unsignedBinding with
+            {
+                Signature = Convert.ToBase64String(candidateKey.SignData(
+                WorldAuthorityTrust.BindingBasis(draft, unsignedBinding), HashAlgorithmName.SHA256))
+            }
+        };
+        var proposal = draft with
         {
             Signature = Convert.ToBase64String(candidateKey.SignData(
-                WorldAuthorityTrust.BindingBasis(draft, unsignedBinding), HashAlgorithmName.SHA256))
-        } };
-        var proposal = draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256))
+        };
         var receiptDraft = new SharedWorldReceipt(1, roster.GroupId, roster.ProfileId,
             version.VersionHash, candidateId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        var receipt = receiptDraft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        var receipt = receiptDraft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+        };
         return new(proposal, roster, version, receipt, [], candidateTlsFingerprint,
             Convert.ToBase64String(candidateKey.SignData(
                 TransportBasis(proposal, candidateTlsFingerprint), HashAlgorithmName.SHA256)));
@@ -93,15 +102,24 @@ internal static class SharedWorldElection
             hostingPublicKey, candidateAddress, "Quorum", candidateId, candidatePublicKey, "");
         var unsignedBinding = new WorldSuccessorBinding(candidateId, candidatePublicKey,
             hostingPublicKey, "");
-        var binding = unsignedBinding with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            WorldAuthorityTrust.BindingBasis(draft, unsignedBinding), HashAlgorithmName.SHA256)) };
+        var binding = unsignedBinding with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            WorldAuthorityTrust.BindingBasis(draft, unsignedBinding), HashAlgorithmName.SHA256))
+        };
         draft = draft with { SuccessorBinding = binding };
-        var proposal = draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+        var proposal = draft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256))
+        };
         var receiptDraft = new SharedWorldReceipt(1, roster.GroupId, roster.ProfileId,
             version.VersionHash, candidateId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        var receipt = receiptDraft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        var receipt = receiptDraft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+        };
         return new(proposal, roster, version, receipt, ancestors ?? [],
             candidateTlsFingerprint, Convert.ToBase64String(candidateKey.SignData(
                 TransportBasis(proposal, candidateTlsFingerprint), HashAlgorithmName.SHA256)));
@@ -154,8 +172,11 @@ internal static class SharedWorldElection
         var draft = new WorldAuthorityRecord(offer.Proposal.Schema == 3 ? 2 : 1,
             offer.Proposal, offer.Roster,
             offer.Version, votes, null, "");
-        var record = draft with { RecordHash = WorldAuthorityTrust.Hash(
-            WorldAuthorityTrust.RecordBasis(draft)) };
+        var record = draft with
+        {
+            RecordHash = WorldAuthorityTrust.Hash(
+            WorldAuthorityTrust.RecordBasis(draft))
+        };
         if (!WorldAuthorityTrust.Verify(record))
             throw new InvalidDataException("The designated voters did not produce a valid majority.");
         store.Append(record);

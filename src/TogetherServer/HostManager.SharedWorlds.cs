@@ -289,8 +289,11 @@ public sealed partial class HostManager
             if (profile is null) return new(false, null, "Server not found.");
             var authorityStatus = SharedAuthorityStatusUnderGate(profile);
             var status = sharedWorlds.Status(profile);
-            return status with { CanManageSharing = authorityStatus.State == "NoTakeover",
-                Authority = authorityStatus };
+            return status with
+            {
+                CanManageSharing = authorityStatus.State == "NoTakeover",
+                Authority = authorityStatus
+            };
         }
         finally { gate.Release(); }
     }

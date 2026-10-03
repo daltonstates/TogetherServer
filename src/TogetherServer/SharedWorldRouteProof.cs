@@ -26,8 +26,11 @@ internal static class SharedWorldRouteTrust
         var draft = new SharedWorldRouteChallenge(1, record.Proposal.ProfileId,
             record.RecordHash, nonce, observerId,
             Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()), "");
-        return draft with { Signature = Convert.ToBase64String(observerKey.SignData(
-            ChallengeBasis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(observerKey.SignData(
+            ChallengeBasis(draft), HashAlgorithmName.SHA256))
+        };
     }
 
     internal static bool VerifyChallenge(SharedWorldRouteChallenge? challenge,
@@ -76,8 +79,11 @@ internal static class SharedWorldRouteTrust
             !ValidNonce(nonce)) throw new InvalidDataException("Invalid route challenge.");
         var draft = new SharedWorldRouteProof(1, profileId, recordHash, nonce,
             endpoint, fingerprint, "");
-        return draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            Basis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            Basis(draft), HashAlgorithmName.SHA256))
+        };
     }
 
     internal static bool Verify(SharedWorldRouteProof? proof, WorldAuthorityRecord record,

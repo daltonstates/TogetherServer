@@ -518,7 +518,7 @@ public sealed class PairingService
                 device.AssignedProfileIds?.Contains(profileId) != true ||
                 device.SharedWorldPublicKey != member.PublicKey ||
                 device.SharedWorldGrants?.GetValueOrDefault(profileId) is not
-                    { Receive: true, EligibleHost: true } grants ||
+                { Receive: true, EligibleHost: true } grants ||
                 grants != member.Grants || member.Revoked ||
                 member.AccessExpiresUtc != device.AccessExpiresUtc ||
                 !roster.Members.SequenceEqual(SharedRosterMembers(profileId)
@@ -534,11 +534,11 @@ public sealed class PairingService
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
         {
-        if (!CanChangeSharedRoster([profileId]))
-            throw new InvalidDataException("This successor PC cannot publish signed membership.");
-        var path = RosterDirtyPath(profileId);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, "Publication required");
+            if (!CanChangeSharedRoster([profileId]))
+                throw new InvalidDataException("This successor PC cannot publish signed membership.");
+            var path = RosterDirtyPath(profileId);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "Publication required");
         }
     }
 

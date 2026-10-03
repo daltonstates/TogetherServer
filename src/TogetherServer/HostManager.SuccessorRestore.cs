@@ -200,12 +200,18 @@ public sealed partial class HostManager
                     "Choose a separate local Factorio RCON port from 1024 to 65535.");
             var profile = new ServerProfile
             {
-                Id = profileId, Kind = record.Version.Game, WorldId = record.Version.WorldId,
-                Name = request.Name, ServerName = request.ServerName,
-                WorldSource = "Existing", WorldDirectory = worldRoot,
-                GamePort = setup.GamePort, ExecutablePath = executable,
+                Id = profileId,
+                Kind = record.Version.Game,
+                WorldId = record.Version.WorldId,
+                Name = request.Name,
+                ServerName = request.ServerName,
+                WorldSource = "Existing",
+                WorldDirectory = worldRoot,
+                GamePort = setup.GamePort,
+                ExecutablePath = executable,
                 Crossplay = record.Version.PortableSetup.Crossplay,
-                PublicListing = false, SharedSavesEnabled = false,
+                PublicListing = false,
+                SharedSavesEnabled = false,
                 Backups = new BackupOptions { Enabled = true },
                 Minecraft = record.Version.Game == GameKinds.MinecraftJava
                     ? new MinecraftOptions { ServerJarPath = setup.ServerFile! } : null,

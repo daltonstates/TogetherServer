@@ -482,8 +482,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     current.SharedWorldGrants?.GetValueOrDefault(profileId)?.EligibleHost != true)
                     return Results.StatusCode(403);
                 new WorldAuthorityStore(data).StageResolutionOffer(offer);
-                return Results.Json(new { code = "ResolutionOfferRecorded",
-                    proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal) });
+                return Results.Json(new
+                {
+                    code = "ResolutionOfferRecorded",
+                    proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal)
+                });
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
                                        CryptographicException)
@@ -535,8 +538,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             // Enrollment changes the signed membership. A successor can host
             // under the inherited roster but cannot re-sign it as the owner.
             if (!await manager.SharedRosterManagementAvailableAsync(profileId))
-                return Results.Conflict(new { code = "SuccessorRosterReadOnly",
-                    message = "This successor PC cannot change signed sharing membership." });
+                return Results.Conflict(new
+                {
+                    code = "SuccessorRosterReadOnly",
+                    message = "This successor PC cannot change signed sharing membership."
+                });
             decision = pairing.BindSharedWorldKey(device.Id, request);
             if (!decision.Ok) return Results.Json(decision, statusCode: 403);
             try

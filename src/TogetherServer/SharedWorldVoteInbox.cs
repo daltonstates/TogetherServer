@@ -248,8 +248,11 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
                 return new(false, "OwnerApprovalRejected");
             var draft = new WorldAuthorityRecord(2, state.Offer.Proposal, state.Offer.Roster,
                 state.Offer.Version, [], approval.OwnerSignature, "");
-            var record = draft with { RecordHash = WorldAuthorityTrust.Hash(
-                WorldAuthorityTrust.RecordBasis(draft)) };
+            var record = draft with
+            {
+                RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(draft))
+            };
             if (!WorldAuthorityTrust.Verify(record)) return new(false, "OwnerApprovalRejected");
             authority.Append(record);
             authority.BindLocalSuccessor(profileId, record.RecordHash,

@@ -29,8 +29,14 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
         (branch.WarningAccepted ? "warning accepted" : "warning not accepted"));
     private static string Hash(WorldSeparateCopyBranch branch) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
-        { branch.Schema, branch.BranchId, branch.Offer, branch.WarningAccepted,
-          branch.CandidatePublicKey, branch.Signature }, Json)));
+        {
+            branch.Schema,
+            branch.BranchId,
+            branch.Offer,
+            branch.WarningAccepted,
+            branch.CandidatePublicKey,
+            branch.Signature
+        }, Json)));
 
     internal static bool Verify(WorldSeparateCopyBranch? branch)
     {
@@ -71,8 +77,11 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
             if (branches.Count >= 20) throw new InvalidDataException("Too many separate histories need review.");
             var draft = new WorldSeparateCopyBranch(1, Guid.NewGuid(), offer, true,
                 WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal), "", "");
-            var signed = draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-                Basis(draft), HashAlgorithmName.SHA256)) };
+            var signed = draft with
+            {
+                Signature = Convert.ToBase64String(candidateKey.SignData(
+                Basis(draft), HashAlgorithmName.SHA256))
+            };
             var branch = signed with { BranchHash = Hash(signed) };
             var set = new BranchSet(1, offer.Roster.GroupId, offer.Roster.ProfileId,
                 branches.Append(branch).ToArray());

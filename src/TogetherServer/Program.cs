@@ -95,8 +95,12 @@ async Task RepairDirtyRostersAsync()
         await PublishRosterAndConfirmAsync(profile.Id);
     }
 }
-object SuccessorRosterReadOnly() => new { ok = false, code = "SuccessorRosterReadOnly",
-    message = "Sharing permissions stay with the original owner. This successor PC may host and share hash-verified post-Stop file copies after local setup and route checks pass. It cannot change the signed member list. Game load has not been checked." };
+object SuccessorRosterReadOnly() => new
+{
+    ok = false,
+    code = "SuccessorRosterReadOnly",
+    message = "Sharing permissions stay with the original owner. This successor PC may host and share hash-verified post-Stop file copies after local setup and route checks pass. It cannot change the signed member list. Game load has not been checked."
+};
 try { if (!friendMode) await RepairDirtyRostersAsync(); }
 catch (Exception ex) when (ex is IOException or InvalidDataException or System.Security.Cryptography.CryptographicException)
 { data.TryAudit($"shared-roster-repair-pending {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
@@ -1392,8 +1396,12 @@ app.MapPost("/api/local/shared-world/repair-rosters", async () =>
         foreach (var shared in data.LoadSettings().Profiles.Where(profile =>
             profile.SharedSavesEnabled && pairing.SharedRosterDirty(profile.Id)))
             if (!await manager.SharedRosterManagementAvailableAsync(shared.Id))
-                return Results.Conflict(new { ok = false, code = "SuccessorGovernanceUnresolved",
-                    message = "Signed membership needs review before this PC can share or vote again." });
+                return Results.Conflict(new
+                {
+                    ok = false,
+                    code = "SuccessorGovernanceUnresolved",
+                    message = "Signed membership needs review before this PC can share or vote again."
+                });
         return Results.Json(new { ok = true, code = "RostersRepaired" });
     }
     finally { modeGate.Release(); }
@@ -1562,7 +1570,8 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/offer-code", (Http
     !friendMode ? Results.Conflict(new { code = "HostMode" }) :
     new SharedWorldVoteInbox(data).Armed(id) is { } offer ? Results.Json(new
     {
-        proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal), offer
+        proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal),
+        offer
     }) :
     Results.NotFound(new { code = "NoArmedOffer", message = "No signed offer is armed on this PC." }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/offer/{selectedHeadHash}",

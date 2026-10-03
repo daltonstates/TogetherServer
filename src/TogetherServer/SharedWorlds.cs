@@ -109,8 +109,11 @@ internal sealed partial class SharedWorldService
             var draft = new WorldAuthorityProposal(1, roster.GroupId, version.ProfileId,
                 epoch, parentHash, WorldAuthorityTrust.RosterHash(roster), version.VersionHash,
                 member.PublicKey, successorAddress, "Planned", Guid.Empty, localKey, "");
-            var proposal = draft with { Signature = Convert.ToBase64String(key.SignData(
-                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            var proposal = draft with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256))
+            };
             var approval = Convert.ToBase64String(key.SignData(
                 WorldAuthorityTrust.OwnerBasis(proposal), HashAlgorithmName.SHA256));
             var unsignedRecord = new WorldAuthorityRecord(1, proposal, roster, version, [],
@@ -121,8 +124,11 @@ internal sealed partial class SharedWorldService
                     VersionLineageDigest = WorldAuthorityTrust.LineageDigest(
                         Authority.ReadLocalPublishedLineage(unsignedRecord, null))
                 };
-            var record = unsignedRecord with { RecordHash = WorldAuthorityTrust.Hash(
-                WorldAuthorityTrust.RecordBasis(unsignedRecord)) };
+            var record = unsignedRecord with
+            {
+                RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(unsignedRecord))
+            };
             if (!WorldAuthorityTrust.Verify(record))
                 throw new InvalidDataException("The planned handoff proof failed verification.");
             return record;
@@ -222,63 +228,63 @@ internal sealed partial class SharedWorldService
         bool reviewSourceChange = false)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
-        lock (sync)
-        {
-            // A successor owns the game/save signing key, not the original owner's
-            // roster key. Until a verified delegated revision chain exists, never
-            // replace the inherited roster or create a new group from this PC.
-            if (Authority.HasState(profile.Id))
-                throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
-            var oldBinding = ReadBinding(profile.Id);
-            var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
-            if (sourceChanged && !reviewSourceChange)
-                throw new InvalidDataException("The shared save source changed. Review the new source before signing a new group.");
-            // Read the old signed head while its binding still verifies. Never reset the rollback clock.
-            var prior = oldBinding is null ? null : ReadRosterForBinding(profile, oldBinding);
-            // A roster can reach Friends before the first save. An existing binding
-            // without its signed roster has an unknown distributed revision, so
-            // neither same-source publication nor source review may reset it.
-            if (oldBinding is not null && prior is null)
-                throw new InvalidDataException("The previous signed roster is missing; sharing history cannot be advanced safely.");
-            // Publish the signed roster before its first binding. If that write
-            // fails, retry may choose a fresh group because none was exposed.
-            var binding = sourceChanged || oldBinding is null
-                ? new SourceBinding(SourceDirectory(profile), profile.Kind, profile.WorldId, Guid.NewGuid())
-                : oldBinding;
-            if (members.Count > 128 || members.Any(member => member.DeviceId == Guid.Empty ||
-                member.Grants is null || !SharedWorldRosterTrust.ValidKey(member.PublicKey)) ||
-                members.Select(member => member.DeviceId).Distinct().Count() != members.Count ||
-                members.Select(member => member.PublicKey).Distinct(StringComparer.Ordinal).Count() != members.Count)
-                throw new InvalidDataException("Shared roster members are invalid.");
-            using var key = LoadSigningKey();
-            var ordered = members.OrderBy(member => member.DeviceId).ToArray();
-            if (!sourceChanged && prior is { Schema: 2 } &&
-                prior.OwnerOverride == (ownerOverride ?? prior.OwnerOverride) &&
-                prior.Members.SequenceEqual(ordered)) return prior;
-            var draft = new SharedWorldRoster(2, binding.GroupId, profile.Id,
-                checked((prior?.Epoch ?? 0) + 1), checked((prior?.Revision ?? 0) + 1),
-                ownerOverride ?? prior?.OwnerOverride ?? true,
-                Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
-                ordered, "");
-            var roster = draft with
+            lock (sync)
             {
-                Signature = Convert.ToBase64String(key.SignData(
-                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
-            };
-            var path = GroupRosterPath(profile.Id, binding.GroupId);
-            Directory.CreateDirectory(Root(profile.Id));
-            var stage = path + ".new";
-            File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
-            File.Move(stage, path, true);
-            if (sourceChanged || oldBinding is null)
-            {
-                var bindingPath = BindingPath(profile.Id);
-                var bindingStage = bindingPath + ".new";
-                File.WriteAllBytes(bindingStage, JsonSerializer.SerializeToUtf8Bytes(binding, Json));
-                File.Move(bindingStage, bindingPath, true);
+                // A successor owns the game/save signing key, not the original owner's
+                // roster key. Until a verified delegated revision chain exists, never
+                // replace the inherited roster or create a new group from this PC.
+                if (Authority.HasState(profile.Id))
+                    throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
+                var oldBinding = ReadBinding(profile.Id);
+                var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
+                if (sourceChanged && !reviewSourceChange)
+                    throw new InvalidDataException("The shared save source changed. Review the new source before signing a new group.");
+                // Read the old signed head while its binding still verifies. Never reset the rollback clock.
+                var prior = oldBinding is null ? null : ReadRosterForBinding(profile, oldBinding);
+                // A roster can reach Friends before the first save. An existing binding
+                // without its signed roster has an unknown distributed revision, so
+                // neither same-source publication nor source review may reset it.
+                if (oldBinding is not null && prior is null)
+                    throw new InvalidDataException("The previous signed roster is missing; sharing history cannot be advanced safely.");
+                // Publish the signed roster before its first binding. If that write
+                // fails, retry may choose a fresh group because none was exposed.
+                var binding = sourceChanged || oldBinding is null
+                    ? new SourceBinding(SourceDirectory(profile), profile.Kind, profile.WorldId, Guid.NewGuid())
+                    : oldBinding;
+                if (members.Count > 128 || members.Any(member => member.DeviceId == Guid.Empty ||
+                    member.Grants is null || !SharedWorldRosterTrust.ValidKey(member.PublicKey)) ||
+                    members.Select(member => member.DeviceId).Distinct().Count() != members.Count ||
+                    members.Select(member => member.PublicKey).Distinct(StringComparer.Ordinal).Count() != members.Count)
+                    throw new InvalidDataException("Shared roster members are invalid.");
+                using var key = LoadSigningKey();
+                var ordered = members.OrderBy(member => member.DeviceId).ToArray();
+                if (!sourceChanged && prior is { Schema: 2 } &&
+                    prior.OwnerOverride == (ownerOverride ?? prior.OwnerOverride) &&
+                    prior.Members.SequenceEqual(ordered)) return prior;
+                var draft = new SharedWorldRoster(2, binding.GroupId, profile.Id,
+                    checked((prior?.Epoch ?? 0) + 1), checked((prior?.Revision ?? 0) + 1),
+                    ownerOverride ?? prior?.OwnerOverride ?? true,
+                    Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
+                    ordered, "");
+                var roster = draft with
+                {
+                    Signature = Convert.ToBase64String(key.SignData(
+                    SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+                };
+                var path = GroupRosterPath(profile.Id, binding.GroupId);
+                Directory.CreateDirectory(Root(profile.Id));
+                var stage = path + ".new";
+                File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
+                File.Move(stage, path, true);
+                if (sourceChanged || oldBinding is null)
+                {
+                    var bindingPath = BindingPath(profile.Id);
+                    var bindingStage = bindingPath + ".new";
+                    File.WriteAllBytes(bindingStage, JsonSerializer.SerializeToUtf8Bytes(binding, Json));
+                    File.Move(bindingStage, bindingPath, true);
+                }
+                return roster;
             }
-            return roster;
-        }
     }
 
     private SharedWorldRoster? ReadRosterForBinding(ServerProfile profile, SourceBinding binding)
@@ -339,109 +345,109 @@ internal sealed partial class SharedWorldService
         if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
             return new(false, "SharingOff", "Shared saves are off for this server.");
         lock (SharedWorldMutationGate.For(data.RootPath))
-        lock (sync)
-        {
-            string? stage = null;
-            try
+            lock (sync)
             {
-                var successor = Authority.LocalAuthorizedHead(profile.Id);
-                if (Authority.GovernanceUnresolved(profile.Id))
-                    throw new InvalidDataException("Signed membership is unresolved; this PC cannot publish another shared save.");
-                AfterGovernanceCheckForChecks?.Invoke();
-                if (Authority.HasState(profile.Id) && successor is null)
-                    throw new InvalidDataException("This PC has no valid successor authority binding.");
-                if (successor is not null && !AuthorizedPublishedLineage(profile))
-                    throw new InvalidDataException("Published history does not continue the authority head.");
-                var oldBinding = ReadBinding(profile.Id);
-                // Enabling sharing and a graceful Stop can race. Publication must
-                // wait for the signed roster to establish the group; a save must
-                // never create a bare binding that strands first setup.
-                if (oldBinding is null || ReadRoster(profile) is null)
-                    throw new InvalidDataException("Sign the shared world roster before publishing a save.");
-                var sameSource = oldBinding is not null && BindingMatches(oldBinding, profile);
-                var priorStatus = Status(profile);
-                if (sameSource && File.Exists(LatestPath(profile.Id)) && priorStatus.Latest is null &&
-                    !VerifiedPreviousGroupPointer(profile, oldBinding!))
-                    throw new InvalidDataException("The existing shared save pointer failed verification.");
-                var binding = BindSource(profile);
-                var previous = ReconcilePublishedVersion(profile, priorStatus.Latest ?? successor?.Version);
-                if (successor is not null && (previous!.GroupId != successor.Version.GroupId ||
-                    previous.Number < successor.Version.Number))
-                    throw new InvalidDataException("Published history does not continue the authority head.");
-                if (previous?.BackupId == backupId)
-                    return new(true, "SharedSavePublished", "The hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", previous);
-                var source = capture.ReadVerified(profile, backupId);
-                if (source.Schema != 1 || source.Kind != SharedWorldCaptureKinds.PostStopBackup ||
-                    source.Files.Count is < 1 or > MaximumFiles ||
-                    source.Files.Any(file => !SafePath(file.Path) || file.Length < 0 ||
-                        file.Sha256.Length != 64))
-                    throw new InvalidDataException("The backup manifest cannot be shared safely.");
-                var size = BoundedTotalBytes(source.Files);
-                var drive = new DriveInfo(Path.GetPathRoot(data.RootPath)!);
-                if (drive.AvailableFreeSpace < 1024L * 1024 * 1024 ||
-                    drive.AvailableFreeSpace - 1024L * 1024 * 1024 < size)
-                    throw new IOException("Keep 1 GiB free after copying the published backup.");
-                var group = binding.GroupId;
-                var number = previous?.Number + 1 ?? 1;
-                var files = source.Files.ToArray();
-                if (source.Setup is null)
-                    throw new InvalidDataException("The backup lacks a complete reviewed setup checkpoint.");
-                var portableSetup = SharedWorldPortableSetupReader.Capture(source.Setup);
-                using var key = LoadPublishingKey(profile.Id);
-                var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
-                var basis = VersionBasis(group, number, previous?.VersionHash, profile.Id,
-                    profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind,
-                    backupId, portableSetup, files, publicKey, 4);
-                var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(basis)));
-                var signature = Convert.ToBase64String(key.SignHash(Convert.FromHexString(digest)));
-                var version = new SharedWorldVersion(4, group, number, previous?.VersionHash,
-                    profile.Id, profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind, backupId,
-                    portableSetup, files, publicKey, digest, signature);
-                if (JsonSerializer.SerializeToUtf8Bytes(version, Json).Length > MaximumManifestBytes)
-                    throw new InvalidDataException("The shared save manifest is too large.");
-                var root = Root(profile.Id);
-                Directory.CreateDirectory(root);
-                stage = Path.Combine(root, ".stage-" + Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(stage);
-                foreach (var file in files)
-                {
-                    var sourcePath = SafeChild(source.PayloadRoot, file.Path);
-                    var destination = SafeChild(Path.Combine(stage, PayloadDirectory), file.Path);
-                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                    File.Copy(sourcePath, destination, false);
-                    VerifyFile(destination, file);
-                }
-                File.WriteAllBytes(Path.Combine(stage, "version.json"),
-                    JsonSerializer.SerializeToUtf8Bytes(version, Json));
-                var destinationRoot = VersionRoot(version);
-                Directory.CreateDirectory(Path.GetDirectoryName(destinationRoot)!);
-                if (Directory.Exists(destinationRoot)) throw new InvalidDataException("Shared version already exists.");
-                Directory.Move(stage, destinationRoot);
-                stage = null;
-                var latestStage = LatestPath(profile.Id) + ".new";
-                File.WriteAllBytes(latestStage, JsonSerializer.SerializeToUtf8Bytes(version, Json));
-                File.Move(latestStage, LatestPath(profile.Id), true);
-                try { PrunePublishedPayloads(version); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
-                { /* The latest verified payload remains available; cleanup can retry at next publish. */ }
-                try { if (File.Exists(ErrorPath(profile.Id))) File.Delete(ErrorPath(profile.Id)); }
-                catch (IOException) { }
-                return new(true, "SharedSavePublished", "A hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", version);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
-                CryptographicException or JsonException or OverflowException)
-            {
+                string? stage = null;
                 try
                 {
-                    Directory.CreateDirectory(Root(profile.Id));
-                    File.WriteAllText(ErrorPath(profile.Id),
-                        "The latest completed backup could not be published. Review free space and backup integrity.");
+                    var successor = Authority.LocalAuthorizedHead(profile.Id);
+                    if (Authority.GovernanceUnresolved(profile.Id))
+                        throw new InvalidDataException("Signed membership is unresolved; this PC cannot publish another shared save.");
+                    AfterGovernanceCheckForChecks?.Invoke();
+                    if (Authority.HasState(profile.Id) && successor is null)
+                        throw new InvalidDataException("This PC has no valid successor authority binding.");
+                    if (successor is not null && !AuthorizedPublishedLineage(profile))
+                        throw new InvalidDataException("Published history does not continue the authority head.");
+                    var oldBinding = ReadBinding(profile.Id);
+                    // Enabling sharing and a graceful Stop can race. Publication must
+                    // wait for the signed roster to establish the group; a save must
+                    // never create a bare binding that strands first setup.
+                    if (oldBinding is null || ReadRoster(profile) is null)
+                        throw new InvalidDataException("Sign the shared world roster before publishing a save.");
+                    var sameSource = oldBinding is not null && BindingMatches(oldBinding, profile);
+                    var priorStatus = Status(profile);
+                    if (sameSource && File.Exists(LatestPath(profile.Id)) && priorStatus.Latest is null &&
+                        !VerifiedPreviousGroupPointer(profile, oldBinding!))
+                        throw new InvalidDataException("The existing shared save pointer failed verification.");
+                    var binding = BindSource(profile);
+                    var previous = ReconcilePublishedVersion(profile, priorStatus.Latest ?? successor?.Version);
+                    if (successor is not null && (previous!.GroupId != successor.Version.GroupId ||
+                        previous.Number < successor.Version.Number))
+                        throw new InvalidDataException("Published history does not continue the authority head.");
+                    if (previous?.BackupId == backupId)
+                        return new(true, "SharedSavePublished", "The hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", previous);
+                    var source = capture.ReadVerified(profile, backupId);
+                    if (source.Schema != 1 || source.Kind != SharedWorldCaptureKinds.PostStopBackup ||
+                        source.Files.Count is < 1 or > MaximumFiles ||
+                        source.Files.Any(file => !SafePath(file.Path) || file.Length < 0 ||
+                            file.Sha256.Length != 64))
+                        throw new InvalidDataException("The backup manifest cannot be shared safely.");
+                    var size = BoundedTotalBytes(source.Files);
+                    var drive = new DriveInfo(Path.GetPathRoot(data.RootPath)!);
+                    if (drive.AvailableFreeSpace < 1024L * 1024 * 1024 ||
+                        drive.AvailableFreeSpace - 1024L * 1024 * 1024 < size)
+                        throw new IOException("Keep 1 GiB free after copying the published backup.");
+                    var group = binding.GroupId;
+                    var number = previous?.Number + 1 ?? 1;
+                    var files = source.Files.ToArray();
+                    if (source.Setup is null)
+                        throw new InvalidDataException("The backup lacks a complete reviewed setup checkpoint.");
+                    var portableSetup = SharedWorldPortableSetupReader.Capture(source.Setup);
+                    using var key = LoadPublishingKey(profile.Id);
+                    var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+                    var basis = VersionBasis(group, number, previous?.VersionHash, profile.Id,
+                        profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind,
+                        backupId, portableSetup, files, publicKey, 4);
+                    var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(basis)));
+                    var signature = Convert.ToBase64String(key.SignHash(Convert.FromHexString(digest)));
+                    var version = new SharedWorldVersion(4, group, number, previous?.VersionHash,
+                        profile.Id, profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind, backupId,
+                        portableSetup, files, publicKey, digest, signature);
+                    if (JsonSerializer.SerializeToUtf8Bytes(version, Json).Length > MaximumManifestBytes)
+                        throw new InvalidDataException("The shared save manifest is too large.");
+                    var root = Root(profile.Id);
+                    Directory.CreateDirectory(root);
+                    stage = Path.Combine(root, ".stage-" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(stage);
+                    foreach (var file in files)
+                    {
+                        var sourcePath = SafeChild(source.PayloadRoot, file.Path);
+                        var destination = SafeChild(Path.Combine(stage, PayloadDirectory), file.Path);
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                        File.Copy(sourcePath, destination, false);
+                        VerifyFile(destination, file);
+                    }
+                    File.WriteAllBytes(Path.Combine(stage, "version.json"),
+                        JsonSerializer.SerializeToUtf8Bytes(version, Json));
+                    var destinationRoot = VersionRoot(version);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destinationRoot)!);
+                    if (Directory.Exists(destinationRoot)) throw new InvalidDataException("Shared version already exists.");
+                    Directory.Move(stage, destinationRoot);
+                    stage = null;
+                    var latestStage = LatestPath(profile.Id) + ".new";
+                    File.WriteAllBytes(latestStage, JsonSerializer.SerializeToUtf8Bytes(version, Json));
+                    File.Move(latestStage, LatestPath(profile.Id), true);
+                    try { PrunePublishedPayloads(version); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+                    { /* The latest verified payload remains available; cleanup can retry at next publish. */ }
+                    try { if (File.Exists(ErrorPath(profile.Id))) File.Delete(ErrorPath(profile.Id)); }
+                    catch (IOException) { }
+                    return new(true, "SharedSavePublished", "A hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", version);
                 }
-                catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException) { }
-                return new(false, "SharedSavePublishFailed", "The completed backup could not be published: " + ex.Message);
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                    CryptographicException or JsonException or OverflowException)
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(Root(profile.Id));
+                        File.WriteAllText(ErrorPath(profile.Id),
+                            "The latest completed backup could not be published. Review free space and backup integrity.");
+                    }
+                    catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException) { }
+                    return new(false, "SharedSavePublishFailed", "The completed backup could not be published: " + ex.Message);
+                }
+                finally { if (stage is not null) TryDeleteStage(stage); }
             }
-            finally { if (stage is not null) TryDeleteStage(stage); }
-        }
     }
 
     private bool VerifiedPreviousGroupPointer(ServerProfile profile, SourceBinding binding)
@@ -582,8 +588,11 @@ internal sealed partial class SharedWorldService
             unsigned.CaptureKind, unsigned.BackupId, unsigned.PortableSetup, unsigned.Files,
             unsigned.SigningPublicKey, unsigned.Schema);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(basis));
-        var signed = unsigned with { VersionHash = Convert.ToHexString(hash),
-            Signature = Convert.ToBase64String(signer.SignHash(hash)) };
+        var signed = unsigned with
+        {
+            VersionHash = Convert.ToHexString(hash),
+            Signature = Convert.ToBase64String(signer.SignHash(hash))
+        };
         if (!VerifySignature(signed)) throw new InvalidDataException("Shared save signature is invalid.");
         return signed;
     }

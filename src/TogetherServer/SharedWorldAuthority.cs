@@ -87,13 +87,23 @@ internal static class WorldAuthorityTrust
         }, Json);
     internal static byte[] ProposalBasis(WorldAuthorityProposal proposal) => proposal.Schema == 3
         ? JsonSerializer.SerializeToUtf8Bytes(new
-    {
-        domain = "TogetherServer authority resolution proposal v3", proposal.Schema,
-        proposal.GroupId, proposal.ProfileId, proposal.Epoch, proposal.ParentAuthorityHash,
-        proposal.RosterHash, proposal.VersionHash, proposal.CandidatePublicKey,
-        proposal.CandidateAddress, proposal.Kind, proposal.ProposerDeviceId,
-        proposal.ProposerPublicKey, proposal.SuccessorBinding, proposal.CompetingHeadHashes
-    }, Json) : proposal.Schema == 1
+        {
+            domain = "TogetherServer authority resolution proposal v3",
+            proposal.Schema,
+            proposal.GroupId,
+            proposal.ProfileId,
+            proposal.Epoch,
+            proposal.ParentAuthorityHash,
+            proposal.RosterHash,
+            proposal.VersionHash,
+            proposal.CandidatePublicKey,
+            proposal.CandidateAddress,
+            proposal.Kind,
+            proposal.ProposerDeviceId,
+            proposal.ProposerPublicKey,
+            proposal.SuccessorBinding,
+            proposal.CompetingHeadHashes
+        }, Json) : proposal.Schema == 1
         ? JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer authority proposal v1",
@@ -140,9 +150,14 @@ internal static class WorldAuthorityTrust
     internal static byte[] RecordBasis(WorldAuthorityRecord record) => record.Schema == 2
         ? JsonSerializer.SerializeToUtf8Bytes(new
         {
-            domain = "TogetherServer authority resolution record v2", record.Schema,
-            record.Proposal, record.Roster, record.Version, record.Votes,
-            record.OwnerSignature, record.VersionLineageDigest
+            domain = "TogetherServer authority resolution record v2",
+            record.Schema,
+            record.Proposal,
+            record.Roster,
+            record.Version,
+            record.Votes,
+            record.OwnerSignature,
+            record.VersionLineageDigest
         }, Json) :
         record.VersionLineageDigest is not null && record.SuccessorReceipt is null
             ? JsonSerializer.SerializeToUtf8Bytes(new

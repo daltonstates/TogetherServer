@@ -2373,10 +2373,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-        {
-            Name: "fixturemod", Version: "1.0.0",
-            RequiredGameVersion: "2.0", Type: "Factorio mod"
-        }],
+    {
+        Name: "fixturemod", Version: "1.0.0",
+        RequiredGameVersion: "2.0", Type: "Factorio mod"
+    }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -3119,7 +3119,9 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var successorId = Guid.NewGuid();
     var routeObserverId = Guid.NewGuid();
     var successorKey = Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo());
-    data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+    data.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
     {
         Id = successorId, ProfileId = Guid.Empty, AssignedProfileIds = [profile.Id],
         CredentialHash = new string('A', 64),
@@ -3135,7 +3137,8 @@ await Check("planned handoff requires exact final save receipt before durable ol
         SharedWorldPublicKey = Convert.ToBase64String(routeObserver.ExportSubjectPublicKeyInfo()),
         SharedWorldGrants = new Dictionary<Guid, SharedWorldGrants>
         { [profile.Id] = new(Receive: true) }
-    }] });
+    }]
+    });
     var pairing = new PairingService(data);
     var manager = new HostManager(data, registry, TimeProvider.System,
         new NullHostingPowerGuard(), pairing: pairing);
@@ -3157,8 +3160,11 @@ await Check("planned handoff requires exact final save receipt before durable ol
         $"final Stop did not publish and hold the old Host offline: {prepared.Code}, version={prepared.Version?.Number}, start={pendingStart.Code}, {prepared.Message}");
     var restartedPending = new HostManager(data, registry);
     var pendingStatus = await restartedPending.PlannedHandoffStatusAsync(profile.Id);
-    Require(pendingStatus is { Pending: true, Code: "WaitingForSuccessorCopy",
-            CanComplete: false, CanCancel: true, ReceiptConfirmed: false } &&
+    Require(pendingStatus is
+    {
+        Pending: true, Code: "WaitingForSuccessorCopy",
+        CanComplete: false, CanCancel: true, ReceiptConfirmed: false
+    } &&
         pendingStatus.SuccessorDeviceId == successorId &&
         pendingStatus.FinalVersion == 1 &&
         pendingStatus.FinalVersionHash == prepared.Version!.VersionHash,
@@ -3178,15 +3184,18 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var version = prepared.Version!;
     var receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
         version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-    var receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
-        SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+    var receipt = receiptDraft with
+    {
+        Signature = Convert.ToBase64String(successor.SignData(
+        SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+    };
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId,
         receipt with { VersionHash = new string('B', 64) })).Code == "StaleOrWrongVersion",
         "wrong version receipt was accepted");
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
         "exact successor receipt was rejected");
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
-        { Code: "ReadyToComplete", ReceiptConfirmed: true, CanComplete: true, CanCancel: true },
+    { Code: "ReadyToComplete", ReceiptConfirmed: true, CanComplete: true, CanCancel: true },
         "owner status did not expose exact signed receipt readiness");
     Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
         new SharedWorldGrants(Receive: false, EligibleHost: false)).Ok,
@@ -3196,13 +3205,15 @@ await Check("planned handoff requires exact final save receipt before durable ol
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
         "a stale signed roster and receipt handed authority to a revoked successor");
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
-        { Code: "SuccessorAccessChanged", ReceiptConfirmed: true,
-            CanComplete: false, CanCancel: true },
+    {
+        Code: "SuccessorAccessChanged", ReceiptConfirmed: true,
+        CanComplete: false, CanCancel: true
+    },
         "owner status offered completion after successor revocation");
     Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled",
         "dirty roster prevented safe owner cancellation");
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
-        { Pending: false, Code: "NoPendingHandoff" },
+    { Pending: false, Code: "NoPendingHandoff" },
         "cancelled handoff remained pending in owner status");
     Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
         new SharedWorldGrants(Receive: true, EligibleHost: true)).Ok,
@@ -3224,8 +3235,11 @@ await Check("planned handoff requires exact final save receipt before durable ol
         .ToDictionary(item => item.Number);
     receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
         version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-    receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
-        SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+    receipt = receiptDraft with
+    {
+        Signature = Convert.ToBase64String(successor.SignData(
+        SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+    };
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
         "reviewed successor receipt was rejected");
     var completed = await manager.CompletePlannedHandoffAsync(profile.Id);
@@ -3489,8 +3503,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 WorldAuthorityTrust.RosterHash(roster), version.VersionHash, candidateKey,
                 address, kind, voters[0].Id,
                 Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo()), "");
-            return draft with { Signature = Convert.ToBase64String(signer.SignData(
-                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            return draft with
+            {
+                Signature = Convert.ToBase64String(signer.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256))
+            };
         }
         WorldAuthorityRecord Record(WorldAuthorityProposal proposal,
             IReadOnlyList<WorldAuthorityVote> votes, string? ownerApproval = null,
@@ -3537,32 +3554,47 @@ await Check("shared world authority requires signed majority, fences old Host, a
         var duplicateDraft = roster with
         {
             Members = [roster.Members[0], roster.Members[1] with
-            { PublicKey = roster.Members[0].PublicKey }], Signature = ""
+            { PublicKey = roster.Members[0].PublicKey }],
+            Signature = ""
         };
-        var duplicateSigned = duplicateDraft with { Signature = Convert.ToBase64String(ownerKey.SignData(
-            SharedWorldRosterTrust.Basis(duplicateDraft), HashAlgorithmName.SHA256)) };
+        var duplicateSigned = duplicateDraft with
+        {
+            Signature = Convert.ToBase64String(ownerKey.SignData(
+            SharedWorldRosterTrust.Basis(duplicateDraft), HashAlgorithmName.SHA256))
+        };
         Require(!SharedWorldRosterTrust.Verify(duplicateSigned),
             "owner-signed roster assigned two votes to one public key");
         var overrideDraft = proposal with { Kind = "OwnerOverride", Signature = "" };
-        var overrideProposal = overrideDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
-            WorldAuthorityTrust.ProposalBasis(overrideDraft), HashAlgorithmName.SHA256)) };
+        var overrideProposal = overrideDraft with
+        {
+            Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(overrideDraft), HashAlgorithmName.SHA256))
+        };
         var ownerApproval = Convert.ToBase64String(ownerKey.SignData(
             WorldAuthorityTrust.OwnerBasis(overrideProposal), HashAlgorithmName.SHA256));
         Require(WorldAuthorityTrust.Verify(Record(overrideProposal, [], ownerApproval)),
             "enabled owner override was rejected");
         var plannedDraft = overrideProposal with
         {
-            Kind = "Planned", ProposerDeviceId = Guid.Empty,
-            ProposerPublicKey = roster.OwnerPublicKey, Signature = ""
+            Kind = "Planned",
+            ProposerDeviceId = Guid.Empty,
+            ProposerPublicKey = roster.OwnerPublicKey,
+            Signature = ""
         };
-        var plannedProposal = plannedDraft with { Signature = Convert.ToBase64String(ownerKey.SignData(
-            WorldAuthorityTrust.ProposalBasis(plannedDraft), HashAlgorithmName.SHA256)) };
+        var plannedProposal = plannedDraft with
+        {
+            Signature = Convert.ToBase64String(ownerKey.SignData(
+            WorldAuthorityTrust.ProposalBasis(plannedDraft), HashAlgorithmName.SHA256))
+        };
         var plannedApproval = Convert.ToBase64String(ownerKey.SignData(
             WorldAuthorityTrust.OwnerBasis(plannedProposal), HashAlgorithmName.SHA256));
         var receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
             version.VersionHash, voters[0].Id, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        var successorReceipt = receiptDraft with { Signature = Convert.ToBase64String(
-            voters[0].Key.SignData(SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        var successorReceipt = receiptDraft with
+        {
+            Signature = Convert.ToBase64String(
+            voters[0].Key.SignData(SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+        };
         Require(WorldAuthorityTrust.Verify(Record(plannedProposal, [], plannedApproval, successorReceipt)),
             "owner-signed planned handoff with exact successor receipt was rejected");
         Require(!WorldAuthorityTrust.Verify(Record(plannedProposal, [], plannedApproval)),
@@ -3575,13 +3607,19 @@ await Check("shared world authority requires signed majority, fences old Host, a
         var noOverrideRoster = shares.PublishRoster(profile, roster.Members, ownerOverride: false);
         var disabledDraft = overrideProposal with
         { RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster), Signature = "" };
-        var disabledProposal = disabledDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
-            WorldAuthorityTrust.ProposalBasis(disabledDraft), HashAlgorithmName.SHA256)) };
+        var disabledProposal = disabledDraft with
+        {
+            Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(disabledDraft), HashAlgorithmName.SHA256))
+        };
         var disabledRecord = new WorldAuthorityRecord(1, disabledProposal, noOverrideRoster, version, [],
             Convert.ToBase64String(ownerKey.SignData(WorldAuthorityTrust.OwnerBasis(disabledProposal),
                 HashAlgorithmName.SHA256)), "");
-        disabledRecord = disabledRecord with { RecordHash = WorldAuthorityTrust.Hash(
-            WorldAuthorityTrust.RecordBasis(disabledRecord)) };
+        disabledRecord = disabledRecord with
+        {
+            RecordHash = WorldAuthorityTrust.Hash(
+            WorldAuthorityTrust.RecordBasis(disabledRecord))
+        };
         Require(!WorldAuthorityTrust.Verify(disabledRecord), "disabled owner override was accepted");
         var accepted = Record(proposal, [vote0, vote1]);
         Require(WorldAuthorityTrust.Verify(accepted), "valid majority was rejected");
@@ -3616,14 +3654,17 @@ await Check("shared world authority requires signed majority, fences old Host, a
             oldSettings.CompanionListeningEnabled = true;
             data.SaveSettings(oldSettings);
             var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+            data.SavePairingState(new PairingPersistentState
+            {
+                Devices = [new PairedDevice
             {
                 Id = voters[1].Id, AssignedProfileIds = [profile.Id],
                 CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
                 SharedWorldGrants = new() { [profile.Id] = new(Receive: true) },
                 SharedWorldPublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo())
-            }] });
+            }]
+            });
             var manager = new HostManager(data, Games(data));
             var fixturePairing = new PairingService(data);
             // This fixture installs a synthetic signed roster rather than publishing
@@ -3633,14 +3674,20 @@ await Check("shared world authority requires signed majority, fences old Host, a
             if (File.Exists(fixtureRosterDirty)) File.Delete(fixtureRosterDirty);
             var newerDraft = proposal with
             { RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster), Signature = "" };
-            var newerProposal = newerDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
-                WorldAuthorityTrust.ProposalBasis(newerDraft), HashAlgorithmName.SHA256)) };
+            var newerProposal = newerDraft with
+            {
+                Signature = Convert.ToBase64String(voters[0].Key.SignData(
+                WorldAuthorityTrust.ProposalBasis(newerDraft), HashAlgorithmName.SHA256))
+            };
             WorldAuthorityVote NewVote(int index)
             {
                 var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(newerProposal),
                     voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-                return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+                return draft with
+                {
+                    Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+                };
             }
             var newer = new WorldAuthorityRecord(1, newerProposal, noOverrideRoster, version,
                 [NewVote(0), NewVote(1)], null, "");
@@ -3715,10 +3762,16 @@ await Check("shared world authority requires signed majority, fences old Host, a
         // its own valid signatures; local double-vote prevention is independent.
         var competingVote1 = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(competing),
             voters[1].Id, Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()), "");
-        var signedCompeting = conflictVotes[0] with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
-            WorldAuthorityTrust.VoteBasis(conflictVotes[0]), HashAlgorithmName.SHA256)) };
-        competingVote1 = competingVote1 with { Signature = Convert.ToBase64String(voters[1].Key.SignData(
-            WorldAuthorityTrust.VoteBasis(competingVote1), HashAlgorithmName.SHA256)) };
+        var signedCompeting = conflictVotes[0] with
+        {
+            Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.VoteBasis(conflictVotes[0]), HashAlgorithmName.SHA256))
+        };
+        competingVote1 = competingVote1 with
+        {
+            Signature = Convert.ToBase64String(voters[1].Key.SignData(
+            WorldAuthorityTrust.VoteBasis(competingVote1), HashAlgorithmName.SHA256))
+        };
         store.Append(Record(competing, [signedCompeting, competingVote1]),
             stopAfterLogForChecks: true, enforceCurrentGrants: false);
         Require(File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
@@ -3733,20 +3786,29 @@ await Check("shared world authority requires signed majority, fences old Host, a
             var losingVersion = SharedWorldService.SignVersion(version with
             { BackupId = Guid.NewGuid() }, ownerKey);
             var losingDraft = competing with { VersionHash = losingVersion.VersionHash, Signature = "" };
-            var losingProposal = losingDraft with { Signature = Convert.ToBase64String(
+            var losingProposal = losingDraft with
+            {
+                Signature = Convert.ToBase64String(
                 voters[0].Key.SignData(WorldAuthorityTrust.ProposalBasis(losingDraft),
-                    HashAlgorithmName.SHA256)) };
+                    HashAlgorithmName.SHA256))
+            };
             WorldAuthorityVote LosingVote(int index)
             {
                 var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(losingProposal),
                     voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-                return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+                return draft with
+                {
+                    Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+                };
             }
             var losingDraftRecord = new WorldAuthorityRecord(1, losingProposal, roster,
                 losingVersion, [LosingVote(0), LosingVote(1)], null, "");
-            var losingRecord = losingDraftRecord with { RecordHash = WorldAuthorityTrust.Hash(
-                WorldAuthorityTrust.RecordBasis(losingDraftRecord)) };
+            var losingRecord = losingDraftRecord with
+            {
+                RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(losingDraftRecord))
+            };
             resolution.Append(accepted);
             resolution.Append(losingRecord);
             Require(resolution.ReadUniqueHead(profile.Id) is null &&
@@ -3769,19 +3831,28 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     voters[0].Id, selectedDevice, "", CompetingHeadHashes: namedHeads);
                 var bindingDraft = new WorldSuccessorBinding(voters[0].Id, selectedDevice,
                     hostingKey, "");
-                var binding = bindingDraft with { Signature = Convert.ToBase64String(
+                var binding = bindingDraft with
+                {
+                    Signature = Convert.ToBase64String(
                     voters[0].Key.SignData(WorldAuthorityTrust.BindingBasis(draft, bindingDraft),
-                        HashAlgorithmName.SHA256)) };
+                        HashAlgorithmName.SHA256))
+                };
                 draft = draft with { SuccessorBinding = binding };
-                return draft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
-                    WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+                return draft with
+                {
+                    Signature = Convert.ToBase64String(voters[0].Key.SignData(
+                    WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256))
+                };
             }
             WorldAuthorityVote ResolutionVote(WorldAuthorityProposal forProposal, int index)
             {
                 var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(forProposal),
                     voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-                return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+                return draft with
+                {
+                    Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+                };
             }
             WorldAuthorityRecord ResolutionRecord(WorldAuthorityProposal forProposal,
                 SharedWorldRoster selectedRoster, IReadOnlyList<WorldAuthorityVote> signedVotes,
@@ -3790,8 +3861,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 var draft = new WorldAuthorityRecord(2, forProposal, selectedRoster,
                     selectedVersion ?? version,
                     signedVotes, approval, "");
-                return draft with { RecordHash = WorldAuthorityTrust.Hash(
-                    WorldAuthorityTrust.RecordBasis(draft)) };
+                return draft with
+                {
+                    RecordHash = WorldAuthorityTrust.Hash(
+                    WorldAuthorityTrust.RecordBasis(draft))
+                };
             }
             var resolutionProposal = ResolutionProposal(roster, hashes);
             var resolved = ResolutionRecord(resolutionProposal, roster,
@@ -3878,8 +3952,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
             for (var i = 0; i < 4; i++)
             {
                 later = SharedWorldService.SignVersion(later with
-                { Number = later.Number + 1, ParentHash = later.VersionHash,
-                  BackupId = Guid.NewGuid() }, ownerKey);
+                {
+                    Number = later.Number + 1,
+                    ParentHash = later.VersionHash,
+                    BackupId = Guid.NewGuid()
+                }, ownerKey);
                 StoreVerifiedPayload(later);
             }
             FriendLink.PruneReceived(receivedRoot, later.VersionHash,
@@ -3946,8 +4023,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 hostingSigner.ImportPkcs8PrivateKey(resolutionData.LoadProtected(
                     WorldAuthorityStore.HostingKeyName(profile.Id))!, out _);
                 var afterDecision = SharedWorldService.SignVersion(version with
-                { Number = version.Number + 1, ParentHash = version.VersionHash,
-                  BackupId = Guid.NewGuid() }, hostingSigner);
+                {
+                    Number = version.Number + 1,
+                    ParentHash = version.VersionHash,
+                    BackupId = Guid.NewGuid()
+                }, hostingSigner);
                 Require(FriendLink.AuthorizedVersionSignerForRecords(roster.OwnerPublicKey,
                         afterDecision, resolution.Read(profile.Id)) &&
                     FriendLink.VerifySharedChain(version, afterDecision, [],
@@ -4009,19 +4089,28 @@ await Check("shared world authority requires signed majority, fences old Host, a
                         CompetingHeadHashes: competingHeads);
                     var bindingDraft = new WorldSuccessorBinding(voters[0].Id, selectedDevice,
                         lineageHostingKey, "");
-                    var binding = bindingDraft with { Signature = Convert.ToBase64String(
+                    var binding = bindingDraft with
+                    {
+                        Signature = Convert.ToBase64String(
                         voters[0].Key.SignData(WorldAuthorityTrust.BindingBasis(draft, bindingDraft),
-                            HashAlgorithmName.SHA256)) };
+                            HashAlgorithmName.SHA256))
+                    };
                     draft = draft with { SuccessorBinding = binding };
-                    var proposal = draft with { Signature = Convert.ToBase64String(
+                    var proposal = draft with
+                    {
+                        Signature = Convert.ToBase64String(
                         voters[0].Key.SignData(WorldAuthorityTrust.ProposalBasis(draft),
-                            HashAlgorithmName.SHA256)) };
+                            HashAlgorithmName.SHA256))
+                    };
                     var recordDraft = new WorldAuthorityRecord(schema == 3 ? 2 : 1,
                         proposal, roster, head,
                         [ResolutionVote(proposal, 0), ResolutionVote(proposal, 1)], null, "",
                         VersionLineage: proof);
-                    return recordDraft with { RecordHash = WorldAuthorityTrust.Hash(
-                        WorldAuthorityTrust.RecordBasis(recordDraft)) };
+                    return recordDraft with
+                    {
+                        RecordHash = WorldAuthorityTrust.Hash(
+                        WorldAuthorityTrust.RecordBasis(recordDraft))
+                    };
                 }
                 var aRecord = LineageRecord(accepted, aFive, a, 2, "Quorum");
                 var bRecord = LineageRecord(accepted, bSix, b, 2, "Quorum");
@@ -4153,31 +4242,46 @@ await Check("shared world authority requires signed majority, fences old Host, a
         }
         var successorVersion = SharedWorldService.SignVersion(version with
         {
-            Number = version.Number + 1, ParentHash = version.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = version.CreatedUtc.AddSeconds(1)
+            Number = version.Number + 1,
+            ParentHash = version.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = version.CreatedUtc.AddSeconds(1)
         }, voters[0].Key);
         var nextCandidate = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo());
         var nextDraft = proposal with
         {
-            Epoch = 2, ParentAuthorityHash = accepted.RecordHash,
+            Epoch = 2,
+            ParentAuthorityHash = accepted.RecordHash,
             RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster),
-            VersionHash = successorVersion.VersionHash, CandidatePublicKey = nextCandidate,
-            ProposerDeviceId = voters[1].Id, ProposerPublicKey = nextCandidate, Signature = ""
+            VersionHash = successorVersion.VersionHash,
+            CandidatePublicKey = nextCandidate,
+            ProposerDeviceId = voters[1].Id,
+            ProposerPublicKey = nextCandidate,
+            Signature = ""
         };
-        var nextProposal = nextDraft with { Signature = Convert.ToBase64String(voters[1].Key.SignData(
-            WorldAuthorityTrust.ProposalBasis(nextDraft), HashAlgorithmName.SHA256)) };
+        var nextProposal = nextDraft with
+        {
+            Signature = Convert.ToBase64String(voters[1].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(nextDraft), HashAlgorithmName.SHA256))
+        };
         WorldAuthorityVote NextVote(int index)
         {
             var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(nextProposal),
                 voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-            return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            return draft with
+            {
+                Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+            };
         }
         var nextAuthority = new WorldAuthorityRecord(1, nextProposal, noOverrideRoster,
             successorVersion, [NextVote(1), NextVote(2)], null, "",
             VersionLineage: [successorVersion]);
-        nextAuthority = nextAuthority with { RecordHash = WorldAuthorityTrust.Hash(
-            WorldAuthorityTrust.RecordBasis(nextAuthority)) };
+        nextAuthority = nextAuthority with
+        {
+            RecordHash = WorldAuthorityTrust.Hash(
+            WorldAuthorityTrust.RecordBasis(nextAuthority))
+        };
         Require(WorldAuthorityTrust.Verify(nextAuthority) &&
             WorldAuthorityTrust.VerifyLineage(nextAuthority, accepted),
             "signed successor save lineage was rejected");
@@ -4197,8 +4301,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
         { Version = wrongSignerVersion, VersionLineage = [wrongSignerVersion] }, accepted),
             "a different PC signed a successor save without authority");
         var unproven = nextAuthority with { VersionLineage = null, RecordHash = "" };
-        unproven = unproven with { RecordHash = WorldAuthorityTrust.Hash(
-            WorldAuthorityTrust.RecordBasis(unproven)) };
+        unproven = unproven with
+        {
+            RecordHash = WorldAuthorityTrust.Hash(
+            WorldAuthorityTrust.RecordBasis(unproven))
+        };
         RequireThrows<InvalidDataException>(() => store.Append(unproven),
             "successor save without signed lineage was accepted");
         store.Append(nextAuthority, stopAfterJournalForChecks: true,
@@ -4218,28 +4325,37 @@ await Check("shared world authority requires signed majority, fences old Host, a
         {
             predecessor = SharedWorldService.SignVersion(predecessor with
             {
-                Number = predecessor.Number + 1, ParentHash = predecessor.VersionHash,
-                BackupId = Guid.NewGuid(), CreatedUtc = predecessor.CreatedUtc.AddSeconds(1)
+                Number = predecessor.Number + 1,
+                ParentHash = predecessor.VersionHash,
+                BackupId = Guid.NewGuid(),
+                CreatedUtc = predecessor.CreatedUtc.AddSeconds(1)
             }, voters[1].Key);
             longLineage.Add(predecessor);
         }
         var thirdDraft = nextProposal with
         {
-            Epoch = 3, ParentAuthorityHash = nextAuthority.RecordHash,
+            Epoch = 3,
+            ParentAuthorityHash = nextAuthority.RecordHash,
             VersionHash = predecessor.VersionHash,
             CandidatePublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo()),
             ProposerDeviceId = voters[2].Id,
             ProposerPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo()),
             Signature = ""
         };
-        var thirdProposal = thirdDraft with { Signature = Convert.ToBase64String(voters[2].Key.SignData(
-            WorldAuthorityTrust.ProposalBasis(thirdDraft), HashAlgorithmName.SHA256)) };
+        var thirdProposal = thirdDraft with
+        {
+            Signature = Convert.ToBase64String(voters[2].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(thirdDraft), HashAlgorithmName.SHA256))
+        };
         WorldAuthorityVote ThirdVote(int index)
         {
             var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(thirdProposal),
                 voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-            return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            return draft with
+            {
+                Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+            };
         }
         var third = new WorldAuthorityRecord(1, thirdProposal, noOverrideRoster,
             predecessor, [ThirdVote(1), ThirdVote(2)], null, "", null,
@@ -4253,8 +4369,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
             !WorldAuthorityTrust.VerifyLineage(third, nextAuthority,
                 longLineage.Select((item, index) => index == 35 ? item with { ParentHash = "BAD" } : item).ToArray()),
             "missing or tampered handoff proof was accepted");
-        Require(WorldAuthorityStore.FirstProofNumber(third with { Version = third.Version with
-            { Number = nextAuthority.Version.Number + 4097 } }, nextAuthority) ==
+        Require(WorldAuthorityStore.FirstProofNumber(third with
+        {
+            Version = third.Version with
+            { Number = nextAuthority.Version.Number + 4097 }
+        }, nextAuthority) ==
             nextAuthority.Version.Number + 1,
             "a handoff after more than 4096 saves was rejected");
         RequireThrows<InvalidDataException>(() => store.Append(third),
@@ -4321,13 +4440,17 @@ await Check("shared world authority requires signed majority, fences old Host, a
             for (var index = 0; index < 4097; index++)
             {
                 proofHead = SharedWorldService.SignVersion(proofHead with
-                { Number = proofHead.Number + 1, ParentHash = proofHead.VersionHash,
-                    BackupId = Guid.NewGuid() }, voters[0].Key);
+                {
+                    Number = proofHead.Number + 1,
+                    ParentHash = proofHead.VersionHash,
+                    BackupId = Guid.NewGuid()
+                }, voters[0].Key);
                 proofVersions.Add(proofHead);
             }
             var longDraft = proposal with
             {
-                Epoch = 2, ParentAuthorityHash = accepted.RecordHash,
+                Epoch = 2,
+                ParentAuthorityHash = accepted.RecordHash,
                 RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster),
                 VersionHash = proofHead.VersionHash,
                 CandidatePublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()),
@@ -4399,8 +4522,10 @@ await Check("shared world authority requires signed majority, fences old Host, a
         }
         var afterThird = SharedWorldService.SignVersion(predecessor with
         {
-            Number = predecessor.Number + 1, ParentHash = predecessor.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = predecessor.CreatedUtc.AddSeconds(1)
+            Number = predecessor.Number + 1,
+            ParentHash = predecessor.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = predecessor.CreatedUtc.AddSeconds(1)
         }, voters[2].Key);
         Require(FriendLink.VerifySharedChain(version, afterThird,
             [successorVersion, .. longLineage], [accepted, nextAuthority, third]),
@@ -4442,8 +4567,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
         for (var index = 0; index < 300; index++)
         {
             gapHead = SharedWorldService.SignVersion(gapHead with
-            { Number = gapHead.Number + 1, ParentHash = gapHead.VersionHash,
-                BackupId = Guid.NewGuid() }, voters[1].Key);
+            {
+                Number = gapHead.Number + 1,
+                ParentHash = gapHead.VersionHash,
+                BackupId = Guid.NewGuid()
+            }, voters[1].Key);
             gap.Add(gapHead);
         }
         var chainRoot = Path.Combine(root, "chain-catch-up");
@@ -4512,23 +4640,33 @@ await Check("shared world authority requires signed majority, fences old Host, a
         }
         var ownerSecond = SharedWorldService.SignVersion(version with
         {
-            Number = version.Number + 1, ParentHash = version.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = version.CreatedUtc.AddSeconds(1)
+            Number = version.Number + 1,
+            ParentHash = version.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = version.CreatedUtc.AddSeconds(1)
         }, ownerKey);
         var ownerThird = SharedWorldService.SignVersion(ownerSecond with
         {
-            Number = ownerSecond.Number + 1, ParentHash = ownerSecond.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = ownerSecond.CreatedUtc.AddSeconds(1)
+            Number = ownerSecond.Number + 1,
+            ParentHash = ownerSecond.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = ownerSecond.CreatedUtc.AddSeconds(1)
         }, ownerKey);
         WorldAuthorityProposal SignProposal(WorldAuthorityProposal draft, ECDsa signer) =>
-            draft with { Signature = Convert.ToBase64String(signer.SignData(
-                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            draft with
+            {
+                Signature = Convert.ToBase64String(signer.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256))
+            };
         WorldAuthorityVote SignVote(WorldAuthorityProposal forProposal, int index)
         {
             var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(forProposal),
                 voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-            return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            return draft with
+            {
+                Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+            };
         }
         WorldAuthorityRecord SignRecord(WorldAuthorityProposal forProposal,
             SharedWorldVersion head, IReadOnlyList<SharedWorldVersion>? lineage,
@@ -4542,7 +4680,8 @@ await Check("shared world authority requires signed majority, fences old Host, a
         var lateFirstProposal = SignProposal(proposal with
         {
             RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster),
-            VersionHash = ownerThird.VersionHash, Signature = ""
+            VersionHash = ownerThird.VersionHash,
+            Signature = ""
         }, voters[0].Key);
         var lateFirst = SignRecord(lateFirstProposal, ownerThird,
             [version, ownerSecond, ownerThird], 0, 1);
@@ -4565,34 +4704,43 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 "a fresh receiver accepted an unproven 5000-save first handoff");
         var lateFirstSave = SharedWorldService.SignVersion(ownerThird with
         {
-            Number = ownerThird.Number + 1, ParentHash = ownerThird.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = ownerThird.CreatedUtc.AddSeconds(1)
+            Number = ownerThird.Number + 1,
+            ParentHash = ownerThird.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = ownerThird.CreatedUtc.AddSeconds(1)
         }, voters[0].Key);
         var lateSecondHead = SharedWorldService.SignVersion(lateFirstSave with
         {
-            Number = lateFirstSave.Number + 1, ParentHash = lateFirstSave.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = lateFirstSave.CreatedUtc.AddSeconds(1)
+            Number = lateFirstSave.Number + 1,
+            ParentHash = lateFirstSave.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = lateFirstSave.CreatedUtc.AddSeconds(1)
         }, voters[0].Key);
         var lateSecondProposal = SignProposal(nextProposal with
         {
             ParentAuthorityHash = lateFirst.RecordHash,
-            VersionHash = lateSecondHead.VersionHash, Signature = ""
+            VersionHash = lateSecondHead.VersionHash,
+            Signature = ""
         }, voters[1].Key);
         var lateSecond = SignRecord(lateSecondProposal, lateSecondHead,
             [lateFirstSave, lateSecondHead], 1, 2);
         var lateSecondSave = SharedWorldService.SignVersion(lateSecondHead with
         {
-            Number = lateSecondHead.Number + 1, ParentHash = lateSecondHead.VersionHash,
-            BackupId = Guid.NewGuid(), CreatedUtc = lateSecondHead.CreatedUtc.AddSeconds(1)
+            Number = lateSecondHead.Number + 1,
+            ParentHash = lateSecondHead.VersionHash,
+            BackupId = Guid.NewGuid(),
+            CreatedUtc = lateSecondHead.CreatedUtc.AddSeconds(1)
         }, voters[1].Key);
         var afterHandoff = SharedWorldService.SignVersion(lateSecondSave with
         {
-            Number = lateSecondSave.Number + 1, ParentHash = lateSecondSave.VersionHash,
+            Number = lateSecondSave.Number + 1,
+            ParentHash = lateSecondSave.VersionHash,
             BackupId = Guid.NewGuid()
         }, voters[1].Key);
         var afterHandoffNext = SharedWorldService.SignVersion(afterHandoff with
         {
-            Number = afterHandoff.Number + 1, ParentHash = afterHandoff.VersionHash,
+            Number = afterHandoff.Number + 1,
+            ParentHash = afterHandoff.VersionHash,
             BackupId = Guid.NewGuid()
         }, voters[1].Key);
         var forkHandoffHead = SharedWorldService.SignVersion(lateSecondSave with
@@ -4631,8 +4779,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
             {
                 var parentDecision = decisions[^1];
                 var draft = proposal with
-                { Epoch = parentDecision.Proposal.Epoch + 1,
-                    ParentAuthorityHash = parentDecision.RecordHash, Signature = "" };
+                {
+                    Epoch = parentDecision.Proposal.Epoch + 1,
+                    ParentAuthorityHash = parentDecision.RecordHash,
+                    Signature = ""
+                };
                 var signedProposal = SignProposal(draft, voters[0].Key);
                 var unsignedRecord = new WorldAuthorityRecord(1, signedProposal, roster, version,
                     [SignVote(signedProposal, 0), SignVote(signedProposal, 1)], null, "");
@@ -4664,14 +4815,21 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     .SequenceEqual(decisions.Skip(127).Select(item => item.RecordHash)) &&
                 manyStore.ReadPage(profile.Id, 128).Single().RecordHash == decisions[128].RecordHash,
                 "authority stopped accepting decisions after record 128");
-            var forkDraft = proposal with { Epoch = decisions[128].Proposal.Epoch,
+            var forkDraft = proposal with
+            {
+                Epoch = decisions[128].Proposal.Epoch,
                 ParentAuthorityHash = decisions[127].RecordHash,
-                CandidateAddress = "https://127.0.0.1:5132", Signature = "" };
+                CandidateAddress = "https://127.0.0.1:5132",
+                Signature = ""
+            };
             var forkProposal = SignProposal(forkDraft, voters[0].Key);
             var forkUnsigned = new WorldAuthorityRecord(1, forkProposal, roster, version,
                 [SignVote(forkProposal, 0), SignVote(forkProposal, 1)], null, "");
-            var forkRecord = forkUnsigned with { RecordHash = WorldAuthorityTrust.Hash(
-                WorldAuthorityTrust.RecordBasis(forkUnsigned)) };
+            var forkRecord = forkUnsigned with
+            {
+                RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(forkUnsigned))
+            };
             manyStore.Append(forkRecord);
             var competingHeads = WorldAuthorityTrust.EffectiveHeads(manyStore.Read(profile.Id));
             Require(competingHeads.Length == 2 && manyStore.Read(profile.Id).Count == 130,
@@ -4686,15 +4844,23 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 CompetingHeadHashes: headHashes);
             var bindingDraft = new WorldSuccessorBinding(voters[0].Id,
                 resolutionDraft.ProposerPublicKey, hostingPublicKey, "");
-            var bound = resolutionDraft with { SuccessorBinding = bindingDraft with
-            { Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            var bound = resolutionDraft with
+            {
+                SuccessorBinding = bindingDraft with
+                {
+                    Signature = Convert.ToBase64String(voters[0].Key.SignData(
                 WorldAuthorityTrust.BindingBasis(resolutionDraft, bindingDraft),
-                HashAlgorithmName.SHA256)) } };
+                HashAlgorithmName.SHA256))
+                }
+            };
             var resolutionProposal = SignProposal(bound, voters[0].Key);
             var unsignedResolution = new WorldAuthorityRecord(2, resolutionProposal, roster,
                 version, [SignVote(resolutionProposal, 0), SignVote(resolutionProposal, 1)], null, "");
-            var signedResolution = unsignedResolution with { RecordHash = WorldAuthorityTrust.Hash(
-                WorldAuthorityTrust.RecordBasis(unsignedResolution)) };
+            var signedResolution = unsignedResolution with
+            {
+                RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(unsignedResolution))
+            };
             manyStore.Append(signedResolution);
             Require(manyStore.Read(profile.Id).Count == 131 &&
                 manyStore.ReadUniqueHead(profile.Id)?.RecordHash == signedResolution.RecordHash &&
@@ -4722,28 +4888,42 @@ await Check("shared world authority requires signed majority, fences old Host, a
         File.WriteAllBytes(proofFile, proofOriginal);
         var expiredRosterDraft = noOverrideRoster with
         {
-            Epoch = noOverrideRoster.Epoch + 1, Revision = noOverrideRoster.Revision + 1,
+            Epoch = noOverrideRoster.Epoch + 1,
+            Revision = noOverrideRoster.Revision + 1,
             Members = noOverrideRoster.Members.Select(member => member.DeviceId == voters[0].Id
                 ? member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }
-                : member).ToArray(), Signature = ""
+                : member).ToArray(),
+            Signature = ""
         };
-        var expiredRoster = expiredRosterDraft with { Signature = Convert.ToBase64String(ownerKey.SignData(
-            SharedWorldRosterTrust.Basis(expiredRosterDraft), HashAlgorithmName.SHA256)) };
+        var expiredRoster = expiredRosterDraft with
+        {
+            Signature = Convert.ToBase64String(ownerKey.SignData(
+            SharedWorldRosterTrust.Basis(expiredRosterDraft), HashAlgorithmName.SHA256))
+        };
         var expiredDraft = proposal with
         { RosterHash = WorldAuthorityTrust.RosterHash(expiredRoster), Signature = "" };
-        var expiredProposal = expiredDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
-            WorldAuthorityTrust.ProposalBasis(expiredDraft), HashAlgorithmName.SHA256)) };
+        var expiredProposal = expiredDraft with
+        {
+            Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(expiredDraft), HashAlgorithmName.SHA256))
+        };
         WorldAuthorityVote ExpiredVote(int index)
         {
             var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(expiredProposal),
                 voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
-            return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
-                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            return draft with
+            {
+                Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+            };
         }
         var expiredRecord = new WorldAuthorityRecord(1, expiredProposal, expiredRoster, version,
             [ExpiredVote(0), ExpiredVote(1)], null, "");
-        expiredRecord = expiredRecord with { RecordHash = WorldAuthorityTrust.Hash(
-            WorldAuthorityTrust.RecordBasis(expiredRecord)) };
+        expiredRecord = expiredRecord with
+        {
+            RecordHash = WorldAuthorityTrust.Hash(
+            WorldAuthorityTrust.RecordBasis(expiredRecord))
+        };
         Require(WorldAuthorityTrust.Verify(expiredRecord), "historical proof became time-dependent");
         RequireThrows<InvalidDataException>(() => store.Append(expiredRecord),
             "expired participant was accepted for a new authority decision");
@@ -4931,8 +5111,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             var wireDraft = new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id,
                 proposalHash, ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
                 validNonce!.Nonce, "");
-            var wireRequest = wireDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
-                SharedWorldVoteInbox.RequestBasis(wireDraft), HashAlgorithmName.SHA256)) };
+            var wireRequest = wireDraft with
+            {
+                Signature = Convert.ToBase64String(keys[1].SignData(
+                SharedWorldVoteInbox.RequestBasis(wireDraft), HashAlgorithmName.SHA256))
+            };
             using var wireOffer = await client.PostAsJsonAsync(route + "/offer", wireRequest);
             Require(wireOffer.IsSuccessStatusCode &&
                 (await wireOffer.Content.ReadFromJsonAsync<WorldAuthorityOffer>())?.Proposal == offer.Proposal,
@@ -4947,8 +5130,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var requestDraft = new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id,
             proposalHash, ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
             challenge.Nonce, "");
-        var request = requestDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
-            SharedWorldVoteInbox.RequestBasis(requestDraft), HashAlgorithmName.SHA256)) };
+        var request = requestDraft with
+        {
+            Signature = Convert.ToBase64String(keys[1].SignData(
+            SharedWorldVoteInbox.RequestBasis(requestDraft), HashAlgorithmName.SHA256))
+        };
         Require(inbox.ReadOffer(request)?.Proposal == offer.Proposal,
             "signed voter did not receive the exact candidate offer");
         Require(inbox.ReadOffer(request) is null, "candidate challenge was reusable");
@@ -5011,8 +5197,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             "a missing local binding was not repaired from the exact current majority");
         pcs[0].SaveProtected(bindingName, JsonSerializer.SerializeToUtf8Bytes(new
         {
-            schema = 1, groupId = roster.GroupId, recordHash = quorumResult.Decision!.RecordHash,
-            deviceId = ids[1], publicKey = Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo())
+            schema = 1,
+            groupId = roster.GroupId,
+            recordHash = quorumResult.Decision!.RecordHash,
+            deviceId = ids[1],
+            publicKey = Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo())
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         Require(new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[1]).State == "ObservedMajority",
             "another device claimed this PC's majority");
@@ -5033,8 +5222,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 roster.GroupId, roster.OwnerPublicKey);
             var receiptDraft = new SharedWorldReceipt(1, roster.GroupId, profile.Id,
                 version.VersionHash, ids[2], roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-            var receipt = receiptDraft with { Signature = Convert.ToBase64String(keys[2].SignData(
-                SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+            var receipt = receiptDraft with
+            {
+                Signature = Convert.ToBase64String(keys[2].SignData(
+                SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+            };
             var plannedChild = shares.SignPlannedHandoff(roster, version, receipt, ids[2],
                 $"https://127.0.0.1:{candidatePort + 1}", 2, quorumResult.Decision!.RecordHash);
             historyStore.AppendReceived(plannedChild, profile.Id, roster.GroupId,
@@ -5068,8 +5260,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             "two of three designated voters did not produce a durable signed decision");
         Require(separate.Read(profile.Id).Single().BranchHash == separateBranch.BranchHash,
             "majority authority overwrote the warned separate history");
-        var fakeReceipt = offer with { CandidateReceipt = offer.CandidateReceipt with
-            { VersionHash = new string('0', 64) } };
+        var fakeReceipt = offer with
+        {
+            CandidateReceipt = offer.CandidateReceipt with
+            { VersionHash = new string('0', 64) }
+        };
         RequireThrows<InvalidDataException>(() => SharedWorldElection.Vote(losses[2], vaults[2],
             floor, roster.OwnerPublicKey, fakeReceipt, ids[2], keys[2],
             new WorldAuthorityStore(pcs[2])), "a mismatched candidate copy receipt was accepted");
@@ -5098,8 +5293,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var staleDraft = new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id,
             staleHash, ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
             staleChallenge.Nonce, "");
-        var staleRequest = staleDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
-            SharedWorldVoteInbox.RequestBasis(staleDraft), HashAlgorithmName.SHA256)) };
+        var staleRequest = staleDraft with
+        {
+            Signature = Convert.ToBase64String(keys[1].SignData(
+            SharedWorldVoteInbox.RequestBasis(staleDraft), HashAlgorithmName.SHA256))
+        };
         var staleVote = SharedWorldElection.Vote(losses[0], vaults[0], floor,
             roster.OwnerPublicKey, childOffer, ids[0], keys[0], new WorldAuthorityStore(pcs[0]));
         new WorldAuthorityStore(pcs[2]).AppendReceived(quorumResult.Decision!, profile.Id,
@@ -5163,8 +5361,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             // heads. The read projection must refuse to pick either as current.
             var forkDraft = new WorldAuthorityVote(1, staleHash, ids[1],
                 Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()), "");
-            var forkVote = forkDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
-                WorldAuthorityTrust.VoteBasis(forkDraft), HashAlgorithmName.SHA256)) };
+            var forkVote = forkDraft with
+            {
+                Signature = Convert.ToBase64String(keys[1].SignData(
+                WorldAuthorityTrust.VoteBasis(forkDraft), HashAlgorithmName.SHA256))
+            };
             SharedWorldElection.ConfirmQuorum(childOffer, [staleVote, forkVote],
                 new WorldAuthorityStore(pcs[0]));
             var conflict = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
@@ -5321,29 +5522,50 @@ await Check("successor hosting key continues exact save lineage and stays bound 
         WorldAuthorityTrust.RosterHash(roster), origin.VersionHash, hostKey,
         "https://127.0.0.1:5132", "Quorum", deviceId, deviceKey, "");
     var bindingDraft = new WorldSuccessorBinding(deviceId, deviceKey, hostKey, "");
-    var binding = bindingDraft with { Signature = Convert.ToBase64String(device.SignData(
-        WorldAuthorityTrust.BindingBasis(unsigned, bindingDraft), HashAlgorithmName.SHA256)) };
+    var binding = bindingDraft with
+    {
+        Signature = Convert.ToBase64String(device.SignData(
+        WorldAuthorityTrust.BindingBasis(unsigned, bindingDraft), HashAlgorithmName.SHA256))
+    };
     unsigned = unsigned with { SuccessorBinding = binding };
-    var proposal = unsigned with { Signature = Convert.ToBase64String(device.SignData(
-        WorldAuthorityTrust.ProposalBasis(unsigned), HashAlgorithmName.SHA256)) };
+    var proposal = unsigned with
+    {
+        Signature = Convert.ToBase64String(device.SignData(
+        WorldAuthorityTrust.ProposalBasis(unsigned), HashAlgorithmName.SHA256))
+    };
     var badBindingDraft = unsigned with
-    { SuccessorBinding = binding with { Signature = Convert.ToBase64String(wrong.SignData(
-        WorldAuthorityTrust.BindingBasis(unsigned, binding), HashAlgorithmName.SHA256)) }, Signature = "" };
-    var badBindingProposal = badBindingDraft with { Signature = Convert.ToBase64String(device.SignData(
-        WorldAuthorityTrust.ProposalBasis(badBindingDraft), HashAlgorithmName.SHA256)) };
+    {
+        SuccessorBinding = binding with
+        {
+            Signature = Convert.ToBase64String(wrong.SignData(
+        WorldAuthorityTrust.BindingBasis(unsigned, binding), HashAlgorithmName.SHA256))
+        },
+        Signature = ""
+    };
+    var badBindingProposal = badBindingDraft with
+    {
+        Signature = Convert.ToBase64String(device.SignData(
+        WorldAuthorityTrust.ProposalBasis(badBindingDraft), HashAlgorithmName.SHA256))
+    };
     Require(!WorldAuthorityTrust.VerifyProposal(badBindingProposal, roster),
         "a proposer signature hid an invalid enrolled-device binding");
     WorldAuthorityVote Vote(Guid id, ECDsa key, string publicKey)
     {
         var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(proposal), id, publicKey, "");
-        return draft with { Signature = Convert.ToBase64String(key.SignData(
-            WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(key.SignData(
+            WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+        };
     }
     var recordDraft = new WorldAuthorityRecord(1, proposal, roster, origin,
         [Vote(deviceId, device, deviceKey), Vote(voterId, voter, voterKey)], null, "",
         VersionLineage: [initialOwnerVersion, origin]);
-    var record = recordDraft with { RecordHash = WorldAuthorityTrust.Hash(
-        WorldAuthorityTrust.RecordBasis(recordDraft)) };
+    var record = recordDraft with
+    {
+        RecordHash = WorldAuthorityTrust.Hash(
+        WorldAuthorityTrust.RecordBasis(recordDraft))
+    };
     Require(WorldAuthorityTrust.Verify(record), "signed device to hosting key proof failed");
     using (var scopedData = Data("lineage-scoped-revoke"))
     {
@@ -5413,22 +5635,30 @@ await Check("successor hosting key continues exact save lineage and stays bound 
             !unsignedPairing.SharedRosterDirty(owner.Id),
             "unsigned B access dirtied unrelated successor roster A");
     }
-    Require(!WorldAuthorityTrust.Verify(record with { Proposal = proposal with
-        { SuccessorBinding = binding with { HostingPublicKey = voterKey } } }),
+    Require(!WorldAuthorityTrust.Verify(record with
+    {
+        Proposal = proposal with
+        { SuccessorBinding = binding with { HostingPublicKey = voterKey } }
+    }),
         "tampered hosting binding passed verification");
     successorStore.AppendReceived(record, owner.Id, roster.GroupId, roster.OwnerPublicKey);
     var pairingGeneration = Guid.NewGuid();
     PairedDevice SuccessorPairedDevice(Guid id, string publicKey, SharedWorldGrants grants,
         bool approvalPending = false) => new()
-    {
-        Id = id, ProfileId = owner.Id, InviteGeneration = pairingGeneration,
-        AssignedProfileIds = [owner.Id], ServerPermissionOverrides = [],
-        CredentialHash = new string('A', 64),
-        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10),
-        SharedWorldPublicKey = publicKey, SharedWorldGrants = new() { [owner.Id] = grants },
-        // Deliberately stale: startup normalization must not dirty a successor roster.
-        SaveReceiveProfileIds = [], ApprovalPending = approvalPending
-    };
+        {
+            Id = id,
+            ProfileId = owner.Id,
+            InviteGeneration = pairingGeneration,
+            AssignedProfileIds = [owner.Id],
+            ServerPermissionOverrides = [],
+            CredentialHash = new string('A', 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10),
+            SharedWorldPublicKey = publicKey,
+            SharedWorldGrants = new() { [owner.Id] = grants },
+            // Deliberately stale: startup normalization must not dirty a successor roster.
+            SaveReceiveProfileIds = [],
+            ApprovalPending = approvalPending
+        };
     successorData.SavePairingState(new PairingPersistentState
     {
         Devices = [SuccessorPairedDevice(deviceId, deviceKey,
