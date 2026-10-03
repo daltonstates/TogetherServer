@@ -87,6 +87,7 @@ internal sealed partial class FriendLink : IDisposable
     private Guid instanceId = Guid.NewGuid();
     private long sequence;
     private HttpClient? client;
+    private readonly SharedWorldHostLoss sharedHostLoss = new();
     private int retainedOperations;
     private bool disposed;
     private bool resourcesDisposed;
@@ -298,7 +299,11 @@ internal sealed partial class FriendLink : IDisposable
             try
             {
                 await RenewCredentialIfNeededAsync();
-                if (await PollPendingOperationsAsync()) return view;
+                if (await PollPendingOperationsAsync())
+                {
+                    sharedHostLoss.Observe(HostReachabilityObservation.Authenticated);
+                    return view;
+                }
                 var hostClient = HostClient();
                 var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence,
                     CompanionProtocol.AppVersion, CompanionProtocol.Current, CompanionProtocol.Capabilities);
@@ -307,6 +312,10 @@ internal sealed partial class FriendLink : IDisposable
                     Content = new StringContent(JsonSerializer.Serialize(heartbeat, Json), Encoding.UTF8, "application/json")
                 };
                 using var response = await hostClient.SendAsync(request);
+                // A reachable endpoint, including an access denial, does not
+                // establish that the Host disappeared. Only transport failure
+                // may start the manual takeover wait.
+                sharedHostLoss.Observe(HostReachabilityObservation.OtherResponse);
                 if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
                     PairingDecision? denial = null;
@@ -354,12 +363,17 @@ internal sealed partial class FriendLink : IDisposable
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
+                sharedHostLoss.Observe(HostReachabilityObservation.Authenticated);
                 ApplyStatus(status);
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 var issue = ConnectionFailure(ex);
+                sharedHostLoss.Observe(issue.Code is "HostPortClosed" or "HostPortTimedOut" or
+                    "HostUnreachable" or "HostTimedOut" or "FriendNetworkUnavailable"
+                    ? HostReachabilityObservation.TransportFailure
+                    : HostReachabilityObservation.OtherResponse);
                 view = view with
                 {
                     State = "Disconnected/Unknown",

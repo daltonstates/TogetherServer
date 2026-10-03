@@ -136,11 +136,41 @@ internal sealed class WorldAuthorityStore(LocalData data)
         return root;
     }
     private static string FloorName(Guid profileId) => $"authority-floor-{profileId:N}.protected";
+    private static string VoteFloorName(Guid profileId) => $"authority-vote-floor-{profileId:N}.protected";
     private string LogPath(Guid profileId) => Path.Combine(Root(profileId), "records.jsonl");
     private string VotePath(Guid profileId) => Path.Combine(Root(profileId), "local-votes.jsonl");
     internal bool HasState(Guid profileId) => data.HasProtected(FloorName(profileId)) ||
         File.Exists(LogPath(profileId));
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+    private IReadOnlyList<LocalVoteEntry> ReadLocalVotes(Guid profileId)
+    {
+        var path = VotePath(profileId);
+        var bytes = File.Exists(path) ? File.ReadAllBytes(path) : [];
+        if (bytes.Length > 256 * 1024) throw new InvalidDataException("Local vote log is oversized.");
+        var floorBytes = data.LoadProtected(VoteFloorName(profileId));
+        if (floorBytes is null)
+        {
+            if (bytes.Length != 0) throw new InvalidDataException("Local vote floor is missing.");
+            return [];
+        }
+        var floor = JsonSerializer.Deserialize<Floor>(floorBytes, Json);
+        var lines = Encoding.UTF8.GetString(bytes).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (floor is null || floor.Schema != 1 || floor.Count != lines.Length ||
+            floor.LogHash != Digest(bytes))
+            throw new InvalidDataException("Local vote history changed or was rolled back.");
+        var votes = new List<LocalVoteEntry>();
+        foreach (var line in lines)
+        {
+            var entry = JsonSerializer.Deserialize<LocalVoteEntry>(line, Json);
+            if (entry is null || entry.Epoch < 1 || entry.Voter == Guid.Empty ||
+                entry.Vote.VoterDeviceId != entry.Voter ||
+                votes.Any(prior => prior.Voter == entry.Voter && prior.Epoch == entry.Epoch &&
+                    prior.Parent == entry.Parent))
+                throw new InvalidDataException("Saved local vote is invalid.");
+            votes.Add(entry);
+        }
+        return votes;
+    }
     internal IReadOnlyList<WorldAuthorityRecord> Read(Guid profileId)
     {
         lock (sync)
@@ -230,22 +260,30 @@ internal sealed class WorldAuthorityStore(LocalData data)
             if (roster.Members.Single(member => member.DeviceId == voterId).AccessExpiresUtc is { } expiry &&
                 expiry <= DateTimeOffset.UtcNow)
                 throw new InvalidDataException("This PC's recovery vote access expired.");
+            var existing = ReadLocalVotes(profileId);
+            var prior = existing.SingleOrDefault(item => item.Voter == voterId &&
+                item.Epoch == proposal.Epoch && item.Parent == proposal.ParentAuthorityHash);
+            if (prior is not null)
+            {
+                if (prior.Vote.ProposalHash == vote.ProposalHash) return prior.Vote;
+                throw new InvalidDataException("This PC already voted for a competing proposal.");
+            }
             var path = VotePath(profileId);
             Directory.CreateDirectory(Root(profileId));
-            if (File.Exists(path))
-                foreach (var line in File.ReadLines(path))
-                {
-                    var prior = JsonSerializer.Deserialize<LocalVoteEntry>(line, Json)
-                        ?? throw new InvalidDataException("Saved local vote is invalid.");
-                    if (prior.Voter == voterId && prior.Epoch == proposal.Epoch &&
-                        prior.Parent == proposal.ParentAuthorityHash)
-                    {
-                        if (prior.Vote.ProposalHash == vote.ProposalHash) return prior.Vote;
-                        throw new InvalidDataException("This PC already voted for a competing proposal.");
-                    }
-                }
-            File.AppendAllText(path, JsonSerializer.Serialize(new LocalVoteEntry(
+            if (!data.HasProtected(VoteFloorName(profileId)))
+                data.SaveProtected(VoteFloorName(profileId),
+                    JsonSerializer.SerializeToUtf8Bytes(new Floor(1, 0, Digest([])), Json));
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new LocalVoteEntry(
                 proposal.ParentAuthorityHash, proposal.Epoch, voterId, vote), Json) + "\n");
+            using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            // A crash before the protected floor advances fails closed; it can
+            // never let this PC sign a different proposal for the same epoch.
+            data.SaveProtected(VoteFloorName(profileId), JsonSerializer.SerializeToUtf8Bytes(
+                new Floor(1, existing.Count + 1, Digest(File.ReadAllBytes(path))), Json));
             return vote;
         }
     }
