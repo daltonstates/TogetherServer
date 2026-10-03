@@ -70,6 +70,21 @@ describe('Shared saves controls', () => {
       thisPcVersion: null, state: 'Off', error: null })).toThrow()
   })
 
+  it('refreshes an open receiver panel as automatic catch-up advances', async () => {
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      reads++
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: reads > 1 ? 3 : 2,
+        state: reads > 1 ? 'Up to date when last checked' : 'Receiving', error: null,
+        receivedBytes: 32, totalBytes: 64 })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(await screen.findByText('Receiving completed save')).toBeInTheDocument()
+    await new Promise(resolve => setTimeout(resolve, 2200))
+    expect(await screen.findByText('Up to date when last checked')).toBeInTheDocument()
+  })
+
   it('explains how to review a changed Host source without comparing group version numbers', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ consented: true, hostVersion: 1,
       thisPcVersion: 8, state: 'Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here.',

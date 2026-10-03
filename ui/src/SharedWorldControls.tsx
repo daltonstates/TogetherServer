@@ -109,15 +109,16 @@ export function FriendSharedWorlds({ profileId, available }:
   { profileId: string; available: boolean }) {
   const [status, setStatus] = useState<FriendStatus | null>(null)
   const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
   const [message, setMessage] = useState('')
   useEffect(() => {
-    if (!busy) return
+    if (!open) return
     const timer = window.setInterval(() => {
       void getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
         .then(setStatus).catch(() => {})
-    }, 1000)
+    }, 2000)
     return () => window.clearInterval(timer)
-  }, [busy, profileId])
+  }, [open, profileId])
   useEffect(() => {
     let active = true
     void getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
@@ -135,22 +136,28 @@ export function FriendSharedWorlds({ profileId, available }:
     } catch (error) { setMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  return <details className="advanced-block"><summary>Shared worlds</summary>
+  const behind = status?.hostVersion != null && status.thisPcVersion != null &&
+    status.hostVersion > status.thisPcVersion && !status.state.startsWith('Host save source changed')
+  const headline = status?.state === 'Receiving' ? 'Receiving completed save' :
+    status?.state === 'Low space' ? 'Low space — receiving paused' :
+    status?.state === 'Stalled' ? 'Receiving stalled — retrying' :
+    status?.state.startsWith('Host save source changed') ? status.state :
+    behind && status?.hostVersion != null && status.thisPcVersion != null ?
+      `${status.hostVersion - status.thisPcVersion} version(s) behind` : status?.state
+  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds</summary>
     <p>Receive approved completed saves into this PC's private vault. Live save sharing and takeover are not available yet.</p>
     {!available && <p>Update the Host app before receiving shared saves.</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
-    <p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.
-      {!status?.state.startsWith('Host save source changed') && status?.hostVersion != null &&
-        status.thisPcVersion != null && status.hostVersion > status.thisPcVersion &&
-        ` ${status.hostVersion - status.thisPcVersion} version(s) behind.`}</p>
-    {status && <p className="helper-text" role={status.state.startsWith('Host save source changed') ? 'alert' : undefined}>{status.state}</p>}
+    {status && <p className="helper-text" role={status.state.startsWith('Host save source changed') ? 'alert' : 'status'}>{headline}</p>}
     {status?.state === 'Receiving' && <p role="status">Receiving {status.receivedBytes} of {status.totalBytes} bytes.</p>}
     <div className="actions"><Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('check')}>Check latest</Button>
     <Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('pull')}>{busy ? 'Working…' : 'Receive latest save'}</Button></div>
-    {message && <p role="status">{message}</p>}{status?.error && <p role="alert">{status.error}</p>}
-    <details><summary>Technical details</summary><p>Transfers resume in bounded chunks. Each file is checked before an atomic vault receipt. This never replaces a live game save.</p></details>
+    {message && <p role="status">{message}</p>}
+    <details><summary>Technical details</summary><p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
+      {status?.error && <p role="alert">{status.error}</p>}
+      <p>Transfers resume in bounded chunks. Each file is checked before an atomic vault receipt. This never replaces a live game save.</p></details>
   </details>
 }

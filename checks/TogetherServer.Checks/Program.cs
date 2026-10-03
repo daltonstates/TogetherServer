@@ -2189,6 +2189,12 @@ await Check("shared save consent withdrawal prevents final receipt pointer", () 
     Require(!link.CommitSharedReceipt(profileId, stage, Path.Combine(root, "received"), root, [1]) &&
         !File.Exists(Path.Combine(root, "latest.json")) && Directory.Exists(stage),
         "withdrawal allowed a completed receipt to be recorded");
+    using var shutdown = new CancellationTokenSource();
+    shutdown.Cancel();
+    var another = Guid.NewGuid();
+    Require(!link.CommitSharedReceipt(another, stage, Path.Combine(root, "received"), root, [1], shutdown.Token) &&
+        !File.Exists(Path.Combine(root, "latest.json")) && Directory.Exists(stage),
+        "shutdown allowed a completed receipt to be recorded");
     return Task.CompletedTask;
 });
 

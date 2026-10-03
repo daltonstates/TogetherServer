@@ -24,7 +24,7 @@ internal sealed class AppBackgroundTasks(
     public async ValueTask DisposeAsync()
     {
         stop.Cancel();
-        try { await Task.WhenAll(tasks); }
+        try { await Task.WhenAll(tasks); await friend.WaitForSharedCatchUpAsync(); }
         finally { stop.Dispose(); }
     }
 
@@ -32,7 +32,7 @@ internal sealed class AppBackgroundTasks(
     {
         while (!stop.IsCancellationRequested)
         {
-            try { await friend.PollAsync(); }
+            try { await friend.PollAsync(); friend.ScheduleSharedCatchUp(stop.Token); }
             catch (Exception ex) { DiagnosticOutput.WriteError("Friend poll failed: " + ex.GetType().Name); }
             if (!await Delay(TimeSpan.FromSeconds(5))) break;
         }
