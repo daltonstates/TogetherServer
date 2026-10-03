@@ -1,9 +1,44 @@
-import { useState } from 'react'
-import { changeJson, errorMessage } from './api'
+import { useEffect, useState } from 'react'
+import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 
 type Readiness = { ready: boolean; reasons: string[]; version: number | null;
   versionHash: string | null; rehearsalPassed: boolean }
+type RestoreStatus = { staged: boolean; restored: boolean; recordHash: string | null;
+  message: string; pendingChecks: string[]; preparedServerRoot: string | null }
+type RestoreResult = { ok: boolean; code: string; message: string;
+  pendingChecks: string[] | null }
+
+function parseRestoreStatus(value: unknown): RestoreStatus {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Handoff status is invalid.')
+  const item = value as Record<string, unknown>
+  if (typeof item.staged !== 'boolean' || typeof item.restored !== 'boolean' ||
+    (item.recordHash !== null && (typeof item.recordHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.recordHash))) ||
+    typeof item.message !== 'string' || !Array.isArray(item.pendingChecks) ||
+    item.pendingChecks.some(check => typeof check !== 'string') ||
+    (item.preparedServerRoot !== null && item.preparedServerRoot !== undefined &&
+      typeof item.preparedServerRoot !== 'string')) throw new Error('Handoff status is invalid.')
+  return item as RestoreStatus
+}
+
+function parseRestoreResult(value: unknown): RestoreResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Restore result is invalid.')
+  const item = value as Record<string, unknown>
+  if (typeof item.ok !== 'boolean' || typeof item.code !== 'string' ||
+    typeof item.message !== 'string' ||
+    (item.pendingChecks !== null && item.pendingChecks !== undefined &&
+      (!Array.isArray(item.pendingChecks) || item.pendingChecks.some(check => typeof check !== 'string'))))
+    throw new Error('Restore result is invalid.')
+  return item as RestoreResult
+}
+
+function parseStageResult(value: unknown): { ok: boolean; message: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Handoff response is invalid.')
+  const item = value as Record<string, unknown>
+  if (typeof item.ok !== 'boolean' || typeof item.message !== 'string')
+    throw new Error('Handoff response is invalid.')
+  return item as { ok: boolean; message: string }
+}
 
 export function parseTakeoverReadiness(value: unknown): Readiness {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Readiness is invalid.')
@@ -23,21 +58,63 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
   const [passwordSet, setPasswordSet] = useState(false)
   const [controlPort, setControlPort] = useState('5131')
   const [gamePort, setGamePort] = useState('')
+  const [serverName, setServerName] = useState('Recovered world')
+  const [executable, setExecutable] = useState('')
+  const [preparedServerRoot, setPreparedServerRoot] = useState('')
+  const [factorioRconPort, setFactorioRconPort] = useState('27015')
+  const [gamePassword, setGamePassword] = useState('')
+  const [handoff, setHandoff] = useState<RestoreStatus | null>(null)
+  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
   const [result, setResult] = useState<Readiness | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    void getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus)
+      .then(status => { if (active) { setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '') } })
+      .catch(() => {})
+    return () => { active = false }
+  }, [profileId])
+  const setup = () => ({ serverFile: serverFile || null, gameVersion: gameVersion || null,
+    enabledAddOns: [], newPasswordConfigured: passwordSet,
+    controlPort: Number(controlPort), gamePort: Number(gamePort) })
   const run = async (action: 'readiness' | 'rehearse') => {
     setBusy(true); setError('')
     try {
       setResult(await changeJson(`/api/local/friend/${profileId}/shared-world/${action}`, 'POST',
-        parseTakeoverReadiness, { serverFile: serverFile || null, gameVersion: gameVersion || null,
-          enabledAddOns: [], newPasswordConfigured: passwordSet,
-          controlPort: Number(controlPort), gamePort: Number(gamePort) }))
+        parseTakeoverReadiness, setup()))
+    } catch (cause) { setError(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  const stage = async () => {
+    setBusy(true); setError('')
+    try {
+      const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/stage`,
+        'POST', parseStageResult)
+      if (!result.ok) throw new Error(result.message)
+      const status = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
+        parseRestoreStatus)
+      setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
+    } catch (cause) { setError(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  const restore = async () => {
+    if (!handoff?.recordHash) return
+    setBusy(true); setError('')
+    try {
+      const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
+        'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
+          name: serverName, serverName, gamePassword: gamePassword || null,
+          executablePath: executable || null, preparedServerRoot: preparedServerRoot || null,
+          factorioRconPort: Number(factorioRconPort) })
+      setRestoreResult(result)
+      if (result.ok) setHandoff(await getLocalJson(
+        `/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus))
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
   return <details><summary>Check this PC for future hosting</summary>
-    <p>Check local files and make a disposable copy of a verified save. Taking over a world is not available yet.</p>
+    <p>Check local files and make a disposable copy. A signed planned handoff can be restored into fresh managed storage; hosting still needs a real Friend route and game test.</p>
     <label>Installed game server file<Input value={serverFile} onChange={event => setServerFile(event.target.value)}
       placeholder="Path to installed server file" /></label>
     <label>Installed game version<Input value={gameVersion} onChange={event => setGameVersion(event.target.value)} /></label>
@@ -51,6 +128,25 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
       Check this PC</Button><Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
       Make disposable test copy</Button></div>
+    {handoff?.staged && <div><p role="status">{handoff.message}</p>
+      {!handoff.restored && <><label>New server name<Input value={serverName}
+        onChange={event => setServerName(event.target.value)} /></label>
+        <label>Installed game executable, if different from the server file<Input value={executable}
+          onChange={event => setExecutable(event.target.value)} /></label>
+        <label>Prepared Minecraft server folder, if using Minecraft<Input value={preparedServerRoot}
+          onChange={event => setPreparedServerRoot(event.target.value)} /></label>
+        {handoff.preparedServerRoot && <small>Install the matching Minecraft server in this separate folder. Review its terms and configuration yourself. The world folder must be empty.</small>}
+        <label>Factorio local RCON port, if using Factorio<Input inputMode="numeric" value={factorioRconPort}
+          onChange={event => setFactorioRconPort(event.target.value)} /></label>
+        <label>New game password, if this game uses one<Input type="password" value={gamePassword}
+          onChange={event => setGamePassword(event.target.value)} /></label>
+        <Button disabled={busy} onClick={() => void restore()}>Create separate Host copy</Button></>}
+      <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul></div>}
+    {!handoff?.staged && <Button className="secondary" disabled={busy} onClick={() => void stage()}>
+      Stage signed handoff</Button>}
+    {restoreResult && <div role="status"><p>{restoreResult.message}</p>
+      {restoreResult.pendingChecks && <ul>{restoreResult.pendingChecks.map(check =>
+        <li key={check}>{check}</li>)}</ul>}</div>}
     {error && <p role="alert">{error}</p>}
     {result && <div role="status"><p>{result.rehearsalPassed ? 'Disposable copy checked and removed.' :
       result.ready ? 'Local checks passed.' : 'Hosting still needs setup.'}</p>

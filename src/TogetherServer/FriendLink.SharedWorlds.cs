@@ -208,6 +208,7 @@ internal sealed partial class FriendLink
         string? vault;
         string? pinned;
         Guid? group;
+        Guid deviceId;
         gate.Wait();
         try
         {
@@ -216,11 +217,12 @@ internal sealed partial class FriendLink
             vault = ReceivedRoot(profileId);
             pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
             group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+            deviceId = config.DeviceId;
         }
         finally { gate.Release(); }
         return SharedWorldReadiness.Check(vault,
             Path.Combine(data.RootPath, "shared-world-rehearsals"), setup,
-            new TakeoverAuthority(false, false, false), pinned, group);
+            LocalTakeoverAuthority(profileId, deviceId), pinned, group);
     }
 
     internal TakeoverReadiness RehearseTakeover(Guid profileId, TakeoverLocalSetup setup)
@@ -228,6 +230,7 @@ internal sealed partial class FriendLink
         string? vault;
         string? pinned;
         Guid? group;
+        Guid deviceId;
         gate.Wait();
         try
         {
@@ -236,10 +239,31 @@ internal sealed partial class FriendLink
             vault = ReceivedRoot(profileId);
             pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
             group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+            deviceId = config.DeviceId;
         }
         finally { gate.Release(); }
         return SharedWorldReadiness.Rehearse(data.RootPath, vault, setup,
-            new TakeoverAuthority(false, false, false), pinned, group);
+            LocalTakeoverAuthority(profileId, deviceId), pinned, group);
+    }
+
+    private TakeoverAuthority LocalTakeoverAuthority(Guid profileId, Guid deviceId)
+    {
+        try
+        {
+            var records = new WorldAuthorityStore(data).Read(profileId);
+            var heads = records.Where(record => !records.Any(child =>
+                child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+            var eligible = heads.Length == 1 && heads[0].Proposal.Kind == "Planned" &&
+                heads[0].Roster.Members.Any(member => member.DeviceId == deviceId &&
+                    member.PublicKey == heads[0].Proposal.CandidatePublicKey &&
+                    member.Grants.EligibleHost && !member.Revoked &&
+                    (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow));
+            return new(eligible, false, false,
+                eligible && data.HasProtected($"successor-restore-{profileId:N}.protected"));
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or
+                                   System.Text.Json.JsonException or CryptographicException)
+        { return new(false, false, false); }
     }
 
     private const long ReceiverReserveBytes = 1024L * 1024 * 1024;

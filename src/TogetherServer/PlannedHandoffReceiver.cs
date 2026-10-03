@@ -92,7 +92,7 @@ internal static class PlannedHandoffReceiver
             received.VersionHash);
     }
 
-    private static void VerifyStage(string dataRoot, string destination, WorldAuthorityRecord expected)
+    internal static void VerifyStage(string dataRoot, string destination, WorldAuthorityRecord expected)
     {
         SharedWorldService.EnsureUnlinkedRoot(dataRoot, destination);
         var path = Path.Combine(destination, "authority.json");
