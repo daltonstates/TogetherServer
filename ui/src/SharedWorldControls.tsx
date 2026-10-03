@@ -4,7 +4,7 @@ import { Button, Input } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 
-type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number }
+type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number; canManageSharing: boolean }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
@@ -40,7 +40,8 @@ export function parseHostSharedWorldStatus(value: unknown): HostStatus {
     latest = { number, versionHash: item.versionHash, createdUtc: item.createdUtc }
   }
   return { enabled: boolean(source.enabled, 'Sharing switch'), latest, error: textOrNull(source.error, 'Shared save error'),
-    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0 }
+    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0,
+    canManageSharing: boolean(source.canManageSharing ?? true, 'Sharing management') }
 }
 export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
   const source = record(value, 'Received save status')
@@ -145,12 +146,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     device.assignedProfileIds.includes(profileId))
   return <details className="advanced-block"><summary>Shared saves</summary>
     <p>Send verified backups after a graceful Stop to PCs you approve. Live save capture and takeover are not available yet.</p>
-    <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled}
+    <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
+    {status?.canManageSharing === false && <p className="helper-text">This PC can host and share verified saves with the current members. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
     {status?.latest ? <p>Copied to {status.confirmedCopies} PCs · latest saved version {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p>No post-Stop save has been published yet.</p>}
-    {status?.enabled && <label><Input type="checkbox" disabled={busy || !roster}
+    {status?.enabled && <label><Input type="checkbox" disabled={busy || !roster || !status.canManageSharing}
       checked={roster?.ownerOverride ?? true} onChange={event => void changeOverride(event.target.checked)} />
       Owner recovery override (future recovery only)</label>}
     {status?.enabled && <p className="helper-text">Signed roster revision: {roster?.revision ?? 'pending'}.
@@ -162,23 +164,24 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
         { key: 'receive', label: 'Receive' }, { key: 'eligibleHost', label: 'Eligible host' },
         { key: 'recoveryVoter', label: 'Recovery voter' }, { key: 'manageSharing', label: 'Manage sharing' }]
       return <div key={device.id}><p>{device.name} · signing identity {device.sharedWorldKeyEnrolled ? 'enrolled' : 'pending'}</p>
-        {fields.map(field => <label key={field.key}><Input type="checkbox" disabled={busy || device.accessExpired}
+        {fields.map(field => <label key={field.key}><Input type="checkbox" disabled={busy || device.accessExpired || !status.canManageSharing}
           checked={grants[field.key]} onChange={event => void changeGrant(device.id,
             { ...grants, [field.key]: event.target.checked })} /> {field.label} for {device.name}</label>)}
-        {device.sharedWorldKeyEnrolled && <Button className="text-button" disabled={busy}
+        {device.sharedWorldKeyEnrolled && <Button className="text-button" disabled={busy || !status.canManageSharing}
           onClick={() => void resetKey(device.id)}>Reset {device.name}'s signing identity and grants</Button>}</div>
     })}
     {status?.enabled && eligible.length === 0 && <p className="helper-text">Approve and assign a Friend PC first.</p>}
+    {status?.enabled && <p className="helper-text">Manage sharing grants are recorded for future delegated updates. Only the original owner can change signed membership today.</p>}
     {status?.error && <p role="alert">{status.error}</p>}
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void getLocalJson(
       `/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus).then(setStatus).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
     <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p>
-      {status?.enabled && <div className="actions"><Button className="secondary" disabled={busy}
+      {status?.enabled && status.canManageSharing && <div className="actions"><Button className="secondary" disabled={busy}
         onClick={() => void repairRoster(false)}>Retry signed permissions</Button>
         <Button className="secondary" disabled={busy}
           onClick={() => void repairRoster(true)}>Review changed world source</Button></div>}
-      {status?.enabled && <p className="helper-text">Review a source change only after checking the selected world and save folder. Friends will approve its new signed group on their PCs.</p>}
+      {status?.enabled && status.canManageSharing && <p className="helper-text">Review a source change only after checking the selected world and save folder. Friends will approve its new signed group on their PCs.</p>}
     </details>
   </details>
 }

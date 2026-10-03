@@ -3239,6 +3239,28 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     var successorBackups = new WorldBackupService(successorData, TimeProvider.System);
     var successorShares = new SharedWorldService(successorData, successorBackups);
     successorShares.AdoptSuccessor(successor, record);
+    var rosterPath = Path.Combine(successorData.RootPath, "shared-worlds", successor.Id.ToString("N"),
+        roster.GroupId.ToString("N") + ".roster.json");
+    var signedRosterBytes = File.ReadAllBytes(rosterPath);
+    var signedBindingBytes = File.ReadAllBytes(Path.Combine(successorData.RootPath,
+        "shared-worlds", successor.Id.ToString("N"), "source.json"));
+    RequireThrows<InvalidDataException>(() => successorShares.PublishRoster(successor,
+        [.. roster.Members, new SharedWorldRosterMember(Guid.NewGuid(),
+            Convert.ToBase64String(wrong.ExportSubjectPublicKeyInfo()),
+            new SharedWorldGrants(ManageSharing: true), false)]),
+        "successor enrolled a member without the original owner's signature");
+    RequireThrows<InvalidDataException>(() => successorShares.PublishRoster(successor,
+        roster.Members, ownerOverride: false), "successor changed the owner's override");
+    RequireThrows<InvalidDataException>(() => new SharedWorldService(successorData, successorBackups)
+        .PublishRoster(successor, roster.Members), "restart allowed successor roster publication");
+    Require(File.ReadAllBytes(rosterPath).SequenceEqual(signedRosterBytes) &&
+        File.ReadAllBytes(Path.Combine(successorData.RootPath, "shared-worlds",
+            successor.Id.ToString("N"), "source.json")).SequenceEqual(signedBindingBytes) &&
+        successorShares.ReadRoster(successor)?.Signature == roster.Signature,
+        "rejected successor mutation damaged the signed membership or binding");
+    Require(!(await new HostManager(successorData, Games(successorData))
+        .SharedWorldStatusAsync(successor.Id)).CanManageSharing,
+        "successor UI claimed sharing management is available");
     var firstBackup = successorBackups.Create(successor, BackupKinds.Rolling);
     Require(firstBackup.Ok && firstBackup.Backup is not null, "first successor backup failed");
     var first = successorShares.PublishAfterStop(successor, firstBackup.Backup!.Id).Version!;

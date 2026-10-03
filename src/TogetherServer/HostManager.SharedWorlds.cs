@@ -34,6 +34,9 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            if (enabled && authority.HasState(profileId) && !profile.SharedSavesEnabled)
+                return new(false, "SuccessorRosterReadOnly",
+                    "This successor PC cannot re-enable sharing without a signed membership update from the original owner.");
             if (enabled && SharedAuthorityBlocked(profileId, out var reason))
                 return new(false, "SharedWorldAuthorityBlocked", reason);
             if (profile.Kind == GameKinds.Custom || !games.TryGet(profile.Kind, out var driver) ||
@@ -63,7 +66,19 @@ public sealed partial class HostManager
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            return profile is null ? new(false, null, "Server not found.") : sharedWorlds.Status(profile);
+            return profile is null ? new(false, null, "Server not found.") :
+                sharedWorlds.Status(profile) with { CanManageSharing = !authority.HasState(profileId) };
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<bool> SharedRosterManagementAvailableAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            return settings.Profiles.Any(item => item.Id == profileId) &&
+                !authority.HasState(profileId) && !SharedAuthorityBlocked(profileId, out _);
         }
         finally { gate.Release(); }
     }

@@ -44,7 +44,7 @@ public sealed record SharedWorldVersion(int Schema, Guid GroupId, long Number, s
     SharedWorldPortableSetup PortableSetup, IReadOnlyList<SharedWorldFile> Files,
     string SigningPublicKey, string VersionHash, string Signature);
 public sealed record SharedWorldStatus(bool Enabled, SharedWorldVersion? Latest,
-    string? Error = null, int ConfirmedCopies = 0);
+    string? Error = null, int ConfirmedCopies = 0, bool CanManageSharing = true);
 public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);
@@ -168,6 +168,11 @@ internal sealed partial class SharedWorldService
     {
         lock (sync)
         {
+            // A successor owns the game/save signing key, not the original owner's
+            // roster key. Until a verified delegated revision chain exists, never
+            // replace the inherited roster or create a new group from this PC.
+            if (Authority.HasState(profile.Id))
+                throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
             var oldBinding = ReadBinding(profile.Id);
             var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
             if (sourceChanged && !reviewSourceChange)
