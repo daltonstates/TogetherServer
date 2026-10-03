@@ -446,11 +446,18 @@ public sealed class PairingService
     }
 
     private DateTimeOffset UtcNow => clock.GetUtcNow();
+    private bool AuthorityStateOrDamaged(Guid profileId)
+    {
+        try { return new WorldAuthorityStore(data).HasState(profileId); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+            InvalidDataException or JsonException or CryptographicException)
+        { return true; }
+    }
     private bool HasSuccessorSharedProfile() => data.LoadSettings().Profiles.Any(profile =>
-        new WorldAuthorityStore(data).HasState(profile.Id));
+        AuthorityStateOrDamaged(profile.Id));
     private bool CanChangeSharedRoster(IEnumerable<Guid> affected) =>
         !data.LoadSettings().Profiles.Any(profile =>
-            affected.Contains(profile.Id) && new WorldAuthorityStore(data).HasState(profile.Id));
+            affected.Contains(profile.Id) && AuthorityStateOrDamaged(profile.Id));
     private static IEnumerable<Guid> AffectedProfiles(PairedDevice device) =>
         (device.AssignedProfileIds ?? []).Concat(device.SharedWorldGrants?.Keys.AsEnumerable() ??
             Enumerable.Empty<Guid>()).Append(device.ProfileId).Where(id => id != Guid.Empty);
@@ -463,16 +470,16 @@ public sealed class PairingService
         var authority = new WorldAuthorityStore(data);
         foreach (var profile in data.LoadSettings().Profiles)
         {
-            if (!authority.HasState(profile.Id))
-            {
-                // On the original Host, an enrolled PC in the local roster
-                // projection is a membership change even before publication.
-                if (device.SharedWorldPublicKey is not null && assigned.Contains(profile.Id))
-                    affected.Add(profile.Id);
-                continue;
-            }
             try
             {
+                if (!authority.HasState(profile.Id))
+                {
+                    // On the original Host, an enrolled PC in the local roster
+                    // projection is a membership change even before publication.
+                    if (device.SharedWorldPublicKey is not null && assigned.Contains(profile.Id))
+                        affected.Add(profile.Id);
+                    continue;
+                }
                 var records = authority.Read(profile.Id);
                 var heads = records.Where(record => !records.Any(child =>
                     child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
@@ -513,10 +520,11 @@ public sealed class PairingService
     {
         var selected = affected?.ToHashSet();
         foreach (var profile in data.LoadSettings().Profiles.Where(item =>
-            (item.SharedSavesEnabled || new WorldAuthorityStore(data).HasState(item.Id)) &&
+            (item.SharedSavesEnabled || AuthorityStateOrDamaged(item.Id)) &&
             (selected is null || selected.Contains(item.Id))))
         {
             var path = RosterDirtyPath(profile.Id);
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, Path.GetDirectoryName(path)!);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, "Signed membership review required");
         }

@@ -3167,6 +3167,49 @@ await Check("shared world authority requires signed majority, fences old Host, a
     finally { foreach (var voter in voters) voter.Key.Dispose(); }
 });
 
+await Check("linked authority still permits durable credential revoke and fences the world", async () =>
+{
+    using var data = Data("linked-authority-revoke");
+    var profile = Profile("linked-authority-world", "linked-authority-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.SharedSavesEnabled = true;
+    data.SaveSettings(Settings(profile));
+    var pairing = new PairingService(data);
+    var invite = pairing.IssueServer(profile.Id, false, false,
+        "https://127.0.0.1:5132", new string('A', 64), refresh: false);
+    var credential = pairing.Activate(new PairingActivation(profile.Id, invite.Code,
+        ServerScope: true));
+    Require(credential is not null &&
+        pairing.Authenticate(credential.DeviceId, credential.Credential, out _).Ok,
+        "the disposable Friend credential was not paired before authority damage");
+    profile.SharedSavesEnabled = false;
+    data.SaveSettings(Settings(profile));
+    var sharedRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
+    Directory.CreateDirectory(sharedRoot);
+    var linkedTarget = Path.Combine(root, "linked-authority-target-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(linkedTarget);
+    File.WriteAllText(Path.Combine(linkedTarget, "sentinel.txt"), "unchanged");
+    CreateJunction(Path.Combine(sharedRoot, "authority"), linkedTarget);
+    RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(data).HasState(profile.Id),
+        "linked authority did not reproduce the damaged-state read failure");
+    var damagedPairing = new PairingService(data);
+    Require(damagedPairing.Revoke(credential!.DeviceId).Ok &&
+        !damagedPairing.Authenticate(credential.DeviceId, credential.Credential, out _).Ok &&
+        damagedPairing.SharedRosterDirty(profile.Id) &&
+        File.ReadAllText(Path.Combine(linkedTarget, "sentinel.txt")) == "unchanged" &&
+        Directory.EnumerateFileSystemEntries(linkedTarget).Count() == 1,
+        "damaged authority prevented revoke or caused a write through its junction");
+    data.Dispose();
+    using var reopened = new LocalData(data.RootPath);
+    var restartedPairing = new PairingService(reopened);
+    Require(!restartedPairing.Authenticate(credential.DeviceId, credential.Credential, out _).Ok &&
+        reopened.LoadPairingState().Devices.Single(item => item.Id == credential.DeviceId).Revoked &&
+        restartedPairing.SharedRosterDirty(profile.Id) &&
+        (await new HostManager(reopened, Games(reopened)).StartAsync(profile.Id)).Code ==
+            "SharedWorldAuthorityBlocked",
+        "restart lost the revoked credential or the conservative authority fence");
+});
+
 await Check("successor hosting key continues exact save lineage and stays bound after restart", async () =>
 {
     using var ownerData = Data("lineage-owner");
