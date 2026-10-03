@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
+import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null }
@@ -156,6 +157,7 @@ export function FriendSharedWorlds({ profileId, available }:
     <Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('pull')}>{busy ? 'Working…' : 'Receive latest save'}</Button></div>
     {message && <p role="status">{message}</p>}
+    {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId} />}
     <details><summary>Technical details</summary><p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
       {status?.error && <p role="alert">{status.error}</p>}
       <p>Transfers resume in bounded chunks. Each file is checked before an atomic vault receipt. This never replaces a live game save.</p></details>

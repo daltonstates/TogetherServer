@@ -1923,6 +1923,79 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
         !SharedWorldService.SafePath("safe/CON.txt"), "traversal or a Windows device name was accepted");
 });
 
+await Check("takeover readiness and rehearsal keep received saves isolated", async () =>
+{
+    using var data = Data("shared-readiness");
+    var profile = Profile("readiness-fixture", "readiness-world", FreePort());
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "rehearsal marker");
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()]));
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
+    Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
+        "fixture Stop did not publish");
+    var version = (await manager.SharedWorldStatusAsync(profile.Id)).Latest!;
+    var vault = Path.Combine(data.RootPath, "received-shared-worlds", Guid.NewGuid().ToString("N"),
+        profile.Id.ToString("N"));
+    var payload = Path.Combine(vault, version.VersionHash, "payload");
+    Directory.CreateDirectory(payload);
+    File.WriteAllBytes(Path.Combine(payload, "world.dat"), manager.ReadSharedChunk(version, 0, 0));
+    File.WriteAllBytes(Path.Combine(vault, "latest.json"),
+        JsonSerializer.SerializeToUtf8Bytes(version, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    var rehearsalRoot = Path.Combine(data.RootPath, "shared-world-rehearsals");
+    var setup = new TakeoverLocalSetup(fixture, version.PortableSetup.GameVersion, [], true,
+        FreePort(), version.PortableSetup.GamePort);
+    var authority = new TakeoverAuthority(false, false, false);
+    var good = SharedWorldReadiness.Check(vault, rehearsalRoot, setup, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024);
+    Require(!good.Ready && good.Reasons.Any(reason => reason.Contains("permission")) &&
+        good.Reasons.Any(reason => reason.Contains("route")), "takeover passed without governance/routes");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup, authority, "different-key", version.GroupId).Reasons.Any(
+        reason => reason.Contains("approved Host signing identity")), "untrusted signing identity passed");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup, authority, version.SigningPublicKey,
+        Guid.NewGuid()).Reasons.Any(reason => reason.Contains("approved Host signing identity")),
+        "unapproved group passed");
+    var alternatePort = setup with { GamePort = FreePort() };
+    Require(!SharedWorldReadiness.Check(vault, rehearsalRoot, alternatePort, authority,
+        version.SigningPublicKey, version.GroupId).Reasons.Any(reason => reason.Contains("separate control and game ports")),
+        "a valid successor-selected game port was rejected");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { ServerFile = null }, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("installed game server")),
+        "missing installation passed");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { GameVersion = "wrong" }, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("matching game server")),
+        "wrong game version passed");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { EnabledAddOns =
+        [new SharedWorldPortableAddOn("Unexpected", "1", "1", "Factorio mod")] }, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("add-ons")),
+        "mismatched add-ons passed");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { NewPasswordConfigured = false }, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("password")),
+        "missing password passed");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { ControlPort = setup.GamePort }, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("ports")),
+        "overlapping ports passed");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup, authority, version.SigningPublicKey, version.GroupId,
+        _ => 1024).Reasons.Any(reason => reason.Contains("disk space")), "low space passed");
+    var rehearsal = SharedWorldReadiness.Rehearse(data.RootPath, vault, setup, authority, version.SigningPublicKey, version.GroupId,
+        _ => 2L * 1024 * 1024 * 1024);
+    Require(rehearsal.RehearsalPassed &&
+        !Directory.EnumerateFileSystemEntries(rehearsalRoot).Any() &&
+        File.ReadAllText(Path.Combine(profile.WorldDirectory, "world.dat")) == "rehearsal marker" &&
+        rehearsal.Reasons.Any(reason => reason.Contains("real game load")), "rehearsal was not isolated or honest");
+    var linkedDevice = Path.Combine(data.RootPath, "received-shared-worlds", "linked-device");
+    CreateJunction(linkedDevice, Path.GetDirectoryName(vault)!);
+    var linkedVault = Path.Combine(linkedDevice, profile.Id.ToString("N"));
+    Require(SharedWorldReadiness.Check(linkedVault, rehearsalRoot, setup, authority,
+        version.SigningPublicKey, version.GroupId).Reasons.Any(reason => reason.Contains("verification")),
+        "linked vault passed readiness");
+    File.WriteAllText(Path.Combine(payload, "world.dat"), "tampered");
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup, authority, version.SigningPublicKey, version.GroupId).Reasons.Any(reason =>
+        reason.Contains("verification")), "tampered vault passed readiness");
+    Require(!SharedWorldReadiness.Rehearse(data.RootPath, vault, setup, authority, version.SigningPublicKey, version.GroupId).RehearsalPassed,
+        "tampered vault was rehearsed");
+});
+
 await Check("shared portable setup signs reviewed requirements without machine secrets", async () =>
 {
     using var data = Data("shared-portable-setup");

@@ -12,6 +12,45 @@ public sealed record ReceivedSharedWorldResult(bool Ok, string Code, string Mess
 
 internal sealed partial class FriendLink
 {
+    internal TakeoverReadiness CheckTakeoverReadiness(Guid profileId, TakeoverLocalSetup setup)
+    {
+        string? vault;
+        string? pinned;
+        Guid? group;
+        gate.Wait();
+        try
+        {
+            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                return new(false, ["Allow saves on this PC and receive a verified copy first."], null, null);
+            vault = ReceivedRoot(profileId);
+            pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
+            group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+        }
+        finally { gate.Release(); }
+        return SharedWorldReadiness.Check(vault,
+            Path.Combine(data.RootPath, "shared-world-rehearsals"), setup,
+            new TakeoverAuthority(false, false, false), pinned, group);
+    }
+
+    internal TakeoverReadiness RehearseTakeover(Guid profileId, TakeoverLocalSetup setup)
+    {
+        string? vault;
+        string? pinned;
+        Guid? group;
+        gate.Wait();
+        try
+        {
+            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                return new(false, ["Allow saves on this PC and receive a verified copy first."], null, null);
+            vault = ReceivedRoot(profileId);
+            pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
+            group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+        }
+        finally { gate.Release(); }
+        return SharedWorldReadiness.Rehearse(data.RootPath, vault, setup,
+            new TakeoverAuthority(false, false, false), pinned, group);
+    }
+
     private const long ReceiverReserveBytes = 1024L * 1024 * 1024;
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedTransfers = new();
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();

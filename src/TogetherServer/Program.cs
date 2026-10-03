@@ -1330,6 +1330,12 @@ app.MapPost("/api/local/friend/{id:guid}/probe-game", async (Guid id) =>
 app.MapGet("/api/local/friend/{id:guid}/shared-world", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Json(friend.SharedWorldStatus(id)) : Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/readiness", (Guid id, TakeoverLocalSetup setup) =>
+    friendMode ? Results.Json(friend.CheckTakeoverReadiness(id, setup, false)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/rehearse", (Guid id, TakeoverLocalSetup setup) =>
+    friendMode ? Results.Json(friend.CheckTakeoverReadiness(id, setup, true)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPut("/api/local/friend/{id:guid}/shared-world/consent", async (Guid id, SharedWorldConsentRequest request) =>
     friendMode ? Results.Json(await friend.SetSharedWorldConsentAsync(id, request.Enabled)) :
     Results.Conflict(new { code = "HostMode" }));

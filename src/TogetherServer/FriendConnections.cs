@@ -200,6 +200,15 @@ public sealed class FriendService : IDisposable
         return link?.SharedWorldStatus(profileId) ?? new(false, null, null, "Not paired");
     }
 
+    public TakeoverReadiness CheckTakeoverReadiness(Guid profileId, TakeoverLocalSetup setup, bool rehearse)
+    {
+        FriendLink? link;
+        lock (sync) link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+        if (link is null) return new(false, ["Choose a saved Host connection first."], null, null);
+        return rehearse ? link.RehearseTakeover(profileId, setup) :
+            link.CheckTakeoverReadiness(profileId, setup);
+    }
+
     public Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
     {
         lock (sync)
