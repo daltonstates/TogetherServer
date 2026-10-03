@@ -427,10 +427,13 @@ internal sealed partial class SharedWorldService
         {
             if (!VerifySignature(latest) || number < 1 || number >= latest.Number)
                 throw new InvalidDataException("Shared version number is invalid.");
+            var proven = Authority.FindProvenVersion(latest.ProfileId, number);
             var head = Authority.LocalAuthorizedHead(latest.ProfileId);
-            if (head is not null && number == head.Version.Number &&
-                latest.GroupId == head.Version.GroupId && AuthorizedPublishedLineageForLatest(latest, head))
-                return head.Version;
+            if (proven is not null && head is not null &&
+                proven.GroupId == latest.GroupId && proven.ProfileId == latest.ProfileId &&
+                proven.Game == latest.Game && proven.WorldId == latest.WorldId &&
+                AuthorizedPublishedLineageForLatest(latest, head))
+                return proven;
             var versionRoot = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
                 number.ToString(System.Globalization.CultureInfo.InvariantCulture));
             var path = SafeChild(versionRoot, "version.json");
@@ -440,8 +443,7 @@ internal sealed partial class SharedWorldService
             var prior = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
             if (prior is null || !VerifySignature(prior) || prior.Number != number ||
                 prior.GroupId != latest.GroupId || prior.ProfileId != latest.ProfileId ||
-                prior.Game != latest.Game || prior.WorldId != latest.WorldId ||
-                prior.SigningPublicKey != latest.SigningPublicKey)
+                prior.Game != latest.Game || prior.WorldId != latest.WorldId)
                 throw new InvalidDataException("Earlier shared version is invalid.");
             return prior;
         }

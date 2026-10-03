@@ -2181,6 +2181,7 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "rehearsal marker");
     var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
+    await manager.PublishSharedWorldRosterAsync(profile.Id, []);
     Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
         "fixture Stop did not publish");
     var version = (await manager.SharedWorldStatusAsync(profile.Id)).Latest!;
@@ -3125,6 +3126,158 @@ await Check("shared world authority requires signed majority, fences old Host, a
             !File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
                 "authority", "append.pending")),
             "a journal-only crash did not finish the signed successor authority");
+        var longLineage = new List<SharedWorldVersion>();
+        var predecessor = successorVersion;
+        for (var index = 0; index < 70; index++)
+        {
+            predecessor = SharedWorldService.SignVersion(predecessor with
+            {
+                Number = predecessor.Number + 1, ParentHash = predecessor.VersionHash,
+                BackupId = Guid.NewGuid(), CreatedUtc = predecessor.CreatedUtc.AddSeconds(1)
+            }, voters[1].Key);
+            longLineage.Add(predecessor);
+        }
+        var thirdDraft = nextProposal with
+        {
+            Epoch = 3, ParentAuthorityHash = nextAuthority.RecordHash,
+            VersionHash = predecessor.VersionHash,
+            CandidatePublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo()),
+            ProposerDeviceId = voters[2].Id,
+            ProposerPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo()),
+            Signature = ""
+        };
+        var thirdProposal = thirdDraft with { Signature = Convert.ToBase64String(voters[2].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(thirdDraft), HashAlgorithmName.SHA256)) };
+        WorldAuthorityVote ThirdVote(int index)
+        {
+            var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(thirdProposal),
+                voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
+            return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+        }
+        var third = new WorldAuthorityRecord(1, thirdProposal, noOverrideRoster,
+            predecessor, [ThirdVote(1), ThirdVote(2)], null, "", null,
+            WorldAuthorityTrust.LineageDigest(longLineage));
+        third = third with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(third)) };
+        Require(WorldAuthorityTrust.Verify(third) &&
+            WorldAuthorityTrust.VerifyLineage(third, nextAuthority, longLineage) &&
+            JsonSerializer.SerializeToUtf8Bytes(third).Length < 400_000,
+            "a second handoff after more than 64 saves failed its chained proof");
+        Require(!WorldAuthorityTrust.VerifyLineage(third, nextAuthority, longLineage.Take(69).ToArray()) &&
+            !WorldAuthorityTrust.VerifyLineage(third, nextAuthority,
+                longLineage.Select((item, index) => index == 35 ? item with { ParentHash = "BAD" } : item).ToArray()),
+            "missing or tampered handoff proof was accepted");
+        RequireThrows<InvalidDataException>(() => store.Append(third),
+            "second handoff without proof was accepted");
+        store.Append(third, externalLineage: longLineage);
+        Require(new WorldAuthorityStore(data).Read(profile.Id).Any(item => item.RecordHash == third.RecordHash),
+            "restart lost the paged second handoff proof");
+        var afterThird = SharedWorldService.SignVersion(predecessor with
+        {
+            Number = predecessor.Number + 1, ParentHash = predecessor.VersionHash,
+            BackupId = Guid.NewGuid(), CreatedUtc = predecessor.CreatedUtc.AddSeconds(1)
+        }, voters[2].Key);
+        Require(FriendLink.VerifySharedChain(version, afterThird,
+            [successorVersion, .. longLineage], [accepted, nextAuthority, third]),
+            "a receiver several versions behind did not cross two handoffs");
+        Require(!FriendLink.VerifySharedChain(version, afterThird,
+            [successorVersion, .. longLineage.Skip(1)], [accepted, nextAuthority, third]),
+            "a missing authority boundary was accepted by a catching-up receiver");
+        var ownerSecond = SharedWorldService.SignVersion(version with
+        {
+            Number = version.Number + 1, ParentHash = version.VersionHash,
+            BackupId = Guid.NewGuid(), CreatedUtc = version.CreatedUtc.AddSeconds(1)
+        }, ownerKey);
+        var ownerThird = SharedWorldService.SignVersion(ownerSecond with
+        {
+            Number = ownerSecond.Number + 1, ParentHash = ownerSecond.VersionHash,
+            BackupId = Guid.NewGuid(), CreatedUtc = ownerSecond.CreatedUtc.AddSeconds(1)
+        }, ownerKey);
+        WorldAuthorityProposal SignProposal(WorldAuthorityProposal draft, ECDsa signer) =>
+            draft with { Signature = Convert.ToBase64String(signer.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+        WorldAuthorityVote SignVote(WorldAuthorityProposal forProposal, int index)
+        {
+            var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(forProposal),
+                voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
+            return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+        }
+        WorldAuthorityRecord SignRecord(WorldAuthorityProposal forProposal,
+            SharedWorldVersion head, IReadOnlyList<SharedWorldVersion>? lineage,
+            params int[] voteIndices)
+        {
+            var draft = new WorldAuthorityRecord(1, forProposal, noOverrideRoster, head,
+                voteIndices.Select(index => SignVote(forProposal, index)).ToArray(), null, "", lineage);
+            return draft with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(draft)) };
+        }
+        var lateFirstProposal = SignProposal(proposal with
+        {
+            RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster),
+            VersionHash = ownerThird.VersionHash, Signature = ""
+        }, voters[0].Key);
+        var lateFirst = SignRecord(lateFirstProposal, ownerThird,
+            [version, ownerSecond, ownerThird], 0, 1);
+        var lateFirstSave = SharedWorldService.SignVersion(ownerThird with
+        {
+            Number = ownerThird.Number + 1, ParentHash = ownerThird.VersionHash,
+            BackupId = Guid.NewGuid(), CreatedUtc = ownerThird.CreatedUtc.AddSeconds(1)
+        }, voters[0].Key);
+        var lateSecondHead = SharedWorldService.SignVersion(lateFirstSave with
+        {
+            Number = lateFirstSave.Number + 1, ParentHash = lateFirstSave.VersionHash,
+            BackupId = Guid.NewGuid(), CreatedUtc = lateFirstSave.CreatedUtc.AddSeconds(1)
+        }, voters[0].Key);
+        var lateSecondProposal = SignProposal(nextProposal with
+        {
+            ParentAuthorityHash = lateFirst.RecordHash,
+            VersionHash = lateSecondHead.VersionHash, Signature = ""
+        }, voters[1].Key);
+        var lateSecond = SignRecord(lateSecondProposal, lateSecondHead,
+            [lateFirstSave, lateSecondHead], 1, 2);
+        var lateSecondSave = SharedWorldService.SignVersion(lateSecondHead with
+        {
+            Number = lateSecondHead.Number + 1, ParentHash = lateSecondHead.VersionHash,
+            BackupId = Guid.NewGuid(), CreatedUtc = lateSecondHead.CreatedUtc.AddSeconds(1)
+        }, voters[1].Key);
+        Require(WorldAuthorityTrust.VerifyLineage(lateFirst, null) &&
+            WorldAuthorityTrust.VerifyLineage(lateSecond, lateFirst) &&
+            FriendLink.VerifySharedChain(version, lateSecondSave,
+                [ownerSecond, ownerThird, lateFirstSave, lateSecondHead],
+                [lateFirst, lateSecond]) &&
+            FriendLink.VerifySharedChain(lateFirst.Version, lateSecondSave,
+                [lateFirstSave, lateSecondHead], [lateFirst, lateSecond]),
+            "a behind receiver or a new no-copy receiver could not cross two handoffs");
+        using (var receiverData = Data("earlier-owner-version-proof"))
+        {
+            var receiverAuthority = new WorldAuthorityStore(receiverData);
+            receiverAuthority.AppendReceived(lateFirst, profile.Id, version.GroupId,
+                noOverrideRoster.OwnerPublicKey);
+            receiverAuthority.AppendReceived(lateSecond, profile.Id, version.GroupId,
+                noOverrideRoster.OwnerPublicKey);
+            Require(receiverAuthority.FindProvenVersion(profile.Id, ownerSecond.Number)?.VersionHash ==
+                ownerSecond.VersionHash,
+                "successor authority lost an earlier owner manifest needed by a behind receiver");
+        }
+        var friendFloor = new FriendConfiguration();
+        Require(!FriendLink.ObserveHistory(friendFloor, profile.Id, null, lateSecondSave),
+            "first verified successor head was treated as a conflict");
+        var sameNumberFork = SharedWorldService.SignVersion(lateSecondSave with
+        { BackupId = Guid.NewGuid() }, voters[1].Key);
+        var restartedFloor = JsonSerializer.Deserialize<FriendConfiguration>(
+            JsonSerializer.Serialize(friendFloor))!;
+        Require(FriendLink.ObserveHistory(restartedFloor, profile.Id, null, sameNumberFork) &&
+            restartedFloor.LastSharedHostHashes[profile.Id] == lateSecondSave.VersionHash &&
+            !FriendLink.CanCommitReceivedVersion(restartedFloor, profile.Id, sameNumberFork),
+            "restart lost the checked head or accepted a same-number signed fork");
+        var proofFile = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "authority", "proof-" + third.RecordHash,
+            longLineage[35].Number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json");
+        var proofOriginal = File.ReadAllBytes(proofFile);
+        File.WriteAllText(proofFile, "{}");
+        RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(data).Read(profile.Id),
+            "restart accepted a tampered lineage page");
+        File.WriteAllBytes(proofFile, proofOriginal);
         var expiredRoster = shares.PublishRoster(profile, noOverrideRoster.Members.Select(member =>
             member.DeviceId == voters[0].Id
                 ? member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }
@@ -3269,6 +3422,12 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     Require(second.Number == first.Number + 1 && second.ParentHash == first.VersionHash &&
         second.SigningPublicKey == hostKey && FriendLink.VerifySharedChain(origin, second, [first], record),
         "continued successor version failed after service restart");
+    Require(FriendLink.AuthorizedVersionSignerForRecords(roster.OwnerPublicKey, second, [record]) &&
+        FriendLink.VerifySharedChain(origin, second, [first], [record]),
+        "newly enrolled Friend with no copy rejected two successor saves");
+    Require(successorShares.ReadEarlierVersion(second, origin.Number).VersionHash == origin.VersionHash &&
+        successorShares.ReadEarlierVersion(second, first.Number).VersionHash == first.VersionHash,
+        "successor did not serve earlier signed versions across the handoff");
     Require(!new WorldAuthorityStore(successorData).Fenced(successor.Id,
         ownerShares.LocalAuthorityPublicKey(), out _),
         "restart lost the enrolled successor binding");
@@ -3307,6 +3466,7 @@ await Check("signed copy receipts count only the exact latest verified version",
     File.WriteAllText(worldFile, "first save");
     var backups = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backups);
+    shares.PublishRoster(profile, []);
     var firstBackup = backups.Create(profile, BackupKinds.Rolling);
     Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
     var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version!;

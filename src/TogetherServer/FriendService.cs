@@ -29,6 +29,8 @@ public sealed class FriendConfiguration
     public Dictionary<Guid, string> SharedWorldSigningKeys { get; set; } = [];
     public Dictionary<Guid, long> LastSharedHostVersions { get; set; } = [];
     public Dictionary<Guid, string> LastSharedHostHashes { get; set; } = [];
+    public Dictionary<Guid, SharedWorldVersion> LastSharedHostManifests { get; set; } = [];
+    public Dictionary<Guid, List<SharedWorldVersion>> CompetingSharedHostManifests { get; set; } = [];
     public HashSet<Guid> SharedWorldConflicts { get; set; } = [];
     public Dictionary<Guid, Guid> LastSharedHostGroups { get; set; } = [];
     public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];

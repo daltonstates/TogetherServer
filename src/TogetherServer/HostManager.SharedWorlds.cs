@@ -96,7 +96,8 @@ public sealed partial class HostManager
         return sharedWorlds.ReadEarlierVersion(latest, number);
     }
 
-    internal async Task ApplySharedWorldAuthorityAsync(WorldAuthorityRecord record)
+    internal async Task ApplySharedWorldAuthorityAsync(WorldAuthorityRecord record,
+        IEnumerable<SharedWorldVersion>? lineageProof = null)
     {
         await gate.WaitAsync();
         try
@@ -110,7 +111,8 @@ public sealed partial class HostManager
                 record.Roster.OwnerPublicKey != roster.OwnerPublicKey ||
                 record.Roster.Epoch < roster.Epoch || record.Roster.Revision < roster.Revision)
                 throw new InvalidDataException("Authority roster is older or belongs to another group.");
-            authority.Append(record, enforceCurrentGrants: false);
+            authority.Append(record, enforceCurrentGrants: false,
+                externalLineage: lineageProof);
             var active = runs.SingleOrDefault(run => run.ProfileId == profile.Id);
             Activity("Backup", "SharedWorldAuthorityApplied",
                 active is not null && Identity(active) == "Matched"
