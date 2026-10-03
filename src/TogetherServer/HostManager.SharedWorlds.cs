@@ -34,7 +34,8 @@ public sealed partial class HostManager
             var roster = sharedWorlds.ReadRoster(profile);
             var member = roster?.Members.SingleOrDefault(item => item.DeviceId == successorDeviceId);
             if (roster is null || member is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
-                member.AccessExpiresUtc is { } expiry && expiry <= clock.GetUtcNow())
+                member.AccessExpiresUtc is { } expiry && expiry <= clock.GetUtcNow() ||
+                !pairing.TryCommitPlannedHandoff(profileId, successorDeviceId, roster, () => { }))
                 return new(false, "SuccessorNotEligible", "Choose an approved PC allowed to receive and host this world.");
             var before = sharedWorlds.Status(profile).Latest?.VersionHash;
             var stopped = await StopUnderGateAsync(profileId, null);
@@ -80,10 +81,17 @@ public sealed partial class HostManager
             var receipt = sharedWorlds.VerifiedReceipt(profile, version, pending.SuccessorDeviceId, roster);
             if (receipt is null)
                 return new(false, "WaitingForSuccessorCopy", "The successor has not confirmed this exact verified save yet.", version);
-            var record = sharedWorlds.SignPlannedHandoff(roster, version, receipt,
-                pending.SuccessorDeviceId, pending.SuccessorAddress, 1, null);
-            // The durable authority floor is the fence. Never report completion first.
-            authority.Append(record);
+            WorldAuthorityRecord? record = null;
+            if (!pairing.TryCommitPlannedHandoff(profileId, pending.SuccessorDeviceId,
+                roster, () =>
+                {
+                    record = sharedWorlds.SignPlannedHandoff(roster, version, receipt,
+                        pending.SuccessorDeviceId, pending.SuccessorAddress, 1, null);
+                    // The durable authority floor is the fence. Never report completion first.
+                    authority.Append(record);
+                }))
+                return new(false, "SuccessorAccessChanged",
+                    "The successor's access or signed membership changed. Cancel this unsigned handoff and review permissions.");
             data.DeleteProtected(name);
             Activity("Backup", "PlannedHandoffFenced",
                 "The final save and successor receipt were verified. This PC is fenced from starting or sharing this world.",

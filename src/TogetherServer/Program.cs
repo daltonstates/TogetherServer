@@ -77,7 +77,7 @@ var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 using var hostingPower = new WindowsHostingPowerGuard();
 var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
-var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery);
+var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery, pairing);
 async Task<SharedWorldRoster> PublishRosterAndConfirmAsync(Guid profileId,
     bool? ownerOverride = null, bool reviewSourceChange = false)
 {

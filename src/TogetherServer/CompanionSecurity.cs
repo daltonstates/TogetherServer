@@ -443,6 +443,32 @@ public sealed class PairingService
 
     public bool SharedRosterDirty(Guid profileId) => File.Exists(RosterDirtyPath(profileId));
 
+    internal bool TryCommitPlannedHandoff(Guid profileId, Guid successorDeviceId,
+        SharedWorldRoster roster, Action commit)
+    {
+        lock (sync)
+        {
+            if (SharedRosterDirty(profileId) || !SharedWorldRosterTrust.Verify(roster) ||
+                roster.ProfileId != profileId) return false;
+            var device = devices.SingleOrDefault(item => item.Id == successorDeviceId &&
+                item.CredentialHash is not null);
+            var member = roster.Members.SingleOrDefault(item => item.DeviceId == successorDeviceId);
+            if (device is null || member is null || !AuthorizationDecision(device, UtcNow).Ok ||
+                device.AssignedProfileIds?.Contains(profileId) != true ||
+                device.SharedWorldPublicKey != member.PublicKey ||
+                device.SharedWorldGrants?.GetValueOrDefault(profileId) is not
+                    { Receive: true, EligibleHost: true } grants ||
+                grants != member.Grants || member.Revoked ||
+                member.AccessExpiresUtc != device.AccessExpiresUtc ||
+                !roster.Members.SequenceEqual(SharedRosterMembers(profileId)
+                    .OrderBy(item => item.DeviceId))) return false;
+            // Keep access edits and authority publication in one PairingService
+            // critical section. A revocation cannot land between this check and commit.
+            commit();
+            return true;
+        }
+    }
+
     public void RequireSharedRosterPublication(Guid profileId)
     {
         var path = RosterDirtyPath(profileId);

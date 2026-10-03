@@ -2910,15 +2910,24 @@ await Check("planned handoff requires exact final save receipt before durable ol
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "handoff marker");
     var driver = new ObservationFixtureDriver();
     var registry = new GameServerRegistry([driver], PortProbeMode.LoopbackOnly);
-    var manager = new HostManager(data, registry);
-    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "handoff fixture settings failed");
     using var successor = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var successorId = Guid.NewGuid();
+    var successorKey = Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo());
+    data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+    {
+        Id = successorId, ProfileId = Guid.Empty, AssignedProfileIds = [profile.Id],
+        CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10),
+        SharedWorldPublicKey = successorKey,
+        SharedWorldGrants = new Dictionary<Guid, SharedWorldGrants>
+        { [profile.Id] = new(Receive: true, EligibleHost: true) }
+    }] });
+    var pairing = new PairingService(data);
+    var manager = new HostManager(data, registry, TimeProvider.System,
+        new NullHostingPowerGuard(), pairing: pairing);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "handoff fixture settings failed");
     var shares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
-    var roster = shares.PublishRoster(profile,
-        [new SharedWorldRosterMember(successorId,
-            Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo()),
-            new SharedWorldGrants(Receive: true, EligibleHost: true), false)]);
+    var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
     Require((await manager.StartAsync(profile.Id)).Ok, "handoff fixture Start failed");
     driver.StopBehavior = FixtureStopBehavior.Failed;
     Require((await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
@@ -2954,6 +2963,34 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "wrong version receipt was accepted");
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
         "exact successor receipt was rejected");
+    Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
+        new SharedWorldGrants(Receive: false, EligibleHost: false)).Ok,
+        "successor grant withdrawal failed");
+    Require((await manager.CompletePlannedHandoffAsync(profile.Id)).Code ==
+        "SuccessorAccessChanged" && !new WorldAuthorityStore(data).HasState(profile.Id) &&
+        (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
+        "a stale signed roster and receipt handed authority to a revoked successor");
+    Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled",
+        "dirty roster prevented safe owner cancellation");
+    Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
+        new SharedWorldGrants(Receive: true, EligibleHost: true)).Ok,
+        "successor grants could not be restored for retry");
+    roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    pairing.ConfirmSharedRosterPublished(profile.Id, roster);
+    Require((await manager.StartAsync(profile.Id)).Ok,
+        "cancelled handoff did not release Start after permissions were reviewed");
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "third final marker");
+    prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
+        "https://127.0.0.1:5132");
+    Require(prepared.Ok && prepared.Version is { Number: 3 },
+        "reviewed retry did not publish another final save");
+    version = prepared.Version!;
+    receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
+        version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+    receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
+        SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+    Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
+        "reviewed successor receipt was rejected");
     var completed = await manager.CompletePlannedHandoffAsync(profile.Id);
     Require(completed.Ok && completed.Code == "OldHostFenced" &&
         WorldAuthorityTrust.Verify(completed.Authority) &&

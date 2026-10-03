@@ -73,6 +73,7 @@ public sealed partial class HostManager
     private readonly WorldBackupService backups;
     private readonly SharedWorldService sharedWorlds;
     private readonly WorldAuthorityStore authority;
+    private readonly PairingService pairing;
     private readonly StorageHealthService storageHealth;
     private readonly StartupRecoveryService? startupRecovery;
 
@@ -82,11 +83,13 @@ public sealed partial class HostManager
         : this(data, games, clock, new NullHostingPowerGuard()) { }
 
     internal HostManager(LocalData data, GameServerRegistry games, TimeProvider? clock,
-        IHostingPowerGuard powerGuard, StartupRecoveryService? startupRecovery = null)
+        IHostingPowerGuard powerGuard, StartupRecoveryService? startupRecovery = null,
+        PairingService? pairing = null)
     {
         this.data = data;
         this.games = games;
         this.clock = clock ?? TimeProvider.System;
+        this.pairing = pairing ?? new PairingService(data, this.clock);
         this.powerGuard = powerGuard;
         this.startupRecovery = startupRecovery;
         settings = data.LoadSettings();
