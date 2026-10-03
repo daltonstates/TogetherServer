@@ -23,6 +23,8 @@
     <InternalsVisibleTo Include="TogetherServer.CompanionChecks" />
     <InternalsVisibleTo Include="TogetherServer.MinecraftChecks" />
     <InternalsVisibleTo Include="TogetherServer.FactorioChecks" />
+    <InternalsVisibleTo Include="TogetherServer.ValheimChecks" />
+    <InternalsVisibleTo Include="TogetherServer.CustomChecks" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" PrivateAssets="all" GeneratePathProperty="true" />

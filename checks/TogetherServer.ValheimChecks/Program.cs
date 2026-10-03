@@ -179,7 +179,7 @@ try
 
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
-        var host = new HostManager(data);
+        var host = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
         var newSeed = new ServerProfile
         {
             Kind = "Valheim",
@@ -286,13 +286,13 @@ try
 
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
-        var host = new HostManager(data);
+        var host = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
         Require((await host.HealthAsync(profile.Id)).Code == "ValheimLogReady", "Host restart lost exact process/readiness identity");
         var unrelatedWorld = Path.Combine(root, "unrelated-world");
         Directory.CreateDirectory(unrelatedWorld);
         using var unrelatedData = new LocalData(Path.Combine(root, "unrelated-host"));
         var unrelatedHost = new HostManager(unrelatedData,
-            new GameServerRegistry(unrelatedData, includeFixture: true));
+            new GameServerRegistry(unrelatedData, true, PortProbeMode.LoopbackOnly));
         var unrelatedProfile = new ServerProfile
         {
             Name = "Unrelated fixture",
@@ -335,7 +335,7 @@ try
 
     using (var stopData = new LocalData(Path.Combine(root, "remote-stop-host")))
     {
-        var games = new GameServerRegistry(stopData);
+        var games = new GameServerRegistry(stopData, false, PortProbeMode.LoopbackOnly);
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero));
         var host = new HostManager(stopData, games, clock);
         var stopProfile = new ServerProfile
@@ -527,7 +527,7 @@ try
 
     using (var logData = new LocalData(Path.Combine(root, "private-log-count-host")))
     {
-        var games = new GameServerRegistry(logData);
+        var games = new GameServerRegistry(logData, false, PortProbeMode.LoopbackOnly);
         var host = new HostManager(logData, games);
         var logProfile = new ServerProfile
         {

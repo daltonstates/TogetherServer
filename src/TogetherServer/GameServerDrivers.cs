@@ -19,6 +19,7 @@ public static class GameKinds
 }
 
 public sealed record GamePort(string Protocol, int Port, string Label, string Family = "Any");
+internal enum PortProbeMode { AllInterfaces, LoopbackOnly }
 public sealed record GameValidation(string Code, string Message);
 public sealed record GameLaunchResult(string Code, string Message, int ProcessId);
 public sealed record GamePlayerCount(int Online, int? Capacity = null);
@@ -53,9 +54,14 @@ public sealed class GameServerRegistry
 {
     public const string FixtureOptInEnvironmentVariable = "TOGETHERSERVER_ENABLE_FIXTURE_DRIVER";
     private readonly Dictionary<string, IGameServerDriver> drivers;
+    private readonly PortProbeMode portProbeMode;
 
     public GameServerRegistry(LocalData data, bool includeFixture = false)
+        : this(data, includeFixture, PortProbeMode.AllInterfaces) { }
+
+    internal GameServerRegistry(LocalData data, bool includeFixture, PortProbeMode portProbeMode)
     {
+        this.portProbeMode = portProbeMode;
         var registered = new List<IGameServerDriver>
         {
             new ValheimServerDriver(data),
@@ -71,15 +77,23 @@ public sealed class GameServerRegistry
         drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
     }
 
-    internal GameServerRegistry(IEnumerable<IGameServerDriver> registered)
+    internal GameServerRegistry(IEnumerable<IGameServerDriver> registered, PortProbeMode portProbeMode)
     {
+        this.portProbeMode = portProbeMode;
         drivers = registered.ToDictionary(driver => driver.Kind, StringComparer.Ordinal);
     }
 
     public IReadOnlyList<IGameServerDriver> All => drivers.Values.OrderBy(driver => driver.DisplayName).ToList();
     public bool TryGet(string? kind, out IGameServerDriver driver) => drivers.TryGetValue(kind ?? "", out driver!);
 
-    public static bool PortsAvailable(IEnumerable<GamePort> ports)
+    internal bool PortsAvailableForStart(IEnumerable<GamePort> ports) => PortsAvailable(ports, portProbeMode);
+
+    internal static IPAddress ProbeAddress(string family, PortProbeMode mode) =>
+        family == "IPv6"
+            ? mode == PortProbeMode.LoopbackOnly ? IPAddress.IPv6Loopback : IPAddress.IPv6Any
+            : mode == PortProbeMode.LoopbackOnly ? IPAddress.Loopback : IPAddress.Any;
+
+    internal static bool PortsAvailable(IEnumerable<GamePort> ports, PortProbeMode mode)
     {
         var sockets = new List<Socket>();
         try
@@ -92,7 +106,7 @@ public sealed class GameServerRegistry
                 var family = port.Family == "IPv6" ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
                 var socket = new Socket(family, type, protocol) { ExclusiveAddressUse = true };
                 if (family == AddressFamily.InterNetworkV6) socket.DualMode = false;
-                socket.Bind(new IPEndPoint(family == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any, port.Port));
+                socket.Bind(new IPEndPoint(ProbeAddress(port.Family, mode), port.Port));
                 if (protocol == ProtocolType.Tcp) socket.Listen(1);
                 sockets.Add(socket);
             }
