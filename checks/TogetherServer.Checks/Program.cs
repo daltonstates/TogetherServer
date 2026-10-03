@@ -4118,6 +4118,20 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var offer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
             ids[0], keys[0], candidateAddress, candidatePin,
             new WorldAuthorityStore(pcs[0]));
+        var directOffer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
+            ids[0], keys[0], $"https://192.0.2.10:{candidatePort}", candidatePin,
+            new WorldAuthorityStore(pcs[0]));
+        var directBranch = SharedWorldSeparateCopyStore.Sign(directOffer, keys[0]);
+        var routeChallenge = SharedWorldSeparateRoute.SignChallenge(directBranch, ids[1], keys[1]);
+        var routeProof = SharedWorldSeparateRoute.SignProof(directBranch, routeChallenge, keys[0]);
+        Require(SharedWorldSeparateRoute.VerifyChallenge(routeChallenge, directBranch,
+                DateTimeOffset.UtcNow) &&
+            SharedWorldSeparateRoute.VerifyProof(routeProof, routeChallenge, directBranch) &&
+            !SharedWorldSeparateRoute.VerifyProof(routeProof with { Endpoint = candidateAddress },
+                routeChallenge, directBranch) &&
+            !SharedWorldSeparateRoute.VerifyChallenge(routeChallenge with
+                { ObserverDeviceId = ids[0] }, directBranch, DateTimeOffset.UtcNow),
+            "a separate-copy route proof did not bind a different enrolled PC and exact direct IP");
         var separate = new SharedWorldSeparateCopyStore(pcs[0]);
         RequireThrows<InvalidDataException>(() => separate.Declare(losses[0], offer,
             vaults[0], keys[0], false), "a separate copy skipped its explicit split warning");
@@ -4134,6 +4148,17 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         RequireThrows<InvalidDataException>(() => separate.Read(profile.Id),
             "a deleted separate branch silently disappeared despite its protected floor");
         pcs[0].SaveProtected(branchName, branchBytes);
+        Require(!separate.HostReturned(profile.Id, separateBranch.BranchHash),
+            "a new separate copy was already marked for review");
+        separate.MarkHostReturned(profile.Id);
+        Require(separate.HostReturned(profile.Id, separateBranch.BranchHash) &&
+            separate.Read(profile.Id).Single().BranchHash == separateBranch.BranchHash,
+            "Host return removed the signed separate history or did not fence it");
+        var returnedBytes = pcs[0].LoadProtected(branchName)!;
+        pcs[0].SaveProtected(branchName, branchBytes);
+        RequireThrows<InvalidDataException>(() => separate.Read(profile.Id),
+            "rolling back the Host-return fence was accepted");
+        pcs[0].SaveProtected(branchName, returnedBytes);
         var vote0 = SharedWorldElection.Vote(losses[0], vaults[0], floor, roster.OwnerPublicKey,
             offer, ids[0], keys[0], new WorldAuthorityStore(pcs[0]));
         RequireThrows<InvalidDataException>(() => SharedWorldElection.ConfirmQuorum(offer, [vote0],

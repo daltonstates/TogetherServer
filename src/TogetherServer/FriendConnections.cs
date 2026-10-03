@@ -220,6 +220,17 @@ public sealed class FriendService : IDisposable
             : link.ProbeSuccessorRouteAsync(profileId, recordHash, tlsFingerprint, cancellationToken);
     }
 
+    public Task<SharedWorldRouteCheck> ProbeSeparateCopyRouteAsync(Guid profileId,
+        WorldSeparateCopyBranch branch, CancellationToken cancellationToken)
+    {
+        FriendLink? link;
+        lock (sync) link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+        return link is null
+            ? Task.FromResult(new SharedWorldRouteCheck(false, "NotPaired",
+                "Choose a saved Host connection first.", DateTimeOffset.UtcNow, branch?.BranchHash))
+            : link.ProbeSeparateCopyRouteAsync(profileId, branch, cancellationToken);
+    }
+
     public Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
     {
         lock (sync)
@@ -318,6 +329,12 @@ public sealed class FriendService : IDisposable
                 "Choose a saved Host connection first.")) :
                 link.DeclareSeparateCopyAsync(profileId, acceptSplitWarning);
         }
+    }
+
+    public IReadOnlyList<WorldSeparateCopyBranch> SeparateCopyBranches(Guid profileId)
+    {
+        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+            .SeparateCopyBranches(profileId) ?? [];
     }
 
     public Task<FriendActionResult> RequestAsync(Guid profileId, string action)

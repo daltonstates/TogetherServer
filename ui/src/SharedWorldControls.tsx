@@ -3,6 +3,7 @@ import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
+import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number;
   liveSave: { available: boolean; message: string }; canManageSharing: boolean }
@@ -563,6 +564,9 @@ export function FriendSharedWorlds({ profileId, available }:
         <p>Save hash: {recovery.versionHash}</p>
       </details>}
     </details>}
+    {status?.consented && status.thisPcVersion != null &&
+      <SharedWorldSeparateRoutePanel profileId={profileId}
+        separateCopies={recovery?.separateCopies ?? 0} />}
     {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId} />}
     <details><summary>Technical details</summary><p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
       {status?.error && <p role="alert">{status.error}</p>}

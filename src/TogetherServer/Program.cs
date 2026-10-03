@@ -1471,6 +1471,23 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/route-check",
     friendMode ? Results.Json(await friend.ProbeSuccessorRouteAsync(id,
         request.RecordHash, request.TlsFingerprint, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/route-check",
+    async (HttpContext context, Guid id) =>
+{
+    if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+    var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+        context.Request.ContentLength, 512 * 1024, context.RequestAborted);
+    if (bytes is null) return Results.BadRequest(new { code = "InvalidSeparateRouteProof" });
+    try
+    {
+        var request = JsonSerializer.Deserialize<SeparateCopyRouteRequest>(bytes,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return request?.Branch is null ? Results.BadRequest(new { code = "InvalidSeparateRouteProof" }) :
+            Results.Json(await friend.ProbeSeparateCopyRouteAsync(id, request.Branch,
+                context.RequestAborted));
+    }
+    catch (JsonException) { return Results.BadRequest(new { code = "InvalidSeparateRouteProof" }); }
+});
 app.MapPost("/api/local/friend/{id:guid}/shared-world/rehearse", (Guid id, TakeoverLocalSetup setup) =>
     friendMode ? Results.Json(friend.CheckTakeoverReadiness(id, setup, true)) :
     Results.Conflict(new { code = "HostMode" }));
@@ -1528,6 +1545,11 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (Htt
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate",
     async (Guid id, WorldSeparateCopyConfirmation confirmation) =>
     friendMode ? Results.Json(await friend.DeclareSeparateCopyAsync(id, confirmation.AcceptSplitWarning)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/separate",
+    (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Json(friend.SeparateCopyBranches(id)) :
     Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {

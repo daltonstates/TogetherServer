@@ -192,6 +192,10 @@ internal sealed partial class FriendLink
                 config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != offer.Roster.OwnerPublicKey ||
                 config.SharedWorldConflicts?.Contains(profileId) == true)
                 return new(false, "RecoveryOfferRejected", "Prepare and review this PC's signed offer first.");
+            var voteStatus = new SharedWorldVoteInbox(data).Status(profileId, config.DeviceId);
+            if (voteStatus.State != "OfferArmed" || voteStatus.Votes >= voteStatus.Required)
+                return new(false, "MajorityAvailable",
+                    "Review the recorded majority or competing history before making a separate copy.");
             using var key = LoadPcSigningKey();
             var branch = new SharedWorldSeparateCopyStore(data).Declare(sharedHostLoss, offer,
                 ReceivedRoot(profileId), key, acceptSplitWarning);

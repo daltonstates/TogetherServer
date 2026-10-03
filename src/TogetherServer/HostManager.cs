@@ -416,6 +416,13 @@ public sealed partial class HostManager
             profile.Maintenance ??= new MaintenanceOptions();
             if (profile.Kind == GameKinds.Factorio) profile.Factorio ??= new FactorioOptions();
             var prior = previous.Profiles.SingleOrDefault(item => item.Id == profile.Id);
+            if (prior?.SeparateCopySourceProfileId is not null)
+            {
+                profile.SeparateCopySourceProfileId = prior.SeparateCopySourceProfileId;
+                profile.SeparateCopyBranchHash = prior.SeparateCopyBranchHash;
+                profile.SharedSavesEnabled = false;
+                profile.CrashRecovery.Enabled = false;
+            }
             if (prior is not null && (prior.Kind != profile.Kind || prior.WorldId != profile.WorldId ||
                 !string.Equals(prior.WorldDirectory, profile.WorldDirectory, StringComparison.OrdinalIgnoreCase)))
                 profile.SharedSavesEnabled = false;
@@ -1038,16 +1045,18 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt)
+    private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt,
+        string? separateBranchHash = null)
     {
         // Pairing revocation does not take the lifecycle semaphore. Hold its
         // shared gate through the managed launch so a completed revoke cannot
         // be followed by a Start authorized with an older roster.
         lock (SharedWorldMutationGate.For(data.RootPath))
-            return StartWithMembershipGate(profileId, crashRecoveryAttempt);
+            return StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash);
     }
 
-    private ActionResult StartWithMembershipGate(Guid profileId, bool crashRecoveryAttempt)
+    private ActionResult StartWithMembershipGate(Guid profileId, bool crashRecoveryAttempt,
+        string? separateBranchHash)
     {
         if (data.Recovery.LifecycleBlocked)
             return Result(false, "DataRecoveryRequired",
@@ -1056,6 +1065,15 @@ public sealed partial class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (profile.SeparateCopySourceProfileId is not null)
+        {
+            if (separateBranchHash is null ||
+                profile.SeparateCopyBranchHash != separateBranchHash)
+                return Result(false, "SeparateCopyManualStartRequired",
+                    "This warned separate copy needs its own manual Start after the Host-loss and route checks.");
+            if (SeparateCopyStartIssue(profileId, profile, separateBranchHash) is { } issue)
+                return Result(false, "SeparateCopyReviewRequired", issue);
+        }
         if (data.HasProtected(SuccessorRestoreName(profileId)))
             return Result(false, "SuccessorChecksPending",
                 "This restored shared world needs a verified disposable game rehearsal and direct-IP Friend route checks before Start.");
@@ -2572,6 +2590,14 @@ public sealed partial class HostManager
             if (profile.SharedSavesEnabled && (!profile.Backups.Enabled || !profileDriver.SupportsBackups ||
                 profile.Kind == GameKinds.Custom))
                 return "Shared saves require a reviewed built-in driver and rolling backups after Stop.";
+            if (profile.SeparateCopySourceProfileId is not null || profile.SeparateCopyBranchHash is not null)
+            {
+                if (profile.SeparateCopySourceProfileId is not { } source || source == Guid.Empty ||
+                    source == profile.Id || profile.SeparateCopyBranchHash is not { Length: 64 } branchHash ||
+                    !branchHash.All(Uri.IsHexDigit) || profile.SharedSavesEnabled ||
+                    profile.CrashRecovery.Enabled)
+                    return "A separate shared-world copy must keep its signed source and manual-only hosting fence.";
+            }
             if (profile.Backups.RetentionCount is < 1 or > 50)
                 return "Backup retention must be between 1 and 50 completed backups.";
             if (profile.Backups.MinimumFreeSpaceMb is < 0 or > 1_048_576)
@@ -2600,6 +2626,8 @@ public sealed partial class HostManager
         a.Kind == b.Kind && a.Name == b.Name && a.ServerName == b.ServerName &&
         a.Crossplay == b.Crossplay && a.PublicListing == b.PublicListing &&
         a.WorldId == b.WorldId && a.WorldSource == b.WorldSource && a.GamePort == b.GamePort &&
+        a.SeparateCopySourceProfileId == b.SeparateCopySourceProfileId &&
+        a.SeparateCopyBranchHash == b.SeparateCopyBranchHash &&
         (a.Minecraft?.ServerJarPath ?? "") == (b.Minecraft?.ServerJarPath ?? "") &&
         (a.Factorio?.RconPort ?? 0) == (b.Factorio?.RconPort ?? 0) &&
         SameCustom(a.Custom, b.Custom) &&
