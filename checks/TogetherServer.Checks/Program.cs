@@ -3119,6 +3119,14 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 Require(valid.IsSuccessStatusCode,
                     "old Host did not ingest the signed newer authority over authenticated HTTPS: " +
                     valid.StatusCode + " " + await valid.Content.ReadAsStringAsync());
+                Require(fixturePairing.Revoke(voters[1].Id).Ok,
+                    "fixture could not revoke the authority sender");
+                using var afterRevoke = await client.PostAsJsonAsync(route, newer);
+                Require(afterRevoke.StatusCode == HttpStatusCode.Forbidden &&
+                    !fixturePairing.CommitSharedWorldAuthority(voters[1].Id, profile.Id,
+                        Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()),
+                        () => throw new Exception("revoked sender reached authority append")),
+                    "a revoked Friend PC could still append authority");
             }
             finally { await oldListener.StopAsync(); }
             Require(store.Read(profile.Id).Count == 2, "newer signed roster authority was not applied");
