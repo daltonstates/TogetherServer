@@ -140,8 +140,8 @@ internal sealed class PairingPersistentState
 public sealed class LocalData : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    internal const int CurrentStorageSchemaVersion = 2;
-    internal const int CurrentPairingSchemaVersion = 2;
+    internal const int CurrentStorageSchemaVersion = 3;
+    internal const int CurrentPairingSchemaVersion = 3;
     private const string PairingStateFile = "pairing-state.protected";
     private const string StorageSchemaFile = "storage-schema.json";
     private const string RecoveryMarkerFile = "data-recovery.json";
@@ -336,11 +336,11 @@ public sealed class LocalData : IDisposable
             {
                 var state = JsonSerializer.Deserialize<PairingPersistentState>(bytes, Json)
                     ?? throw new InvalidDataException("Invalid protected pairing state");
-                if (state.SchemaVersion is not (1 or CurrentPairingSchemaVersion) ||
+                if (state.SchemaVersion is not (1 or 2 or CurrentPairingSchemaVersion) ||
                     state.Devices is null || state.ServerInvites is null ||
                     state.CredentialRenewals is null)
                     throw new InvalidDataException("Unsupported protected pairing state");
-                if (state.SchemaVersion == 1)
+                if (state.SchemaVersion < CurrentPairingSchemaVersion)
                 {
                     state.SchemaVersion = CurrentPairingSchemaVersion;
                     SavePairingState(state);
@@ -668,22 +668,20 @@ public sealed class LocalData : IDisposable
         }
         while (schema.Version < supportedStorageSchemaVersion)
         {
-            if (schema.Version != 1 || supportedStorageSchemaVersion < 2)
+            if (schema.Version is not (1 or 2))
                 throw new InvalidDataException(
                     $"Storage schema {schema.Version} cannot be migrated safely by this TogetherServer build.");
 
-            // Advance the directory marker first. From this point onward an
-            // older v1 binary rejects the data root before it can ignore the
-            // owner access deadline. If migration is interrupted, this build
-            // still accepts and completes a v1 protected pairing snapshot.
-            schema.Version = 2;
+            // Advance the directory marker before protected authorization state.
+            // A previous executable must refuse this root before reading sharing grants.
+            schema.Version = supportedStorageSchemaVersion;
             Save(StorageSchemaFile, schema);
-            MigratePairingStateToV2();
+            MigratePairingState();
         }
         Save(StorageSchemaFile, schema);
     }
 
-    private void MigratePairingStateToV2()
+    private void MigratePairingState()
     {
         if (!HasProtected(PairingStateFile)) return;
         var bytes = LoadProtected(PairingStateFile);
@@ -692,10 +690,10 @@ public sealed class LocalData : IDisposable
         {
             var state = JsonSerializer.Deserialize<PairingPersistentState>(bytes, Json)
                 ?? throw new InvalidDataException("Invalid protected pairing state");
-            if (state.SchemaVersion is not (1 or CurrentPairingSchemaVersion) ||
+            if (state.SchemaVersion is not (1 or 2 or CurrentPairingSchemaVersion) ||
                 state.Devices is null || state.ServerInvites is null || state.CredentialRenewals is null)
                 throw new InvalidDataException("Unsupported protected pairing state");
-            if (state.SchemaVersion == 1) SavePairingState(state);
+            if (state.SchemaVersion < CurrentPairingSchemaVersion) SavePairingState(state);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or NotSupportedException)
         {

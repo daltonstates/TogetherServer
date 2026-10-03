@@ -30,9 +30,13 @@ public sealed class FriendConfiguration
     public Dictionary<Guid, long> LastSharedHostVersions { get; set; } = [];
     public Dictionary<Guid, string> LastSharedHostHashes { get; set; } = [];
     public HashSet<Guid> SharedWorldConflicts { get; set; } = [];
+    public Dictionary<Guid, Guid> LastSharedHostGroups { get; set; } = [];
     public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];
     public Dictionary<Guid, Guid> ApprovedSharedWorldGroups { get; set; } = [];
+    public Dictionary<Guid, SharedRosterFloor> SharedRosterFloors { get; set; } = [];
 }
+
+public sealed record SharedRosterFloor(Guid GroupId, long Epoch, long Revision, string Signature);
 
 public sealed class PendingFriendOperation
 {

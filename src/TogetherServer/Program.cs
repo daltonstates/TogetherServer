@@ -78,6 +78,23 @@ pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile
 using var hostingPower = new WindowsHostingPowerGuard();
 var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
 var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery);
+async Task<SharedWorldRoster> PublishRosterAndConfirmAsync(Guid profileId,
+    bool? ownerOverride = null, bool reviewSourceChange = false)
+{
+    var roster = await manager.PublishSharedWorldRosterAsync(profileId,
+        pairing.SharedRosterMembers(profileId), ownerOverride, reviewSourceChange);
+    pairing.ConfirmSharedRosterPublished(profileId, roster);
+    return roster;
+}
+async Task RepairDirtyRostersAsync()
+{
+    foreach (var profile in data.LoadSettings().Profiles.Where(item =>
+        item.SharedSavesEnabled && pairing.SharedRosterDirty(item.Id)))
+        await PublishRosterAndConfirmAsync(profile.Id);
+}
+try { if (!friendMode) await RepairDirtyRostersAsync(); }
+catch (Exception ex) when (ex is IOException or InvalidDataException or System.Security.Cryptography.CryptographicException)
+{ data.TryAudit($"shared-roster-repair-pending {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
 var acceptanceRecorder = new AcceptanceRecorder(data, TimeProvider.System);
 var updateCheckpoints = new StateCheckpointService(data, TimeProvider.System);
 var serverLogs = new ServerLogService(data, manager);
@@ -657,8 +674,14 @@ app.MapGet("/api/local/profiles/{id:guid}/shared-world", async (HttpContext cont
     friendMode ? Results.Conflict(new { code = "FriendMode" }) :
     Results.Json(await manager.SharedWorldStatusAsync(id)));
 app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedWorldConsentRequest request) =>
-    friendMode ? Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first.")) :
-    Results.Json(await manager.SetSharedSavesAsync(id, request.Enabled)));
+{
+    if (friendMode) return Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first."));
+    if (request.Enabled) pairing.RequireSharedRosterPublication(id);
+    var result = await manager.SetSharedSavesAsync(id, request.Enabled);
+    if (result.Ok && request.Enabled)
+        await PublishRosterAndConfirmAsync(id);
+    return Results.Json(result);
+});
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>
@@ -1172,6 +1195,7 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
                 settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate), request.Refresh,
                 request.DurationMinutes, request.DeviceLimit, request.RequireApproval, request.CanViewLogs);
             password = PairingPassword.Encode(invite);
+            if (request.Refresh) await RepairDirtyRostersAsync();
             if (request.EnableConnections)
             {
                 settings.CompanionListeningEnabled = true;
@@ -1214,7 +1238,11 @@ app.MapPost("/api/local/servers/{profileId:guid}/pairing/emergency-revoke", asyn
 {
     await modeGate.WaitAsync();
     PairingDecision result;
-    try { result = friendMode ? new(false, "FriendMode", "Switch to Host mode first.") : pairing.EmergencyRevoke(profileId); }
+    try
+    {
+        result = friendMode ? new(false, "FriendMode", "Switch to Host mode first.") : pairing.EmergencyRevoke(profileId);
+        if (result.Ok) await RepairDirtyRostersAsync();
+    }
     finally { modeGate.Release(); }
     if (result.Ok) await companionServer.SyncAsync();
     return Results.Json(result);
@@ -1222,13 +1250,25 @@ app.MapPost("/api/local/servers/{profileId:guid}/pairing/emergency-revoke", asyn
 app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Revoke(id)); }
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.Revoke(id);
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
+    }
     finally { modeGate.Release(); }
 });
 app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Approve(id)); }
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.Approve(id);
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
+    }
     finally { modeGate.Release(); }
 });
 app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}",
@@ -1241,7 +1281,65 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}",
         var status = await manager.SharedWorldStatusAsync(profileId);
         if (request.Enabled && !status.Enabled)
             return Results.Conflict(new { code = "SharingOff", message = "Enable sharing for this server first." });
-        return Results.Json(pairing.SetReceiveSaves(id, profileId, request.Enabled));
+        var result = pairing.SetReceiveSaves(id, profileId, request.Enabled);
+        if (result.Ok && status.Enabled) await RepairDirtyRostersAsync();
+        return Results.Json(result);
+    }
+    finally { modeGate.Release(); }
+});
+app.MapGet("/api/local/profiles/{profileId:guid}/shared-world/governance", async (HttpContext context, Guid profileId) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Conflict(new { code = "FriendMode" }) :
+    pairing.SharedRosterDirty(profileId) ? Results.Conflict(new { code = "RosterUnavailable" }) :
+        Results.Json(await manager.SharedWorldRosterAsync(profileId)));
+app.MapPut("/api/local/profiles/{profileId:guid}/shared-world/governance",
+    async (Guid profileId, SharedWorldGovernanceRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        pairing.RequireSharedRosterPublication(profileId);
+        return Results.Json(await PublishRosterAndConfirmAsync(profileId,
+            request.OwnerOverride, request.ReviewSourceChange));
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/shared-world/repair-rosters", async () =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        await RepairDirtyRostersAsync();
+        return Results.Json(new { ok = true, code = "RostersRepaired" });
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}/grants",
+    async (Guid id, Guid profileId, SharedWorldDeviceGrantsRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        if (!(await manager.SharedWorldStatusAsync(profileId)).Enabled)
+            return Results.Conflict(new { code = "SharingOff" });
+        var result = pairing.SetSharedWorldGrants(id, profileId, request.Grants);
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/devices/{id:guid}/shared-world/re-enroll", async (Guid id) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        var result = pairing.ResetSharedWorldKey(id);
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
     }
     finally { modeGate.Release(); }
 });
@@ -1254,6 +1352,7 @@ app.MapPut("/api/local/devices/{id:guid}/access-expiry", async (Guid id, DeviceA
             return Results.Conflict(new DeviceAccessExpiryResult(false, "FriendMode",
                 "Switch to Host mode first."));
         var result = pairing.SetAccessExpiry(id, request);
+        if (result.Ok) await RepairDirtyRostersAsync();
         return result.Ok ? Results.Json(result) : result.Code switch
         {
             "UnknownDevice" => Results.NotFound(result),
@@ -1296,9 +1395,11 @@ app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerA
     await modeGate.WaitAsync();
     try
     {
-        return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
-            data.LoadSettings().Profiles.Select(profile => profile.Id)));
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
+            data.LoadSettings().Profiles.Select(profile => profile.Id));
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
     }
     finally { modeGate.Release(); }
 });

@@ -1451,7 +1451,7 @@ function App() {
                   : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
               <FriendStopBlockers snapshot={snapshot} profile={profile} />
               {profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id}
-                available={snapshot.hostCapabilities.includes('shared-worlds-v1')} />}
+                available={snapshot.hostCapabilities.includes('shared-worlds-v2')} />}
               {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
               {['Ready', 'Listening'].includes(profile.state) && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
             </article>

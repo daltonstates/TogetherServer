@@ -24,6 +24,8 @@ public sealed class PairedDevice
     public bool CanViewLogs { get; set; }
     // Deliberately separate from presets and temporary helper permissions.
     public List<Guid> SaveReceiveProfileIds { get; set; } = [];
+    public Dictionary<Guid, SharedWorldGrants> SharedWorldGrants { get; set; } = [];
+    public string? SharedWorldPublicKey { get; set; }
     // Global permissions remain the default. Entries are stored only when an
     // assigned server differs from that default, so the owner can see and edit
     // explicit per-server exceptions without duplicating the access list.
@@ -92,7 +94,9 @@ public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> Ass
     bool ApprovalPending = false, bool CanExtendTimer = false, bool CanViewLogs = false,
     DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false,
     DateTimeOffset? TemporaryHelperUntilUtc = null, bool TemporaryHelperActive = false,
-    IReadOnlyList<Guid>? SaveReceiveProfileIds = null);
+    IReadOnlyList<Guid>? SaveReceiveProfileIds = null,
+    IReadOnlyDictionary<Guid, SharedWorldGrants>? SharedWorldGrants = null,
+    bool SharedWorldKeyEnrolled = false);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop,
     bool CanExtendTimer = false, bool CanViewLogs = false);
 
@@ -426,10 +430,45 @@ public sealed class PairingService
         var normalized = NormalizeAssignments() | NormalizeServerCodes();
         normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
             devices.All(device => device.Id != receipt.DeviceId)) > 0;
-        if (normalized) SaveState();
+        if (normalized)
+        {
+            MarkSharedRostersDirty();
+            SaveState();
+        }
     }
 
     private DateTimeOffset UtcNow => clock.GetUtcNow();
+    private string RosterDirtyPath(Guid profileId) => Path.Combine(data.RootPath,
+        "shared-worlds", profileId.ToString("N"), "roster-dirty");
+
+    public bool SharedRosterDirty(Guid profileId) => File.Exists(RosterDirtyPath(profileId));
+
+    public void RequireSharedRosterPublication(Guid profileId)
+    {
+        var path = RosterDirtyPath(profileId);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "Publication required");
+    }
+
+    private void MarkSharedRostersDirty()
+    {
+        foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled))
+        {
+            RequireSharedRosterPublication(profile.Id);
+        }
+    }
+
+    public void ConfirmSharedRosterPublished(Guid profileId, SharedWorldRoster roster)
+    {
+        lock (sync)
+        {
+            if (!SharedWorldRosterTrust.Verify(roster) ||
+                !roster.Members.SequenceEqual(SharedRosterMembers(profileId).OrderBy(item => item.DeviceId)))
+                throw new InvalidDataException("The signed roster no longer matches current access.");
+            var path = RosterDirtyPath(profileId);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
     public bool IsTemporaryHelperActive(PairedDevice device) =>
         device.TemporaryHelperUntilUtc is { } until && until > UtcNow;
 
@@ -547,12 +586,19 @@ public sealed class PairingService
                 device.ServerPermissionOverrides = [];
                 changed = true;
             }
-            var saveGrants = (device.SaveReceiveProfileIds ?? [])
-                .Where(id => id != Guid.Empty && normalized.Contains(id)).Distinct().ToList();
+            device.SharedWorldGrants ??= [];
+            var saveGrants = device.SharedWorldGrants
+                .Where(item => normalized.Contains(item.Key) && item.Value?.Receive == true)
+                .Select(item => item.Key).Distinct().ToList();
             if (device.SaveReceiveProfileIds is null ||
                 !saveGrants.SequenceEqual(device.SaveReceiveProfileIds))
             {
                 device.SaveReceiveProfileIds = saveGrants;
+                changed = true;
+            }
+            foreach (var id in device.SharedWorldGrants.Keys.Where(id => !normalized.Contains(id)).ToArray())
+            {
+                device.SharedWorldGrants.Remove(id);
                 changed = true;
             }
             // Corrupt duplicate entries collapse to the most restrictive
@@ -584,6 +630,16 @@ public sealed class PairingService
                 changed = true;
             }
         }
+        foreach (var duplicate in devices.Where(item => item.SharedWorldPublicKey is not null)
+                     .GroupBy(item => item.SharedWorldPublicKey, StringComparer.Ordinal)
+                     .Where(group => group.Count() > 1))
+            foreach (var device in duplicate)
+            {
+                device.SharedWorldPublicKey = null;
+                device.SharedWorldGrants?.Clear();
+                device.SaveReceiveProfileIds?.Clear();
+                changed = true;
+            }
         return changed;
     }
 
@@ -664,7 +720,11 @@ public sealed class PairingService
                 heartbeats.TryRemove(device.Id, out _);
                 changedDevices = true;
             }
-            if (removed > 0 || changedDevices) SaveState();
+            if (removed > 0 || changedDevices)
+            {
+                if (changedDevices) MarkSharedRostersDirty();
+                SaveState();
+            }
         }
     }
 
@@ -735,6 +795,7 @@ public sealed class PairingService
             serverInvites.Add(next);
             // Generation is the authorization gate. Persist it before updating device views,
             // so even an interrupted rotation cannot leave an old credential usable.
+            if (refresh) MarkSharedRostersDirty();
             SaveState();
             if (refresh)
             {
@@ -799,6 +860,7 @@ public sealed class PairingService
                 heartbeats.TryRemove(device.Id, out _);
                 revoked++;
             }
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"pairing-emergency-revoke {profileId} devices={revoked} {UtcNow:O}");
             Activity("Connections", "CodeAccessRemoved",
@@ -853,7 +915,9 @@ public sealed class PairingService
                     device.ApprovalPending, helper || device.CanExtendTimer, helper || device.CanViewLogs,
                     device.AccessExpiresUtc, IsAccessExpired(device, now),
                     device.TemporaryHelperUntilUtc, helper,
-                    device.SaveReceiveProfileIds.Where(device.AssignedProfileIds.Contains).ToArray());
+                    device.SaveReceiveProfileIds.Where(device.AssignedProfileIds.Contains).ToArray(),
+                    new Dictionary<Guid, SharedWorldGrants>(device.SharedWorldGrants ?? []),
+                    device.SharedWorldPublicKey is not null);
             }).ToList();
         }
     }
@@ -1106,6 +1170,7 @@ public sealed class PairingService
 
             device.AccessExpiresUtc = deadline;
             device.AccessExpiryNotifiedForUtc = null;
+            MarkSharedRostersDirty();
             SaveState();
             if (deadline is null)
             {
@@ -1135,6 +1200,7 @@ public sealed class PairingService
             device.PreviousCredentialExpiresUtc = null;
             ForgetRenewalReceipt(device.Id);
             heartbeats.TryRemove(id, out _);
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"revoke {device.Id} {UtcNow:O}");
             Activity("Access", "DeviceRevoked", "The Host removed access from a connected PC.", ActivitySeverity.Warning,
@@ -1151,6 +1217,7 @@ public sealed class PairingService
             if (device is null) return new(false, "UnknownDevice", "Connected PC was not found.");
             if (!device.ApprovalPending) return new(true, "AlreadyApproved", "This PC is already approved.");
             device.ApprovalPending = false;
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"device-approve {device.Id} {UtcNow:O}");
             Activity("Connections", "DeviceApproved", "A waiting PC was approved locally.",
@@ -1257,6 +1324,10 @@ public sealed class PairingService
             device.AssignedProfileIds = profileIds.ToList();
             device.SaveReceiveProfileIds = (device.SaveReceiveProfileIds ?? [])
                 .Where(device.AssignedProfileIds.Contains).ToList();
+            device.SharedWorldGrants = (device.SharedWorldGrants ?? [])
+                .Where(item => device.AssignedProfileIds.Contains(item.Key))
+                .ToDictionary(item => item.Key, item => item.Value);
+            MarkSharedRostersDirty();
             if (permissions is null)
             {
                 device.ServerPermissionOverrides = device.ServerPermissionOverrides!
@@ -1375,7 +1446,8 @@ public sealed class PairingService
             var decision = AuthorizationDecision(current, UtcNow);
             if (!decision.Ok) return decision;
             return current.AssignedProfileIds?.Contains(profileId) == true &&
-                current.SaveReceiveProfileIds?.Contains(profileId) == true
+                current.SharedWorldGrants?.GetValueOrDefault(profileId)?.Receive == true &&
+                current.SharedWorldPublicKey is not null
                 ? new(true, "ReceiveSavesAllowed", "Shared save access is allowed.")
                 : new(false, "PermissionDenied", "Shared save access is not granted to this PC for this server.");
         }
@@ -1390,9 +1462,13 @@ public sealed class PairingService
             if (device is null) return new(false, "UnknownDevice", "Connect and approve this PC first.");
             if (enabled && (device.ApprovalPending || device.AssignedProfileIds?.Contains(profileId) != true))
                 return new(false, "PermissionDenied", "Approve and assign this PC to the server first.");
+            device.SharedWorldGrants ??= [];
+            var previous = device.SharedWorldGrants.GetValueOrDefault(profileId) ?? new();
+            device.SharedWorldGrants[profileId] = previous with { Receive = enabled };
             device.SaveReceiveProfileIds ??= [];
             device.SaveReceiveProfileIds.Remove(profileId);
             if (enabled) device.SaveReceiveProfileIds.Add(profileId);
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"save-receive-grant {deviceId} {profileId} enabled={enabled} {UtcNow:O}");
             Activity("Access", enabled ? "SaveReceiveGranted" : "SaveReceiveRemoved",
@@ -1402,6 +1478,74 @@ public sealed class PairingService
             return new(true, "ReceiveSavesSaved", enabled ? "This PC may receive completed saves." :
                 "This PC can no longer start new shared save reads.");
         }
+    }
+
+    public PairingDecision SetSharedWorldGrants(Guid deviceId, Guid profileId, SharedWorldGrants grants)
+    {
+        if (grants is null) return new(false, "InvalidGrants", "Choose the reviewed shared world grants.");
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
+                item.CredentialHash is not null && !item.ApprovalPending &&
+                item.AssignedProfileIds?.Contains(profileId) == true);
+            if (device is null) return new(false, "PermissionDenied", "Approve and assign this PC first.");
+            device.SharedWorldGrants ??= [];
+            device.SharedWorldGrants[profileId] = grants;
+            device.SaveReceiveProfileIds ??= [];
+            device.SaveReceiveProfileIds.Remove(profileId);
+            if (grants.Receive) device.SaveReceiveProfileIds.Add(profileId);
+            MarkSharedRostersDirty();
+            SaveState();
+            return new(true, "SharedGrantsSaved", "Shared world grants saved.");
+        }
+    }
+
+    public PairingDecision BindSharedWorldKey(Guid deviceId, SharedWorldEnrollmentRequest request)
+    {
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
+                item.CredentialHash is not null && !item.ApprovalPending);
+            if (device is null || !SharedWorldRosterTrust.VerifyEnrollment(deviceId, request))
+                return new(false, "EnrollmentRejected", "This PC could not prove its signing identity.");
+            if (device.SharedWorldPublicKey is not null && device.SharedWorldPublicKey != request.PublicKey)
+                return new(false, "KeyReviewRequired", "The owner must reset this PC's shared world identity first.");
+            if (devices.Any(item => item.Id != deviceId && item.SharedWorldPublicKey == request.PublicKey))
+                return new(false, "KeyAlreadyBound", "This signing identity is already bound to another PC.");
+            if (device.SharedWorldPublicKey == request.PublicKey)
+                return new(true, "IdentityAlreadyEnrolled", "This PC's signing identity is already bound.");
+            device.SharedWorldPublicKey = request.PublicKey;
+            MarkSharedRostersDirty();
+            SaveState();
+            return new(true, "IdentityEnrolled", "This PC's signing identity is bound to its device ID.");
+        }
+    }
+
+    public PairingDecision ResetSharedWorldKey(Guid deviceId)
+    {
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item));
+            if (device is null) return new(false, "UnknownDevice", "This PC was not found.");
+            device.SharedWorldPublicKey = null;
+            device.SharedWorldGrants?.Clear();
+            device.SaveReceiveProfileIds?.Clear();
+            MarkSharedRostersDirty();
+            SaveState();
+            return new(true, "IdentityReset", "Shared world identity reset. Review grants after this PC enrolls again.");
+        }
+    }
+
+    public IReadOnlyList<SharedWorldRosterMember> SharedRosterMembers(Guid profileId)
+    {
+        lock (sync) return devices.Where(item => item.SharedWorldPublicKey is not null &&
+                (item.AssignedProfileIds?.Contains(profileId) == true ||
+                 item.SharedWorldGrants?.ContainsKey(profileId) == true))
+            .Select(item => new SharedWorldRosterMember(item.Id, item.SharedWorldPublicKey!,
+                item.SharedWorldGrants?.GetValueOrDefault(profileId) ?? new(),
+                IsRevoked(item) || item.ApprovalPending || item.AssignedProfileIds?.Contains(profileId) != true,
+                item.AccessExpiresUtc))
+            .ToArray();
     }
 
     public PairingDecision SetName(Guid id, string? name)

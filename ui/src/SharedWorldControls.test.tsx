@@ -20,6 +20,7 @@ describe('Shared saves controls', () => {
     const calls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/governance')) return reply({ revision: calls.length, ownerOverride: true })
       if (url.endsWith('/shared-world') && !init?.method)
         return reply({ enabled: calls.some(call => call.startsWith('PUT')), latest: null, error: null })
       return reply({ ok: true, code: 'Saved', message: 'Saved' })
@@ -31,10 +32,13 @@ describe('Shared saves controls', () => {
     expect(sharing).not.toBeChecked()
     fireEvent.click(sharing)
     await waitFor(() => expect(calls).toContain(`PUT /api/local/profiles/${profile}/shared-world`))
-    const grant = await screen.findByLabelText('Allow Friend PC to receive saves')
+    const grant = await screen.findByLabelText('Receive for Friend PC')
     fireEvent.click(grant)
     await waitFor(() => expect(calls).toContain(
-      `PUT /api/local/devices/${device.id}/shared-world/${profile}`))
+      `PUT /api/local/devices/${device.id}/shared-world/${profile}/grants`))
+    expect(screen.getByLabelText('Eligible host for Friend PC')).not.toBeChecked()
+    expect(screen.getByLabelText('Recovery voter for Friend PC')).not.toBeChecked()
+    expect(screen.getByLabelText('Manage sharing for Friend PC')).not.toBeChecked()
     expect(screen.getByText(/Live save capture and takeover are not available yet/)).toBeInTheDocument()
   })
 
@@ -83,6 +87,44 @@ describe('Shared saves controls', () => {
     expect(await screen.findByText('Receiving completed save')).toBeInTheDocument()
     await new Promise(resolve => setTimeout(resolve, 2200))
     expect(await screen.findByText('Up to date when last checked')).toBeInTheDocument()
+  })
+
+  it('sends owner override changes through the signed governance route', async () => {
+    const bodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/governance')) {
+        if (init?.method === 'PUT') bodies.push(JSON.parse(String(init.body)))
+        return reply({ revision: init?.method === 'PUT' ? 2 : 1,
+          ownerOverride: init?.method !== 'PUT' })
+      }
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    const toggle = await screen.findByLabelText('Owner recovery override (future recovery only)')
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    await waitFor(() => expect(bodies).toEqual([{ ownerOverride: false }]))
+    expect(toggle).not.toBeChecked()
+  })
+
+  it('lets the owner review a changed source without changing the override choice', async () => {
+    const bodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/governance')) {
+        if (init?.method === 'PUT') bodies.push(JSON.parse(String(init.body)))
+        return reply({ revision: 4, ownerOverride: false })
+      }
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    fireEvent.click(screen.getByText('Technical details'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
+    await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
+    expect(screen.getByLabelText('Owner recovery override (future recovery only)')).not.toBeChecked()
   })
 
   it('explains how to review a changed Host source without comparing group version numbers', async () => {
