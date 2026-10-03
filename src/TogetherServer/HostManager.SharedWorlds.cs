@@ -7,11 +7,20 @@ public sealed partial class HostManager
         reason = "";
         try
         {
-            return authority.HasState(profileId) && authority.Fenced(profileId,
-                sharedWorlds.LocalAuthorityPublicKey(), out reason);
+            if (!authority.HasState(profileId)) return false;
+            if (authority.Fenced(profileId, sharedWorlds.LocalAuthorityPublicKey(), out reason))
+                return true;
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null || !sharedWorlds.AuthorizedPublishedLineage(profile))
+            {
+                reason = "The published save does not continue the signed authority head. Keep this world offline for review.";
+                return true;
+            }
+            return false;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or
-                                   UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+                                   UnauthorizedAccessException or System.Text.Json.JsonException or
+                                   System.Security.Cryptography.CryptographicException)
         {
             reason = "Shared world authority could not be verified. Keep this world offline until its history is reviewed.";
             return true;
@@ -101,7 +110,7 @@ public sealed partial class HostManager
                 record.Roster.OwnerPublicKey != roster.OwnerPublicKey ||
                 record.Roster.Epoch < roster.Epoch || record.Roster.Revision < roster.Revision)
                 throw new InvalidDataException("Authority roster is older or belongs to another group.");
-            authority.Append(record);
+            authority.Append(record, enforceCurrentGrants: false);
             var active = runs.SingleOrDefault(run => run.ProfileId == profile.Id);
             Activity("Backup", "SharedWorldAuthorityApplied",
                 active is not null && Identity(active) == "Matched"
@@ -118,7 +127,15 @@ public sealed partial class HostManager
         string recordHash, Guid deviceId)
     {
         await gate.WaitAsync();
-        try { authority.BindLocalSuccessor(profileId, recordHash, deviceId); }
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
+                throw new InvalidDataException("This PC does not have that world.");
+            authority.BindLocalSuccessor(profileId, recordHash, deviceId);
+            var record = authority.LocalAuthorizedHead(profileId) ??
+                throw new InvalidDataException("The bound successor is not the current authority head.");
+            sharedWorlds.AdoptSuccessor(profile, record);
+        }
         finally { gate.Release(); }
     }
 
@@ -145,6 +162,18 @@ public sealed partial class HostManager
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (SharedAuthorityBlocked(profileId, out _)) return null;
             return profile is null ? null : sharedWorlds.ReadRoster(profile);
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<IReadOnlyList<WorldAuthorityRecord>?> SharedWorldAuthorityAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (settings.Profiles.All(item => item.Id != profileId) ||
+                SharedAuthorityBlocked(profileId, out _)) return null;
+            return authority.Read(profileId);
         }
         finally { gate.Release(); }
     }

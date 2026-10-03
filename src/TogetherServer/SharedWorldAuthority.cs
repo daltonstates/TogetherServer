@@ -9,7 +9,10 @@ namespace TogetherServer;
 public sealed record WorldAuthorityProposal(int Schema, Guid GroupId, Guid ProfileId,
     long Epoch, string? ParentAuthorityHash, string RosterHash, string VersionHash,
     string CandidatePublicKey, string CandidateAddress, string Kind,
-    Guid ProposerDeviceId, string ProposerPublicKey, string Signature);
+    Guid ProposerDeviceId, string ProposerPublicKey, string Signature,
+    WorldSuccessorBinding? SuccessorBinding = null);
+public sealed record WorldSuccessorBinding(Guid DeviceId, string DevicePublicKey,
+    string HostingPublicKey, string Signature);
 public sealed record WorldAuthorityVote(int Schema, string ProposalHash, Guid VoterDeviceId,
     string VoterPublicKey, string Signature);
 public sealed record WorldAuthorityRecord(int Schema, WorldAuthorityProposal Proposal,
@@ -22,12 +25,28 @@ internal static class WorldAuthorityTrust
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     internal static string RosterHash(SharedWorldRoster roster) => Hash(JsonSerializer.SerializeToUtf8Bytes(roster, Json));
-    internal static byte[] ProposalBasis(WorldAuthorityProposal proposal) => JsonSerializer.SerializeToUtf8Bytes(new
+    internal static byte[] BindingBasis(WorldAuthorityProposal proposal, WorldSuccessorBinding binding) =>
+        JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer successor hosting binding v1", proposal.GroupId,
+            proposal.ProfileId, proposal.Epoch, proposal.ParentAuthorityHash,
+            proposal.RosterHash, proposal.VersionHash, binding.DeviceId,
+            binding.DevicePublicKey, binding.HostingPublicKey
+        }, Json);
+    internal static byte[] ProposalBasis(WorldAuthorityProposal proposal) => proposal.Schema == 1
+        ? JsonSerializer.SerializeToUtf8Bytes(new
     {
         domain = "TogetherServer authority proposal v1", proposal.Schema, proposal.GroupId,
         proposal.ProfileId, proposal.Epoch, proposal.ParentAuthorityHash, proposal.RosterHash,
         proposal.VersionHash, proposal.CandidatePublicKey, proposal.CandidateAddress,
         proposal.Kind, proposal.ProposerDeviceId, proposal.ProposerPublicKey
+    }, Json) : JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        domain = "TogetherServer authority proposal v2", proposal.Schema, proposal.GroupId,
+        proposal.ProfileId, proposal.Epoch, proposal.ParentAuthorityHash, proposal.RosterHash,
+        proposal.VersionHash, proposal.CandidatePublicKey, proposal.CandidateAddress,
+        proposal.Kind, proposal.ProposerDeviceId, proposal.ProposerPublicKey,
+        proposal.SuccessorBinding
     }, Json);
     internal static string ProposalHash(WorldAuthorityProposal proposal) => Hash(ProposalBasis(proposal));
     internal static byte[] VoteBasis(WorldAuthorityVote vote) => JsonSerializer.SerializeToUtf8Bytes(new
@@ -63,9 +82,23 @@ internal static class WorldAuthorityTrust
     }
     internal static bool VerifyProposal(WorldAuthorityProposal proposal, SharedWorldRoster roster)
     {
-        if (proposal.Schema != 1 || proposal.Epoch < 1 || proposal.GroupId != roster.GroupId ||
+        if (proposal.Schema is not (1 or 2) || proposal.Epoch < 1 || proposal.GroupId != roster.GroupId ||
             proposal.ProfileId != roster.ProfileId || proposal.RosterHash != RosterHash(roster) ||
             !Signature(proposal.ProposerPublicKey, ProposalBasis(proposal), proposal.Signature)) return false;
+        if (proposal.Schema == 1 && proposal.SuccessorBinding is not null) return false;
+        if (proposal.Schema == 2)
+        {
+            var binding = proposal.SuccessorBinding;
+            if (binding is null || binding.DeviceId == Guid.Empty ||
+                binding.HostingPublicKey != proposal.CandidatePublicKey ||
+                binding.HostingPublicKey == roster.OwnerPublicKey ||
+                !SharedWorldRosterTrust.ValidKey(binding.HostingPublicKey) ||
+                roster.Members.SingleOrDefault(member => member.DeviceId == binding.DeviceId) is not
+                    { Revoked: false, Grants.EligibleHost: true } candidate ||
+                candidate.PublicKey != binding.DevicePublicKey ||
+                !Signature(binding.DevicePublicKey, BindingBasis(proposal, binding), binding.Signature))
+                return false;
+        }
         if (proposal.Kind == "Planned")
             return proposal.ProposerPublicKey == roster.OwnerPublicKey &&
                 proposal.ProposerDeviceId == Guid.Empty;
@@ -87,7 +120,7 @@ internal static class WorldAuthorityTrust
     {
         try
         {
-            if (record is null || record.Schema != 1 || record.Proposal.Schema != 1 ||
+            if (record is null || record.Schema != 1 || record.Proposal.Schema is not (1 or 2) ||
                 record.Proposal.GroupId == Guid.Empty || record.Proposal.ProfileId == Guid.Empty ||
                 record.Proposal.Epoch < 1 || record.Votes.Count > 128 ||
                 record.VersionLineage is { Count: > 64 } ||
@@ -108,7 +141,8 @@ internal static class WorldAuthorityTrust
                 !VerifyProposal(record.Proposal, record.Roster) ||
                 record.RecordHash != Hash(RecordBasis(record))) return false;
             var candidate = record.Roster.Members.SingleOrDefault(member =>
-                member.PublicKey == record.Proposal.CandidatePublicKey);
+                member.PublicKey == (record.Proposal.SuccessorBinding?.DevicePublicKey ??
+                    record.Proposal.CandidatePublicKey));
             if (candidate is not { Revoked: false, Grants.EligibleHost: true }) return false;
             var ownerApproved = record.OwnerSignature is not null &&
                 Signature(record.Roster.OwnerPublicKey, OwnerBasis(record.Proposal), record.OwnerSignature);
@@ -169,7 +203,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         int OldLength, int NewCount, string NewHash, string Line);
     private sealed record LocalVoteEntry(string? Parent, long Epoch, Guid Voter, WorldAuthorityVote Vote);
     private sealed record LocalHostBinding(int Schema, Guid GroupId, string RecordHash,
-        Guid DeviceId, string PublicKey);
+        Guid DeviceId, string DevicePublicKey, string HostingPublicKey);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object sync = new();
     private string Root(Guid profileId)
@@ -240,7 +274,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         bool Active(Guid id) => record.Roster.Members.Single(member => member.DeviceId == id)
             .AccessExpiresUtc is not { } end || end > now;
         var candidate = record.Roster.Members.Single(member =>
-            member.PublicKey == record.Proposal.CandidatePublicKey);
+            member.PublicKey == (record.Proposal.SuccessorBinding?.DevicePublicKey ??
+                record.Proposal.CandidatePublicKey));
         return Active(candidate.DeviceId) &&
             (record.Proposal.Kind == "Planned" || Active(record.Proposal.ProposerDeviceId)) &&
             record.Votes.All(vote => Active(vote.VoterDeviceId));
@@ -250,16 +285,61 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         var bytes = data.LoadProtected(HostBindingName(record.Proposal.ProfileId));
         if (bytes is null) return false;
         var binding = JsonSerializer.Deserialize<LocalHostBinding>(bytes, Json);
-        if (binding is null || binding.Schema != 1 || binding.GroupId != record.Proposal.GroupId ||
+        if (binding is null || binding.Schema != 2 || binding.GroupId != record.Proposal.GroupId ||
             binding.RecordHash != record.RecordHash ||
-            binding.PublicKey != record.Proposal.CandidatePublicKey) return false;
+            binding.HostingPublicKey != record.Proposal.CandidatePublicKey ||
+            record.Proposal.SuccessorBinding is not { } signed ||
+            signed.DeviceId != binding.DeviceId || signed.DevicePublicKey != binding.DevicePublicKey)
+            return false;
         var member = record.Roster.Members.SingleOrDefault(item => item.DeviceId == binding.DeviceId);
-        if (member?.PublicKey != binding.PublicKey) return false;
+        if (member?.PublicKey != binding.DevicePublicKey) return false;
         var keyBytes = data.LoadProtected($"shared-world-pc-signing-{binding.DeviceId:N}.protected");
         if (keyBytes is null) return false;
         using var key = ECDsa.Create();
         key.ImportPkcs8PrivateKey(keyBytes, out _);
-        return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) == binding.PublicKey;
+        if (!ProvesPossession(key, binding.DevicePublicKey))
+            return false;
+        var hostBytes = data.LoadProtected(HostingKeyName(record.Proposal.ProfileId));
+        if (hostBytes is null) return false;
+        using var hostKey = ECDsa.Create();
+        hostKey.ImportPkcs8PrivateKey(hostBytes, out _);
+        return ProvesPossession(hostKey, binding.HostingPublicKey);
+    }
+    private static bool ProvesPossession(ECDsa privateKey, string expectedPublicKey)
+    {
+        if (Convert.ToBase64String(privateKey.ExportSubjectPublicKeyInfo()) != expectedPublicKey)
+            return false;
+        using var verifier = ECDsa.Create();
+        verifier.ImportSubjectPublicKeyInfo(Convert.FromBase64String(expectedPublicKey), out _);
+        var challenge = RandomNumberGenerator.GetBytes(32);
+        return verifier.VerifyData(challenge,
+            privateKey.SignData(challenge, HashAlgorithmName.SHA256), HashAlgorithmName.SHA256);
+    }
+    internal static string HostingKeyName(Guid profileId) =>
+        $"shared-world-host-signing-{profileId:N}.protected";
+    internal string PrepareLocalHostingKey(Guid profileId)
+    {
+        lock (sync)
+        {
+            var bytes = data.LoadProtected(HostingKeyName(profileId));
+            if (bytes is null)
+            {
+                using var created = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+                bytes = created.ExportPkcs8PrivateKey();
+                data.SaveProtected(HostingKeyName(profileId), bytes);
+            }
+            using var key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(bytes, out _);
+            return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        }
+    }
+    internal WorldAuthorityRecord? LocalAuthorizedHead(Guid profileId)
+    {
+        var records = Read(profileId);
+        if (records.Count == 0) return null;
+        var heads = records.Where(record => !records.Any(child =>
+            child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+        return heads.Length == 1 && MatchesLocalSuccessor(heads[0]) ? heads[0] : null;
     }
     internal void BindLocalSuccessor(Guid profileId, string recordHash, Guid deviceId)
     {
@@ -268,17 +348,20 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             var record = Read(profileId).SingleOrDefault(item => item.RecordHash == recordHash)
                 ?? throw new InvalidDataException("The verified authority record is missing.");
             var member = record.Roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
-            if (member?.PublicKey != record.Proposal.CandidatePublicKey)
+            if (record.Proposal.Schema != 2 || record.Proposal.SuccessorBinding is not { } signed ||
+                signed.DeviceId != deviceId || member?.PublicKey != signed.DevicePublicKey)
                 throw new InvalidDataException("This PC is not the signed successor.");
-            var binding = new LocalHostBinding(1, record.Proposal.GroupId, recordHash,
-                deviceId, member.PublicKey);
+            var binding = new LocalHostBinding(2, record.Proposal.GroupId, recordHash,
+                deviceId, member.PublicKey, signed.HostingPublicKey);
             // The proof of possession is checked before writing and again at each Start.
             var keyBytes = data.LoadProtected($"shared-world-pc-signing-{deviceId:N}.protected");
             if (keyBytes is null) throw new InvalidDataException("Successor PC identity is missing.");
             using var key = ECDsa.Create();
             key.ImportPkcs8PrivateKey(keyBytes, out _);
-            if (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) != member.PublicKey)
+            if (!ProvesPossession(key, member.PublicKey))
                 throw new InvalidDataException("Successor PC identity does not match the signed roster.");
+            if (PrepareLocalHostingKey(profileId) != signed.HostingPublicKey)
+                throw new InvalidDataException("This PC does not own the authorized hosting key.");
             data.SaveProtected(HostBindingName(profileId), JsonSerializer.SerializeToUtf8Bytes(binding, Json));
         }
     }
@@ -290,7 +373,9 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             record.Proposal.ProfileId != expectedProfileId ||
             record.Proposal.GroupId != expectedGroupId)
             throw new InvalidDataException("Authority does not match the pinned shared world.");
-        Append(record);
+        // A received historical decision is verified by signatures and lineage.
+        // Its participants' grants may have expired since it was accepted.
+        Append(record, enforceCurrentGrants: false);
     }
     internal IReadOnlyList<WorldAuthorityRecord> Read(Guid profileId)
     {
@@ -330,14 +415,14 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         }
     }
     internal void Append(WorldAuthorityRecord record, bool stopAfterLogForChecks = false,
-        bool stopAfterJournalForChecks = false)
+        bool stopAfterJournalForChecks = false, bool enforceCurrentGrants = true)
     {
         lock (sync)
         {
             if (!WorldAuthorityTrust.Verify(record)) throw new InvalidDataException("Authority proof is invalid.");
             var existing = Read(record.Proposal.ProfileId);
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
-            if (!EligibleAtAcceptance(record))
+            if (enforceCurrentGrants && !EligibleAtAcceptance(record))
                 throw new InvalidDataException("A successor, proposer, or voter grant has expired.");
             var parentRecord = existing.SingleOrDefault(item =>
                 item.RecordHash == record.Proposal.ParentAuthorityHash);
@@ -429,8 +514,9 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             var heads = records.Where(record => !records.Any(child =>
                 child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
             if (heads.Length == 0) { reason = ""; return false; }
-            if (heads.Length > 1 || heads.Any(head =>
-                head.Proposal.CandidatePublicKey != localPublicKey && !MatchesLocalSuccessor(head)))
+            if (heads.Length > 1 || heads.Any(head => head.Proposal.Schema == 2
+                ? !MatchesLocalSuccessor(head)
+                : head.Proposal.CandidatePublicKey != localPublicKey))
             {
                 reason = "A verified takeover or competing authority was recorded. Keep this copy and gracefully stop the exact managed server before reviewing the histories.";
                 return true;
