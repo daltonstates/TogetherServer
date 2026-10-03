@@ -471,14 +471,18 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
     data.SaveSettings(Settings(profile));
     var deviceId = Guid.NewGuid();
     var inviteGeneration = Guid.NewGuid();
-    data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+    data.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
     {
         Id = deviceId, ProfileId = profile.Id, InviteGeneration = inviteGeneration,
         AssignedProfileIds = [profile.Id],
         CredentialHash = new string('A', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
         CanStart = true, CanStop = true, CanViewLogs = true
-    }], ServerInvites = [new ServerInviteState { ProfileId = profile.Id,
-        Generation = inviteGeneration, Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }] });
+    }],
+        ServerInvites = [new ServerInviteState { ProfileId = profile.Id,
+        Generation = inviteGeneration, Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }]
+    });
     var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
     var pairing = new PairingService(data, clock);
     using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -2070,7 +2074,7 @@ await Check("shared Stop before first signed roster leaves setup recoverable", a
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first stop");
-    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()]));
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok &&
         (await manager.StartAsync(profile.Id)).Ok &&
         (await manager.StopAsync(profile.Id)).Ok, "the first graceful Stop failed");
@@ -2121,7 +2125,7 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     Require(status.Enabled && status.Latest is { Number: 1, Schema: 4 } &&
         SharedWorldService.VerifySignature(status.Latest), "signed version was not published after Stop");
     Require(!SharedWorldService.VerifySignature(status.Latest! with
-        { PortableSetup = status.Latest.PortableSetup with { GameVersion = "9.9.9" } }),
+    { PortableSetup = status.Latest.PortableSetup with { GameVersion = "9.9.9" } }),
         "changed portable game requirements passed signature verification");
     Require(!SharedWorldService.VerifySignature(status.Latest! with { Schema = 1 }),
         "a v4 manifest was accepted as the old unsigned-setup schema");
@@ -2175,8 +2179,10 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "rehearsal marker");
-    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()]));
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
+    new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System))
+        .PublishRoster(profile, []);
     Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
         "fixture Stop did not publish");
     var version = (await manager.SharedWorldStatusAsync(profile.Id)).Latest!;
@@ -2210,8 +2216,11 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { GameVersion = "wrong" }, authority, version.SigningPublicKey, version.GroupId,
         _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("matching game server")),
         "wrong game version passed");
-    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { EnabledAddOns =
-        [new SharedWorldPortableAddOn("Unexpected", "1", "1", "Factorio mod")] }, authority, version.SigningPublicKey, version.GroupId,
+    Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with
+    {
+        EnabledAddOns =
+        [new SharedWorldPortableAddOn("Unexpected", "1", "1", "Factorio mod")]
+    }, authority, version.SigningPublicKey, version.GroupId,
         _ => 2L * 1024 * 1024 * 1024).Reasons.Any(reason => reason.Contains("add-ons")),
         "mismatched add-ons passed");
     Require(SharedWorldReadiness.Check(vault, rehearsalRoot, setup with { NewPasswordConfigured = false }, authority, version.SigningPublicKey, version.GroupId,
@@ -2288,8 +2297,11 @@ await Check("shared portable setup signs reviewed requirements without machine s
         "{\"mods\":[{\"name\":\"fixturemod\",\"enabled\":true}]}");
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
-    Require(modSetup.AddOns is [{ Name: "fixturemod", Version: "1.0.0",
-        RequiredGameVersion: "2.0", Type: "Factorio mod" }],
+    Require(modSetup.AddOns is [
+        {
+            Name: "fixturemod", Version: "1.0.0",
+            RequiredGameVersion: "2.0", Type: "Factorio mod"
+        }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -2298,8 +2310,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     Require(!SharedWorldPortableSetupReader.Valid(GameKinds.Valheim, invalid),
         "a machine path was accepted as a player identity");
     Require(!SharedWorldPortableSetupReader.Valid(GameKinds.Valheim, invalid with
-        { Allowlist = Enumerable.Range(0, 129).Select(number =>
-            new SharedWorldPortableAllowEntry("Player" + number, null)).ToArray() }),
+    {
+        Allowlist = Enumerable.Range(0, 129).Select(number =>
+        new SharedWorldPortableAllowEntry("Player" + number, null)).ToArray()
+    }),
         "oversized portable metadata was accepted");
     var java = Profile("malformed-portable", "world", FreePort());
     java.Kind = GameKinds.MinecraftJava;
@@ -2320,50 +2334,108 @@ await Check("new shared manifest reader accepts signed v1 history and rejects al
     var file = new SharedWorldFile("world.dat", 4, new string('A', 64));
     var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
     var portable = new SharedWorldPortableSetup(2456, false);
-    var basis = JsonSerializer.Serialize(new { schema = 1, group, number = 1L,
-        parent = (string?)null, profile, game = GameKinds.Valheim, world = "world",
-        createdUtc, captureKind = SharedWorldCaptureKinds.PostStopBackup,
-        backup, portableSetup = new { portable.GamePort, portable.Crossplay },
-        files = new[] { file }, publicKey }, json);
+    var basis = JsonSerializer.Serialize(new
+    {
+        schema = 1,
+        group,
+        number = 1L,
+        parent = (string?)null,
+        profile,
+        game = GameKinds.Valheim,
+        world = "world",
+        createdUtc,
+        captureKind = SharedWorldCaptureKinds.PostStopBackup,
+        backup,
+        portableSetup = new { portable.GamePort, portable.Crossplay },
+        files = new[] { file },
+        publicKey
+    }, json);
     var digest = SHA256.HashData(Encoding.UTF8.GetBytes(basis));
     var version = new SharedWorldVersion(1, group, 1, null, profile, GameKinds.Valheim,
         "world", createdUtc, SharedWorldCaptureKinds.PostStopBackup, backup, portable,
         [file], publicKey, Convert.ToHexString(digest), Convert.ToBase64String(key.SignHash(digest)));
     Require(SharedWorldService.VerifySignature(version), "signed v1 history was not readable");
     Require(!SharedWorldService.VerifySignature(version with
-        { PortableSetup = portable with { GameVersion = "Unknown" } }),
+    { PortableSetup = portable with { GameVersion = "Unknown" } }),
         "unsigned metadata was injected into a signed v1 manifest");
     Require(!SharedWorldService.VerifySignature(version with { Schema = 2 }),
         "old signature was accepted for the new portable schema");
     var v2Setup = new SharedWorldPortableSetup(2456, false, "Unknown", [], []);
-    var v2Basis = JsonSerializer.Serialize(new { schema = 2, group, number = 1L,
-        parent = (string?)null, profile, game = GameKinds.Valheim, world = "world",
-        createdUtc, captureKind = SharedWorldCaptureKinds.PostStopBackup, backup,
-        portableSetup = new { v2Setup.GamePort, v2Setup.Crossplay, v2Setup.GameVersion,
-            v2Setup.AddOns, v2Setup.Allowlist }, files = new[] { file }, publicKey }, json);
+    var v2Basis = JsonSerializer.Serialize(new
+    {
+        schema = 2,
+        group,
+        number = 1L,
+        parent = (string?)null,
+        profile,
+        game = GameKinds.Valheim,
+        world = "world",
+        createdUtc,
+        captureKind = SharedWorldCaptureKinds.PostStopBackup,
+        backup,
+        portableSetup = new
+        {
+            v2Setup.GamePort,
+            v2Setup.Crossplay,
+            v2Setup.GameVersion,
+            v2Setup.AddOns,
+            v2Setup.Allowlist
+        },
+        files = new[] { file },
+        publicKey
+    }, json);
     var v2Digest = SHA256.HashData(Encoding.UTF8.GetBytes(v2Basis));
-    var v2 = version with { Schema = 2, PortableSetup = v2Setup,
+    var v2 = version with
+    {
+        Schema = 2,
+        PortableSetup = v2Setup,
         VersionHash = Convert.ToHexString(v2Digest),
-        Signature = Convert.ToBase64String(key.SignHash(v2Digest)) };
+        Signature = Convert.ToBase64String(key.SignHash(v2Digest))
+    };
     Require(SharedWorldService.VerifySignature(v2), "signed v2 history was not readable");
     Require(!SharedWorldService.VerifySignature(v2 with
-        { PortableSetup = v2Setup with { PublicListing = true } }),
+    { PortableSetup = v2Setup with { PublicListing = true } }),
         "unsigned settings were injected into signed v2 history");
     var v3Setup = v2Setup with { PublicListing = true };
-    var v3Basis = JsonSerializer.Serialize(new { schema = 3, group, number = 1L,
-        parent = (string?)null, profile, game = GameKinds.Valheim, world = "world",
-        createdUtc, captureKind = SharedWorldCaptureKinds.PostStopBackup, backup,
-        portableSetup = new { v3Setup.GamePort, v3Setup.Crossplay, v3Setup.GameVersion,
-            v3Setup.AddOns, v3Setup.Allowlist, v3Setup.PublicListing, v3Setup.MaxPlayers,
-            v3Setup.GameMode, v3Setup.Difficulty, v3Setup.AllowlistEnabled },
-        files = new[] { file }, publicKey }, json);
+    var v3Basis = JsonSerializer.Serialize(new
+    {
+        schema = 3,
+        group,
+        number = 1L,
+        parent = (string?)null,
+        profile,
+        game = GameKinds.Valheim,
+        world = "world",
+        createdUtc,
+        captureKind = SharedWorldCaptureKinds.PostStopBackup,
+        backup,
+        portableSetup = new
+        {
+            v3Setup.GamePort,
+            v3Setup.Crossplay,
+            v3Setup.GameVersion,
+            v3Setup.AddOns,
+            v3Setup.Allowlist,
+            v3Setup.PublicListing,
+            v3Setup.MaxPlayers,
+            v3Setup.GameMode,
+            v3Setup.Difficulty,
+            v3Setup.AllowlistEnabled
+        },
+        files = new[] { file },
+        publicKey
+    }, json);
     var v3Digest = SHA256.HashData(Encoding.UTF8.GetBytes(v3Basis));
-    var v3 = version with { Schema = 3, PortableSetup = v3Setup,
+    var v3 = version with
+    {
+        Schema = 3,
+        PortableSetup = v3Setup,
         VersionHash = Convert.ToHexString(v3Digest),
-        Signature = Convert.ToBase64String(key.SignHash(v3Digest)) };
+        Signature = Convert.ToBase64String(key.SignHash(v3Digest))
+    };
     Require(SharedWorldService.VerifySignature(v3), "signed v3 history was not readable");
     Require(!SharedWorldService.VerifySignature(v3 with
-        { PortableSetup = v3Setup with { JavaServerJarSha256 = new string('A', 64) } }),
+    { PortableSetup = v3Setup with { JavaServerJarSha256 = new string('A', 64) } }),
         "unsigned JAR identity was injected into signed v3 history");
     return Task.CompletedTask;
 });
@@ -2905,21 +2977,25 @@ await Check("signed copy receipts count only the exact latest verified version",
     File.WriteAllText(worldFile, "first save");
     var backups = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backups);
-    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
-    Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
-    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version!;
     var device = Guid.NewGuid();
     using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     using var fake = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var key = Convert.ToBase64String(pc.ExportSubjectPublicKeyInfo());
     var roster = shares.PublishRoster(profile, [new SharedWorldRosterMember(device, key,
         new SharedWorldGrants(Receive: true), false)]);
+    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
+    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version!;
     SharedWorldReceipt Sign(SharedWorldVersion version, ECDsa signer, Guid deviceId,
-        long epoch, long revision) {
+        long epoch, long revision)
+    {
         var draft = new SharedWorldReceipt(1, version.GroupId, profile.Id, version.VersionHash,
             deviceId, epoch, revision, Guid.NewGuid(), "");
-        return draft with { Signature = Convert.ToBase64String(signer.SignData(
-            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(signer.SignData(
+            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+        };
     }
     var receipt = Sign(first, pc, device, roster.Epoch, roster.Revision);
     Require(!shares.ConfirmReceipt(profile, device, Sign(first, fake, device,
@@ -2937,9 +3013,13 @@ await Check("signed copy receipts count only the exact latest verified version",
     Require(shares.Status(profile).ConfirmedCopies == 1, "confirmed copy was not counted");
     var receiptsFile = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), "receipts.json");
     var originalReceipts = File.ReadAllBytes(receiptsFile);
-    File.WriteAllBytes(receiptsFile, JsonSerializer.SerializeToUtf8Bytes(new {
-        schema = 1, groupId = first.GroupId, profileId = profile.Id,
-        versionHash = first.VersionHash, receipts = new[] { receipt with { ReceiptId = Guid.NewGuid() } }
+    File.WriteAllBytes(receiptsFile, JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        schema = 1,
+        groupId = first.GroupId,
+        profileId = profile.Id,
+        versionHash = first.VersionHash,
+        receipts = new[] { receipt with { ReceiptId = Guid.NewGuid() } }
     }));
     Require(shares.Status(profile).ConfirmedCopies == 0, "tampered persisted receipt inflated the count");
     File.WriteAllBytes(receiptsFile, originalReceipts);
@@ -2972,8 +3052,11 @@ await Check("copy receipt requests reject oversized declared and chunked bodies"
     using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var draft = new SharedWorldReceipt(1, Guid.NewGuid(), Guid.NewGuid(), new string('A', 64),
         Guid.NewGuid(), 2, 3, Guid.NewGuid(), "");
-    var signed = draft with { Signature = Convert.ToBase64String(pc.SignData(
-        SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    var signed = draft with
+    {
+        Signature = Convert.ToBase64String(pc.SignData(
+        SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+    };
     var friendWire = JsonSerializer.SerializeToUtf8Bytes(signed,
         new JsonSerializerOptions(JsonSerializerDefaults.Web));
     using var wireStream = new MemoryStream(friendWire);

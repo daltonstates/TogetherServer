@@ -223,7 +223,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 decision = pairing.AuthorizeReceiveSaves(current, profileId, out var refreshed);
                 if (decision.Ok && refreshed?.SharedWorldPublicKey is not null && roster is not null &&
                     roster.Members.SingleOrDefault(item => item.DeviceId == refreshed.Id) is
-                        { Revoked: false, Grants: { Receive: true } } member &&
+                    { Revoked: false, Grants: { Receive: true } } member &&
                     member.PublicKey == refreshed.SharedWorldPublicKey &&
                     (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow) &&
                     !pairing.SharedRosterDirty(profileId))

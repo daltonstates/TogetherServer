@@ -93,7 +93,7 @@ internal sealed partial class SharedWorldService
             return set.Receipts.Count(receipt => receipt.GroupId == version.GroupId &&
                 receipt.ProfileId == version.ProfileId && receipt.VersionHash == version.VersionHash &&
                 roster.Members.SingleOrDefault(member => member.DeviceId == receipt.DeviceId) is
-                    { Revoked: false, Grants: { Receive: true } } member &&
+                { Revoked: false, Grants: { Receive: true } } member &&
                 SharedWorldReceiptTrust.Verify(receipt, member.PublicKey));
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)

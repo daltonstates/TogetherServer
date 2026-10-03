@@ -67,7 +67,7 @@ internal static class SharedWorldReadiness
                 else if (version.Game != GameKinds.Fixture)
                 {
                     var detected = ServerAddOns.GameVersion(new ServerProfile
-                        { Kind = version.Game, ExecutablePath = setup.ServerFile });
+                    { Kind = version.Game, ExecutablePath = setup.ServerFile });
                     if (detected == "Unknown" || detected != version.PortableSetup.GameVersion)
                         reasons.Add("The selected game server file does not report the required version.");
                 }
@@ -135,8 +135,11 @@ internal static class SharedWorldReadiness
         { return checkedState with { Reasons = [.. checkedState.Reasons, "The received save changed during rehearsal. No copy was made."] }; }
         if (version is not null && (version.VersionHash != checkedState.VersionHash ||
             version.SigningPublicKey != pinnedKey || version.GroupId != approvedGroup))
-            return checkedState with { Reasons = [.. checkedState.Reasons,
-                "The approved save changed during rehearsal. No copy was made."] };
+            return checkedState with
+            {
+                Reasons = [.. checkedState.Reasons,
+                "The approved save changed during rehearsal. No copy was made."]
+            };
         if (version is null || checkedState.Reasons.Any(reason => reason.Contains("disk space", StringComparison.OrdinalIgnoreCase)))
             return checkedState;
         var destination = Path.Combine(root, Guid.NewGuid().ToString("N"));
@@ -158,9 +161,12 @@ internal static class SharedWorldReadiness
                     from.CopyTo(to);
                 SharedWorldService.VerifyFile(target, item);
             }
-            return checkedState with { RehearsalPassed = true,
+            return checkedState with
+            {
+                RehearsalPassed = true,
                 Reasons = [.. checkedState.Reasons,
-                    "Disposable file copy passed hash checks. A real game load, join, and save still need testing."] };
+                    "Disposable file copy passed hash checks. A real game load, join, and save still need testing."]
+            };
         }
         finally
         {

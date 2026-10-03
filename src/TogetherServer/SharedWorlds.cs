@@ -189,8 +189,11 @@ internal sealed partial class SharedWorldService
                 ownerOverride ?? prior?.OwnerOverride ?? true,
                 Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
                 ordered, "");
-            var roster = draft with { Signature = Convert.ToBase64String(key.SignData(
-                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            var roster = draft with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+            };
             var path = GroupRosterPath(profile.Id, binding.GroupId);
             Directory.CreateDirectory(Root(profile.Id));
             var stage = path + ".new";
@@ -479,29 +482,93 @@ internal sealed partial class SharedWorldService
         string game, string world, DateTimeOffset createdUtc, string captureKind, Guid backup,
         SharedWorldPortableSetup portableSetup, IReadOnlyList<SharedWorldFile> files, string publicKey,
         int schema) => schema == 1
-            ? JsonSerializer.Serialize(new { schema = 1, group, number, parent, profile, game, world,
-                createdUtc, captureKind, backup,
-                portableSetup = new { portableSetup.GamePort, portableSetup.Crossplay }, files, publicKey }, Json)
+            ? JsonSerializer.Serialize(new
+            {
+                schema = 1,
+                group,
+                number,
+                parent,
+                profile,
+                game,
+                world,
+                createdUtc,
+                captureKind,
+                backup,
+                portableSetup = new { portableSetup.GamePort, portableSetup.Crossplay },
+                files,
+                publicKey
+            }, Json)
             : schema == 2
-                ? JsonSerializer.Serialize(new { schema = 2, group, number, parent, profile, game, world,
-                    createdUtc, captureKind, backup,
-                    portableSetup = new { portableSetup.GamePort, portableSetup.Crossplay,
+                ? JsonSerializer.Serialize(new
+                {
+                    schema = 2,
+                    group,
+                    number,
+                    parent,
+                    profile,
+                    game,
+                    world,
+                    createdUtc,
+                    captureKind,
+                    backup,
+                    portableSetup = new
+                    {
+                        portableSetup.GamePort,
+                        portableSetup.Crossplay,
                         portableSetup.GameVersion,
                         AddOns = portableSetup.AddOns?.Select(item => new
                         { item.Name, item.Version, item.RequiredGameVersion, item.Type }).ToArray(),
-                        portableSetup.Allowlist }, files, publicKey }, Json)
+                        portableSetup.Allowlist
+                    },
+                    files,
+                    publicKey
+                }, Json)
                 : schema == 3
-                    ? JsonSerializer.Serialize(new { schema = 3, group, number, parent, profile, game, world,
-                        createdUtc, captureKind, backup,
-                        portableSetup = new { portableSetup.GamePort, portableSetup.Crossplay,
+                    ? JsonSerializer.Serialize(new
+                    {
+                        schema = 3,
+                        group,
+                        number,
+                        parent,
+                        profile,
+                        game,
+                        world,
+                        createdUtc,
+                        captureKind,
+                        backup,
+                        portableSetup = new
+                        {
+                            portableSetup.GamePort,
+                            portableSetup.Crossplay,
                             portableSetup.GameVersion,
                             AddOns = portableSetup.AddOns?.Select(item => new
                             { item.Name, item.Version, item.RequiredGameVersion, item.Type, item.Id }).ToArray(),
-                            portableSetup.Allowlist, portableSetup.PublicListing, portableSetup.MaxPlayers,
-                            portableSetup.GameMode, portableSetup.Difficulty, portableSetup.AllowlistEnabled },
-                        files, publicKey }, Json)
-                    : JsonSerializer.Serialize(new { schema = 4, group, number, parent, profile, game, world,
-                        createdUtc, captureKind, backup, portableSetup, files, publicKey }, Json);
+                            portableSetup.Allowlist,
+                            portableSetup.PublicListing,
+                            portableSetup.MaxPlayers,
+                            portableSetup.GameMode,
+                            portableSetup.Difficulty,
+                            portableSetup.AllowlistEnabled
+                        },
+                        files,
+                        publicKey
+                    }, Json)
+                    : JsonSerializer.Serialize(new
+                    {
+                        schema = 4,
+                        group,
+                        number,
+                        parent,
+                        profile,
+                        game,
+                        world,
+                        createdUtc,
+                        captureKind,
+                        backup,
+                        portableSetup,
+                        files,
+                        publicKey
+                    }, Json);
 
     internal static bool SafePath(string path) => !string.IsNullOrWhiteSpace(path) && path.Length <= 240 &&
         !Path.IsPathRooted(path) && !path.Contains('\\') &&

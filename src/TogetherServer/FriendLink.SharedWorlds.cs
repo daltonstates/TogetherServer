@@ -159,38 +159,38 @@ internal sealed partial class FriendLink
         await gate.WaitAsync(cancellationToken);
         try
         {
-        if (config is null || config.DeviceId != deviceId || config.HostId != hostId ||
-            config.Endpoint != endpoint || !AcceptedPins().SequenceEqual(pins) ||
-            config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
-            withdrawnSharedConsent.ContainsKey(profileId))
-            return SharedFailure("ConnectionChanged", "The saved Host connection changed while checking the roster.");
-        config.SharedWorldSigningKeys ??= [];
-        config.SharedRosterFloors ??= [];
-        var pinned = config.SharedWorldSigningKeys.GetValueOrDefault(profileId);
-        if (pinned is not null && roster?.OwnerPublicKey != pinned)
-            return SharedFailure("SigningIdentityChanged", "The Host's world signing identity changed. Ask the owner to review it.");
-        var floor = config.SharedRosterFloors.GetValueOrDefault(profileId);
-        if (roster is not null && floor is not null && floor.GroupId != roster.GroupId &&
-            config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != roster.GroupId)
-        {
-            config.PendingSharedWorldGroups ??= [];
-            config.PendingSharedWorldGroups[profileId] = roster.GroupId;
+            if (config is null || config.DeviceId != deviceId || config.HostId != hostId ||
+                config.Endpoint != endpoint || !AcceptedPins().SequenceEqual(pins) ||
+                config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
+                withdrawnSharedConsent.ContainsKey(profileId))
+                return SharedFailure("ConnectionChanged", "The saved Host connection changed while checking the roster.");
+            config.SharedWorldSigningKeys ??= [];
+            config.SharedRosterFloors ??= [];
+            var pinned = config.SharedWorldSigningKeys.GetValueOrDefault(profileId);
+            if (pinned is not null && roster?.OwnerPublicKey != pinned)
+                return SharedFailure("SigningIdentityChanged", "The Host's world signing identity changed. Ask the owner to review it.");
+            var floor = config.SharedRosterFloors.GetValueOrDefault(profileId);
+            if (roster is not null && floor is not null && floor.GroupId != roster.GroupId &&
+                config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != roster.GroupId)
+            {
+                config.PendingSharedWorldGroups ??= [];
+                config.PendingSharedWorldGroups[profileId] = roster.GroupId;
+                SaveConfig();
+                return SharedFailure("SourceReviewRequired",
+                    "The Host changed this save source. Turn Allow saves off, then on to review the new signed group.");
+            }
+            if (roster is null || !SharedWorldRosterTrust.Accept(roster, profileId, deviceId,
+                    publicKey, pinned ?? roster.OwnerPublicKey, floor?.Epoch ?? 0, floor?.Revision ?? 0) ||
+                floor is not null && roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
+                    roster.Signature != floor.Signature)
+                return SharedFailure("RosterRejected", "The signed roster is invalid, older, or does not grant this PC Receive access.");
+            if (withdrawnSharedConsent.ContainsKey(profileId))
+                return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
+            // Persist the rollback floor before any manifest or chunks are trusted.
+            config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
+            config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature);
             SaveConfig();
-            return SharedFailure("SourceReviewRequired",
-                "The Host changed this save source. Turn Allow saves off, then on to review the new signed group.");
-        }
-        if (roster is null || !SharedWorldRosterTrust.Accept(roster, profileId, deviceId,
-                publicKey, pinned ?? roster.OwnerPublicKey, floor?.Epoch ?? 0, floor?.Revision ?? 0) ||
-            floor is not null && roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
-                roster.Signature != floor.Signature)
-            return SharedFailure("RosterRejected", "The signed roster is invalid, older, or does not grant this PC Receive access.");
-        if (withdrawnSharedConsent.ContainsKey(profileId))
-            return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
-        // Persist the rollback floor before any manifest or chunks are trusted.
-        config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
-        config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature);
-        SaveConfig();
-        return null;
+            return null;
         }
         finally { gate.Release(); }
     }
@@ -814,8 +814,11 @@ internal sealed partial class FriendLink
         {
             var draft = new SharedWorldReceipt(1, version.GroupId, profileId, version.VersionHash,
                 deviceId, floor.Epoch, floor.Revision, Guid.NewGuid(), "");
-            receipt = draft with { Signature = Convert.ToBase64String(key.SignData(
-                SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            receipt = draft with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+            };
             var stage = receiptFile + "." + Guid.NewGuid().ToString("N") + ".new";
             File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
             File.Move(stage, receiptFile, true);

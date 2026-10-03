@@ -1,5 +1,5 @@
-using System.Security.Cryptography;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -28,15 +28,26 @@ internal static class SharedWorldRosterTrust
     internal static byte[] Basis(SharedWorldRoster roster) => roster.Schema == 1
         ? JsonSerializer.SerializeToUtf8Bytes(new
         {
-            roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
-            roster.OwnerOverride, roster.OwnerPublicKey,
+            roster.Schema,
+            roster.GroupId,
+            roster.ProfileId,
+            roster.Epoch,
+            roster.Revision,
+            roster.OwnerOverride,
+            roster.OwnerPublicKey,
             Members = roster.Members.Select(member => new
             { member.DeviceId, member.PublicKey, member.Grants, member.Revoked }).ToArray()
         }, Json)
         : JsonSerializer.SerializeToUtf8Bytes(new
         {
-            roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
-            roster.OwnerOverride, roster.OwnerPublicKey, roster.Members
+            roster.Schema,
+            roster.GroupId,
+            roster.ProfileId,
+            roster.Epoch,
+            roster.Revision,
+            roster.OwnerOverride,
+            roster.OwnerPublicKey,
+            roster.Members
         }, Json);
 
     internal static bool Verify(SharedWorldRoster? roster)
@@ -102,7 +113,7 @@ internal static class SharedWorldRosterTrust
         Func<SharedWorldGrants, bool> role, TimeProvider? clock = null) =>
         roster.Schema == 2 && Verify(roster) &&
         roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is
-            { Revoked: false } member && member.PublicKey == deviceKey &&
+        { Revoked: false } member && member.PublicKey == deviceKey &&
         HasActiveAccess(member, clock) && role(member.Grants);
 
     private static bool HasActiveAccess(SharedWorldRosterMember member, TimeProvider? clock) =>
