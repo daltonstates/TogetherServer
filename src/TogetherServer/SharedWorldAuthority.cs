@@ -14,7 +14,8 @@ public sealed record WorldAuthorityVote(int Schema, string ProposalHash, Guid Vo
     string VoterPublicKey, string Signature);
 public sealed record WorldAuthorityRecord(int Schema, WorldAuthorityProposal Proposal,
     SharedWorldRoster Roster, SharedWorldVersion Version,
-    IReadOnlyList<WorldAuthorityVote> Votes, string? OwnerSignature, string RecordHash);
+    IReadOnlyList<WorldAuthorityVote> Votes, string? OwnerSignature, string RecordHash,
+    IReadOnlyList<SharedWorldVersion>? VersionLineage = null);
 
 internal static class WorldAuthorityTrust
 {
@@ -36,11 +37,18 @@ internal static class WorldAuthorityTrust
     }, Json);
     internal static byte[] OwnerBasis(WorldAuthorityProposal proposal) => Encoding.UTF8.GetBytes(
         "TogetherServer authority owner approval v1\n" + ProposalHash(proposal));
-    internal static byte[] RecordBasis(WorldAuthorityRecord record) => JsonSerializer.SerializeToUtf8Bytes(new
-    {
-        domain = "TogetherServer authority record v1", record.Schema, record.Proposal,
-        record.Roster, record.Version, record.Votes, record.OwnerSignature
-    }, Json);
+    internal static byte[] RecordBasis(WorldAuthorityRecord record) => record.VersionLineage is null
+        ? JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer authority record v1", record.Schema, record.Proposal,
+            record.Roster, record.Version, record.Votes, record.OwnerSignature
+        }, Json)
+        : JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer authority record v1", record.Schema, record.Proposal,
+            record.Roster, record.Version, record.Votes, record.OwnerSignature,
+            record.VersionLineage
+        }, Json);
     private static bool Signature(string key, byte[] basis, string signature)
     {
         try
@@ -82,6 +90,9 @@ internal static class WorldAuthorityTrust
             if (record is null || record.Schema != 1 || record.Proposal.Schema != 1 ||
                 record.Proposal.GroupId == Guid.Empty || record.Proposal.ProfileId == Guid.Empty ||
                 record.Proposal.Epoch < 1 || record.Votes.Count > 128 ||
+                record.VersionLineage is { Count: > 64 } ||
+                record.VersionLineage is not null && record.VersionLineage.Any(version =>
+                    !SharedWorldService.VerifySignature(version)) ||
                 !SharedWorldRosterTrust.Verify(record.Roster) ||
                 !SharedWorldService.VerifySignature(record.Version) ||
                 record.Proposal.GroupId != record.Roster.GroupId ||
@@ -90,7 +101,6 @@ internal static class WorldAuthorityTrust
                 record.Proposal.ProfileId != record.Version.ProfileId ||
                 record.Proposal.VersionHash != record.Version.VersionHash ||
                 record.Proposal.RosterHash != RosterHash(record.Roster) ||
-                record.Version.SigningPublicKey != record.Roster.OwnerPublicKey ||
                 !SharedWorldRosterTrust.ValidKey(record.Proposal.CandidatePublicKey) ||
                 record.Proposal.CandidateAddress.Length is < 3 or > 255 ||
                 !Uri.TryCreate(record.Proposal.CandidateAddress, UriKind.Absolute, out var address) ||
@@ -121,12 +131,45 @@ internal static class WorldAuthorityTrust
                                    NullReferenceException or JsonException or OverflowException)
         { return false; }
     }
+    internal static bool VerifyLineage(WorldAuthorityRecord record, WorldAuthorityRecord? parent)
+    {
+        if (parent is null)
+            return record.Proposal.Epoch == 1 && record.Proposal.ParentAuthorityHash is null &&
+                record.Version.SigningPublicKey == record.Roster.OwnerPublicKey &&
+                record.VersionLineage is null;
+        if (record.Proposal.ParentAuthorityHash != parent.RecordHash ||
+            record.Proposal.Epoch != parent.Proposal.Epoch + 1 ||
+            record.Proposal.GroupId != parent.Proposal.GroupId ||
+            record.Version.Game != parent.Version.Game ||
+            record.Version.WorldId != parent.Version.WorldId) return false;
+        if (record.Version.VersionHash == parent.Version.VersionHash)
+            return record.VersionLineage is null &&
+                record.Version.SigningPublicKey == parent.Version.SigningPublicKey;
+        if (record.VersionLineage is not { Count: > 0 } chain ||
+            chain[^1].VersionHash != record.Version.VersionHash) return false;
+        var previous = parent.Version;
+        foreach (var version in chain)
+        {
+            if (version.SigningPublicKey != parent.Proposal.CandidatePublicKey ||
+                version.GroupId != previous.GroupId || version.ProfileId != previous.ProfileId ||
+                version.Game != previous.Game || version.WorldId != previous.WorldId ||
+                version.ParentHash != previous.VersionHash || version.Number != previous.Number + 1 ||
+                !SharedWorldService.VerifySignature(version)) return false;
+            previous = version;
+        }
+        return previous.VersionHash == record.Version.VersionHash &&
+            previous.SigningPublicKey == record.Version.SigningPublicKey;
+    }
 }
 
-internal sealed class WorldAuthorityStore(LocalData data)
+internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = null)
 {
     private sealed record Floor(int Schema, int Count, string LogHash);
+    private sealed record PendingAppend(int Schema, int OldCount, string OldHash,
+        int OldLength, int NewCount, string NewHash, string Line);
     private sealed record LocalVoteEntry(string? Parent, long Epoch, Guid Voter, WorldAuthorityVote Vote);
+    private sealed record LocalHostBinding(int Schema, Guid GroupId, string RecordHash,
+        Guid DeviceId, string PublicKey);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object sync = new();
     private string Root(Guid profileId)
@@ -137,10 +180,12 @@ internal sealed class WorldAuthorityStore(LocalData data)
     }
     private static string FloorName(Guid profileId) => $"authority-floor-{profileId:N}.protected";
     private static string VoteFloorName(Guid profileId) => $"authority-vote-floor-{profileId:N}.protected";
+    private static string HostBindingName(Guid profileId) => $"authority-host-{profileId:N}.protected";
     private string LogPath(Guid profileId) => Path.Combine(Root(profileId), "records.jsonl");
+    private string PendingPath(Guid profileId) => Path.Combine(Root(profileId), "append.pending");
     private string VotePath(Guid profileId) => Path.Combine(Root(profileId), "local-votes.jsonl");
     internal bool HasState(Guid profileId) => data.HasProtected(FloorName(profileId)) ||
-        File.Exists(LogPath(profileId));
+        File.Exists(LogPath(profileId)) || File.Exists(PendingPath(profileId));
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     private IReadOnlyList<LocalVoteEntry> ReadLocalVotes(Guid profileId)
     {
@@ -171,11 +216,120 @@ internal sealed class WorldAuthorityStore(LocalData data)
         }
         return votes;
     }
+    private void RecoverPending(Guid profileId)
+    {
+        var pendingPath = PendingPath(profileId);
+        if (!File.Exists(pendingPath)) return;
+        if ((File.GetAttributes(pendingPath) & FileAttributes.ReparsePoint) != 0 ||
+            new FileInfo(pendingPath).Length > 512 * 1024)
+            throw new InvalidDataException("Authority append journal is invalid.");
+        var pending = JsonSerializer.Deserialize<PendingAppend>(File.ReadAllBytes(pendingPath), Json);
+        var floorBytes = data.LoadProtected(FloorName(profileId));
+        var floor = floorBytes is null ? null : JsonSerializer.Deserialize<Floor>(floorBytes, Json);
+        if (pending is null || pending.Schema != 1 || floor is null || floor.Schema != 1 ||
+            pending.OldCount < 0 || pending.NewCount != pending.OldCount + 1 ||
+            pending.OldLength < 0 || pending.Line.Length > 400_000 ||
+            !pending.Line.EndsWith('\n'))
+            throw new InvalidDataException("Authority append journal failed verification.");
+        var record = JsonSerializer.Deserialize<WorldAuthorityRecord>(pending.Line, Json);
+        if (!WorldAuthorityTrust.Verify(record) || record!.Proposal.ProfileId != profileId)
+            throw new InvalidDataException("Authority append journal has an invalid record.");
+        var log = LogPath(profileId);
+        if (File.Exists(log) && (File.GetAttributes(log) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Authority log is linked.");
+        var bytes = File.Exists(log) ? File.ReadAllBytes(log) : [];
+        if (floor.Count == pending.NewCount && floor.LogHash == pending.NewHash &&
+            Digest(bytes) == pending.NewHash)
+        {
+            File.Delete(pendingPath);
+            return;
+        }
+        if (floor.Count != pending.OldCount || floor.LogHash != pending.OldHash ||
+            bytes.Length < pending.OldLength ||
+            Digest(bytes[..pending.OldLength]) != pending.OldHash)
+            throw new InvalidDataException("Authority append journal does not match the protected floor.");
+        var line = Encoding.UTF8.GetBytes(pending.Line);
+        var expected = new byte[pending.OldLength + line.Length];
+        bytes.AsSpan(0, pending.OldLength).CopyTo(expected);
+        line.CopyTo(expected, pending.OldLength);
+        if (Digest(expected) != pending.NewHash || bytes.Length > expected.Length ||
+            !bytes.AsSpan().SequenceEqual(expected.AsSpan(0, bytes.Length)))
+            throw new InvalidDataException("Authority append journal does not match the log.");
+        using (var stream = new FileStream(log, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(expected);
+            stream.Flush(true);
+        }
+        data.SaveProtected(FloorName(profileId),
+            JsonSerializer.SerializeToUtf8Bytes(new Floor(1, pending.NewCount, pending.NewHash), Json));
+        File.Delete(pendingPath);
+    }
+    private bool EligibleAtAcceptance(WorldAuthorityRecord record)
+    {
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        bool Active(Guid id) => record.Roster.Members.Single(member => member.DeviceId == id)
+            .AccessExpiresUtc is not { } end || end > now;
+        var candidate = record.Roster.Members.Single(member =>
+            member.PublicKey == record.Proposal.CandidatePublicKey);
+        return Active(candidate.DeviceId) &&
+            (record.Proposal.Kind == "Planned" || Active(record.Proposal.ProposerDeviceId)) &&
+            record.Votes.All(vote => Active(vote.VoterDeviceId));
+    }
+    private bool MatchesLocalSuccessor(WorldAuthorityRecord record)
+    {
+        var bytes = data.LoadProtected(HostBindingName(record.Proposal.ProfileId));
+        if (bytes is null) return false;
+        var binding = JsonSerializer.Deserialize<LocalHostBinding>(bytes, Json);
+        if (binding is null || binding.Schema != 1 || binding.GroupId != record.Proposal.GroupId ||
+            binding.RecordHash != record.RecordHash ||
+            binding.PublicKey != record.Proposal.CandidatePublicKey) return false;
+        var member = record.Roster.Members.SingleOrDefault(item => item.DeviceId == binding.DeviceId);
+        if (member?.PublicKey != binding.PublicKey) return false;
+        var keyBytes = data.LoadProtected($"shared-world-pc-signing-{binding.DeviceId:N}.protected");
+        if (keyBytes is null) return false;
+        using var key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(keyBytes, out _);
+        return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) == binding.PublicKey;
+    }
+    internal void BindLocalSuccessor(Guid profileId, string recordHash, Guid deviceId)
+    {
+        lock (sync)
+        {
+            var record = Read(profileId).SingleOrDefault(item => item.RecordHash == recordHash)
+                ?? throw new InvalidDataException("The verified authority record is missing.");
+            var member = record.Roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
+            if (member?.PublicKey != record.Proposal.CandidatePublicKey)
+                throw new InvalidDataException("This PC is not the signed successor.");
+            var binding = new LocalHostBinding(1, record.Proposal.GroupId, recordHash,
+                deviceId, member.PublicKey);
+            // The proof of possession is checked before writing and again at each Start.
+            var keyBytes = data.LoadProtected($"shared-world-pc-signing-{deviceId:N}.protected");
+            if (keyBytes is null) throw new InvalidDataException("Successor PC identity is missing.");
+            using var key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(keyBytes, out _);
+            if (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) != member.PublicKey)
+                throw new InvalidDataException("Successor PC identity does not match the signed roster.");
+            data.SaveProtected(HostBindingName(profileId), JsonSerializer.SerializeToUtf8Bytes(binding, Json));
+        }
+    }
+    internal void AppendReceived(WorldAuthorityRecord record, Guid expectedProfileId,
+        Guid expectedGroupId, string pinnedOwnerPublicKey)
+    {
+        if (!SharedWorldRosterTrust.ValidKey(pinnedOwnerPublicKey) ||
+            record.Roster.OwnerPublicKey != pinnedOwnerPublicKey ||
+            record.Proposal.ProfileId != expectedProfileId ||
+            record.Proposal.GroupId != expectedGroupId)
+            throw new InvalidDataException("Authority does not match the pinned shared world.");
+        Append(record);
+    }
     internal IReadOnlyList<WorldAuthorityRecord> Read(Guid profileId)
     {
         lock (sync)
         {
+            RecoverPending(profileId);
             var path = LogPath(profileId);
+            if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Authority log is linked.");
             var floorBytes = data.LoadProtected(FloorName(profileId));
             if (floorBytes is null)
             {
@@ -196,33 +350,32 @@ internal sealed class WorldAuthorityStore(LocalData data)
                 var record = JsonSerializer.Deserialize<WorldAuthorityRecord>(line, Json);
                 if (!WorldAuthorityTrust.Verify(record) || record!.Proposal.ProfileId != profileId)
                     throw new InvalidDataException("Authority record failed verification.");
-                if (record.Proposal.Epoch != 1 && !records.Any(parent =>
-                    parent.RecordHash == record.Proposal.ParentAuthorityHash &&
-                    parent.Proposal.Epoch + 1 == record.Proposal.Epoch))
-                    throw new InvalidDataException("Authority history has a missing parent.");
-                if (record.Proposal.Epoch == 1 && record.Proposal.ParentAuthorityHash is not null)
-                    throw new InvalidDataException("First authority has an invalid parent.");
+                var parent = records.SingleOrDefault(item =>
+                    item.RecordHash == record.Proposal.ParentAuthorityHash);
+                if (!WorldAuthorityTrust.VerifyLineage(record, parent))
+                    throw new InvalidDataException("Authority save signer lineage failed verification.");
                 records.Add(record);
             }
             return records;
         }
     }
-    internal void Append(WorldAuthorityRecord record)
+    internal void Append(WorldAuthorityRecord record, bool stopAfterLogForChecks = false,
+        bool stopAfterJournalForChecks = false)
     {
         lock (sync)
         {
             if (!WorldAuthorityTrust.Verify(record)) throw new InvalidDataException("Authority proof is invalid.");
             var existing = Read(record.Proposal.ProfileId);
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
-            if (record.Proposal.Epoch == 1 ? record.Proposal.ParentAuthorityHash is not null :
-                !existing.Any(parent => parent.RecordHash == record.Proposal.ParentAuthorityHash &&
-                    parent.Proposal.Epoch + 1 == record.Proposal.Epoch))
-                throw new InvalidDataException("Authority parent is unknown.");
+            if (!EligibleAtAcceptance(record))
+                throw new InvalidDataException("A successor, proposer, or voter grant has expired.");
+            var parentRecord = existing.SingleOrDefault(item =>
+                item.RecordHash == record.Proposal.ParentAuthorityHash);
+            if (!WorldAuthorityTrust.VerifyLineage(record, parentRecord))
+                throw new InvalidDataException("Authority save signer lineage is invalid.");
             if (existing.Any(item => item.Proposal.GroupId != record.Proposal.GroupId ||
                 item.Roster.OwnerPublicKey != record.Roster.OwnerPublicKey))
                 throw new InvalidDataException("Authority group identity changed.");
-            var parentRecord = existing.SingleOrDefault(item =>
-                item.RecordHash == record.Proposal.ParentAuthorityHash);
             if (parentRecord is not null && (record.Roster.Epoch < parentRecord.Roster.Epoch ||
                 record.Roster.Revision < parentRecord.Roster.Revision))
                 throw new InvalidDataException("Authority uses an older roster.");
@@ -232,15 +385,34 @@ internal sealed class WorldAuthorityStore(LocalData data)
                 data.SaveProtected(FloorName(record.Proposal.ProfileId),
                     JsonSerializer.SerializeToUtf8Bytes(new Floor(1, 0, Digest([])), Json));
             var line = JsonSerializer.Serialize(record, Json) + "\n";
+            var old = File.Exists(path) ? File.ReadAllBytes(path) : [];
+            var next = new byte[old.Length + Encoding.UTF8.GetByteCount(line)];
+            old.CopyTo(next, 0);
+            Encoding.UTF8.GetBytes(line).CopyTo(next, old.Length);
+            var pending = new PendingAppend(1, existing.Count, Digest(old), old.Length,
+                existing.Count + 1, Digest(next), line);
+            var journalPath = PendingPath(record.Proposal.ProfileId);
+            var journalBytes = JsonSerializer.SerializeToUtf8Bytes(pending, Json);
+            if (journalBytes.Length > 512 * 1024 || line.Length > 400_000 ||
+                next.Length > 4 * 1024 * 1024)
+                throw new InvalidDataException("Authority proof exceeds the bounded log.");
+            using (var journal = new FileStream(journalPath, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None))
+            {
+                journal.Write(journalBytes);
+                journal.Flush(true);
+            }
+            if (stopAfterJournalForChecks) return;
             using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None))
             {
                 var bytes = Encoding.UTF8.GetBytes(line);
                 stream.Write(bytes);
                 stream.Flush(true);
             }
-            var all = File.ReadAllBytes(path);
+            if (stopAfterLogForChecks) return;
             data.SaveProtected(FloorName(record.Proposal.ProfileId),
-                JsonSerializer.SerializeToUtf8Bytes(new Floor(1, existing.Count + 1, Digest(all)), Json));
+                JsonSerializer.SerializeToUtf8Bytes(new Floor(1, existing.Count + 1, Digest(next)), Json));
+            File.Delete(journalPath);
         }
     }
     internal WorldAuthorityVote SignLocalVote(Guid profileId, WorldAuthorityProposal proposal,
@@ -258,7 +430,7 @@ internal sealed class WorldAuthorityStore(LocalData data)
             if (!WorldAuthorityTrust.VerifyVote(vote, proposal, roster))
                 throw new InvalidDataException("Voter is not approved in this roster.");
             if (roster.Members.Single(member => member.DeviceId == voterId).AccessExpiresUtc is { } expiry &&
-                expiry <= DateTimeOffset.UtcNow)
+                expiry <= (clock ?? TimeProvider.System).GetUtcNow())
                 throw new InvalidDataException("This PC's recovery vote access expired.");
             var existing = ReadLocalVotes(profileId);
             var prior = existing.SingleOrDefault(item => item.Voter == voterId &&
@@ -295,7 +467,8 @@ internal sealed class WorldAuthorityStore(LocalData data)
             var heads = records.Where(record => !records.Any(child =>
                 child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
             if (heads.Length == 0) { reason = ""; return false; }
-            if (heads.Length > 1 || heads.Any(head => head.Proposal.CandidatePublicKey != localPublicKey))
+            if (heads.Length > 1 || heads.Any(head =>
+                head.Proposal.CandidatePublicKey != localPublicKey && !MatchesLocalSuccessor(head)))
             {
                 reason = "A verified takeover or competing authority was recorded. Keep this copy and gracefully stop the exact managed server before reviewing the histories.";
                 return true;

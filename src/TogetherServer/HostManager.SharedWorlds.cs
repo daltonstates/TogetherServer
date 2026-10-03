@@ -114,6 +114,14 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    internal async Task BindSharedWorldSuccessorIdentityAsync(Guid profileId,
+        string recordHash, Guid deviceId)
+    {
+        await gate.WaitAsync();
+        try { authority.BindLocalSuccessor(profileId, recordHash, deviceId); }
+        finally { gate.Release(); }
+    }
+
     internal async Task<SharedWorldReceiptResult> ConfirmSharedWorldReceiptAsync(Guid profileId,
         Guid deviceId, SharedWorldReceipt receipt)
     {
