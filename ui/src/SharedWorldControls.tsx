@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
@@ -18,6 +18,7 @@ type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'Major
   'ObservedMajority' | 'HistoricalRecovery' | 'HistoryReviewRequired'; votes: number;
   required: number; version: number | null; versionHash: string | null; candidateAddress: string | null;
   candidateDeviceId: string | null; majorityReached: boolean; separateCopies: number }
+  & { proposalHash: string | null; authorityHeadHash: string | null }
 
 function record(value: unknown, where: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${where} is invalid.`)
@@ -88,12 +89,21 @@ function parseRecoveryStatus(value: unknown): RecoveryStatus {
   const candidateAddress = source.candidateAddress === null ? null : shortText(source.candidateAddress, 'Candidate address', 255)
   const candidateDeviceId = source.candidateDeviceId === null ? null : guid(source.candidateDeviceId, 'Candidate PC')
   const majorityReached = boolean(source.majorityReached, 'Majority decision')
+  const proposalHash = source.proposalHash === null ? null : hash(source.proposalHash, 'Recovery proposal hash')
+  const authorityHeadHash = source.authorityHeadHash === null ? null : hash(source.authorityHeadHash, 'Authority head hash')
   if (source.state === 'OfferArmed' && (version === null || versionHash === null ||
-    candidateAddress === null || candidateDeviceId === null)) throw new Error('Armed offer status is incomplete.')
+    candidateAddress === null || candidateDeviceId === null || proposalHash === null))
+    throw new Error('Armed offer status is incomplete.')
   if ((source.state === 'MajorityRecorded' || source.state === 'ObservedMajority') !== majorityReached)
     throw new Error('Majority state is invalid.')
   return { state: source.state as RecoveryStatus['state'], votes, required, separateCopies,
-    version, versionHash, candidateAddress, candidateDeviceId, majorityReached }
+    version, versionHash, candidateAddress, candidateDeviceId, majorityReached,
+    proposalHash, authorityHeadHash }
+}
+function parseCurrentOfferCode(value: unknown, profileId: string) {
+  const source = record(value, 'Current offer code')
+  return { proposalHash: hash(source.proposalHash, 'Recovery proposal hash'),
+    offer: parseRecoveryOffer(source.offer, profileId) }
 }
 function parseHandoffStatus(value: unknown): HandoffStatus {
   const source = record(value, 'Planned handoff')
@@ -343,30 +353,67 @@ export function FriendSharedWorlds({ profileId, available }:
   const [recovery, setRecovery] = useState<RecoveryStatus | null>(null)
   const [recoveryMessage, setRecoveryMessage] = useState('')
   const [offerCode, setOfferCode] = useState('')
-  const [candidateCode, setCandidateCode] = useState<RecoveryOffer | null>(null)
+  const [candidateCode, setCandidateCode] = useState<{ proposalHash: string; offer: RecoveryOffer } | null>(null)
   const [reviewedOffer, setReviewedOffer] = useState<RecoveryOffer | null>(null)
   const [splitAccepted, setSplitAccepted] = useState(false)
   const [voteCount, setVoteCount] = useState<{ votes: number; required: number; majorityReached: boolean } | null>(null)
-  const refreshRecovery = async () => {
-    const next = await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery`, parseRecoveryStatus)
+  const recoveryFlight = useRef<{ profileId: string; request: Promise<RecoveryStatus> } | null>(null)
+  const recoveryIdentity = useRef<string | null>(null)
+  const currentRecovery = useRef<RecoveryStatus | null>(null)
+  const refreshRecovery = useCallback(async (active: () => boolean = () => true) => {
+    const flight = recoveryFlight.current?.profileId === profileId ? recoveryFlight.current.request :
+      getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery`, parseRecoveryStatus)
+    recoveryFlight.current = { profileId, request: flight }
+    let next: RecoveryStatus
+    try { next = await flight }
+    finally { if (recoveryFlight.current?.request === flight) recoveryFlight.current = null }
+    if (!active()) return
+    const identity = `${next.proposalHash ?? ''}/${next.authorityHeadHash ?? ''}`
+    if (recoveryIdentity.current !== null && recoveryIdentity.current !== identity) {
+      setCandidateCode(null); setVoteCount(null); setReviewedOffer(null); setOfferCode('')
+      setSplitAccepted(false); setRecoveryMessage('')
+    }
+    recoveryIdentity.current = identity
+    currentRecovery.current = next
     setRecovery(next)
     if (next.state !== 'OfferArmed') setCandidateCode(null)
-    if (next.state === 'HistoricalRecovery' || next.state === 'HistoryReviewRequired' ||
-      next.state === 'OfferClosed') setVoteCount(null)
-  }
+    if (next.state !== 'OfferArmed' && next.state !== 'MajorityRecorded' &&
+      next.state !== 'ObservedMajority') setVoteCount(null)
+  }, [profileId])
   const showCandidateCode = async () => {
     setRecoveryMessage(''); setCandidateCode(null)
-    try { setCandidateCode(await getLocalJson(
-      `/api/local/friend/${profileId}/shared-world/recovery/offer-code`, value => parseRecoveryOffer(value, profileId))) }
-    catch (error) { setRecoveryMessage(errorMessage(error)) }
+    const identity = recoveryIdentity.current
+    try {
+      const result = await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery/offer-code`,
+        value => parseCurrentOfferCode(value, profileId))
+      if (identity === recoveryIdentity.current && currentRecovery.current?.state === 'OfferArmed' &&
+        result.proposalHash === currentRecovery.current.proposalHash) setCandidateCode(result)
+    }
+    catch (error) { if (identity === recoveryIdentity.current) setRecoveryMessage(errorMessage(error)) }
   }
   useEffect(() => {
+    if (!open) return
     let active = true
-    void getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery`, parseRecoveryStatus)
-      .then(value => { if (active) setRecovery(value) })
-      .catch(error => { if (active) setRecoveryMessage(errorMessage(error)) })
-    return () => { active = false }
-  }, [profileId])
+    let timer: number | undefined
+    let delay = 2000
+    const poll = async () => {
+      try {
+        await refreshRecovery(() => active)
+        delay = 2000
+      } catch (error) {
+        if (active) {
+          recoveryIdentity.current = null; currentRecovery.current = null
+          setRecovery(null); setCandidateCode(null); setVoteCount(null)
+          setReviewedOffer(null); setOfferCode(''); setSplitAccepted(false)
+          setRecoveryMessage(errorMessage(error))
+        }
+        delay = Math.min(delay * 2, 30000)
+      }
+      if (active) timer = window.setTimeout(() => void poll(), delay)
+    }
+    void poll()
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [open, refreshRecovery])
   useEffect(() => {
     if (!open) return
     const timer = window.setInterval(() => {
@@ -403,13 +450,14 @@ export function FriendSharedWorlds({ profileId, available }:
     finally { setBusy(false) }
   }
   const prepareOffer = async () => {
+    const identity = recoveryIdentity.current
     setBusy(true); setRecoveryMessage('')
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/recovery/offer`,
         'POST', value => parseOfferResult(value, profileId))
-      setRecoveryMessage(result.message)
-      if (result.ok) { setCandidateCode(result.offer); await refreshRecovery() }
-    } catch (error) { setRecoveryMessage(errorMessage(error)) }
+      if (identity === recoveryIdentity.current) setRecoveryMessage(result.message)
+      if (result.ok) await refreshRecovery()
+    } catch (error) { if (identity === recoveryIdentity.current) setRecoveryMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const reviewOffer = () => {
@@ -421,25 +469,29 @@ export function FriendSharedWorlds({ profileId, available }:
   }
   const vote = async () => {
     if (!reviewedOffer) return
+    const identity = recoveryIdentity.current
     setBusy(true); setRecoveryMessage('')
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/recovery/vote`,
         'POST', parseVoteResult, reviewedOffer)
-      setRecoveryMessage(result.message)
-      if (result.ok) setVoteCount(result)
+      if (identity === recoveryIdentity.current) {
+        setRecoveryMessage(result.message)
+        if (result.ok) setVoteCount(result)
+      }
       await refreshRecovery()
-    } catch (error) { setRecoveryMessage(errorMessage(error)) }
+    } catch (error) { if (identity === recoveryIdentity.current) setRecoveryMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const separate = async () => {
     if (!splitAccepted) return
+    const identity = recoveryIdentity.current
     setBusy(true); setRecoveryMessage('')
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/recovery/separate`,
         'POST', parseBasicResult, { acceptSplitWarning: true })
-      setRecoveryMessage(result.message)
+      if (identity === recoveryIdentity.current) setRecoveryMessage(result.message)
       if (result.ok) { setSplitAccepted(false); await refreshRecovery() }
-    } catch (error) { setRecoveryMessage(errorMessage(error)) }
+    } catch (error) { if (identity === recoveryIdentity.current) setRecoveryMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const behind = status?.hostVersion != null && status.thisPcVersion != null &&
@@ -504,7 +556,8 @@ export function FriendSharedWorlds({ profileId, available }:
       {recovery?.state === 'OfferArmed' && <details><summary>Technical details</summary>
         <p>Share this signed offer code with approved voters. It names the candidate address and exact completed save. It does not authorize game Start.</p>
         <Button className="secondary" disabled={busy} onClick={() => void showCandidateCode()}>Show signed offer code</Button>
-        {candidateCode && <textarea className="ui-textarea" rows={3} aria-label="Signed offer code" readOnly value={JSON.stringify(candidateCode)} />}
+        {candidateCode?.proposalHash === recovery.proposalHash &&
+          <textarea className="ui-textarea" rows={3} aria-label="Signed offer code" readOnly value={JSON.stringify(candidateCode.offer)} />}
         <p>Save hash: {recovery.versionHash}</p>
       </details>}
     </details>}

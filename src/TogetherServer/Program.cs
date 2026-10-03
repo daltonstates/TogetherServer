@@ -1479,7 +1479,10 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery", (HttpContext con
 app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/offer-code", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     !friendMode ? Results.Conflict(new { code = "HostMode" }) :
-    new SharedWorldVoteInbox(data).Armed(id) is { } offer ? Results.Json(offer) :
+    new SharedWorldVoteInbox(data).Armed(id) is { } offer ? Results.Json(new
+    {
+        proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal), offer
+    }) :
     Results.NotFound(new { code = "NoArmedOffer", message = "No signed offer is armed on this PC." }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (HttpContext context, Guid id) =>
 {

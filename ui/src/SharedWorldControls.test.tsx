@@ -15,7 +15,8 @@ function reply(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
 const noRecovery = { state: 'NoOffer', votes: 0, required: 0, version: null, versionHash: null,
-  candidateAddress: null, candidateDeviceId: null, majorityReached: false, separateCopies: 0 }
+  candidateAddress: null, candidateDeviceId: null, majorityReached: false, separateCopies: 0,
+  proposalHash: null, authorityHeadHash: null }
 const noHandoff = { pending: false, code: 'NoPendingHandoff', message: 'No pending handoff.',
   successorDeviceId: null, finalVersion: null, receiptConfirmed: false, canComplete: false, canCancel: false }
 const offer = { proposal: { profileId: profile, candidateAddress: 'https://192.0.2.10:5131', candidatePublicKey: 'public-key' },
@@ -275,10 +276,10 @@ describe('Shared saves controls', () => {
           message: 'The candidate did not answer.', votes: 0, required: 0, decision: null })
         return reply({ ok: true, code: 'VoteRecorded', message: 'Your recovery vote was recorded.', votes: 1, required: 2, decision: null })
       }
-      if (url.endsWith('/offer-code')) return reply(offer)
+      if (url.endsWith('/offer-code')) return reply({ proposalHash: 'B'.repeat(64), offer })
       if (url.endsWith('/recovery')) return reply({ ...noRecovery, state: 'OfferArmed', votes: 1, required: 2,
         version: 3, versionHash: 'A'.repeat(64), candidateAddress: offer.proposal.candidateAddress,
-        candidateDeviceId: device.id })
+        candidateDeviceId: device.id, proposalHash: 'B'.repeat(64) })
       return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
@@ -317,7 +318,7 @@ describe('Shared saves controls', () => {
       }
       if (url.endsWith('/recovery')) return reply({ ...noRecovery, state: 'OfferArmed', votes: 0, required: 2,
         version: 3, versionHash: 'A'.repeat(64), candidateAddress: offer.proposal.candidateAddress,
-        candidateDeviceId: device.id })
+        candidateDeviceId: device.id, proposalHash: 'B'.repeat(64) })
       return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
@@ -340,7 +341,7 @@ describe('Shared saves controls', () => {
     let state: 'OfferArmed' | 'ObservedMajority' | 'HistoricalRecovery' | 'HistoryReviewRequired' = 'OfferArmed'
     const otherPc = '33333333-3333-4333-8333-333333333333'
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.endsWith('/offer-code')) return reply(offer)
+      if (url.endsWith('/offer-code')) return reply({ proposalHash: 'B'.repeat(64), offer })
       if (url.endsWith('/recovery')) return reply({ ...noRecovery, state,
         votes: state === 'ObservedMajority' ? 2 : 0,
         required: state === 'OfferArmed' || state === 'ObservedMajority' ? 2 : 0,
@@ -348,7 +349,9 @@ describe('Shared saves controls', () => {
         versionHash: state === 'HistoryReviewRequired' ? null : 'A'.repeat(64),
         candidateAddress: state === 'HistoryReviewRequired' ? null : offer.proposal.candidateAddress,
         candidateDeviceId: state === 'HistoryReviewRequired' ? null : otherPc,
-        majorityReached: state === 'ObservedMajority' })
+        majorityReached: state === 'ObservedMajority',
+        proposalHash: state === 'OfferArmed' ? 'B'.repeat(64) : 'C'.repeat(64),
+        authorityHeadHash: state === 'OfferArmed' ? null : 'D'.repeat(64) })
       return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
@@ -372,5 +375,61 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
     expect(await screen.findByText(/Competing authority histories need review/)).toBeInTheDocument()
     expect(screen.queryByText(/Current candidate PC/)).not.toBeInTheDocument()
+  })
+
+  it('drops an armed code and split action when the authority head changes while open', async () => {
+    let changed = false
+    let reads = 0
+    let codeReads = 0
+    let codeHash = 'C'.repeat(64)
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/offer-code')) { codeReads++; return reply({ proposalHash: codeHash, offer }) }
+      if (url.endsWith('/recovery')) {
+        reads++
+        return reply(changed ? { ...noRecovery, state: 'HistoryReviewRequired',
+          authorityHeadHash: 'D'.repeat(64) } : { ...noRecovery, state: 'OfferArmed',
+          votes: 1, required: 2, version: 3, versionHash: 'A'.repeat(64),
+          candidateAddress: offer.proposal.candidateAddress, candidateDeviceId: device.id,
+          proposalHash: 'B'.repeat(64) })
+      }
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(screen.getAllByText('Technical details')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
+    await waitFor(() => expect(codeReads).toBe(1))
+    expect(screen.queryByLabelText('Signed offer code')).not.toBeInTheDocument()
+    codeHash = 'B'.repeat(64)
+    fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
+    expect(await screen.findByLabelText('Signed offer code')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('I understand this world may split into separate histories'))
+    expect(screen.getByRole('button', { name: 'Record separate history' })).toBeEnabled()
+    changed = true
+    await waitFor(() => expect(reads).toBeGreaterThan(1), { timeout: 3500 })
+    await waitFor(() => expect(screen.getByText(/Competing authority histories need review/)).toBeInTheDocument())
+    expect(screen.queryByLabelText('Signed offer code')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Record separate history' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Votes 1\/2/)).not.toBeInTheDocument()
+  })
+
+  it('shares one in-flight recovery read between polling and manual refresh', async () => {
+    let reads = 0
+    let finishRead: ((response: Response) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/recovery')) {
+        reads++
+        return await new Promise<Response>(resolve => { finishRead = resolve })
+      }
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
+    expect(reads).toBe(1)
+    finishRead?.(reply(noRecovery))
+    await waitFor(() => expect(screen.getByText('No candidate offer is armed on this PC.')).toBeInTheDocument())
   })
 })

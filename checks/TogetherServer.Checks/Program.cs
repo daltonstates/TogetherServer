@@ -3806,7 +3806,9 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         Require(armedStatus.State == "OfferArmed" && armedStatus.Votes == 0 &&
             armedStatus.Required == 2 && inbox.Armed(profile.Id)?.Proposal == offer.Proposal &&
             armedStatus.Version == offer.Version.Number &&
-            armedStatus.CandidateAddress == candidateAddress && armedStatus.SeparateCopies == 1,
+            armedStatus.CandidateAddress == candidateAddress && armedStatus.SeparateCopies == 1 &&
+            armedStatus.ProposalHash == WorldAuthorityTrust.ProposalHash(offer.Proposal) &&
+            armedStatus.AuthorityHeadHash is null,
             "candidate recovery status did not reopen from verified durable records");
         var statusJson = JsonSerializer.Serialize(armedStatus);
         Require(!statusJson.Contains("Files", StringComparison.OrdinalIgnoreCase) &&
@@ -3896,6 +3898,8 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         Require(decidedStatus.State == "MajorityRecorded" && decidedStatus.MajorityReached &&
             decidedStatus.Votes == 2 && decidedStatus.Required == 2 &&
             decidedStatus.CandidateDeviceId == offer.Proposal.ProposerDeviceId &&
+            decidedStatus.ProposalHash == proposalHash &&
+            decidedStatus.AuthorityHeadHash == quorumResult.Decision!.RecordHash &&
             inboxAfterRestart.Armed(profile.Id) is null,
             "reopened recovery status did not verify the durable majority fence");
         var bindingName = $"authority-host-{profile.Id:N}.protected";
@@ -4033,6 +4037,8 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             var after = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
             Require(after.State == "ObservedMajority" && after.CandidateDeviceId == ids[1] &&
                 after.Votes == 2 && after.MajorityReached &&
+                after.ProposalHash == WorldAuthorityTrust.ProposalHash(next.Proposal) &&
+                after.AuthorityHeadHash == next.RecordHash &&
                 inboxAfterRestart.Armed(profile.Id) is null &&
                 !inboxAfterRestart.HasArmedOffer(candidateAddress),
                 "stale candidate offer or older quorum remained current after child authority");

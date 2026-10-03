@@ -14,7 +14,7 @@ public sealed record WorldAuthorityVoteResult(bool Ok, string Code,
 public sealed record WorldRecoveryStatus(string State, int Votes, int Required,
     long? Version, string? VersionHash, string? CandidateAddress,
     Guid? CandidateDeviceId, bool MajorityReached,
-    int SeparateCopies);
+    int SeparateCopies, string? ProposalHash, string? AuthorityHeadHash);
 
 // Candidate state is inert until a local user deliberately arms an offer and
 // enables this PC's ordinary companion listener. Voters require only outbound
@@ -201,14 +201,17 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             var heads = Heads(records);
             var separate = new SharedWorldSeparateCopyStore(data).Read(profileId).Count;
             if (heads.Length > 1)
-                return new("HistoryReviewRequired", 0, 0, null, null, null, null, false, separate);
+                return new("HistoryReviewRequired", 0, 0, null, null, null, null, false, separate,
+                    null, null);
             var head = heads.SingleOrDefault();
+            var headHash = head?.RecordHash;
             if (state is { Retired: false } && OfferExtendsHead(state.Offer, heads))
             {
                 var required = Required(state.Offer.Roster);
                 return new("OfferArmed", state.Votes.Count, required, state.Offer.Version.Number,
                     state.Offer.Version.VersionHash, state.Offer.Proposal.CandidateAddress,
-                    state.Offer.Proposal.ProposerDeviceId, false, separate);
+                    state.Offer.Proposal.ProposerDeviceId, false, separate,
+                    WorldAuthorityTrust.ProposalHash(state.Offer.Proposal), headHash);
             }
             if (head?.Proposal.Kind == "Quorum")
             {
@@ -217,16 +220,19 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
                 return new(isCandidate ? "MajorityRecorded" : "ObservedMajority",
                     head.Votes.Count, Required(head.Roster), head.Version.Number,
                     head.Version.VersionHash, head.Proposal.CandidateAddress,
-                    head.Proposal.ProposerDeviceId, true, separate);
+                    head.Proposal.ProposerDeviceId, true, separate,
+                    WorldAuthorityTrust.ProposalHash(head.Proposal), headHash);
             }
             var historical = state?.Offer;
             if (historical is not null)
                 return new(head is null && state!.Retired ? "OfferClosed" : "HistoricalRecovery",
                     0, 0, historical.Version.Number, historical.Version.VersionHash,
                     historical.Proposal.CandidateAddress, historical.Proposal.ProposerDeviceId,
-                    false, separate);
+                    false, separate, head is null ? null : WorldAuthorityTrust.ProposalHash(head.Proposal),
+                    headHash);
             return new(records.Any(record => record.Proposal.Kind == "Quorum") ?
-                "HistoricalRecovery" : "NoOffer", 0, 0, null, null, null, null, false, separate);
+                "HistoricalRecovery" : "NoOffer", 0, 0, null, null, null, null, false, separate,
+                head is null ? null : WorldAuthorityTrust.ProposalHash(head.Proposal), headHash);
         }
     }
 
