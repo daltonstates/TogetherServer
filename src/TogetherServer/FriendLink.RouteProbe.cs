@@ -23,9 +23,10 @@ internal sealed partial class FriendLink
                     return Fail("RouteCheckUnavailable", "Choose a trusted shared world and its successor certificate fingerprint.");
                 recordHash = recordHash.ToUpperInvariant();
                 tlsFingerprint = tlsFingerprint.ToUpperInvariant();
-                var record = new WorldAuthorityStore(data).Read(profileId)
-                    .SingleOrDefault(item => item.RecordHash == recordHash);
-                if (record is null || !WorldAuthorityTrust.Verify(record) ||
+                var authority = new WorldAuthorityStore(data);
+                var record = authority.ReadUniqueHead(profileId);
+                if (record is null || record.RecordHash != recordHash ||
+                    !WorldAuthorityTrust.Verify(record) ||
                     record.Roster.OwnerPublicKey !=
                         config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) ||
                     record.Proposal.GroupId !=
@@ -33,7 +34,15 @@ internal sealed partial class FriendLink
                     return Fail("HandoffProofInvalid", "This PC has not verified the signed takeover history.");
                 var candidate = record.Roster.Members.SingleOrDefault(item =>
                     item.PublicKey == record.Proposal.CandidatePublicKey);
-                if (candidate is null) return Fail("HandoffProofInvalid", "The signed successor is not in this group.");
+                if (candidate is not { Revoked: false, Grants.EligibleHost: true } ||
+                    record.Proposal.Kind == "Planned" && !candidate.Grants.Receive ||
+                    candidate.AccessExpiresUtc is { } candidateExpiry && candidateExpiry <= DateTimeOffset.UtcNow)
+                    return Fail("HandoffProofInvalid", "The signed successor no longer has current hosting permission.");
+                var observer = record.Roster.Members.SingleOrDefault(item => item.DeviceId == config.DeviceId);
+                if (observer is not { Revoked: false } ||
+                    !(observer.Grants.Receive || observer.Grants.RecoveryVoter) ||
+                    observer.AccessExpiresUtc is { } observerExpiry && observerExpiry <= DateTimeOffset.UtcNow)
+                    return Fail("HandoffProofInvalid", "This PC no longer has current observer permission.");
                 if (candidate.DeviceId == config.DeviceId || data.HasProtected(
                     $"shared-world-pc-signing-{candidate.DeviceId:N}.protected"))
                     return Fail("OtherFriendRequired", "Run this direct-IP route check from another Friend PC.");
@@ -44,6 +53,8 @@ internal sealed partial class FriendLink
                 using var observerKey = LoadPcSigningKey();
                 var challenge = SharedWorldRouteTrust.SignChallenge(record,
                     nonce, config.DeviceId, observerKey);
+                if (!SharedWorldRouteTrust.VerifyChallenge(challenge, record, DateTimeOffset.UtcNow))
+                    return Fail("HandoffProofInvalid", "This PC's signing identity does not match the current signed roster.");
                 using var client = MakeClient(record.Proposal.CandidateAddress, [tlsFingerprint]);
                 using var response = await client.PostAsJsonAsync(
                     $"api/companion/servers/{profileId}/shared-world/route-proof/{recordHash}",
@@ -51,7 +62,14 @@ internal sealed partial class FriendLink
                 var bytes = await ReadBoundedSharedAsync(response.Content, 2048, cancellationToken);
                 var proof = response.IsSuccessStatusCode && bytes is not null ?
                     JsonSerializer.Deserialize<SharedWorldRouteProof>(bytes, Json) : null;
-                return SharedWorldRouteTrust.Verify(proof, record, nonce, tlsFingerprint)
+                var current = authority.ReadUniqueHead(profileId);
+                if (current?.RecordHash != recordHash)
+                    return Fail("HandoffProofInvalid", "The signed handoff was superseded or its history needs review.");
+                if (!SharedWorldRouteTrust.VerifyChallenge(challenge, current, DateTimeOffset.UtcNow) ||
+                    current.Roster.Members.Single(item => item.PublicKey == current.Proposal.CandidatePublicKey)
+                        .AccessExpiresUtc is { } currentExpiry && currentExpiry <= DateTimeOffset.UtcNow)
+                    return Fail("HandoffProofInvalid", "Current signed membership or permission changed.");
+                return SharedWorldRouteTrust.Verify(proof, current, nonce, tlsFingerprint)
                     ? new(true, "ControlRouteObserved",
                         "This Friend connection reached the successor over pinned HTTPS and verified its signed handoff. Confirm this check ran on another PC; the game route and a real join still need testing.",
                         DateTimeOffset.UtcNow, recordHash)

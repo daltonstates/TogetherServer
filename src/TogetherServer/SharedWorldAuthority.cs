@@ -386,6 +386,13 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             return records;
         }
     }
+    internal WorldAuthorityRecord? ReadUniqueHead(Guid profileId)
+    {
+        var records = Read(profileId);
+        var heads = records.Where(item => !records.Any(child =>
+            child.Proposal.ParentAuthorityHash == item.RecordHash)).ToArray();
+        return heads.Length == 1 ? heads[0] : null;
+    }
     internal void Append(WorldAuthorityRecord record, bool stopAfterLogForChecks = false,
         bool stopAfterJournalForChecks = false)
     {

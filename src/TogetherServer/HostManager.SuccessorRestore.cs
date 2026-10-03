@@ -35,9 +35,9 @@ public sealed partial class HostManager
             var restoredBytes = data.LoadProtected(SuccessorRestoreName(profileId));
             var restored = restoredBytes is null ? null :
                 JsonSerializer.Deserialize<SuccessorRestoreState>(restoredBytes);
-            var record = authority.Read(profileId).SingleOrDefault(item =>
-                item.RecordHash == recordHash);
+            var record = authority.ReadUniqueHead(profileId);
             if (restored is not { Schema: 1 } || record is null ||
+                record.RecordHash != recordHash ||
                 !WorldAuthorityTrust.Verify(record) || restored.GroupId != record.Proposal.GroupId ||
                 restored.RecordHash != recordHash ||
                 restored.VersionHash != record.Version.VersionHash ||

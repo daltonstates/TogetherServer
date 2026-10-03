@@ -2273,16 +2273,31 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
         _ => 1024).Reasons.Any(reason => reason.Contains("disk space")), "low space passed");
     var rehearsal = SharedWorldReadiness.Rehearse(data.RootPath, vault, setup, authority, version.SigningPublicKey, version.GroupId,
         _ => 2L * 1024 * 1024 * 1024);
-    Require(rehearsal.RehearsalPassed && rehearsal.ManagedProcessRehearsalPassed && !rehearsal.Ready &&
+    Require(rehearsal.RehearsalPassed && !rehearsal.ManagedProcessRehearsalPassed && !rehearsal.Ready &&
         !Directory.EnumerateFileSystemEntries(rehearsalRoot).Any() &&
         File.ReadAllText(Path.Combine(profile.WorldDirectory, "world.dat")) == "rehearsal marker" &&
+        rehearsal.Reasons.Any(reason => reason.Contains("provenance")) &&
         rehearsal.Reasons.Any(reason => reason.Contains("real game load")), "rehearsal was not isolated or honest");
+    var renamedRoot = Path.Combine(data.RootPath, "untrusted-fixture");
+    Directory.CreateDirectory(renamedRoot);
+    var renamedExecutable = Path.Combine(renamedRoot, "TogetherServer.Fixture.exe");
+    File.WriteAllText(renamedExecutable, "arbitrary renamed executable, not a trusted fixture");
+    var renamed = SharedWorldReadiness.Rehearse(data.RootPath, vault,
+        setup with { ServerFile = renamedExecutable }, authority,
+        version.SigningPublicKey, version.GroupId, _ => 2L * 1024 * 1024 * 1024);
+    Require(renamed.RehearsalPassed && !renamed.ManagedProcessRehearsalPassed &&
+        renamed.Reasons.Any(reason => reason.Contains("provenance")) &&
+        File.ReadAllText(renamedExecutable) == "arbitrary renamed executable, not a trusted fixture" &&
+        !Directory.EnumerateFileSystemEntries(rehearsalRoot).Any(),
+        "renamed arbitrary executable was launched or disposable copy was left behind");
     var badFixture = SharedWorldReadiness.Rehearse(data.RootPath, vault,
         setup with { ServerFile = Path.Combine(data.RootPath, "missing-fixture.exe") },
         authority, version.SigningPublicKey, version.GroupId, _ => 2L * 1024 * 1024 * 1024);
-    Require(!badFixture.ManagedProcessRehearsalPassed && !badFixture.RehearsalPassed &&
+    Require(!badFixture.ManagedProcessRehearsalPassed && badFixture.RehearsalPassed &&
+        badFixture.Reasons.Any(reason => reason.Contains("installed game server")) &&
+        badFixture.Reasons.Any(reason => reason.Contains("provenance")) &&
         !Directory.EnumerateFileSystemEntries(rehearsalRoot).Any(),
-        "missing managed fixture passed or left a disposable copy");
+        "missing fixture file was accepted as installed or left a disposable copy");
     var linkedDevice = Path.Combine(data.RootPath, "received-shared-worlds", "linked-device");
     CreateJunction(linkedDevice, Path.GetDirectoryName(vault)!);
     var linkedVault = Path.Combine(linkedDevice, profile.Id.ToString("N"));
@@ -3695,6 +3710,17 @@ await Check("shared world authority requires signed majority, fences old Host, a
         Require(WorldAuthorityTrust.Verify(nextAuthority) &&
             WorldAuthorityTrust.VerifyLineage(nextAuthority, accepted),
             "signed successor save lineage was rejected");
+        using (var linearData = Data("superseded-route-head"))
+        {
+            var linear = new WorldAuthorityStore(linearData);
+            linear.Append(accepted);
+            Require(linear.ReadUniqueHead(profile.Id)?.RecordHash == accepted.RecordHash,
+                "current signed handoff was not selected as the sole authority head");
+            linear.Append(nextAuthority);
+            Require(linear.ReadUniqueHead(profile.Id)?.RecordHash == nextAuthority.RecordHash &&
+                linear.ReadUniqueHead(profile.Id)?.RecordHash != accepted.RecordHash,
+                "superseded signed handoff remained eligible for route proof");
+        }
         var wrongSignerVersion = SharedWorldService.SignVersion(successorVersion, voters[1].Key);
         Require(!WorldAuthorityTrust.VerifyLineage(nextAuthority with
         { Version = wrongSignerVersion, VersionLineage = [wrongSignerVersion] }, accepted),
@@ -3706,6 +3732,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
             "successor save without signed lineage was accepted");
         store.Append(nextAuthority, stopAfterJournalForChecks: true);
         Require(new WorldAuthorityStore(data).Read(profile.Id).Count == 4 &&
+            new WorldAuthorityStore(data).ReadUniqueHead(profile.Id) is null &&
             !File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
                 "authority", "append.pending")),
             "a journal-only crash did not finish the signed successor authority");
