@@ -6,7 +6,8 @@ namespace TogetherServer;
 internal sealed record SetupFileSnapshot(string Key, byte[]? Content);
 internal sealed record ServerSetupSnapshot(int Version, Guid ProfileId, string Kind, string WorldId,
     string GameVersion, string AddOnStateToken, IReadOnlyList<ServerAddOnItem> AddOns,
-    IReadOnlyList<SetupFileSnapshot> Files);
+    IReadOnlyList<SetupFileSnapshot> Files, int GamePort = 0, bool Crossplay = false,
+    bool PublicListing = false);
 
 internal static class ServerSetupSnapshots
 {
@@ -27,8 +28,9 @@ internal static class ServerSetupSnapshots
         if (!addons.Ok) throw new InvalidDataException("The add-on inventory is unavailable for a complete setup checkpoint.");
         if (addons.Items.Any(item => item.Type == "External shared pack"))
             throw new InvalidDataException("Active shared Bedrock packs are outside this world's checkpoint.");
-        var snapshot = new ServerSetupSnapshot(1, profile.Id, profile.Kind, profile.WorldId,
-            addons.GameVersion, addons.StateToken, addons.Items, files);
+        var snapshot = new ServerSetupSnapshot(2, profile.Id, profile.Kind, profile.WorldId,
+            addons.GameVersion, addons.StateToken, addons.Items, files,
+            profile.GamePort, profile.Crossplay, profile.PublicListing);
         var plain = JsonSerializer.SerializeToUtf8Bytes(snapshot);
         if (plain.Length > MaximumSnapshotBytes)
             throw new InvalidDataException("The server setup is too large for a protected checkpoint.");
@@ -41,8 +43,9 @@ internal static class ServerSetupSnapshots
             throw new InvalidDataException("The protected setup checkpoint is too large.");
         var plain = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
         var snapshot = JsonSerializer.Deserialize<ServerSetupSnapshot>(plain);
-        if (snapshot is null || snapshot.Version != 1 || snapshot.ProfileId != profile.Id ||
+        if (snapshot is null || snapshot.Version is not (1 or 2) || snapshot.ProfileId != profile.Id ||
             snapshot.Kind != profile.Kind || snapshot.WorldId != profile.WorldId ||
+            snapshot.Version == 2 && snapshot.GamePort is < 1 or > 65535 ||
             snapshot.Files is null || snapshot.AddOns is null)
             throw new InvalidDataException("The setup checkpoint belongs to a different server or format.");
         var paths = ServerFiles.SnapshotPaths(profile);

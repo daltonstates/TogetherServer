@@ -1902,13 +1902,13 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     driver.StopBehavior = FixtureStopBehavior.Normal;
     Require((await manager.StopAsync(profile.Id)).Ok, "fixture Stop failed");
     var status = await manager.SharedWorldStatusAsync(profile.Id);
-    Require(status.Enabled && status.Latest is { Number: 1, Schema: 2 } &&
+    Require(status.Enabled && status.Latest is { Number: 1, Schema: 3 } &&
         SharedWorldService.VerifySignature(status.Latest), "signed version was not published after Stop");
     Require(!SharedWorldService.VerifySignature(status.Latest! with
         { PortableSetup = status.Latest.PortableSetup with { GameVersion = "9.9.9" } }),
         "changed portable game requirements passed signature verification");
     Require(!SharedWorldService.VerifySignature(status.Latest! with { Schema = 1 }),
-        "a v2 manifest was accepted as the old unsigned-setup schema");
+        "a v3 manifest was accepted as the old unsigned-setup schema");
     Require(!SharedWorldService.VerifySignature(status.Latest! with { CaptureKind = "LiveSave" }),
         "a post-Stop capture was relabeled as a live save");
     var chunk = manager.ReadSharedChunk(status.Latest!, 0, 0);
@@ -1943,7 +1943,8 @@ await Check("shared portable setup signs reviewed requirements without machine s
         if (kind == GameKinds.Valheim)
             File.WriteAllText(Path.Combine(profile.WorldDirectory, "permittedlist.txt"),
                 "# comment\nSteam_12345\n");
-        var setup = SharedWorldPortableSetupReader.Capture(data, profile);
+        var snapshot = ServerSetupSnapshots.Read(profile, ServerSetupSnapshots.Capture(profile, data));
+        var setup = SharedWorldPortableSetupReader.Capture(snapshot);
         Require(SharedWorldPortableSetupReader.Valid(kind, setup), "portable setup invalid for " + kind);
         Require(setup.GameVersion == ServerAddOns.GameVersion(profile), "game version was not captured");
         Require(setup.Allowlist!.Count == (kind is GameKinds.Valheim or GameKinds.MinecraftJava or
@@ -1967,7 +1968,8 @@ await Check("shared portable setup signs reviewed requirements without machine s
         writer.Write("{\"name\":\"fixturemod\",\"version\":\"1.0.0\",\"factorio_version\":\"2.0\"}");
     File.WriteAllText(Path.Combine(mods, "mod-list.json"),
         "{\"mods\":[{\"name\":\"fixturemod\",\"enabled\":true}]}");
-    var modSetup = SharedWorldPortableSetupReader.Capture(data, factorio);
+    var modSetup = SharedWorldPortableSetupReader.Capture(
+        ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [{ Name: "fixturemod", Version: "1.0.0",
         RequiredGameVersion: "2.0", Type: "Factorio mod" }],
         "enabled add-on requirements were not captured");
@@ -1984,7 +1986,8 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var java = Profile("malformed-portable", "world", FreePort());
     java.Kind = GameKinds.MinecraftJava;
     File.WriteAllText(Path.Combine(java.WorldDirectory, "whitelist.json"), "{\"password\":\"do-not-share\"}");
-    RequireThrows<InvalidDataException>(() => SharedWorldPortableSetupReader.Capture(data, java),
+    RequireThrows<InvalidDataException>(() => SharedWorldPortableSetupReader.Capture(
+        ServerSetupSnapshots.Read(java, ServerSetupSnapshots.Capture(java, data))),
         "malformed allowlist was silently shared");
 });
 
@@ -2009,8 +2012,88 @@ await Check("new shared manifest reader accepts signed v1 history and rejects al
         "world", createdUtc, SharedWorldCaptureKinds.PostStopBackup, backup, portable,
         [file], publicKey, Convert.ToHexString(digest), Convert.ToBase64String(key.SignHash(digest)));
     Require(SharedWorldService.VerifySignature(version), "signed v1 history was not readable");
+    Require(!SharedWorldService.VerifySignature(version with
+        { PortableSetup = portable with { GameVersion = "Unknown" } }),
+        "unsigned metadata was injected into a signed v1 manifest");
     Require(!SharedWorldService.VerifySignature(version with { Schema = 2 }),
         "old signature was accepted for the new portable schema");
+    var v2Setup = new SharedWorldPortableSetup(2456, false, "Unknown", [], []);
+    var v2Basis = JsonSerializer.Serialize(new { schema = 2, group, number = 1L,
+        parent = (string?)null, profile, game = GameKinds.Valheim, world = "world",
+        createdUtc, captureKind = SharedWorldCaptureKinds.PostStopBackup, backup,
+        portableSetup = new { v2Setup.GamePort, v2Setup.Crossplay, v2Setup.GameVersion,
+            v2Setup.AddOns, v2Setup.Allowlist }, files = new[] { file }, publicKey }, json);
+    var v2Digest = SHA256.HashData(Encoding.UTF8.GetBytes(v2Basis));
+    var v2 = version with { Schema = 2, PortableSetup = v2Setup,
+        VersionHash = Convert.ToHexString(v2Digest),
+        Signature = Convert.ToBase64String(key.SignHash(v2Digest)) };
+    Require(SharedWorldService.VerifySignature(v2), "signed v2 history was not readable");
+    Require(!SharedWorldService.VerifySignature(v2 with
+        { PortableSetup = v2Setup with { PublicListing = true } }),
+        "unsigned settings were injected into signed v2 history");
+    return Task.CompletedTask;
+});
+
+await Check("shared setup comes from the verified backup and accepts unknown Java version", () =>
+{
+    using var data = Data("shared-setup-checkpoint");
+    var profile = Profile("shared-java-checkpoint", "world", FreePort());
+    profile.Kind = GameKinds.MinecraftJava;
+    profile.SharedSavesEnabled = true;
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.PublicListing = false;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "synthetic saved world");
+    var config = Path.Combine(profile.WorldDirectory, "server.properties");
+    var allow = Path.Combine(profile.WorldDirectory, "whitelist.json");
+    File.WriteAllText(config,
+        "max-players=8\ngamemode=survival\ndifficulty=normal\nwhite-list=true\nrcon.password=do-not-share\n");
+    File.WriteAllText(allow, "[{\"name\":\"Alice\"}]");
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var backup = backups.Create(profile, BackupKinds.Rolling);
+    Require(backup.Ok && backup.Backup is not null, "Java checkpoint backup failed");
+    File.WriteAllText(config, "max-players=99\ngamemode=creative\nrcon.password=changed-secret\n");
+    File.WriteAllText(allow, "[{\"name\":\"Mallory\"}]");
+    profile.PublicListing = true;
+    var service = new SharedWorldService(data, backups);
+    var publication = service.PublishAfterStop(profile, backup.Backup!.Id);
+    Require(publication.Ok && publication.Version is { Schema: 3 },
+        "unknown Java server version blocked publication: " + publication.Message);
+    var setup = publication.Version!.PortableSetup;
+    Require(setup.GameVersion == "Unknown" && setup.MaxPlayers == 8 &&
+        setup.GameMode == "survival" && setup.Difficulty == "normal" &&
+        setup.AllowlistEnabled == true && !setup.PublicListing &&
+        setup.Allowlist is [{ Name: "Alice" }],
+        "portable setup drifted from the verified backup checkpoint");
+    var manifest = JsonSerializer.Serialize(publication.Version);
+    Require(!manifest.Contains("do-not-share", StringComparison.Ordinal) &&
+        !manifest.Contains("changed-secret", StringComparison.Ordinal) &&
+        !manifest.Contains(profile.WorldDirectory, StringComparison.OrdinalIgnoreCase) &&
+        !manifest.Contains("Mallory", StringComparison.Ordinal),
+        "raw config, machine path, or later allowlist escaped into the signed manifest");
+    return Task.CompletedTask;
+});
+
+await Check("Bedrock portable requirements retain active pack UUID and reject missing packs", () =>
+{
+    var id = Guid.NewGuid();
+    var snapshot = new ServerSetupSnapshot(2, Guid.NewGuid(), GameKinds.MinecraftBedrock,
+        "world", "Unknown", "", [new ServerAddOnItem("behavior:" + id.ToString("D"),
+            "Example Pack", "1.0.0", "1.21.0", true, "Check real client join", "behavior pack")],
+        [], 19132);
+    var setup = SharedWorldPortableSetupReader.Capture(snapshot);
+    var pack = setup.AddOns?.SingleOrDefault() ?? throw new Exception("active pack was not captured");
+    Require(pack.Id == id.ToString("D") &&
+        SharedWorldPortableSetupReader.Valid(GameKinds.MinecraftBedrock, setup),
+        "active Bedrock pack identity was lost");
+    Require(!SharedWorldPortableSetupReader.Valid(GameKinds.MinecraftBedrock,
+        setup with { AddOns = [pack with { Id = null }] }),
+        "an active pack without a UUID was accepted");
+    RequireThrows<InvalidDataException>(() => SharedWorldPortableSetupReader.Capture(snapshot with
+    {
+        AddOns = [new ServerAddOnItem("behavior:" + id.ToString("D"),
+            "Shared or missing pack", "Unknown", "Unknown", true,
+            "Outside this world's checkpoint", "External shared pack")]
+    }), "incomplete external Bedrock pack was published");
     return Task.CompletedTask;
 });
 
@@ -3083,6 +3166,8 @@ sealed class SkewedSharedCapture(string root) : ISharedWorldCaptureAdapter
         var bytes = File.ReadAllBytes(path);
         return new(1, SharedWorldCaptureKinds.PostStopBackup, backupId, CapturedUtc,
             [new SharedWorldFile("world.dat", bytes.Length,
-                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)))], root);
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)))], root,
+            new ServerSetupSnapshot(2, profile.Id, profile.Kind, profile.WorldId,
+                "Unknown", "", [], [], profile.GamePort, profile.Crossplay, profile.PublicListing));
     }
 }
