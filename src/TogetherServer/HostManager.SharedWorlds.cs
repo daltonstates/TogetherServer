@@ -91,7 +91,7 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
                 throw new InvalidDataException("Server not found.");
-            if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
+            if ((!profile.SharedSavesEnabled && !reviewSourceChange) || profile.Kind == GameKinds.Custom)
                 throw new InvalidDataException("Shared saves are not enabled for this server.");
             return sharedWorlds.PublishRoster(profile, members, ownerOverride, reviewSourceChange);
         }

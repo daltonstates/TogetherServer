@@ -174,11 +174,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     <Button className="text-button" disabled={busy} onClick={() => void getLocalJson(
       `/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus).then(setStatus).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
     <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p>
-      {status?.enabled && <div className="actions"><Button className="secondary" disabled={busy}
-        onClick={() => void repairRoster(false)}>Retry signed permissions</Button>
+      <div className="actions">{status?.enabled && <Button className="secondary" disabled={busy}
+        onClick={() => void repairRoster(false)}>Retry signed permissions</Button>}
         <Button className="secondary" disabled={busy}
-          onClick={() => void repairRoster(true)}>Review changed world source</Button></div>}
-      {status?.enabled && <p className="helper-text">Review a source change only after checking the selected world and save folder. Friends will approve its new signed group on their PCs.</p>}
+          onClick={() => void repairRoster(true)}>Review changed world source</Button></div>
+      <p className="helper-text">Review a source change only after checking the selected world and save folder. Friends will approve its new signed group on their PCs.</p>
     </details>
   </details>
 }

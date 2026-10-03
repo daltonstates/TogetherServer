@@ -944,6 +944,10 @@ try
     profile.SharedSavesEnabled = true;
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "Host could not select the disposable replacement source");
+    var reviewedSource = await OwnerPut<SharedWorldGovernanceRequest, SharedWorldRoster>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world/governance", new(ReviewSourceChange: true));
+    Require(reviewedSource.GroupId != publishedShared.Latest!.GroupId,
+        "Host source review did not sign a new shared group");
     Require((await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
         "Host could not re-enable sharing for the replacement source");
@@ -2275,7 +2279,11 @@ async Task<TResponse> OwnerPut<TRequest, TResponse>(HttpClient client, string pa
     request.Headers.Add("Origin", client.BaseAddress!.ToString().TrimEnd('/'));
     request.Headers.Add("X-TogetherServer-Local", "1");
     using var response = await client.SendAsync(request);
-    return await response.Content.ReadFromJsonAsync<TResponse>(webJson) ?? throw new Exception($"Empty local PUT {path}: {(int)response.StatusCode}");
+    var responseBody = await response.Content.ReadAsStringAsync();
+    if (string.IsNullOrWhiteSpace(responseBody))
+        throw new Exception($"Empty local PUT {path}: {(int)response.StatusCode}");
+    return JsonSerializer.Deserialize<TResponse>(responseBody, webJson) ??
+        throw new Exception($"Invalid local PUT {path}: {(int)response.StatusCode}");
 }
 
 async Task<HttpResponseMessage> OwnerGet(HttpClient client, string path)
