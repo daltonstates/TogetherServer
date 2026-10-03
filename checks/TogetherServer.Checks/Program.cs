@@ -77,6 +77,41 @@ LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, true, PortProbeMode.LoopbackOnly);
 HostManager Manager(LocalData data) => new(data, Games(data));
 
+await Check("live save candidates stay closed until a real load test", () =>
+{
+    using var data = Data("live-save-candidates");
+    var expected = new Dictionary<string, string?>(StringComparer.Ordinal)
+    {
+        [GameKinds.Valheim] = null,
+        [GameKinds.MinecraftJava] = "save-all flush",
+        [GameKinds.MinecraftBedrock] = "save hold",
+        [GameKinds.Factorio] = "/server-save",
+        [GameKinds.Terraria] = "save"
+    };
+    foreach (var (game, firstCommand) in expected)
+    {
+        var candidate = SharedWorldLiveSaveAdapters.ForGame(game);
+        Require(candidate is not null && !candidate.LiveCaptureAccepted &&
+            candidate.Steps.Count > 0 && candidate.Steps[0].FixedCommand == firstCommand &&
+            candidate.MissingProof.Length > 0, game + " live capture was enabled or lost its reviewed plan");
+        var profile = Profile("live-" + game, "world", FreePort());
+        profile.Kind = game;
+        var status = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System)).Status(profile);
+        Require(status.LiveSave is { Available: false } &&
+            status.LiveSave.Message.Contains("post-Stop", StringComparison.Ordinal),
+            game + " advertised a live copy without game-load acceptance");
+    }
+    var bedrock = SharedWorldLiveSaveAdapters.ForGame(GameKinds.MinecraftBedrock)!;
+    Require(bedrock.Steps.Select(step => step.FixedCommand).SequenceEqual(
+        ["save hold", "save query", "save resume"]) &&
+        bedrock.Steps[1].RequiredEvidence == LiveSaveEvidence.FrozenSnapshotQuery,
+        "Bedrock candidate lost its hold/query/resume boundary");
+    Require(SharedWorldLiveSaveAdapters.ForGame(GameKinds.Custom) is null &&
+        SharedWorldLiveSaveAdapters.ForGame("invalid") is null,
+        "an unreviewed game gained live capture");
+    return Task.CompletedTask;
+});
+
 await Check("shared Host snapshot fixture matches the backend contract", async () =>
 {
     var fixtureJson = await File.ReadAllTextAsync(Path.GetFullPath("contracts/host-snapshot.v1.json"));

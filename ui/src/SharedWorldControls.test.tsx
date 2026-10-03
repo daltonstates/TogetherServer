@@ -22,7 +22,8 @@ describe('Shared saves controls', () => {
       calls.push(`${init?.method ?? 'GET'} ${url}`)
       if (url.endsWith('/governance')) return reply({ revision: calls.length, ownerOverride: true })
       if (url.endsWith('/shared-world') && !init?.method)
-        return reply({ enabled: calls.some(call => call.startsWith('PUT')), latest: null, error: null })
+        return reply({ enabled: calls.some(call => call.startsWith('PUT')), latest: null, error: null,
+          liveSave: { available: false, message: 'Live save sharing is unavailable for this game. Use its verified post-Stop copy.' } })
       return reply({ ok: true, code: 'Saved', message: 'Saved' })
     }))
     render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled
@@ -40,6 +41,7 @@ describe('Shared saves controls', () => {
     expect(screen.getByLabelText('Recovery voter for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Manage sharing for Friend PC')).not.toBeChecked()
     expect(screen.getByText(/Live save capture and takeover are not available yet/)).toBeInTheDocument()
+    expect(screen.getByText(/Use its verified post-Stop copy/)).toBeInTheDocument()
   })
 
   it('keeps receiver consent off until this PC opts in and shows version lag', async () => {

@@ -4,7 +4,8 @@ import { Button, Input } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 
-type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number }
+type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number;
+  liveSave: { available: boolean; message: string } }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
@@ -30,6 +31,10 @@ function textOrNull(value: unknown, where: string): string | null {
 }
 export function parseHostSharedWorldStatus(value: unknown): HostStatus {
   const source = record(value, 'Shared save status')
+  const live = source.liveSave === undefined || source.liveSave === null ? null : record(source.liveSave, 'Live save status')
+  const liveSave = live === null ? { available: false, message: 'Live save sharing is unavailable. Use a verified post-Stop copy.' } :
+    { available: boolean(live.available, 'Live save availability'), message: textOrNull(live.message, 'Live save message') ?? '' }
+  if (liveSave.available || liveSave.message.length === 0) throw new Error('Live save status is invalid.')
   let latest: HostStatus['latest'] = null
   if (source.latest !== null) {
     const item = record(source.latest, 'Published version')
@@ -40,7 +45,7 @@ export function parseHostSharedWorldStatus(value: unknown): HostStatus {
     latest = { number, versionHash: item.versionHash, createdUtc: item.createdUtc }
   }
   return { enabled: boolean(source.enabled, 'Sharing switch'), latest, error: textOrNull(source.error, 'Shared save error'),
-    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0 }
+    confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0, liveSave }
 }
 export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
   const source = record(value, 'Received save status')
@@ -145,6 +150,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     device.assignedProfileIds.includes(profileId))
   return <details className="advanced-block"><summary>Shared saves</summary>
     <p>Send verified backups after a graceful Stop to PCs you approve. Live save capture and takeover are not available yet.</p>
+    <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a verified post-Stop copy.'}</p>
     <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}

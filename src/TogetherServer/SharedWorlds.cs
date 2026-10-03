@@ -44,7 +44,8 @@ public sealed record SharedWorldVersion(int Schema, Guid GroupId, long Number, s
     SharedWorldPortableSetup PortableSetup, IReadOnlyList<SharedWorldFile> Files,
     string SigningPublicKey, string VersionHash, string Signature);
 public sealed record SharedWorldStatus(bool Enabled, SharedWorldVersion? Latest,
-    string? Error = null, int ConfirmedCopies = 0);
+    string? Error = null, int ConfirmedCopies = 0,
+    SharedWorldLiveSaveStatus? LiveSave = null);
 public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);
@@ -231,8 +232,9 @@ internal sealed partial class SharedWorldService
     {
         lock (sync)
         {
+            var live = SharedWorldLiveSaveAdapters.Status(profile.Kind);
             if (profile.Kind == GameKinds.Custom)
-                return new(false, null);
+                return new(false, null, LiveSave: live);
             try
             {
                 var path = LatestPath(profile.Id);
@@ -241,7 +243,7 @@ internal sealed partial class SharedWorldService
                 if (File.Exists(errorPath) && new FileInfo(errorPath).Length <= 300 &&
                     (File.GetAttributes(errorPath) & FileAttributes.ReparsePoint) == 0)
                     error = File.ReadAllText(errorPath);
-                if (!File.Exists(path)) return new(profile.SharedSavesEnabled, null, error);
+                if (!File.Exists(path)) return new(profile.SharedSavesEnabled, null, error, LiveSave: live);
                 if (new FileInfo(path).Length > MaximumManifestBytes ||
                     (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                     throw new InvalidDataException("Shared save metadata is oversized or linked.");
@@ -255,10 +257,10 @@ internal sealed partial class SharedWorldService
                 using var currentKey = LoadSigningKey();
                 if (Convert.ToBase64String(currentKey.ExportSubjectPublicKeyInfo()) != version.SigningPublicKey)
                     throw new InvalidDataException("The world signing identity changed.");
-                return new(profile.SharedSavesEnabled, version, error, CountReceipts(profile, version));
+                return new(profile.SharedSavesEnabled, version, error, CountReceipts(profile, version), live);
             }
             catch (Exception ex) when (ex is IOException or JsonException or CryptographicException or InvalidDataException)
-            { return new(profile.SharedSavesEnabled, null, "The published save could not be verified."); }
+            { return new(profile.SharedSavesEnabled, null, "The published save could not be verified.", LiveSave: live); }
         }
     }
 
