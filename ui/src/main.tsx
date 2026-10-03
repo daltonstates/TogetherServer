@@ -284,6 +284,8 @@ function App() {
   const snapshotEpochRef = useRef(0)
   const liveConnectionKeysRef = useRef<Set<string>>(new Set())
   const connectionRevealRequestRef = useRef<Record<string, number>>({})
+  const addressRecoveryRef = useRef<HTMLDetailsElement>(null)
+  const recoveryAddressInputRef = useRef<HTMLInputElement>(null)
   const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
   const updatePromptRef = useModalDialog(showUpdatePrompt)
   const workspaceNavigationRef = useRef<(page: WorkspacePage) => void>(() => {})
@@ -813,6 +815,13 @@ function App() {
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
+  }
+  const openFriendAddressRecovery = () => {
+    if (addressRecoveryRef.current) {
+      addressRecoveryRef.current.open = true
+      addressRecoveryRef.current.scrollIntoView({ block: 'center' })
+    }
+    recoveryAddressInputRef.current?.focus()
   }
   const renameFriendConnection = async () => {
     if (snapshot?.mode !== 'Friend' || !snapshot.connectionId) return
@@ -1383,11 +1392,11 @@ function App() {
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>This PC is saved. Ask the Host to approve it under Friend access; you do not need a new code.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
             <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
               <Button className="text-button" onClick={() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) }}>Add another server</Button></div>
-            <details className="advanced-block"><summary>Connection identity and recovery</summary>
+            <details className="advanced-block" ref={addressRecoveryRef}><summary>Connection identity and recovery</summary>
               <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}>Rename</Button></div></label>
               <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
               <p className="helper-text">Saved access expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Secure Host identity expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
-              <label>New Host address<Input value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
+              <label>New Host address<Input ref={recoveryAddressInputRef} value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
               <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Checking...' : 'Check and update address'}</Button>
               <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
             </details>
@@ -1451,7 +1460,8 @@ function App() {
                   : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
               <FriendStopBlockers snapshot={snapshot} profile={profile} />
               {profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id}
-                available={snapshot.hostCapabilities.includes('shared-worlds-v2')} />}
+                available={snapshot.hostCapabilities.includes('shared-worlds-v2')}
+                onAddressChange={openFriendAddressRecovery} />}
               {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
               {['Ready', 'Listening'].includes(profile.state) && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
             </article>
@@ -1590,7 +1600,10 @@ function App() {
                     <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} title={status?.state !== 'Offline' ? 'Stop the server before copying its world.' : undefined} onClick={() => void createManualBackup(profile.id)}>{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
                     <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds. “Copy to vault” uses a Windows folder picker, verifies every hash after transfer, and keeps the local backup. Choose an external or network location when you want another-device protection. “Test restore” uses disposable scratch storage and never swaps the live world.</small>
                     <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []}
-                      rollingBackupEnabled={profile.backups?.enabled === true} onGrantChanged={refreshCompanion} />
+                      rollingBackupEnabled={profile.backups?.enabled === true}
+                      currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
+                        ? snapshot.settings.companionEndpoint : ''}
+                      onGrantChanged={refreshCompanion} />
                     {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
                       const verification = backupVerifications[backup.id]
                       const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'
