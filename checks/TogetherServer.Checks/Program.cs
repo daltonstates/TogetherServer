@@ -3068,9 +3068,16 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 Id = voters[1].Id, AssignedProfileIds = [profile.Id],
                 CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true) },
                 SharedWorldPublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo())
             }] });
             var manager = new HostManager(data, Games(data));
+            var fixturePairing = new PairingService(data);
+            // This fixture installs a synthetic signed roster rather than publishing
+            // one from its synthetic pairing state. Model that publication as complete.
+            var fixtureRosterDirty = Path.Combine(data.RootPath, "shared-worlds",
+                profile.Id.ToString("N"), "roster-dirty");
+            if (File.Exists(fixtureRosterDirty)) File.Delete(fixtureRosterDirty);
             var newerDraft = proposal with
             { RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster), Signature = "" };
             var newerProposal = newerDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
@@ -3086,7 +3093,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 [NewVote(0), NewVote(1)], null, "");
             newer = newer with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(newer)) };
             using var oldModeGate = new SemaphoreSlim(1, 1);
-            var oldListener = new CompanionServer(data, manager, new PairingService(data),
+            var oldListener = new CompanionServer(data, manager, fixturePairing,
                 Games(data), new ServerLogService(data, manager), oldModeGate, oldPort + 2);
             try
             {
@@ -3110,7 +3117,8 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     "old Host accepted a tampered authority decision");
                 using var valid = await client.PostAsJsonAsync(route, newer);
                 Require(valid.IsSuccessStatusCode,
-                    "old Host did not ingest the signed newer authority over authenticated HTTPS");
+                    "old Host did not ingest the signed newer authority over authenticated HTTPS: " +
+                    valid.StatusCode + " " + await valid.Content.ReadAsStringAsync());
             }
             finally { await oldListener.StopAsync(); }
             Require(store.Read(profile.Id).Count == 2, "newer signed roster authority was not applied");
@@ -3355,7 +3363,9 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var candidateManager = Manager(pcs[0]);
         var candidateListener = new CompanionServer(pcs[0], candidateManager,
             new PairingService(pcs[0]), Games(pcs[0]),
-            new ServerLogService(pcs[0], candidateManager), modeGate, candidatePort + 2);
+            new ServerLogService(pcs[0], candidateManager), modeGate, candidatePort + 2,
+            recoveryLossProbe: (_, _) => Task.FromResult(losses[0].MayPropose),
+            recoveryLossCurrent: _ => losses[0].MayPropose);
         try
         {
             await candidateListener.SyncAsync();
@@ -3411,9 +3421,26 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var inboxAfterRestart = new SharedWorldVoteInbox(pcs[0]);
         Require(inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote0).Votes == 1,
             "candidate lost or duplicated a vote on restart");
+        Require(inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote1,
+            () => false).Code == "VoteRejected" &&
+            new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 0,
+            "delayed majority completed after the Host became reachable");
         var quorumResult = inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote1);
         Require(quorumResult.Code == "MajorityRecorded" && quorumResult.Decision is not null,
             "candidate did not retain a valid majority decision");
+        Require(inboxAfterRestart.Challenge(profile.Id, proposalHash, ids[1]) is null &&
+            !inboxAfterRestart.HasArmedOffer(candidateAddress),
+            "a completed offer remained reachable for another vote");
+        RequireThrows<InvalidDataException>(() => inboxAfterRestart.Arm(offer, vaults[0]),
+            "a completed offer reused its old authority epoch");
+        var childOffer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
+            ids[0], keys[0], candidateAddress, candidatePin, new WorldAuthorityStore(pcs[0]));
+        Require(inboxAfterRestart.Arm(childOffer, vaults[0]).Proposal.Epoch ==
+            offer.Proposal.Epoch + 1, "a signed child epoch could not replace a completed offer");
+        inboxAfterRestart.Retire(profile.Id);
+        Require(!inboxAfterRestart.HasArmedOffer(candidateAddress) &&
+            inboxAfterRestart.Armed(profile.Id) is null,
+            "withdrawal or Host return left a candidate offer armed");
         Require(new WorldAuthorityStore(pcs[0]).Fenced(profile.Id,
             Convert.ToBase64String(keys[0].ExportSubjectPublicKeyInfo()), out _) == false,
             "signed successor stayed fenced after proving its local PC identity");

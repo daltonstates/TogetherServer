@@ -1369,6 +1369,23 @@ public sealed class PairingService
         }
     }
 
+    internal bool CommitSharedWorldAuthority(Guid deviceId, Guid profileId,
+        string publicKey, Action commit)
+    {
+        lock (sync)
+        {
+            var current = devices.SingleOrDefault(item => item.Id == deviceId &&
+                item.CredentialHash is not null);
+            if (current is null || !AuthorizationDecision(current, UtcNow).Ok ||
+                current.AssignedProfileIds?.Contains(profileId) != true ||
+                current.SharedWorldPublicKey != publicKey || SharedRosterDirty(profileId) ||
+                current.SharedWorldGrants?.GetValueOrDefault(profileId) is not { } grants ||
+                !(grants.Receive || grants.RecoveryVoter || grants.EligibleHost)) return false;
+            commit();
+            return true;
+        }
+    }
+
     public bool TryGetActiveDevice(Guid id, out PairedDevice? device)
     {
         return AuthorizeActiveDevice(id, out device).Ok;

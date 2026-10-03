@@ -399,7 +399,11 @@ internal sealed partial class FriendLink
     public async Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
     {
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
-        if (!enabled) WithdrawSharedConsent(profileId);
+        if (!enabled)
+        {
+            WithdrawSharedConsent(profileId);
+            new SharedWorldVoteInbox(data).Retire(profileId);
+        }
         await gate.WaitAsync();
         try
         {

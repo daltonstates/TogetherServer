@@ -88,6 +88,46 @@ internal sealed partial class FriendLink : IDisposable
     private long sequence;
     private HttpClient? client;
     private readonly SharedWorldHostLoss sharedHostLoss = new();
+    internal bool CurrentRecoveryHostLoss(Guid profileId) =>
+        config?.ApprovedSharedWorldGroups?.ContainsKey(profileId) == true &&
+        config.ConsentedSharedWorldProfiles.Contains(profileId) && sharedHostLoss.MayPropose;
+
+    internal async Task<bool> ProbeRecoveryHostLossAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!CurrentRecoveryHostLoss(profileId)) return false;
+            try
+            {
+                using var response = await HostClient().GetAsync("api/companion/status", cancellationToken);
+                ObserveSharedHost(HostReachabilityObservation.OtherResponse);
+                return false;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            {
+                var issue = ConnectionFailure(ex);
+                ObserveSharedHost(issue.Code is "HostPortClosed" or "HostPortTimedOut" or
+                    "HostUnreachable" or "HostTimedOut" or "FriendNetworkUnavailable"
+                    ? HostReachabilityObservation.TransportFailure
+                    : HostReachabilityObservation.OtherResponse);
+                return CurrentRecoveryHostLoss(profileId);
+            }
+        }
+        finally { gate.Release(); }
+    }
+
+    private void ObserveSharedHost(HostReachabilityObservation observation)
+    {
+        sharedHostLoss.Observe(observation);
+        if (observation != HostReachabilityObservation.TransportFailure && config is not null)
+        {
+            var inbox = new SharedWorldVoteInbox(data);
+            foreach (var profileId in config.ApprovedSharedWorldGroups?.Keys.AsEnumerable() ??
+                     Enumerable.Empty<Guid>()) inbox.Retire(profileId);
+        }
+    }
     private int retainedOperations;
     private bool disposed;
     private bool resourcesDisposed;
@@ -301,7 +341,7 @@ internal sealed partial class FriendLink : IDisposable
                 await RenewCredentialIfNeededAsync();
                 if (await PollPendingOperationsAsync())
                 {
-                    sharedHostLoss.Observe(HostReachabilityObservation.Authenticated);
+                    ObserveSharedHost(HostReachabilityObservation.Authenticated);
                     await ReturnAuthorityToOriginalHostAsync();
                     return view;
                 }
@@ -316,7 +356,7 @@ internal sealed partial class FriendLink : IDisposable
                 // A reachable endpoint, including an access denial, does not
                 // establish that the Host disappeared. Only transport failure
                 // may start the manual takeover wait.
-                sharedHostLoss.Observe(HostReachabilityObservation.OtherResponse);
+                ObserveSharedHost(HostReachabilityObservation.OtherResponse);
                 if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
                     PairingDecision? denial = null;
@@ -364,7 +404,7 @@ internal sealed partial class FriendLink : IDisposable
                 }
                 var status = await response.Content.ReadFromJsonAsync<CompanionStatus>(Json);
                 if (status is null) throw new IOException("Host status was empty.");
-                sharedHostLoss.Observe(HostReachabilityObservation.Authenticated);
+                ObserveSharedHost(HostReachabilityObservation.Authenticated);
                 ApplyStatus(status);
                 await ReturnAuthorityToOriginalHostAsync();
                 return view;
@@ -373,7 +413,7 @@ internal sealed partial class FriendLink : IDisposable
             {
                 var issue = ConnectionFailure(ex);
                 deliveredAuthority.Clear();
-                sharedHostLoss.Observe(issue.Code is "HostPortClosed" or "HostPortTimedOut" or
+                ObserveSharedHost(issue.Code is "HostPortClosed" or "HostPortTimedOut" or
                     "HostUnreachable" or "HostTimedOut" or "FriendNetworkUnavailable"
                     ? HostReachabilityObservation.TransportFailure
                     : HostReachabilityObservation.OtherResponse);

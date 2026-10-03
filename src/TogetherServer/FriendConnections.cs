@@ -251,6 +251,22 @@ public sealed class FriendService : IDisposable
         }
     }
 
+    internal Task<bool> ProbeRecoveryHostLossAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link?.ProbeRecoveryHostLossAsync(profileId, cancellationToken) ?? Task.FromResult(false);
+        }
+    }
+
+    internal bool CurrentRecoveryHostLoss(Guid profileId)
+    {
+        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+            .CurrentRecoveryHostLoss(profileId) == true;
+    }
+
     public Task<WorldAuthorityVoteAction> VoteOnRecoveryOfferAsync(Guid profileId,
         WorldAuthorityOffer offer, CancellationToken cancellationToken = default)
     {

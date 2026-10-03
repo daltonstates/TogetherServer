@@ -20,7 +20,9 @@ public static class CompanionListenerStates
 // material is ready; the local GUI remains bound to loopback.
 public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
     GameServerRegistry games, ServerLogService serverLogs, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
-    Func<bool>? isShuttingDown = null)
+    Func<bool>? isShuttingDown = null,
+    Func<Guid, CancellationToken, Task<bool>>? recoveryLossProbe = null,
+    Func<Guid, bool>? recoveryLossCurrent = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -373,7 +375,13 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var vote = JsonSerializer.Deserialize<WorldAuthorityVote>(body,
                     new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 if (vote is null) return Results.BadRequest(new { code = "InvalidRecoveryRequest" });
-                var result = recoveryVotes.AcceptVote(profileId, proposalHash, vote);
+                if (recoveryLossProbe is null || recoveryLossCurrent is null ||
+                    !await recoveryLossProbe(profileId,
+                        context.RequestAborted))
+                    return Results.Json(new WorldAuthorityVoteResult(false, "HostLossNotConfirmed"),
+                        statusCode: 403);
+                var result = recoveryVotes.AcceptVote(profileId, proposalHash, vote,
+                    () => recoveryLossCurrent(profileId));
                 return Results.Json(result, statusCode: result.Ok ? 200 : 403);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
@@ -406,8 +414,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     currentDevice is null || !pairing.CanAccess(currentDevice, profileId) ||
                     currentDevice.SharedWorldPublicKey != member.PublicKey)
                     return Results.StatusCode(403);
-                await manager.ApplySharedWorldAuthorityAsync(record);
-                if (!pairing.CanAccess(currentDevice, profileId)) return Results.StatusCode(403);
+                await manager.ApplySharedWorldAuthorityAsync(record,
+                    commit => pairing.CommitSharedWorldAuthority(device.Id, profileId,
+                        member.PublicKey, commit));
                 return Results.Json(new { code = "AuthorityRecorded", record.RecordHash });
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or

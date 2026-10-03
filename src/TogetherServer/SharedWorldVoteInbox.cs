@@ -18,9 +18,10 @@ public sealed record WorldAuthorityVoteResult(bool Ok, string Code,
 internal sealed class SharedWorldVoteInbox(LocalData data)
 {
     private sealed record InboxState(int Schema, WorldAuthorityOffer Offer,
-        IReadOnlyList<WorldAuthorityVote> Votes);
+        IReadOnlyList<WorldAuthorityVote> Votes, bool Retired = false, bool Completed = false);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly object sync = new();
+    private static readonly ConcurrentDictionary<string, object> Locks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object sync = Locks.GetOrAdd(data.RootPath, _ => new object());
     private readonly ConcurrentDictionary<(Guid Profile, Guid Device), (string Nonce, DateTimeOffset Expires)>
         challenges = new();
     private readonly WorldAuthorityStore authority = new(data);
@@ -50,11 +51,29 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             if (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) != candidate.PublicKey)
                 throw new InvalidDataException("The candidate PC identity does not match the signed roster.");
             var existing = ReadState(offer.Proposal.ProfileId);
-            if (existing is not null &&
+            if (existing is { Retired: false } &&
                 WorldAuthorityTrust.ProposalHash(existing.Offer.Proposal) !=
                 WorldAuthorityTrust.ProposalHash(offer.Proposal))
                 throw new InvalidDataException("A competing offer is already armed on this PC.");
-            if (existing is not null)
+            if (existing is { Retired: true })
+            {
+                if (existing.Completed &&
+                    (offer.Proposal.ParentAuthorityHash is not { } parentHash ||
+                     offer.Proposal.Epoch != existing.Offer.Proposal.Epoch + 1 ||
+                     !authority.Read(offer.Proposal.ProfileId).Any(record =>
+                         record.RecordHash == parentHash &&
+                         WorldAuthorityTrust.ProposalHash(record.Proposal) ==
+                         WorldAuthorityTrust.ProposalHash(existing.Offer.Proposal))))
+                    throw new InvalidDataException("A completed offer requires a signed child authority epoch.");
+                if (!existing.Completed &&
+                    (offer.Proposal.ParentAuthorityHash != existing.Offer.Proposal.ParentAuthorityHash ||
+                     offer.Proposal.Epoch != existing.Offer.Proposal.Epoch))
+                    throw new InvalidDataException("A canceled offer cannot change its authority epoch.");
+                if (!existing.Completed && existing.Votes.Count > 0)
+                    throw new InvalidDataException(
+                        "A canceled offer with recorded votes requires conflict review before another proposal.");
+            }
+            if (existing is { Retired: false })
             {
                 if (existing.Offer.CandidateTlsFingerprint != offer.CandidateTlsFingerprint ||
                     existing.Offer.Roster.Signature != offer.Roster.Signature ||
@@ -63,11 +82,11 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
                 EnsureIndexed(offer.Proposal.ProfileId);
                 return existing.Offer;
             }
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(existing ?? new InboxState(1, offer, []), Json);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(new InboxState(1, offer, []), Json);
             if (bytes.Length > 512 * 1024)
                 throw new InvalidDataException("Candidate offer is oversized.");
-            data.SaveProtected(Name(offer.Proposal.ProfileId), bytes);
             EnsureIndexed(offer.Proposal.ProfileId);
+            data.SaveProtected(Name(offer.Proposal.ProfileId), bytes);
             return offer;
         }
     }
@@ -75,7 +94,21 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     internal bool HasArmedOffer(string endpoint)
     {
         lock (sync) return ReadIndex().Any(id =>
-            ReadState(id)?.Offer.Proposal.CandidateAddress == endpoint);
+            ReadState(id) is { Retired: false } state &&
+            state.Offer.Proposal.CandidateAddress == endpoint);
+    }
+
+    internal void Retire(Guid profileId)
+    {
+        lock (sync)
+        {
+            var state = ReadState(profileId);
+            if (state is { Retired: false })
+                data.SaveProtected(Name(profileId), JsonSerializer.SerializeToUtf8Bytes(
+                    state with { Retired = true }, Json));
+            foreach (var challenge in challenges.Keys.Where(key => key.Profile == profileId))
+                challenges.TryRemove(challenge, out _);
+        }
     }
 
     internal WorldAuthorityChallenge? Challenge(Guid profileId, string proposalHash, Guid deviceId)
@@ -83,7 +116,7 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
         lock (sync)
         {
             var state = ReadState(profileId);
-            if (state is null || WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
+            if (state is null || state.Retired || WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
                 state.Offer.Roster.Members.SingleOrDefault(item => item.DeviceId == deviceId) is
                     not { Revoked: false, Grants.RecoveryVoter: true } member ||
                 !SharedWorldRosterTrust.HasRole(state.Offer.Roster, deviceId, member.PublicKey,
@@ -99,7 +132,7 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
         lock (sync)
         {
             var state = ReadState(request.ProfileId);
-            if (state is null || request.Schema != 1 || request.GroupId != state.Offer.Roster.GroupId ||
+            if (state is null || state.Retired || request.Schema != 1 || request.GroupId != state.Offer.Roster.GroupId ||
                 request.ProposalHash != WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) ||
                 !challenges.TryRemove((request.ProfileId, request.VoterDeviceId), out var challenge) ||
                 challenge.Expires < DateTimeOffset.UtcNow || challenge.Nonce != request.Nonce ||
@@ -118,12 +151,13 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     }
 
     internal WorldAuthorityVoteResult AcceptVote(Guid profileId, string proposalHash,
-        WorldAuthorityVote vote)
+        WorldAuthorityVote vote, Func<bool>? stillUnreachable = null)
     {
         lock (sync)
         {
             var state = ReadState(profileId);
-            if (state is null || WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
+            if (state is null || state.Retired || stillUnreachable?.Invoke() == false ||
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
                 !WorldAuthorityTrust.VerifyVote(vote, state.Offer.Proposal, state.Offer.Roster) ||
                 !SharedWorldRosterTrust.HasRole(state.Offer.Roster, vote.VoterDeviceId,
                     vote.VoterPublicKey, grants => grants.RecoveryVoter))
@@ -141,13 +175,15 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             var record = SharedWorldElection.ConfirmQuorum(state.Offer, votes, authority);
             authority.BindLocalSuccessor(profileId, record.RecordHash,
                 state.Offer.CandidateReceipt.DeviceId);
+            data.SaveProtected(Name(profileId), JsonSerializer.SerializeToUtf8Bytes(
+                state with { Votes = votes, Retired = true, Completed = true }, Json));
             return new(true, "MajorityRecorded", votes.Count, required, record);
         }
     }
 
     internal WorldAuthorityOffer? Armed(Guid profileId)
     {
-        lock (sync) return ReadState(profileId)?.Offer;
+        lock (sync) return ReadState(profileId) is { Retired: false } state ? state.Offer : null;
     }
 
     private InboxState? ReadState(Guid profileId)
@@ -167,6 +203,10 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             state.Votes.Any(vote => !WorldAuthorityTrust.VerifyVote(vote,
                 state.Offer.Proposal, state.Offer.Roster)))
             throw new InvalidDataException("Candidate offer or votes failed verification.");
+        if (authority.Read(profileId).Any(record =>
+                WorldAuthorityTrust.ProposalHash(record.Proposal) ==
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal)))
+            return state with { Retired = true, Completed = true };
         return state;
     }
 

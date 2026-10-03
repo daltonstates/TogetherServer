@@ -116,7 +116,8 @@ using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
-    () => updatePending, () => shutdownPending);
+    () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
+    friend.CurrentRecoveryHostLoss);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
