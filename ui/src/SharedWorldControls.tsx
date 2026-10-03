@@ -112,6 +112,22 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     } catch (error) { setMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
+  const repairRoster = async (reviewSourceChange: boolean) => {
+    setBusy(true); setMessage('')
+    try {
+      if (reviewSourceChange) {
+        setRoster(await changeJson(`/api/local/profiles/${profileId}/shared-world/governance`,
+          'PUT', parseRoster, { reviewSourceChange: true }))
+      } else {
+        await changeJson('/api/local/shared-world/repair-rosters', 'POST', parseBasicResult)
+        setRoster(await getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster))
+      }
+      setStatus(await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus))
+      setMessage(reviewSourceChange ? 'The changed world source has a new signed group. Friends must review it.' :
+        'Signed sharing permissions are available again.')
+    } catch (error) { setMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
   const resetKey = async (deviceId: string) => {
     setBusy(true); setMessage('')
     try {
@@ -155,7 +171,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void getLocalJson(
       `/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus).then(setStatus).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
-    <details><summary>Technical details</summary><p>Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p></details>
+    <details><summary>Technical details</summary><p>Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p>
+      {status?.enabled && <div className="actions"><Button className="secondary" disabled={busy}
+        onClick={() => void repairRoster(false)}>Retry signed permissions</Button>
+        <Button className="secondary" disabled={busy}
+          onClick={() => void repairRoster(true)}>Review changed world source</Button></div>}
+      {status?.enabled && <p className="helper-text">Review a source change only after checking the selected world and save folder. Friends will approve its new signed group on their PCs.</p>}
+    </details>
   </details>
 }
 

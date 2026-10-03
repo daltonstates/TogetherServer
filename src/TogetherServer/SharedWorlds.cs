@@ -92,6 +92,8 @@ internal sealed class SharedWorldService
     private string ErrorPath(Guid profileId) => Path.Combine(Root(profileId), "last-error.txt");
     private string BindingPath(Guid profileId) => Path.Combine(Root(profileId), "source.json");
     private string RosterPath(Guid profileId) => Path.Combine(Root(profileId), "roster.json");
+    private string GroupRosterPath(Guid profileId, Guid groupId) =>
+        Path.Combine(Root(profileId), groupId.ToString("N") + ".roster.json");
     private static string SourceDirectory(ServerProfile profile) =>
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(profile.WorldDirectory));
 
@@ -114,6 +116,8 @@ internal sealed class SharedWorldService
         var binding = ReadBinding(profile.Id);
         if (binding is not null && BindingMatches(binding, profile))
             return binding;
+        if (binding is not null)
+            throw new InvalidDataException("The shared save source changed. Review and sign a new source group first.");
         binding = new(directory, profile.Kind, profile.WorldId, Guid.NewGuid());
         var path = BindingPath(profile.Id);
         Directory.CreateDirectory(Root(profile.Id));
@@ -131,13 +135,14 @@ internal sealed class SharedWorldService
     {
         lock (sync)
         {
-            var path = RosterPath(profile.Id);
+            var binding = ReadBinding(profile.Id);
+            var path = binding is not null && File.Exists(GroupRosterPath(profile.Id, binding.GroupId))
+                ? GroupRosterPath(profile.Id, binding.GroupId) : RosterPath(profile.Id);
             if (!File.Exists(path)) return null;
             if (new FileInfo(path).Length > MaximumManifestBytes ||
                 (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("Shared roster is oversized or linked.");
             var roster = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(path), Json);
-            var binding = ReadBinding(profile.Id);
             using var key = LoadSigningKey();
             if (!SharedWorldRosterTrust.Verify(roster) || binding is null ||
                 !BindingMatches(binding, profile) || roster!.GroupId != binding.GroupId ||
@@ -149,35 +154,69 @@ internal sealed class SharedWorldService
     }
 
     internal SharedWorldRoster PublishRoster(ServerProfile profile,
-        IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null)
+        IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
+        bool reviewSourceChange = false)
     {
         lock (sync)
         {
             var oldBinding = ReadBinding(profile.Id);
-            var binding = BindSource(profile);
-            var prior = oldBinding?.GroupId == binding.GroupId ? ReadRoster(profile) : null;
+            var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
+            if (sourceChanged && !reviewSourceChange)
+                throw new InvalidDataException("The shared save source changed. Review the new source before signing a new group.");
+            // Read the old signed head while its binding still verifies. Never reset the rollback clock.
+            var prior = oldBinding is null ? null : ReadRosterForBinding(profile, oldBinding);
+            if (sourceChanged && prior is null && File.Exists(LatestPath(profile.Id)))
+                throw new InvalidDataException("The previous signed roster is missing; source history cannot be advanced safely.");
+            var binding = sourceChanged
+                ? new SourceBinding(SourceDirectory(profile), profile.Kind, profile.WorldId, Guid.NewGuid())
+                : oldBinding ?? BindSource(profile);
             if (members.Count > 128 || members.Any(member => member.DeviceId == Guid.Empty ||
                 member.Grants is null || !SharedWorldRosterTrust.ValidKey(member.PublicKey)) ||
                 members.Select(member => member.DeviceId).Distinct().Count() != members.Count)
                 throw new InvalidDataException("Shared roster members are invalid.");
             using var key = LoadSigningKey();
             var ordered = members.OrderBy(member => member.DeviceId).ToArray();
-            if (prior is not null && prior.OwnerOverride == (ownerOverride ?? prior.OwnerOverride) &&
+            if (!sourceChanged && prior is { Schema: 2 } &&
+                prior.OwnerOverride == (ownerOverride ?? prior.OwnerOverride) &&
                 prior.Members.SequenceEqual(ordered)) return prior;
-            var draft = new SharedWorldRoster(1, binding.GroupId, profile.Id,
+            var draft = new SharedWorldRoster(2, binding.GroupId, profile.Id,
                 checked((prior?.Epoch ?? 0) + 1), checked((prior?.Revision ?? 0) + 1),
                 ownerOverride ?? prior?.OwnerOverride ?? true,
                 Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
                 ordered, "");
             var roster = draft with { Signature = Convert.ToBase64String(key.SignData(
                 SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
-            var path = RosterPath(profile.Id);
+            var path = GroupRosterPath(profile.Id, binding.GroupId);
             Directory.CreateDirectory(Root(profile.Id));
             var stage = path + ".new";
             File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
             File.Move(stage, path, true);
+            if (sourceChanged)
+            {
+                var bindingPath = BindingPath(profile.Id);
+                var bindingStage = bindingPath + ".new";
+                File.WriteAllBytes(bindingStage, JsonSerializer.SerializeToUtf8Bytes(binding, Json));
+                File.Move(bindingStage, bindingPath, true);
+            }
             return roster;
         }
+    }
+
+    private SharedWorldRoster? ReadRosterForBinding(ServerProfile profile, SourceBinding binding)
+    {
+        var path = File.Exists(GroupRosterPath(profile.Id, binding.GroupId))
+            ? GroupRosterPath(profile.Id, binding.GroupId) : RosterPath(profile.Id);
+        if (!File.Exists(path)) return null;
+        if (new FileInfo(path).Length > MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Shared roster is oversized or linked.");
+        var roster = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(path), Json);
+        using var key = LoadSigningKey();
+        if (!SharedWorldRosterTrust.Verify(roster) || roster!.GroupId != binding.GroupId ||
+            roster.ProfileId != profile.Id ||
+            roster.OwnerPublicKey != Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()))
+            throw new InvalidDataException("The previous shared roster failed verification.");
+        return roster;
     }
 
     public SharedWorldStatus Status(ServerProfile profile)
@@ -227,7 +266,8 @@ internal sealed class SharedWorldService
                 var oldBinding = ReadBinding(profile.Id);
                 var sameSource = oldBinding is not null && BindingMatches(oldBinding, profile);
                 var priorStatus = Status(profile);
-                if (sameSource && File.Exists(LatestPath(profile.Id)) && priorStatus.Latest is null)
+                if (sameSource && File.Exists(LatestPath(profile.Id)) && priorStatus.Latest is null &&
+                    !VerifiedPreviousGroupPointer(profile, oldBinding!))
                     throw new InvalidDataException("The existing shared save pointer failed verification.");
                 var binding = BindSource(profile);
                 var previous = ReconcilePublishedVersion(profile, priorStatus.Latest);
@@ -305,6 +345,19 @@ internal sealed class SharedWorldService
             }
             finally { if (stage is not null) TryDeleteStage(stage); }
         }
+    }
+
+    private bool VerifiedPreviousGroupPointer(ServerProfile profile, SourceBinding binding)
+    {
+        var path = LatestPath(profile.Id);
+        if (new FileInfo(path).Length > MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return false;
+        var previous = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        if (previous is null || previous.GroupId == binding.GroupId ||
+            previous.ProfileId != profile.Id || !VerifySignature(previous)) return false;
+        using var key = LoadSigningKey();
+        return previous.SigningPublicKey == Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) &&
+            File.Exists(Path.Combine(VersionRoot(previous), "version.json"));
     }
 
     public byte[] ReadChunk(SharedWorldVersion version, int fileIndex, long offset)

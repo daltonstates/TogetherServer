@@ -64,7 +64,6 @@ internal sealed partial class FriendLink
             return SharedFailure("SourceReviewRequired",
                 "The Host changed this save source. Turn Allow saves off, then on to review the new signed group.");
         }
-        if (roster is not null && floor?.GroupId != roster.GroupId) floor = null;
         if (roster is null || !SharedWorldRosterTrust.Accept(roster, profileId, config.DeviceId,
                 publicKey, pinned ?? roster.OwnerPublicKey, floor?.Epoch ?? 0, floor?.Revision ?? 0) ||
             floor is not null && roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&

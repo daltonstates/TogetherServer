@@ -94,6 +94,24 @@ describe('Shared saves controls', () => {
     expect(toggle).not.toBeChecked()
   })
 
+  it('lets the owner review a changed source without changing the override choice', async () => {
+    const bodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/governance')) {
+        if (init?.method === 'PUT') bodies.push(JSON.parse(String(init.body)))
+        return reply({ revision: 4, ownerOverride: false })
+      }
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    fireEvent.click(screen.getByText('Technical details'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
+    await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
+    expect(screen.getByLabelText('Owner recovery override (future recovery only)')).not.toBeChecked()
+  })
+
   it('explains how to review a changed Host source without comparing group version numbers', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ consented: true, hostVersion: 1,
       thisPcVersion: 8, state: 'Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here.',

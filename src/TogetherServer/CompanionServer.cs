@@ -213,6 +213,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         async Task<(PairingDecision Decision, PairedDevice? Current)> AuthorizeShared(
             PairedDevice loaded, Guid profileId)
         {
+            if (pairing.SharedRosterDirty(profileId))
+                return (new(false, "RosterUnavailable", "The signed roster needs owner repair."), null);
             var decision = pairing.AuthorizeReceiveSaves(loaded, profileId, out var current);
             if (!decision.Ok || current is null) return (decision, null);
             try
@@ -222,7 +224,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 if (decision.Ok && refreshed?.SharedWorldPublicKey is not null && roster is not null &&
                     roster.Members.SingleOrDefault(item => item.DeviceId == refreshed.Id) is
                         { Revoked: false, Grants: { Receive: true } } member &&
-                    member.PublicKey == refreshed.SharedWorldPublicKey)
+                    member.PublicKey == refreshed.SharedWorldPublicKey &&
+                    (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow) &&
+                    !pairing.SharedRosterDirty(profileId))
                     return (decision, refreshed);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
@@ -332,7 +336,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var roster = await manager.SharedWorldRosterAsync(profileId);
                 if (decision.Code != "IdentityAlreadyEnrolled" || roster is null ||
                     roster.Members.All(item => item.DeviceId != device.Id || item.PublicKey != request.PublicKey))
-                    await manager.PublishSharedWorldRosterAsync(profileId, pairing.SharedRosterMembers(profileId));
+                {
+                    var published = await manager.PublishSharedWorldRosterAsync(profileId, pairing.SharedRosterMembers(profileId));
+                    pairing.ConfirmSharedRosterPublished(profileId, published);
+                }
                 return Results.Json(decision);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)

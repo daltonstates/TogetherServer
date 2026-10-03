@@ -70,7 +70,8 @@ public sealed partial class HostManager
     }
 
     public async Task<SharedWorldRoster> PublishSharedWorldRosterAsync(Guid profileId,
-        IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null)
+        IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
+        bool reviewSourceChange = false)
     {
         await gate.WaitAsync();
         try
@@ -79,7 +80,7 @@ public sealed partial class HostManager
                 throw new InvalidDataException("Server not found.");
             if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
                 throw new InvalidDataException("Shared saves are not enabled for this server.");
-            return sharedWorlds.PublishRoster(profile, members, ownerOverride);
+            return sharedWorlds.PublishRoster(profile, members, ownerOverride, reviewSourceChange);
         }
         finally { gate.Release(); }
     }

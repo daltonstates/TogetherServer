@@ -430,10 +430,45 @@ public sealed class PairingService
         var normalized = NormalizeAssignments() | NormalizeServerCodes();
         normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
             devices.All(device => device.Id != receipt.DeviceId)) > 0;
-        if (normalized) SaveState();
+        if (normalized)
+        {
+            MarkSharedRostersDirty();
+            SaveState();
+        }
     }
 
     private DateTimeOffset UtcNow => clock.GetUtcNow();
+    private string RosterDirtyPath(Guid profileId) => Path.Combine(data.RootPath,
+        "shared-worlds", profileId.ToString("N"), "roster-dirty");
+
+    public bool SharedRosterDirty(Guid profileId) => File.Exists(RosterDirtyPath(profileId));
+
+    public void RequireSharedRosterPublication(Guid profileId)
+    {
+        var path = RosterDirtyPath(profileId);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "Publication required");
+    }
+
+    private void MarkSharedRostersDirty()
+    {
+        foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled))
+        {
+            RequireSharedRosterPublication(profile.Id);
+        }
+    }
+
+    public void ConfirmSharedRosterPublished(Guid profileId, SharedWorldRoster roster)
+    {
+        lock (sync)
+        {
+            if (!SharedWorldRosterTrust.Verify(roster) ||
+                !roster.Members.SequenceEqual(SharedRosterMembers(profileId).OrderBy(item => item.DeviceId)))
+                throw new InvalidDataException("The signed roster no longer matches current access.");
+            var path = RosterDirtyPath(profileId);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
     public bool IsTemporaryHelperActive(PairedDevice device) =>
         device.TemporaryHelperUntilUtc is { } until && until > UtcNow;
 
@@ -685,7 +720,11 @@ public sealed class PairingService
                 heartbeats.TryRemove(device.Id, out _);
                 changedDevices = true;
             }
-            if (removed > 0 || changedDevices) SaveState();
+            if (removed > 0 || changedDevices)
+            {
+                if (changedDevices) MarkSharedRostersDirty();
+                SaveState();
+            }
         }
     }
 
@@ -756,6 +795,7 @@ public sealed class PairingService
             serverInvites.Add(next);
             // Generation is the authorization gate. Persist it before updating device views,
             // so even an interrupted rotation cannot leave an old credential usable.
+            if (refresh) MarkSharedRostersDirty();
             SaveState();
             if (refresh)
             {
@@ -820,6 +860,7 @@ public sealed class PairingService
                 heartbeats.TryRemove(device.Id, out _);
                 revoked++;
             }
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"pairing-emergency-revoke {profileId} devices={revoked} {UtcNow:O}");
             Activity("Connections", "CodeAccessRemoved",
@@ -1129,6 +1170,7 @@ public sealed class PairingService
 
             device.AccessExpiresUtc = deadline;
             device.AccessExpiryNotifiedForUtc = null;
+            MarkSharedRostersDirty();
             SaveState();
             if (deadline is null)
             {
@@ -1158,6 +1200,7 @@ public sealed class PairingService
             device.PreviousCredentialExpiresUtc = null;
             ForgetRenewalReceipt(device.Id);
             heartbeats.TryRemove(id, out _);
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"revoke {device.Id} {UtcNow:O}");
             Activity("Access", "DeviceRevoked", "The Host removed access from a connected PC.", ActivitySeverity.Warning,
@@ -1174,6 +1217,7 @@ public sealed class PairingService
             if (device is null) return new(false, "UnknownDevice", "Connected PC was not found.");
             if (!device.ApprovalPending) return new(true, "AlreadyApproved", "This PC is already approved.");
             device.ApprovalPending = false;
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"device-approve {device.Id} {UtcNow:O}");
             Activity("Connections", "DeviceApproved", "A waiting PC was approved locally.",
@@ -1283,6 +1327,7 @@ public sealed class PairingService
             device.SharedWorldGrants = (device.SharedWorldGrants ?? [])
                 .Where(item => device.AssignedProfileIds.Contains(item.Key))
                 .ToDictionary(item => item.Key, item => item.Value);
+            MarkSharedRostersDirty();
             if (permissions is null)
             {
                 device.ServerPermissionOverrides = device.ServerPermissionOverrides!
@@ -1423,6 +1468,7 @@ public sealed class PairingService
             device.SaveReceiveProfileIds ??= [];
             device.SaveReceiveProfileIds.Remove(profileId);
             if (enabled) device.SaveReceiveProfileIds.Add(profileId);
+            MarkSharedRostersDirty();
             SaveState();
             data.TryAudit($"save-receive-grant {deviceId} {profileId} enabled={enabled} {UtcNow:O}");
             Activity("Access", enabled ? "SaveReceiveGranted" : "SaveReceiveRemoved",
@@ -1448,6 +1494,7 @@ public sealed class PairingService
             device.SaveReceiveProfileIds ??= [];
             device.SaveReceiveProfileIds.Remove(profileId);
             if (grants.Receive) device.SaveReceiveProfileIds.Add(profileId);
+            MarkSharedRostersDirty();
             SaveState();
             return new(true, "SharedGrantsSaved", "Shared world grants saved.");
         }
@@ -1468,6 +1515,7 @@ public sealed class PairingService
             if (device.SharedWorldPublicKey == request.PublicKey)
                 return new(true, "IdentityAlreadyEnrolled", "This PC's signing identity is already bound.");
             device.SharedWorldPublicKey = request.PublicKey;
+            MarkSharedRostersDirty();
             SaveState();
             return new(true, "IdentityEnrolled", "This PC's signing identity is bound to its device ID.");
         }
@@ -1482,6 +1530,7 @@ public sealed class PairingService
             device.SharedWorldPublicKey = null;
             device.SharedWorldGrants?.Clear();
             device.SaveReceiveProfileIds?.Clear();
+            MarkSharedRostersDirty();
             SaveState();
             return new(true, "IdentityReset", "Shared world identity reset. Review grants after this PC enrolls again.");
         }
@@ -1494,7 +1543,8 @@ public sealed class PairingService
                  item.SharedWorldGrants?.ContainsKey(profileId) == true))
             .Select(item => new SharedWorldRosterMember(item.Id, item.SharedWorldPublicKey!,
                 item.SharedWorldGrants?.GetValueOrDefault(profileId) ?? new(),
-                IsRevoked(item) || item.ApprovalPending || item.AssignedProfileIds?.Contains(profileId) != true))
+                IsRevoked(item) || item.ApprovalPending || item.AssignedProfileIds?.Contains(profileId) != true,
+                item.AccessExpiresUtc))
             .ToArray();
     }
 

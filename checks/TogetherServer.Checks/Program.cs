@@ -468,6 +468,7 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
     using var data = Data("shared-governance");
     var profile = Profile("governance", "world", FreePort());
     profile.SharedSavesEnabled = true;
+    data.SaveSettings(Settings(profile));
     var deviceId = Guid.NewGuid();
     var inviteGeneration = Guid.NewGuid();
     data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
@@ -478,13 +479,15 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
         CanStart = true, CanStop = true, CanViewLogs = true
     }], ServerInvites = [new ServerInviteState { ProfileId = profile.Id,
         Generation = inviteGeneration, Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }] });
-    var pairing = new PairingService(data);
+    var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var pairing = new PairingService(data, clock);
     using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     using var other = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var publicKey = Convert.ToBase64String(pc.ExportSubjectPublicKeyInfo());
     var challenges = new SharedWorldEnrollmentNonces();
     var nonce = challenges.Issue(deviceId, profile.Id);
     Require(!challenges.Consume(Guid.NewGuid(), profile.Id, nonce) &&
+        !challenges.Consume(deviceId, Guid.NewGuid(), nonce) &&
         challenges.Consume(deviceId, profile.Id, nonce) &&
         !challenges.Consume(deviceId, profile.Id, nonce),
         "enrollment nonce was not device-bound and one-use");
@@ -499,6 +502,11 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
         SharedWorldRosterTrust.EnrollmentBasis(deviceId, nonce, otherKey), HashAlgorithmName.SHA256)));
     Require(pairing.BindSharedWorldKey(deviceId, changed).Code == "KeyReviewRequired",
         "a key change bypassed explicit owner review");
+    Require(pairing.ResetSharedWorldKey(deviceId).Ok &&
+        pairing.BindSharedWorldKey(deviceId, changed).Ok &&
+        pairing.ResetSharedWorldKey(deviceId).Ok &&
+        pairing.BindSharedWorldKey(deviceId, proof).Ok,
+        "explicit owner reset did not safely replace and restore the PC signing key");
     var service = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
     var roster = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
     Require(SharedWorldRosterTrust.Verify(roster) && roster.OwnerOverride &&
@@ -532,15 +540,59 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
     Require(SharedWorldRosterTrust.Accept(disabled, profile.Id, deviceId, publicKey,
         disabled.OwnerPublicKey, disabled.Epoch, disabled.Revision),
         "the current signed roster was rejected");
-    Require(pairing.SetSharedWorldGrants(deviceId, profile.Id, new()).Ok,
-        "Receive revocation failed");
-    var revoked = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
-    Require(!revoked.Members.Single().Grants.Receive &&
-        !SharedWorldRosterTrust.Accept(revoked, profile.Id, deviceId, publicKey,
-            revoked.OwnerPublicKey, disabled.Epoch, disabled.Revision),
+    Require(pairing.SetAccessExpiry(deviceId, new DeviceAccessExpiryRequest(
+        AccessExpiresUtc: clock.GetUtcNow().AddMinutes(1))).Ok, "access deadline was rejected");
+    Require(pairing.SetSharedWorldGrants(deviceId, profile.Id,
+        new(Receive: true, EligibleHost: true, RecoveryVoter: true, ManageSharing: true)).Ok,
+        "deadline-bearing governance grants failed");
+    var expiring = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(expiring.Schema == 2 && SharedWorldRosterTrust.HasRole(expiring, deviceId, publicKey,
+        grants => grants.Receive, clock), "signed access deadline denied a live grant");
+    clock.Advance(TimeSpan.FromMinutes(1));
+    Require(!SharedWorldRosterTrust.HasRole(expiring, deviceId, publicKey,
+        grants => grants.Receive, clock) &&
+        !SharedWorldRosterTrust.HasRole(expiring, deviceId, publicKey,
+            grants => grants.EligibleHost || grants.RecoveryVoter || grants.ManageSharing, clock),
+        "an expired offline grant remained usable");
+    Require(pairing.SetAccessExpiry(deviceId, new DeviceAccessExpiryRequest(Clear: true)).Ok,
+        "access deadline could not be cleared");
+    var restored = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    pairing.ConfirmSharedRosterPublished(profile.Id, restored);
+    Require(!pairing.SharedRosterDirty(profile.Id), "publication did not clear the durable repair marker");
+    Require(pairing.SetServerAccess(deviceId, [], null, [profile.Id]).Ok,
+        "server unassignment failed");
+    Require(pairing.SharedRosterDirty(profile.Id), "unassignment did not block sharing pending publication");
+    var unassigned = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(unassigned.Revision > restored.Revision && unassigned.Members.All(member => member.DeviceId != deviceId),
+        "unassignment remained in the signed roster");
+    pairing.ConfirmSharedRosterPublished(profile.Id, unassigned);
+    Require(pairing.SetServerAccess(deviceId, [profile.Id], null, [profile.Id]).Ok,
+        "server reassignment failed");
+    Require(pairing.SetSharedWorldGrants(deviceId, profile.Id, new(Receive: true)).Ok,
+        "reassigned Receive grant failed");
+    var reassigned = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    pairing.ConfirmSharedRosterPublished(profile.Id, reassigned);
+    var activeRosterPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        reassigned.GroupId.ToString("N") + ".roster.json");
+    using (var locked = new FileStream(activeRosterPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        Require(pairing.Revoke(deviceId).Ok && pairing.SharedRosterDirty(profile.Id),
+            "revocation did not persist a repair marker");
+        RequireThrows<IOException>(() => service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id)),
+            "a locked roster unexpectedly allowed publication");
+    }
+    var restartedPairing = new PairingService(data, clock);
+    Require(restartedPairing.SharedRosterDirty(profile.Id), "restart lost the publication failure marker");
+    var revokedAfterRestart = service.PublishRoster(profile, restartedPairing.SharedRosterMembers(profile.Id));
+    Require(revokedAfterRestart.Members.Single().Revoked,
+        "emergency revocation was not recorded in the signed roster");
+    restartedPairing.ConfirmSharedRosterPublished(profile.Id, revokedAfterRestart);
+    Require(!restartedPairing.SharedRosterDirty(profile.Id), "repair did not clear the marker");
+    Require(!SharedWorldRosterTrust.Accept(revokedAfterRestart, profile.Id, deviceId, publicKey,
+            revokedAfterRestart.OwnerPublicKey, disabled.Epoch, disabled.Revision),
         "revocation did not block new reads");
-    var rosterPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), "roster.json");
-    File.WriteAllBytes(rosterPath, JsonSerializer.SerializeToUtf8Bytes(revoked with { OwnerOverride = true }));
+    var rosterPath = activeRosterPath;
+    File.WriteAllBytes(rosterPath, JsonSerializer.SerializeToUtf8Bytes(revokedAfterRestart with { OwnerOverride = true }));
     RequireThrows<InvalidDataException>(() => service.ReadRoster(profile),
         "a tampered persisted roster was loaded");
     return Task.CompletedTask;
@@ -2006,6 +2058,35 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
         "a post-Stop capture was relabeled as a live save");
     var chunk = manager.ReadSharedChunk(status.Latest!, 0, 0);
     Require(Encoding.UTF8.GetString(chunk) == "synthetic world one", "published chunk changed");
+    var sourceService = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
+    using var reviewingPc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var reviewingDevice = Guid.NewGuid();
+    var reviewingKey = Convert.ToBase64String(reviewingPc.ExportSubjectPublicKeyInfo());
+    SharedWorldRosterMember[] reviewingMembers = [new(reviewingDevice, reviewingKey,
+        new SharedWorldGrants(Receive: true), false)];
+    var oldRoster = sourceService.PublishRoster(profile, reviewingMembers);
+    var previousSource = profile.WorldDirectory;
+    profile.WorldDirectory = Path.Combine(data.RootPath, "reviewed-new-world");
+    Directory.CreateDirectory(profile.WorldDirectory);
+    RequireThrows<InvalidDataException>(() => sourceService.PublishRoster(profile, reviewingMembers),
+        "a changed world source silently received a new signed roster");
+    Require(!sourceService.PublishAfterStop(profile, Guid.NewGuid()).Ok,
+        "a changed world source silently published a save");
+    var reviewedRoster = sourceService.PublishRoster(profile, reviewingMembers, reviewSourceChange: true);
+    Require(reviewedRoster.GroupId != oldRoster.GroupId &&
+        reviewedRoster.Epoch > oldRoster.Epoch && reviewedRoster.Revision > oldRoster.Revision &&
+        sourceService.ReadRoster(profile)?.GroupId == reviewedRoster.GroupId &&
+        File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            oldRoster.GroupId.ToString("N") + ".roster.json")) &&
+        File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            status.Latest!.GroupId.ToString("N"), "1", "version.json")),
+        "reviewed source rotation lost the signed rollback floor or prior history");
+    Require(!SharedWorldRosterTrust.Accept(oldRoster, profile.Id, reviewingDevice, reviewingKey,
+        oldRoster.OwnerPublicKey, reviewedRoster.Epoch, reviewedRoster.Revision) &&
+        SharedWorldRosterTrust.Accept(reviewedRoster, profile.Id, reviewingDevice, reviewingKey,
+            oldRoster.OwnerPublicKey, oldRoster.Epoch, oldRoster.Revision),
+        "source rotation broke the Friend rollback floor");
+    profile.WorldDirectory = previousSource;
     var payload = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
         status.Latest!.GroupId.ToString("N"), "1", "payload", "world.dat");
     File.WriteAllText(payload, "tampered world one");
@@ -2414,6 +2495,7 @@ await Check("shared save source changes hide old publication and rotate the grou
     Require(firstBackup.Ok && firstBackup.Backup is not null, "first source backup failed");
     var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id);
     Require(first.Ok && first.Version is not null, "first source publication failed");
+    var firstRoster = shares.PublishRoster(profile, []);
     var oldDirectory = profile.WorldDirectory;
     profile.WorldDirectory = Path.Combine(data.RootPath, "replacement-world");
     Directory.CreateDirectory(profile.WorldDirectory);
@@ -2421,14 +2503,24 @@ await Check("shared save source changes hide old publication and rotate the grou
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "replacement source");
     var nextBackup = backups.Create(profile, BackupKinds.Rolling);
     Require(nextBackup.Ok && nextBackup.Backup is not null, "replacement source backup failed");
+    Require(!shares.PublishAfterStop(profile, nextBackup.Backup!.Id).Ok,
+        "replacement source published without owner review");
+    var secondRoster = shares.PublishRoster(profile, [], reviewSourceChange: true);
+    Require(secondRoster.GroupId != firstRoster.GroupId &&
+        secondRoster.Revision > firstRoster.Revision, "source review reset signed roster history");
     var next = shares.PublishAfterStop(profile, nextBackup.Backup!.Id);
     Require(next.Ok && next.Version?.GroupId != first.Version!.GroupId && next.Version?.Number == 1,
-        "replacement source reused the old world group");
+        "replacement source reused the old world group: " + next.Code + " " + next.Message);
     profile.WorldDirectory = Path.Combine(data.RootPath, "third-world");
     Directory.CreateDirectory(profile.WorldDirectory);
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "third source");
     var thirdBackup = backups.Create(profile, BackupKinds.Rolling);
     Require(thirdBackup.Ok && thirdBackup.Backup is not null, "third source backup failed");
+    Require(!shares.PublishAfterStop(profile, thirdBackup.Backup!.Id).Ok,
+        "third source published without owner review");
+    var thirdRoster = shares.PublishRoster(profile, [], reviewSourceChange: true);
+    Require(thirdRoster.Revision > secondRoster.Revision,
+        "a second source review reset signed roster history");
     var third = shares.PublishAfterStop(profile, thirdBackup.Backup!.Id);
     Require(third.Ok && third.Version?.GroupId != next.Version!.GroupId &&
         Directory.EnumerateFiles(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N")),

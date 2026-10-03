@@ -9,7 +9,7 @@ namespace TogetherServer;
 public sealed record SharedWorldGrants(bool Receive = false, bool EligibleHost = false,
     bool RecoveryVoter = false, bool ManageSharing = false);
 public sealed record SharedWorldRosterMember(Guid DeviceId, string PublicKey,
-    SharedWorldGrants Grants, bool Revoked);
+    SharedWorldGrants Grants, bool Revoked, DateTimeOffset? AccessExpiresUtc = null);
 public sealed record SharedWorldRoster(int Schema, Guid GroupId, Guid ProfileId,
     long Epoch, long Revision, bool OwnerOverride, string OwnerPublicKey,
     IReadOnlyList<SharedWorldRosterMember> Members, string Signature);
@@ -17,24 +17,33 @@ public sealed record SharedWorldEnrollmentChallenge(string Nonce);
 public sealed record SharedWorldEnrollmentRequest(
     [property: JsonRequired] string Nonce, [property: JsonRequired] string PublicKey,
     [property: JsonRequired] string Signature);
-public sealed record SharedWorldGovernanceRequest([property: JsonRequired] bool OwnerOverride);
+public sealed record SharedWorldGovernanceRequest(bool? OwnerOverride = null,
+    bool ReviewSourceChange = false);
 public sealed record SharedWorldDeviceGrantsRequest([property: JsonRequired] SharedWorldGrants Grants);
 
 internal static class SharedWorldRosterTrust
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    internal static byte[] Basis(SharedWorldRoster roster) => JsonSerializer.SerializeToUtf8Bytes(new
-    {
-        roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
-        roster.OwnerOverride, roster.OwnerPublicKey, roster.Members
-    }, Json);
+    internal static byte[] Basis(SharedWorldRoster roster) => roster.Schema == 1
+        ? JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
+            roster.OwnerOverride, roster.OwnerPublicKey,
+            Members = roster.Members.Select(member => new
+            { member.DeviceId, member.PublicKey, member.Grants, member.Revoked }).ToArray()
+        }, Json)
+        : JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
+            roster.OwnerOverride, roster.OwnerPublicKey, roster.Members
+        }, Json);
 
     internal static bool Verify(SharedWorldRoster? roster)
     {
         try
         {
-            if (roster is null || roster.Schema != 1 || roster.GroupId == Guid.Empty ||
+            if (roster is null || roster.Schema is not (1 or 2) || roster.GroupId == Guid.Empty ||
                 roster.ProfileId == Guid.Empty || roster.Epoch < 1 || roster.Revision < 1 ||
                 roster.Members.Count > 128 || roster.Members.Any(member => member.DeviceId == Guid.Empty ||
                     member.Grants is null || !ValidKey(member.PublicKey)) ||
@@ -81,11 +90,23 @@ internal static class SharedWorldRosterTrust
     }
 
     internal static bool Accept(SharedWorldRoster roster, Guid profileId, Guid deviceId,
-        string deviceKey, string pinnedOwnerKey, long floorEpoch, long floorRevision) =>
+        string deviceKey, string pinnedOwnerKey, long floorEpoch, long floorRevision,
+        TimeProvider? clock = null) =>
         Verify(roster) && roster.ProfileId == profileId && roster.OwnerPublicKey == pinnedOwnerKey &&
         roster.Epoch >= floorEpoch && roster.Revision >= floorRevision &&
         roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is { Revoked: false } member &&
-        member.PublicKey == deviceKey && member.Grants.Receive;
+        member.PublicKey == deviceKey && member.Grants.Receive &&
+        HasActiveAccess(member, clock);
+
+    internal static bool HasRole(SharedWorldRoster roster, Guid deviceId, string deviceKey,
+        Func<SharedWorldGrants, bool> role, TimeProvider? clock = null) =>
+        roster.Schema == 2 && Verify(roster) &&
+        roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is
+            { Revoked: false } member && member.PublicKey == deviceKey &&
+        HasActiveAccess(member, clock) && role(member.Grants);
+
+    private static bool HasActiveAccess(SharedWorldRosterMember member, TimeProvider? clock) =>
+        member.AccessExpiresUtc is not { } expires || expires > (clock ?? TimeProvider.System).GetUtcNow();
 }
 
 internal sealed class SharedWorldEnrollmentNonces
@@ -101,5 +122,7 @@ internal sealed class SharedWorldEnrollmentNonces
 
     internal bool Consume(Guid deviceId, Guid profileId, string nonce) =>
         pending.TryRemove((deviceId, profileId), out var challenge) &&
-        challenge.Expires >= DateTimeOffset.UtcNow && challenge.Nonce == nonce;
+        challenge.Expires >= DateTimeOffset.UtcNow &&
+        CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(challenge.Nonce),
+            Encoding.UTF8.GetBytes(nonce));
 }
