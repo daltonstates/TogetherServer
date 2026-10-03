@@ -1001,22 +1001,47 @@ await Check("takeover votes use the current delegated roster and fence forked go
         [voteManager, voteNew], null, "");
     var record = draftRecord with { RecordHash = WorldAuthorityTrust.Hash(
         WorldAuthorityTrust.RecordBasis(draftRecord)) };
-    Require(!WorldAuthorityTrust.Verify(record) && WorldAuthorityTrust.Verify(record, true),
-        "delegated record bypassed chain validation or failed its signatures");
+    Require(!WorldAuthorityTrust.Verify(record, true),
+        "a delegated authority without Host acceptance was trusted");
+    var decisionHash = record.RecordHash;
+    data.SaveProtected(WorldAuthorityStore.HostingKeyName(profile.Id),
+        hostingKey.ExportPkcs8PrivateKey());
     store.Append(record);
-    Require(new WorldAuthorityStore(data).Read(profile.Id).Single().RecordHash == record.RecordHash,
+    record = new WorldAuthorityStore(data).Read(profile.Id).Single();
+    Require(record.RecordHash == decisionHash &&
+        WorldAuthorityTrust.Verify(record, true) &&
+        WorldAuthorityTrust.VerifyHostAcceptance(record),
         "delegated quorum did not survive authority restart");
+    Require(!WorldAuthorityTrust.VerifyHostAcceptance(record with
+        { RecordHash = new string('0', 64) }) &&
+        !WorldAuthorityTrust.VerifyHostAcceptance(record with
+        { HostAcceptedUtc = record.HostAcceptedUtc!.Value.AddMinutes(1) }) &&
+        !WorldAuthorityTrust.VerifyHostAcceptance(record with
+        { Proposal = record.Proposal with { RosterHash = new string('0', 64) } }),
+        "Host acceptance replayed against another decision, roster, or time");
     var afterDelegateExpiry = new WorldAuthorityStore(data,
         new ManualTimeProvider(DateTimeOffset.UtcNow.AddMinutes(6)));
     RequireThrows<InvalidDataException>(() => afterDelegateExpiry.SignLocalVote(profile.Id,
         proposal, delegated, managerId, managerKey),
         "an expired delegate retained a recovery vote");
+    RequireThrows<InvalidDataException>(() => afterDelegateExpiry.Append(
+        draftRecord with { RecordHash = decisionHash }),
+        "an expired first submission received a Host attestation");
+    RequireThrows<InvalidDataException>(() => afterDelegateExpiry.AppendReceived(
+        record with { HostAcceptanceSignature = voteManager.Signature },
+        profile.Id, root.GroupId, root.OwnerPublicKey),
+        "a forged Host acceptance was accepted");
     using (var receiver = Data("delegated-authority-friend"))
     {
         var receivedChain = new SharedWorldRosterChainStore(receiver);
         receivedChain.Append(root, root.OwnerPublicKey);
         receivedChain.Append(delegated, root.OwnerPublicKey);
-        var receivedAuthority = new WorldAuthorityStore(receiver);
+        var receivedAuthority = new WorldAuthorityStore(receiver,
+            new ManualTimeProvider(DateTimeOffset.UtcNow.AddMinutes(6)));
+        RequireThrows<InvalidDataException>(() => receivedAuthority.AppendReceived(
+            draftRecord with { RecordHash = decisionHash },
+            profile.Id, root.GroupId, root.OwnerPublicKey),
+            "an offline Friend accepted an unattested delayed authority");
         receivedAuthority.AppendReceived(record, profile.Id, root.GroupId, root.OwnerPublicKey);
         Require(new WorldAuthorityStore(receiver).Read(profile.Id).Single().RecordHash ==
             record.RecordHash, "Friend did not accept owner-rooted delegated quorum history");
@@ -3576,7 +3601,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
         {
             Epoch = noOverrideRoster.Epoch + 1, Revision = noOverrideRoster.Revision + 1,
             Members = noOverrideRoster.Members.Select(member => member.DeviceId == voters[0].Id
-                ? member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }
+                ? member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(1) }
                 : member).ToArray(), Signature = ""
         };
         var expiredRoster = expiredRosterDraft with { Signature = Convert.ToBase64String(ownerKey.SignData(
@@ -3597,9 +3622,19 @@ await Check("shared world authority requires signed majority, fences old Host, a
         expiredRecord = expiredRecord with { RecordHash = WorldAuthorityTrust.Hash(
             WorldAuthorityTrust.RecordBasis(expiredRecord)) };
         Require(WorldAuthorityTrust.Verify(expiredRecord), "historical proof became time-dependent");
-        RequireThrows<InvalidDataException>(() => store.Append(expiredRecord),
+        var delayedStore = new WorldAuthorityStore(data,
+            new ManualTimeProvider(DateTimeOffset.UtcNow.AddMinutes(2)));
+        RequireThrows<InvalidDataException>(() => delayedStore.Append(expiredRecord),
             "expired participant was accepted for a new authority decision");
-        store.AppendReceived(expiredRecord, profile.Id, version.GroupId, roster.OwnerPublicKey);
+        RequireThrows<InvalidDataException>(() => delayedStore.AppendReceived(expiredRecord,
+            profile.Id, version.GroupId, roster.OwnerPublicKey),
+            "a delayed first receipt accepted an expired voter without acceptance proof");
+        var acceptedAt = DateTimeOffset.UtcNow;
+        expiredRecord = expiredRecord with { HostAcceptedUtc = acceptedAt,
+            HostAcceptanceSignature = Convert.ToBase64String(voters[0].Key.SignData(
+                WorldAuthorityTrust.HostAcceptanceBasis(expiredRecord, acceptedAt),
+                HashAlgorithmName.SHA256)) };
+        delayedStore.AppendReceived(expiredRecord, profile.Id, version.GroupId, roster.OwnerPublicKey);
         Require(store.Read(profile.Id).Any(item => item.RecordHash == expiredRecord.RecordHash),
             "a signed historical branch was discarded using this PC's current clock");
         var log = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
