@@ -8,6 +8,7 @@ public static class CompanionProtocol
 {
     public const string HeaderName = "X-TogetherServer-Protocol";
     public const string ServerLogsCapability = "server-logs-v1";
+    public const string SharedWorldsCapability = "shared-worlds-v1";
     public const int Current = 3;
     public const int Minimum = 3;
     public static readonly IReadOnlyList<string> Capabilities =
@@ -22,7 +23,8 @@ public static class CompanionProtocol
         "player-count-refresh",
         "persistent-server-codes",
         "action-protocol-header",
-        ServerLogsCapability
+        ServerLogsCapability,
+        SharedWorldsCapability
     ];
 
     public static string AppVersion => typeof(CompanionProtocol).Assembly.GetName().Version?.ToString(3) ?? "unknown";

@@ -181,6 +181,45 @@ public sealed class FriendService : IDisposable
             : link.ReadLogsAsync(profileId, query, cancellationToken);
     }
 
+    public ReceivedSharedWorldStatus SharedWorldStatus(Guid profileId)
+    {
+        lock (sync)
+            return links.FirstOrDefault(item => item.Id == selectedId).Link?.SharedWorldStatus(profileId)
+                ?? new(false, null, null, "Not paired");
+    }
+
+    public Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) : link.SetSharedWorldConsentAsync(profileId, enabled);
+        }
+    }
+
+    public Task<ReceivedSharedWorldResult> PullSharedWorldAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) : link.PullSharedWorldAsync(profileId, cancellationToken);
+        }
+    }
+
+    public Task<ReceivedSharedWorldResult> CheckSharedWorldAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) : link.CheckSharedWorldAsync(profileId, cancellationToken);
+        }
+    }
+
     public Task<FriendActionResult> RequestAsync(Guid profileId, string action)
     {
         lock (sync)

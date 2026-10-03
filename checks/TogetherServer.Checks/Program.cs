@@ -20,6 +20,8 @@ var failed = 0;
 
 async Task Check(string name, Func<Task> test)
 {
+    var filter = args.FirstOrDefault(argument => argument.StartsWith("--filter=", StringComparison.Ordinal))?[9..];
+    if (filter is not null && !name.Contains(filter, StringComparison.OrdinalIgnoreCase)) return;
     try { await test(); Console.WriteLine("PASS " + name); passed++; }
     catch (Exception ex) { Console.WriteLine("FAIL " + name + ": " + ex); failed++; }
 }
@@ -1873,6 +1875,420 @@ await Check("backup staging, integrity, retention, and free-space checks fail cl
         "backup ignored the configured destination free-space boundary");
 });
 
+await Check("shared save publishes only after confirmed Stop and rejects changed payload", async () =>
+{
+    using var data = Data("shared-world-stop");
+    var profile = Profile("shared-stop", "shared-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "synthetic world one");
+    var driver = new ObservationFixtureDriver();
+    var manager = new HostManager(data, new GameServerRegistry([driver]));
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture settings were rejected");
+    Require((await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
+        "a save was published before a graceful Stop");
+    Require((await manager.StartAsync(profile.Id)).Ok, "fixture Start failed");
+    Require((await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
+        "a save was published while the game was running");
+    driver.StopBehavior = FixtureStopBehavior.Failed;
+    Require(!(await manager.StopAsync(profile.Id)).Ok &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
+        "a failed Stop published a shared save");
+    driver.StopBehavior = FixtureStopBehavior.Unconfirmed;
+    Require(!(await manager.StopAsync(profile.Id)).Ok &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
+        "an unconfirmed Stop published a shared save");
+    driver.StopBehavior = FixtureStopBehavior.Normal;
+    Require((await manager.StopAsync(profile.Id)).Ok, "fixture Stop failed");
+    var status = await manager.SharedWorldStatusAsync(profile.Id);
+    Require(status.Enabled && status.Latest is { Number: 1 } &&
+        SharedWorldService.VerifySignature(status.Latest), "signed version was not published after Stop");
+    Require(!SharedWorldService.VerifySignature(status.Latest! with { CaptureKind = "LiveSave" }),
+        "a post-Stop capture was relabeled as a live save");
+    var chunk = manager.ReadSharedChunk(status.Latest!, 0, 0);
+    Require(Encoding.UTF8.GetString(chunk) == "synthetic world one", "published chunk changed");
+    var payload = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        status.Latest!.GroupId.ToString("N"), "1", "payload", "world.dat");
+    File.WriteAllText(payload, "tampered world one");
+    RequireThrows<InvalidDataException>(() => manager.ReadSharedChunk(status.Latest!, 0, 0),
+        "tampered published file was transferred");
+    Require(!SharedWorldService.SafePath("../world.dat") && !SharedWorldService.SafePath("C:/world.dat") &&
+        !SharedWorldService.SafePath("safe/../../world.dat") &&
+        !SharedWorldService.SafePath("safe/CON.txt"), "traversal or a Windows device name was accepted");
+});
+
+await Check("shared save grant is separate and revoked at access deadline or unassignment", () =>
+{
+    using var data = Data("shared-world-access");
+    var profileId = Guid.NewGuid();
+    var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,
+        AssignedProfileIds = [profileId], CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10) };
+    data.SavePairingState(new PairingPersistentState { Devices = [device] });
+    var pairing = new PairingService(data);
+    Require(!pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
+        "default receive permission was not off");
+    Require(pairing.SetReceiveSaves(device.Id, profileId, true).Ok &&
+        pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
+        "explicit per-server save grant failed");
+    Require(pairing.SetServerAccess(device.Id, [], null, [profileId]).Ok &&
+        !pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
+        "unassignment retained save access");
+    Require(pairing.SetServerAccess(device.Id, [profileId], null, [profileId]).Ok &&
+        !pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
+        "reassignment silently restored the save grant");
+    Require(pairing.SetReceiveSaves(device.Id, profileId, true).Ok,
+        "second explicit grant failed");
+    Require(pairing.SetAccessExpiry(device.Id, new DeviceAccessExpiryRequest(
+        AccessExpiresUtc: DateTimeOffset.UtcNow.AddMilliseconds(100))).Ok,
+        "access deadline could not be set");
+    Thread.Sleep(200);
+    Require(pairing.AuthorizeReceiveSaves(device, profileId, out _).Code == "AccessExpired",
+        "expired access still read shared saves");
+    return Task.CompletedTask;
+});
+
+await Check("shared save receipt resumes bounded chunks, keeps three verified copies, and preserves reserve", () =>
+{
+    using var data = Data("shared-world-receipt");
+    var profile = Profile("shared-receipt", "received-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0,
+        RetentionCount = 5 };
+    profile.SharedSavesEnabled = true;
+    var backupService = new WorldBackupService(data, TimeProvider.System);
+    var shares = new SharedWorldService(data, backupService);
+    var receiver = Path.Combine(data.RootPath, "disposable-receiver");
+    Directory.CreateDirectory(receiver);
+    SharedWorldVersion? latest = null;
+    for (var number = 1; number <= 4; number++)
+    {
+        var latestPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), "latest.json");
+        var previousPointer = File.Exists(latestPath) ? File.ReadAllBytes(latestPath) : null;
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), $"synthetic version {number}");
+        var backup = backupService.Create(profile, BackupKinds.Rolling);
+        Require(backup.Ok && backup.Backup is not null, "synthetic backup failed");
+        var published = shares.PublishAfterStop(profile, backup.Backup!.Id);
+        Require(published.Ok && published.Version is not null &&
+            published.Version.Number == number, "signed version chain failed");
+        Require(!SharedWorldService.VerifySignature(published.Version! with
+            { CreatedUtc = published.Version.CreatedUtc.AddSeconds(1) }),
+            "displayed save completion time was not signed");
+        if (number == 2)
+        {
+            File.WriteAllBytes(latestPath, previousPointer!);
+            var recovered = shares.PublishAfterStop(profile, backup.Backup.Id);
+            Require(recovered.Ok && recovered.Version?.VersionHash == published.Version.VersionHash &&
+                shares.Status(profile).Latest?.VersionHash == published.Version.VersionHash,
+                "verified orphan was not reconciled after a pointer crash");
+        }
+        if (number == 3)
+        {
+            var orphanFile = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+                published.Version.GroupId.ToString("N"), "3", "payload", "world.dat");
+            var original = File.ReadAllBytes(orphanFile);
+            File.WriteAllBytes(latestPath, previousPointer!);
+            File.WriteAllText(orphanFile, "tampered orphan");
+            Require(!shares.PublishAfterStop(profile, backup.Backup.Id).Ok &&
+                shares.Status(profile).Latest?.Number == 2,
+                "a corrupted orphan advanced the shared save pointer");
+            File.WriteAllBytes(orphanFile, original);
+            Require(shares.PublishAfterStop(profile, backup.Backup.Id).Version?.VersionHash ==
+                published.Version.VersionHash, "a repaired verified orphan could not be reconciled");
+        }
+        latest = published.Version;
+        var hostFile = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            latest!.GroupId.ToString("N"), number.ToString(), "payload", "world.dat");
+        var received = Path.Combine(receiver, latest!.VersionHash);
+        Directory.CreateDirectory(received);
+        Directory.CreateDirectory(Path.Combine(received, "payload"));
+        File.Copy(hostFile, Path.Combine(received, "payload", "world.dat"));
+        File.WriteAllBytes(Path.Combine(received, "version.json"),
+            JsonSerializer.SerializeToUtf8Bytes(latest, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+    File.WriteAllBytes(Path.Combine(receiver, "latest.json"),
+        JsonSerializer.SerializeToUtf8Bytes(latest, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    var secondManifest = shares.ReadEarlierVersion(latest!, 2);
+    var thirdManifest = shares.ReadEarlierVersion(latest!, 3);
+    Require(thirdManifest.ParentHash == secondManifest.VersionHash &&
+        latest!.ParentHash == thirdManifest.VersionHash,
+        "a missed-version chain did not retain signed parent hashes");
+    var firstManifest = shares.ReadEarlierVersion(latest!, 1);
+    Require(FriendLink.VerifySharedChain(firstManifest, latest!, [secondManifest, thirdManifest]) &&
+        !FriendLink.VerifySharedChain(firstManifest, latest!, [thirdManifest, secondManifest]) &&
+        !FriendLink.VerifySharedChain(firstManifest, latest!, [secondManifest]) &&
+        !FriendLink.VerifySharedChain(firstManifest, latest! with { ParentHash = firstManifest.VersionHash },
+            [secondManifest, thirdManifest]),
+        "missed-version ancestry accepted an unrelated or incomplete history");
+    var publishedRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        latest!.GroupId.ToString("N"));
+    Require(File.Exists(Path.Combine(publishedRoot, "1", "version.json")) &&
+        File.Exists(Path.Combine(publishedRoot, "2", "version.json")) &&
+        !File.Exists(Path.Combine(publishedRoot, "1", "payload", "world.dat")) &&
+        File.Exists(Path.Combine(publishedRoot, "2", "payload", "world.dat")) &&
+        File.Exists(Path.Combine(publishedRoot, "3", "payload", "world.dat")) &&
+        File.Exists(Path.Combine(publishedRoot, "4", "payload", "world.dat")),
+        "Host did not retain newest plus two payloads and all signed ancestry metadata");
+    RequireThrows<InvalidDataException>(() => shares.ReadChunk(firstManifest, 0, 0),
+        "pruned payload still served a chunk");
+    var earlierManifestPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        latest!.GroupId.ToString("N"), "2", "version.json");
+    var validEarlierManifest = File.ReadAllBytes(earlierManifestPath);
+    File.WriteAllText(earlierManifestPath, "{}");
+    RequireThrows<InvalidDataException>(() => shares.ReadEarlierVersion(latest!, 2),
+        "tampered earlier manifest was accepted");
+    File.WriteAllBytes(earlierManifestPath, validEarlierManifest);
+    Require(FriendLink.ReadReceivedLatest(receiver)?.VersionHash == latest!.VersionHash,
+        "atomic latest pointer did not resolve to a verified copy");
+    FriendLink.PruneReceived(receiver, latest.VersionHash);
+    Require(Directory.EnumerateDirectories(receiver).Count() == 3 &&
+        Directory.Exists(Path.Combine(receiver, latest.VersionHash)),
+        "receipt retention did not keep newest plus two earlier copies");
+    var chunkFile = Path.Combine(receiver, "partial.dat");
+    var chunk = new SharedWorldFile("partial.dat", SharedWorldService.ChunkBytes * 2L,
+        new string('0', 64));
+    File.WriteAllBytes(chunkFile, new byte[SharedWorldService.ChunkBytes]);
+    Require(FriendLink.ResumeOffset(chunkFile, chunk) == SharedWorldService.ChunkBytes,
+        "bounded partial chunk was not resumable");
+    File.WriteAllBytes(chunkFile, []);
+    Require(FriendLink.ResumeOffset(chunkFile, chunk) == 0,
+        "zero-byte interrupted chunk could not restart after reconnect");
+    using (var restarted = FriendLink.OpenPartialOutput(chunkFile, 0)) restarted.WriteByte(1);
+    Require(new FileInfo(chunkFile).Length == 1, "zero-byte partial could not restart after reconnect");
+    File.WriteAllBytes(chunkFile, new byte[SharedWorldService.ChunkBytes * 2]);
+    Require(FriendLink.ExistingPartialBytes(receiver, chunk) == 0,
+        "corrupt complete partial understated the disk reserve needed for retry");
+    using (var stream = File.OpenWrite(chunkFile)) { stream.Position = stream.Length; stream.WriteByte(1); }
+    Require(FriendLink.ResumeOffset(chunkFile, chunk) == -1,
+        "unaligned partial chunk was accepted");
+    Require(!FriendLink.HasReceiverReserve(1024L * 1024 * 1024, 1) &&
+        FriendLink.HasReceiverReserve(1024L * 1024 * 1024 + 1, 1),
+        "1 GiB receiver reserve was not enforced");
+    File.WriteAllText(Path.Combine(receiver, latest.VersionHash, "payload", "world.dat"), "tampered");
+    RequireThrows<InvalidDataException>(() => FriendLink.ReadReceivedLatest(receiver),
+        "tampered received copy was reported verified");
+    return Task.CompletedTask;
+});
+
+await Check("shared save source changes hide old publication and rotate the group", () =>
+{
+    using var data = Data("shared-world-source-binding");
+    var profile = Profile("shared-source", "same-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first source");
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var shares = new SharedWorldService(data, backups);
+    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(firstBackup.Ok && firstBackup.Backup is not null, "first source backup failed");
+    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id);
+    Require(first.Ok && first.Version is not null, "first source publication failed");
+    var oldDirectory = profile.WorldDirectory;
+    profile.WorldDirectory = Path.Combine(data.RootPath, "replacement-world");
+    Directory.CreateDirectory(profile.WorldDirectory);
+    Require(shares.Status(profile).Latest is null, "old source remained addressable after directory change");
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "replacement source");
+    var nextBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(nextBackup.Ok && nextBackup.Backup is not null, "replacement source backup failed");
+    var next = shares.PublishAfterStop(profile, nextBackup.Backup!.Id);
+    Require(next.Ok && next.Version?.GroupId != first.Version!.GroupId && next.Version?.Number == 1,
+        "replacement source reused the old world group");
+    profile.WorldDirectory = Path.Combine(data.RootPath, "third-world");
+    Directory.CreateDirectory(profile.WorldDirectory);
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "third source");
+    var thirdBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(thirdBackup.Ok && thirdBackup.Backup is not null, "third source backup failed");
+    var third = shares.PublishAfterStop(profile, thirdBackup.Backup!.Id);
+    Require(third.Ok && third.Version?.GroupId != next.Version!.GroupId &&
+        Directory.EnumerateFiles(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N")),
+            "world.dat", SearchOption.AllDirectories).Count() == 3,
+        "source rotation lost a competing group payload");
+    profile.WorldDirectory = oldDirectory;
+    Require(shares.Status(profile).Latest is null, "old source could read replacement publication");
+    return Task.CompletedTask;
+});
+
+await Check("shared save retention follows signed numbers despite skewed capture clocks", () =>
+{
+    using var data = Data("shared-world-skew");
+    var profile = Profile("shared-skew", "skew-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.SharedSavesEnabled = true;
+    var capture = new SkewedSharedCapture(profile.WorldDirectory);
+    var shares = new SharedWorldService(data, capture);
+    var receiver = Path.Combine(data.RootPath, "skew-receiver");
+    Directory.CreateDirectory(receiver);
+    SharedWorldVersion? head = null;
+    for (var number = 1; number <= 5; number++)
+    {
+        capture.CapturedUtc = DateTimeOffset.UtcNow.AddYears(10 - number);
+        var bytes = Encoding.UTF8.GetBytes($"skew payload {number}");
+        File.WriteAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"), bytes);
+        var result = shares.PublishAfterStop(profile, Guid.NewGuid());
+        Require(result.Ok && result.Version?.Number == number, "skewed capture failed to publish");
+        head = result.Version;
+        var received = Path.Combine(receiver, head!.VersionHash);
+        Directory.CreateDirectory(Path.Combine(received, "payload"));
+        File.WriteAllBytes(Path.Combine(received, "payload", "world.dat"), bytes);
+        File.WriteAllBytes(Path.Combine(received, "version.json"),
+            JsonSerializer.SerializeToUtf8Bytes(head, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+    File.WriteAllBytes(Path.Combine(receiver, "latest.json"),
+        JsonSerializer.SerializeToUtf8Bytes(head, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    FriendLink.PruneReceived(receiver, head!.VersionHash);
+    var groupRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        head.GroupId.ToString("N"));
+    for (var number = 1; number <= 5; number++)
+    {
+        var hostPayload = Path.Combine(groupRoot, number.ToString(), "payload", "world.dat");
+        Require(File.Exists(hostPayload) == (number >= 3),
+            "Host retention used capture time instead of signed version number");
+        var version = number == 5 ? head : shares.ReadEarlierVersion(head, number);
+        Require(Directory.Exists(Path.Combine(receiver, version.VersionHash)) == (number >= 3),
+            "Friend retention used capture time instead of signed version number");
+    }
+    return Task.CompletedTask;
+});
+
+await Check("shared save totals reject overflow and over-limit payloads", () =>
+{
+    static SharedWorldFile FileOf(long length) => new("world.dat", length, new string('0', 64));
+    Require(SharedWorldService.BoundedTotalBytes([FileOf(SharedWorldService.MaximumSharedWorldBytes)]) ==
+        SharedWorldService.MaximumSharedWorldBytes, "exact transfer ceiling was rejected");
+    RequireThrows<InvalidDataException>(() => SharedWorldService.BoundedTotalBytes(
+        [FileOf(SharedWorldService.MaximumSharedWorldBytes), FileOf(1)]),
+        "over-limit transfer was accepted");
+    RequireThrows<InvalidDataException>(() => SharedWorldService.BoundedTotalBytes(
+        [FileOf(long.MaxValue), FileOf(long.MaxValue)]),
+        "overflowing transfer was accepted");
+    using var data = Data("shared-world-oversize-publish");
+    var profile = Profile("oversize source", "oversize-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.SharedSavesEnabled = true;
+    var vault = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
+    var shares = new SharedWorldService(data, new OversizedSharedCapture(data.RootPath));
+    Require(!shares.PublishAfterStop(profile, Guid.NewGuid()).Ok &&
+        !File.Exists(Path.Combine(vault, "latest.json")) &&
+        !Directory.EnumerateDirectories(vault, ".stage-*", SearchOption.TopDirectoryOnly).Any(),
+        "oversized source reached the copying or publication stage");
+    return Task.CompletedTask;
+});
+
+await Check("shared save consent withdrawal prevents final receipt pointer", () =>
+{
+    using var data = Data("shared-receipt-withdrawal");
+    using var link = new FriendLink(data, "absent-friend.protected");
+    var profileId = Guid.NewGuid();
+    var root = Path.Combine(data.RootPath, "receipt-race");
+    var stage = Path.Combine(root, "stage");
+    Directory.CreateDirectory(stage);
+    File.WriteAllText(Path.Combine(stage, "world.dat"), "verified fixture");
+    link.WithdrawSharedConsent(profileId);
+    Require(!link.CommitSharedReceipt(profileId, stage, Path.Combine(root, "received"), root, [1]) &&
+        !File.Exists(Path.Combine(root, "latest.json")) && Directory.Exists(stage),
+        "withdrawal allowed a completed receipt to be recorded");
+    return Task.CompletedTask;
+});
+
+await Check("shared save chunks detect later tampering without rescanning earlier chunks", () =>
+{
+    using var data = Data("shared-world-chunk-integrity");
+    var profile = Profile("shared-chunks", "chunk-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"),
+        new byte[SharedWorldService.ChunkBytes * 2]);
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var backup = backups.Create(profile, BackupKinds.Rolling);
+    Require(backup.Ok && backup.Backup is not null, "chunk fixture backup failed");
+    var shares = new SharedWorldService(data, backups);
+    var result = shares.PublishAfterStop(profile, backup.Backup!.Id);
+    Require(result.Ok && result.Version is not null, "chunk fixture publication failed");
+    var version = result.Version!;
+    Require(shares.ReadChunk(version, 0, 0).Length == SharedWorldService.ChunkBytes,
+        "first verified chunk could not be read");
+    var published = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+        version.GroupId.ToString("N"), "1", "payload", "world.dat");
+    using (var stream = new FileStream(published, FileMode.Open, FileAccess.Write, FileShare.None))
+    {
+        stream.Position = SharedWorldService.ChunkBytes;
+        stream.WriteByte(1);
+    }
+    RequireThrows<InvalidDataException>(() => shares.ReadChunk(version, 0, SharedWorldService.ChunkBytes),
+        "a later changed chunk was sent after its first verified read");
+    return Task.CompletedTask;
+});
+
+await Check("shared save authorization is rechecked after asynchronous read and membership is signed", async () =>
+{
+    using var data = Data("shared-world-revocation");
+    var profile = Profile("shared-revocation", "signed-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "fixture");
+    var backupService = new WorldBackupService(data, TimeProvider.System);
+    var backup = backupService.Create(profile, BackupKinds.Rolling);
+    Require(backup.Ok && backup.Backup is not null, "fixture backup failed");
+    var shares = new SharedWorldService(data, backupService);
+    var published = shares.PublishAfterStop(profile, backup.Backup!.Id);
+    Require(published.Ok && published.Version is not null, "fixture publication failed");
+    var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,
+        AssignedProfileIds = [profile.Id], CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10) };
+    data.SavePairingState(new PairingPersistentState { Devices = [device] });
+    var pairing = new PairingService(data);
+    Require(pairing.SetReceiveSaves(device.Id, profile.Id, true).Ok,
+        "explicit grant failed");
+    using var pcKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var pcPublicKey = Convert.ToBase64String(pcKey.ExportSubjectPublicKeyInfo());
+    var member = shares.IssueMembership(profile, device.Id, pcPublicKey);
+    Require(SharedWorldService.VerifyMembership(member) &&
+        member.OwnerPublicKey == published.Version!.SigningPublicKey,
+        "group membership signature failed");
+    Require(!SharedWorldService.VerifyMembership(member with { DeviceId = Guid.NewGuid() }),
+        "membership accepted a tampered device ID");
+    Require(!SharedWorldService.VerifyMembership(member with { Role = "Writer" }),
+        "receive-only membership was escalated to writer");
+    var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var delayedRead = Task.Run(async () =>
+    {
+        var before = pairing.AuthorizeReceiveSaves(device, profile.Id, out var loaded);
+        entered.SetResult();
+        await release.Task;
+        var payload = shares.ReadChunk(published.Version!, 0, 0);
+        var after = pairing.AuthorizeReceiveSaves(loaded!, profile.Id, out _);
+        return before.Ok && after.Ok ? payload : null;
+    });
+    await entered.Task;
+    Require(pairing.SetReceiveSaves(device.Id, profile.Id, false).Ok,
+        "grant removal failed");
+    release.SetResult();
+    Require(await delayedRead is null, "an in-flight read returned bytes after grant removal");
+});
+
+await Check("shared save proxy bounds declared and streamed bytes before receipt", async () =>
+{
+    using var declared = new ByteArrayContent([1]);
+    declared.Headers.ContentLength = SharedWorldService.ChunkBytes + 1;
+    using var streamed = new StreamContent(new MemoryStream(new byte[SharedWorldService.ChunkBytes + 1]));
+    streamed.Headers.ContentLength = null;
+    using var exact = new ByteArrayContent(new byte[SharedWorldService.ChunkBytes]);
+    Require(await FriendLink.ReadBoundedSharedAsync(declared,
+        SharedWorldService.ChunkBytes, CancellationToken.None) is null,
+        "oversized declared chunk was buffered");
+    Require(await FriendLink.ReadBoundedSharedAsync(streamed,
+        SharedWorldService.ChunkBytes, CancellationToken.None) is null,
+        "oversized streamed chunk was buffered");
+    Require((await FriendLink.ReadBoundedSharedAsync(exact,
+        SharedWorldService.ChunkBytes, CancellationToken.None))?.Length == SharedWorldService.ChunkBytes,
+        "exact bounded chunk was rejected");
+});
+
 await Check("Terraria preview copies an isolated world and treats listener evidence as player-count unknown", async () =>
 {
     using var data = Data("terraria-preview");
@@ -2550,5 +2966,27 @@ sealed class BlockingPowerGuard : IHostingPowerGuard
         released.Set();
         released.Dispose();
         Entered.Dispose();
+    }
+}
+
+sealed class OversizedSharedCapture(string root) : ISharedWorldCaptureAdapter
+{
+    public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId) =>
+        new(1, SharedWorldCaptureKinds.PostStopBackup, backupId, DateTimeOffset.UtcNow,
+            [new SharedWorldFile("world.dat", SharedWorldService.MaximumSharedWorldBytes + 1,
+                new string('0', 64))], root);
+}
+
+sealed class SkewedSharedCapture(string root) : ISharedWorldCaptureAdapter
+{
+    public DateTimeOffset CapturedUtc { get; set; }
+
+    public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId)
+    {
+        var path = Path.Combine(root, "world.dat");
+        var bytes = File.ReadAllBytes(path);
+        return new(1, SharedWorldCaptureKinds.PostStopBackup, backupId, CapturedUtc,
+            [new SharedWorldFile("world.dat", bytes.Length,
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)))], root);
     }
 }

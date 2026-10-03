@@ -35,6 +35,7 @@ import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
 import { ServerFilesPanel } from './ServerFilesPanel'
+import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import {
@@ -1449,6 +1450,8 @@ function App() {
                 {operationConflict.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending || operationBusy} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
                   : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
               <FriendStopBlockers snapshot={snapshot} profile={profile} />
+              {profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id}
+                available={snapshot.hostCapabilities.includes('shared-worlds-v1')} />}
               {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
               {['Ready', 'Listening'].includes(profile.state) && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
             </article>
@@ -1586,6 +1589,8 @@ function App() {
                     {shownBackupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</p>}
                     <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} title={status?.state !== 'Offline' ? 'Stop the server before copying its world.' : undefined} onClick={() => void createManualBackup(profile.id)}>{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
                     <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds. “Copy to vault” uses a Windows folder picker, verifies every hash after transfer, and keeps the local backup. Choose an external or network location when you want another-device protection. “Test restore” uses disposable scratch storage and never swaps the live world.</small>
+                    <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []}
+                      rollingBackupEnabled={profile.backups?.enabled === true} onGrantChanged={refreshCompanion} />
                     {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
                       const verification = backupVerifications[backup.id]
                       const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'

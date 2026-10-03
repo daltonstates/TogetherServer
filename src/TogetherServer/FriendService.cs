@@ -25,6 +25,11 @@ public sealed class FriendConfiguration
     public ConnectionRoute? Route { get; set; }
     public List<PendingFriendOperation>? PendingOperations { get; set; }
     public List<PublicProfile>? CachedProfiles { get; set; }
+    public List<Guid> ConsentedSharedWorldProfiles { get; set; } = [];
+    public Dictionary<Guid, string> SharedWorldSigningKeys { get; set; } = [];
+    public Dictionary<Guid, long> LastSharedHostVersions { get; set; } = [];
+    public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];
+    public Dictionary<Guid, Guid> ApprovedSharedWorldGroups { get; set; } = [];
 }
 
 public sealed class PendingFriendOperation
@@ -63,7 +68,7 @@ public sealed record FriendActionResult(bool Ok, string Code, string Message, Co
     IReadOnlyList<PortConflictView>? PortConflicts = null, Guid? OperationId = null,
     string? OperationState = null);
 
-internal sealed class FriendLink : IDisposable
+internal sealed partial class FriendLink : IDisposable
 {
     internal const int MaximumServerLogResponseBytes = 3 * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -458,6 +463,7 @@ internal sealed class FriendLink : IDisposable
             client?.Dispose();
             client = null;
             data.DeleteProtected(configFile);
+            data.DeleteProtected($"shared-world-pc-signing-{config.DeviceId:N}.protected");
             config = null;
             view = new("Friend", "Not connected", "This saved Host connection was forgotten.", "",
                 null, false, false, false, [], []);

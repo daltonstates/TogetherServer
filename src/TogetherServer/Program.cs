@@ -652,6 +652,13 @@ app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => 
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
     ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })
     : Results.Json(await manager.BackupsAsync(id)));
+app.MapGet("/api/local/profiles/{id:guid}/shared-world", async (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Conflict(new { code = "FriendMode" }) :
+    Results.Json(await manager.SharedWorldStatusAsync(id)));
+app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedWorldConsentRequest request) =>
+    friendMode ? Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first.")) :
+    Results.Json(await manager.SetSharedSavesAsync(id, request.Enabled)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>
@@ -1224,6 +1231,20 @@ app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
     try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Approve(id)); }
     finally { modeGate.Release(); }
 });
+app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}",
+    async (Guid id, Guid profileId, SharedWorldGrantRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        var status = await manager.SharedWorldStatusAsync(profileId);
+        if (request.Enabled && !status.Enabled)
+            return Results.Conflict(new { code = "SharingOff", message = "Enable sharing for this server first." });
+        return Results.Json(pairing.SetReceiveSaves(id, profileId, request.Enabled));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPut("/api/local/devices/{id:guid}/access-expiry", async (Guid id, DeviceAccessExpiryRequest request) =>
 {
     await modeGate.WaitAsync();
@@ -1306,6 +1327,18 @@ app.MapPost("/api/local/friend/poll", async () =>
     friendMode ? Results.Json(await friend.PollAsync()) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/probe-game", async (Guid id) =>
     friendMode ? Results.Json(await friend.ProbeGameEndpointAsync(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/shared-world", (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Json(friend.SharedWorldStatus(id)) : Results.Conflict(new { code = "HostMode" }));
+app.MapPut("/api/local/friend/{id:guid}/shared-world/consent", async (Guid id, SharedWorldConsentRequest request) =>
+    friendMode ? Results.Json(await friend.SetSharedWorldConsentAsync(id, request.Enabled)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/pull", async (HttpContext context, Guid id) =>
+    friendMode ? Results.Json(await friend.PullSharedWorldAsync(id, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext context, Guid id) =>
+    friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {
     if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);

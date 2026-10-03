@@ -230,6 +230,7 @@ export type Device = {
   canStop: boolean
   canExtendTimer: boolean
   canViewLogs: boolean
+  saveReceiveProfileIds?: string[]
   revoked: boolean
   paired: boolean
   approvalPending: boolean
@@ -557,6 +558,7 @@ export function parseProfile(value: unknown, context = 'profile'): Profile {
     id: text(source.id, `${context}.id`), kind, name: text(source.name, `${context}.name`),
     serverName: text(source.serverName, `${context}.serverName`), crossplay: flag(source.crossplay, `${context}.crossplay`),
     publicListing: flag(source.publicListing, `${context}.publicListing`), worldId: text(source.worldId, `${context}.worldId`),
+    sharedSavesEnabled: source.sharedSavesEnabled === undefined ? false : flag(source.sharedSavesEnabled, `${context}.sharedSavesEnabled`),
     worldSource, worldDirectory: text(source.worldDirectory, `${context}.worldDirectory`),
     gamePort: numeric(source.gamePort, `${context}.gamePort`), executablePath: text(source.executablePath, `${context}.executablePath`),
     minecraft, factorio, custom, crashRecovery, backups, maintenance
@@ -1186,6 +1188,8 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
     assignedProfileIds: textList(source.assignedProfileIds, `${context}.assignedProfileIds`), name: text(source.name, `${context}.name`),
     canStart: flag(source.canStart, `${context}.canStart`), canStop: flag(source.canStop, `${context}.canStop`),
     canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`), canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
+    saveReceiveProfileIds: source.saveReceiveProfileIds === undefined || source.saveReceiveProfileIds === null ? [] :
+      textList(source.saveReceiveProfileIds, `${context}.saveReceiveProfileIds`),
     revoked: flag(source.revoked, `${context}.revoked`),
     paired: flag(source.paired, `${context}.paired`), approvalPending: flag(source.approvalPending, `${context}.approvalPending`),
     credentialExpiresUtc: nullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),

@@ -659,7 +659,7 @@ try
     var rejectedCode = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(PairingPassword.Encode(inviteA with { Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) })));
     Require(!rejectedCode.Ok && rejectedCode.Code == "PairingRejected" && rejectedCode.Message.Contains("current server code"),
-        "a rejected server code was mistaken for a network or TLS failure");
+        "a rejected server code was mistaken for a network or TLS failure: " + JsonSerializer.Serialize(rejectedCode, webJson));
     var pairedA = await OwnerPost<FriendPairRequest, FriendActionResult>(aLocal, "/api/local/friend/pair",
         new(passwordA));
     Require(pairedA.Ok, "a current invite did not pair without a separate Host IP");
@@ -803,6 +803,129 @@ try
     Require(aView.Profiles.Single().JoinAddress is null,
         "a fixture server exposed a Valheim join address");
     Console.WriteLine("PASS saved Friend connections can be selected and renamed"); passes++;
+
+    // Real loopback HTTPS transfer using the same Host/Friend processes and TLS pin
+    // as the companion journey. All data and the fixture game stay under local-data.
+    settings.Profiles.Single(item => item.Id == profile.Id).Backups =
+        new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
+        "shared-world rolling backup setup failed");
+    var enabledSharing = await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world", new(true));
+    Require(enabledSharing.Ok, "owner could not opt in to shared saves");
+    var deniedGrant = await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceAId}/shared-world/{joinProfile.Id}", new(true));
+    Require(!deniedGrant.Ok, "an unassigned profile received a save grant");
+    var grantA = await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(true));
+    Require(grantA.Ok, "owner save grant failed");
+    var consentA = await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/consent", new(true));
+    Require(consentA.Ok, "Friend PC consent failed");
+    var beforeStop = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    Require(!beforeStop.Ok, "a Friend received a save before a graceful Stop");
+    File.WriteAllText(Path.Combine(world, "world.dat"), "verified HTTPS fixture world");
+    var collisionVersion = System.Text.Encoding.UTF8.GetBytes("legitimate world version.json payload");
+    var collisionMembership = System.Text.Encoding.UTF8.GetBytes("legitimate world membership.json payload");
+    File.WriteAllBytes(Path.Combine(world, "version.json"), collisionVersion);
+    File.WriteAllBytes(Path.Combine(world, "membership.json"), collisionMembership);
+    Require((await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profile.Id}/start", new { })).Ok,
+        "shared-world fixture start failed");
+    Require((await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
+        "shared-world fixture graceful Stop failed");
+    var publishedShared = await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world");
+    Require(publishedShared.Enabled && publishedShared.Latest is { Number: 1 },
+        "Host did not publish a signed post-Stop version");
+    var receivedShared = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    var receivedStatus = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world");
+    Require(receivedShared.Ok && receivedStatus.ThisPcVersion == 1 &&
+        receivedStatus.HostVersion == 1,
+        $"pinned HTTPS receipt failed: {receivedShared.Code} {receivedShared.Message}");
+    var receiverRoot = Path.Combine(friendAData, "received-shared-worlds",
+        deviceAId.ToString("N"), profile.Id.ToString("N"));
+    Require(File.ReadAllText(Path.Combine(receiverRoot,
+        publishedShared.Latest!.VersionHash, "payload", "world.dat")) == "verified HTTPS fixture world",
+        "Friend vault did not contain the verified file");
+    foreach (var (name, expected) in new[] { ("version.json", collisionVersion),
+        ("membership.json", collisionMembership) })
+    {
+        var hostPayload = Path.Combine(hostData, "shared-worlds", profile.Id.ToString("N"),
+            publishedShared.Latest.GroupId.ToString("N"), "1", "payload", name);
+        var friendPayload = Path.Combine(receiverRoot, publishedShared.Latest.VersionHash, "payload", name);
+        Require(File.ReadAllBytes(hostPayload).SequenceEqual(expected) &&
+            File.ReadAllBytes(friendPayload).SequenceEqual(expected),
+            $"payload named {name} collided with shared save metadata");
+    }
+    var rereadShared = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    Require(rereadShared.Ok && rereadShared.Code == "AlreadyReceived",
+        "Friend could not re-verify the collision-named payload files");
+    var rotatedWorld = Path.Combine(root, "rotated-world");
+    Directory.CreateDirectory(rotatedWorld);
+    File.WriteAllText(Path.Combine(rotatedWorld, "world.dat"), "same WorldId, replacement source");
+    profile.WorldDirectory = rotatedWorld;
+    profile.SharedSavesEnabled = true;
+    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
+        "Host could not select the disposable replacement source");
+    Require((await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
+        "Host could not re-enable sharing for the replacement source");
+    Require((await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profile.Id}/start", new { })).Ok &&
+        (await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
+        "replacement source did not complete a disposable Start and Stop");
+    var rotatedShared = await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world");
+    Require(rotatedShared.Latest is { Number: 1 } &&
+        rotatedShared.Latest.GroupId != publishedShared.Latest!.GroupId &&
+        rotatedShared.Latest.WorldId == publishedShared.Latest.WorldId,
+        "same-WorldId source rotation did not create a separate signed group: " +
+        JsonSerializer.Serialize(rotatedShared, webJson));
+    var blockedRotation = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    Require(!blockedRotation.Ok && blockedRotation.Code == "SourceReviewRequired" &&
+        File.Exists(Path.Combine(receiverRoot, publishedShared.Latest.VersionHash, "payload", "world.dat")),
+        "Friend replaced an earlier group without renewed consent");
+    Require((await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/consent", new(false))).Ok &&
+        (await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
+        "Friend could not renew consent for the signed replacement group");
+    var acceptedRotation = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    Require(acceptedRotation.Ok &&
+        File.ReadAllText(Path.Combine(receiverRoot, rotatedShared.Latest!.VersionHash,
+            "payload", "world.dat")) == "same WorldId, replacement source" &&
+        File.Exists(Path.Combine(receiverRoot, publishedShared.Latest!.VersionHash, "payload", "world.dat")),
+        $"reviewed source rotation did not preserve both verified groups: {acceptedRotation.Code}");
+    var consentB = await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(bLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/consent", new(true));
+    var deniedB = await OwnerPost<object, ReceivedSharedWorldResult>(bLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    Require(consentB.Ok && !deniedB.Ok &&
+        !Directory.Exists(Path.Combine(friendBData, "received-shared-worlds", deviceBId.ToString("N"))),
+        "an ungranted paired PC received a shared save");
+    var removedGrant = await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(false));
+    Require(removedGrant.Ok && !(await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { })).Ok,
+        "removing a save grant did not deny a new transfer");
+    Console.WriteLine("PASS pinned HTTPS shared save receipt requires Stop, Host grant, and Friend consent"); passes++;
+    if (args.Skip(1).Contains("--shared-worlds-only", StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Shared-world HTTPS checks: {passes} groups passed, 0 failed. Data: {root}");
+        return 0;
+    }
+    settings.Profiles.Single(item => item.Id == profile.Id).Backups = new BackupOptions();
+    Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
+        "companion fixture settings could not be restored after shared-world coverage");
 
     using var publicClient = PinnedClient(endpoint, inviteA.Fingerprint);
     using var invalid = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
@@ -1224,7 +1347,7 @@ try
         var sessionJson = await sessionResponse.Content.ReadAsStringAsync();
         var sessions = JsonSerializer.Deserialize<RecentServerSessionsResult>(sessionJson, webJson) ??
             throw new Exception("empty recent-session response after graceful Stop");
-        var session = sessions.Sessions.Single();
+        var session = sessions.Sessions.First();
         Require(sessionResponse.IsSuccessStatusCode && session.ProfileId == profile.Id &&
             session.OperationId != Guid.Empty && session.Outcome == ServerSessionOutcome.GracefulStop &&
             session.BackupResult == ServerSessionBackupResult.NotConfigured &&
@@ -2021,6 +2144,7 @@ static Process StartApp(string path, string mode, int port, string data, int sto
     info.Environment[GameServerRegistry.FixtureOptInEnvironmentVariable] = "1";
     if (stopDelayMs > 0) info.Environment["TOGETHERSERVER_FIXTURE_STOP_DELAY_MS"] = stopDelayMs.ToString();
     info.Environment["Logging__LogLevel__Default"] = "Warning";
+    info.Environment["Logging__EventLog__LogLevel__Default"] = "None";
     var process = Process.Start(info) ?? throw new Exception("App did not start.");
     if (drainDiagnostics)
     {

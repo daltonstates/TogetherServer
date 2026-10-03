@@ -71,6 +71,7 @@ public sealed partial class HostManager
     private readonly Dictionary<Guid, CustomCertificationSession> customCertificationSessions = [];
     private readonly List<CrashRecoveryState> crashRecovery;
     private readonly WorldBackupService backups;
+    private readonly SharedWorldService sharedWorlds;
     private readonly StorageHealthService storageHealth;
     private readonly StartupRecoveryService? startupRecovery;
 
@@ -99,6 +100,7 @@ public sealed partial class HostManager
         }
         if (recoveryNormalized) data.SaveCrashRecoveryStates(crashRecovery);
         backups = new WorldBackupService(data, this.clock, games: games);
+        sharedWorlds = new SharedWorldService(data, backups);
         storageHealth = new StorageHealthService(data, this.clock);
         hostingPowerView = ReconcileHostingPower();
         lastOwnerSnapshot = Snapshot();
@@ -406,6 +408,10 @@ public sealed partial class HostManager
             profile.Backups ??= new BackupOptions();
             profile.Maintenance ??= new MaintenanceOptions();
             if (profile.Kind == GameKinds.Factorio) profile.Factorio ??= new FactorioOptions();
+            var prior = previous.Profiles.SingleOrDefault(item => item.Id == profile.Id);
+            if (prior is not null && (prior.Kind != profile.Kind || prior.WorldId != profile.WorldId ||
+                !string.Equals(prior.WorldDirectory, profile.WorldDirectory, StringComparison.OrdinalIgnoreCase)))
+                profile.SharedSavesEnabled = false;
         }
         if (settings.PublicGameIpCheckedUtc is { } recorded &&
             (next.PublicGameIpCheckedUtc is null || next.PublicGameIpCheckedUtc < recorded))
@@ -1869,6 +1875,14 @@ public sealed partial class HostManager
                 backupResult = backup.Ok
                     ? ServerSessionBackupResult.Completed
                     : ServerSessionBackupResult.Failed;
+                if (backup.Ok && backup.Backup is not null && profile!.SharedSavesEnabled)
+                {
+                    var published = sharedWorlds.PublishAfterStop(profile, backup.Backup.Id);
+                    Activity("Backup", published.Ok ? "SharedSavePublished" : "SharedSavePublishFailed",
+                        published.Ok ? "A completed post-Stop backup was published for approved PCs." :
+                            "The completed backup remains local; shared save publication failed.",
+                        published.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
+                }
             }
             ArchiveCompletedRun(run, ServerSessionEndReason.GracefulStop,
                 ServerSessionOutcome.GracefulStop, backupResult, false, endedUtc: endedUtc);
@@ -2522,6 +2536,9 @@ public sealed partial class HostManager
                 return "Automatic crash recovery is available only for reviewed built-in game drivers.";
             if (profile.Backups.Enabled && !profileDriver.SupportsBackups)
                 return "Rolling backups are available only for reviewed built-in game drivers.";
+            if (profile.SharedSavesEnabled && (!profile.Backups.Enabled || !profileDriver.SupportsBackups ||
+                profile.Kind == GameKinds.Custom))
+                return "Shared saves require a reviewed built-in driver and rolling backups after Stop.";
             if (profile.Backups.RetentionCount is < 1 or > 50)
                 return "Backup retention must be between 1 and 50 completed backups.";
             if (profile.Backups.MinimumFreeSpaceMb is < 0 or > 1_048_576)

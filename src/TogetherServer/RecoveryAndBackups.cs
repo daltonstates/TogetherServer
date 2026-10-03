@@ -355,6 +355,19 @@ internal sealed class WorldBackupService
         }
     }
 
+    internal (BackupManifest Manifest, string PayloadRoot) ReadVerifiedTransfer(ServerProfile profile, Guid backupId)
+    {
+        lock (sync)
+        {
+            var record = data.LoadBackupCatalog().Records.SingleOrDefault(item =>
+                item.Id == backupId && item.ProfileId == profile.Id && item.Kind == profile.Kind &&
+                item.WorldId == profile.WorldId && item.BackupKind == BackupKinds.Rolling);
+            if (record is null) throw new InvalidDataException("A completed rolling backup was not found.");
+            var directory = BackupDirectory(profile.Id, backupId);
+            return (ReadAndVerifyManifest(record, directory), Path.Combine(directory, "payload"));
+        }
+    }
+
     public ServerSetupSnapshot? ReadSetup(ServerProfile profile, Guid backupId)
     {
         lock (sync)

@@ -22,6 +22,8 @@ public sealed class PairedDevice
     public bool CanStop { get; set; }
     public bool CanExtendTimer { get; set; }
     public bool CanViewLogs { get; set; }
+    // Deliberately separate from presets and temporary helper permissions.
+    public List<Guid> SaveReceiveProfileIds { get; set; } = [];
     // Global permissions remain the default. Entries are stored only when an
     // assigned server differs from that default, so the owner can see and edit
     // explicit per-server exceptions without duplicating the access list.
@@ -89,7 +91,8 @@ public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> Ass
     string? AppVersion = null, int? ProtocolVersion = null,
     bool ApprovalPending = false, bool CanExtendTimer = false, bool CanViewLogs = false,
     DateTimeOffset? AccessExpiresUtc = null, bool AccessExpired = false,
-    DateTimeOffset? TemporaryHelperUntilUtc = null, bool TemporaryHelperActive = false);
+    DateTimeOffset? TemporaryHelperUntilUtc = null, bool TemporaryHelperActive = false,
+    IReadOnlyList<Guid>? SaveReceiveProfileIds = null);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop,
     bool CanExtendTimer = false, bool CanViewLogs = false);
 
@@ -544,6 +547,14 @@ public sealed class PairingService
                 device.ServerPermissionOverrides = [];
                 changed = true;
             }
+            var saveGrants = (device.SaveReceiveProfileIds ?? [])
+                .Where(id => id != Guid.Empty && normalized.Contains(id)).Distinct().ToList();
+            if (device.SaveReceiveProfileIds is null ||
+                !saveGrants.SequenceEqual(device.SaveReceiveProfileIds))
+            {
+                device.SaveReceiveProfileIds = saveGrants;
+                changed = true;
+            }
             // Corrupt duplicate entries collapse to the most restrictive
             // effective permission so normalization never expands access.
             var normalizedPermissions = device.ServerPermissionOverrides
@@ -841,7 +852,8 @@ public sealed class PairingService
                     fresh ? heartbeat!.AppVersion : null, fresh ? heartbeat!.ProtocolVersion : null,
                     device.ApprovalPending, helper || device.CanExtendTimer, helper || device.CanViewLogs,
                     device.AccessExpiresUtc, IsAccessExpired(device, now),
-                    device.TemporaryHelperUntilUtc, helper);
+                    device.TemporaryHelperUntilUtc, helper,
+                    device.SaveReceiveProfileIds.Where(device.AssignedProfileIds.Contains).ToArray());
             }).ToList();
         }
     }
@@ -1243,6 +1255,8 @@ public sealed class PairingService
             var device = devices.SingleOrDefault(d => d.Id == id && !IsRevoked(d) && d.CredentialHash is not null);
             if (device is null) return new PairingDecision(false, "UnknownDevice", "Connect this Friend PC first.");
             device.AssignedProfileIds = profileIds.ToList();
+            device.SaveReceiveProfileIds = (device.SaveReceiveProfileIds ?? [])
+                .Where(device.AssignedProfileIds.Contains).ToList();
             if (permissions is null)
             {
                 device.ServerPermissionOverrides = device.ServerPermissionOverrides!
@@ -1348,6 +1362,45 @@ public sealed class PairingService
                 ? new(true, "ViewLogsAllowed", "Server-log access is allowed.")
                 : new(false, "PermissionDenied",
                     "The Host has not assigned this server with View logs permission to this PC.");
+        }
+    }
+
+    public PairingDecision AuthorizeReceiveSaves(PairedDevice device, Guid profileId,
+        out PairedDevice? current)
+    {
+        lock (sync)
+        {
+            current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            if (current is null) return new(false, "Unauthorized", "This PC's saved access was not accepted.");
+            var decision = AuthorizationDecision(current, UtcNow);
+            if (!decision.Ok) return decision;
+            return current.AssignedProfileIds?.Contains(profileId) == true &&
+                current.SaveReceiveProfileIds?.Contains(profileId) == true
+                ? new(true, "ReceiveSavesAllowed", "Shared save access is allowed.")
+                : new(false, "PermissionDenied", "Shared save access is not granted to this PC for this server.");
+        }
+    }
+
+    public PairingDecision SetReceiveSaves(Guid deviceId, Guid profileId, bool enabled)
+    {
+        lock (sync)
+        {
+            var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
+                item.CredentialHash is not null);
+            if (device is null) return new(false, "UnknownDevice", "Connect and approve this PC first.");
+            if (enabled && (device.ApprovalPending || device.AssignedProfileIds?.Contains(profileId) != true))
+                return new(false, "PermissionDenied", "Approve and assign this PC to the server first.");
+            device.SaveReceiveProfileIds ??= [];
+            device.SaveReceiveProfileIds.Remove(profileId);
+            if (enabled) device.SaveReceiveProfileIds.Add(profileId);
+            SaveState();
+            data.TryAudit($"save-receive-grant {deviceId} {profileId} enabled={enabled} {UtcNow:O}");
+            Activity("Access", enabled ? "SaveReceiveGranted" : "SaveReceiveRemoved",
+                enabled ? "The owner allowed a PC to receive completed saves." :
+                    "The owner removed completed-save access from a PC.",
+                ActivitySeverity.Important, profileId, deviceId);
+            return new(true, "ReceiveSavesSaved", enabled ? "This PC may receive completed saves." :
+                "This PC can no longer start new shared save reads.");
         }
     }
 

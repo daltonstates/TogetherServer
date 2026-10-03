@@ -22,6 +22,7 @@ export type Profile = {
   crossplay: boolean
   publicListing: boolean
   worldId: string
+  sharedSavesEnabled?: boolean
   worldSource: 'Existing' | 'New'
   worldDirectory: string
   gamePort: number

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
@@ -286,6 +287,95 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!Reauthorize(device, out _, out decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(status);
+        });
+        companion.MapGet("/servers/{profileId:guid}/shared-world", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            decision = pairing.AuthorizeReceiveSaves(device!, profileId, out var current);
+            if (!decision.Ok || current is null)
+                return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol))
+                return Results.Conflict(new { code = "SharedWorldsUpdateRequired" });
+            var (status, _) = await manager.SharedWorldReadAsync(profileId);
+            decision = pairing.AuthorizeReceiveSaves(current, profileId, out _);
+            if (!decision.Ok || !status.Enabled)
+                return Results.Json(new { code = decision.Ok ? "SharingOff" : decision.Code },
+                    statusCode: StatusCodes.Status403Forbidden);
+            return status.Latest is null ? Results.NotFound(new { code = "NoPublishedSave" }) :
+                Results.Json(status.Latest);
+        });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/membership",
+            async (HttpContext context, Guid profileId, SharedWorldMembershipRequest request) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            decision = pairing.AuthorizeReceiveSaves(device!, profileId, out var current);
+            if (!decision.Ok || current is null)
+                return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
+            SharedWorldMembership membership;
+            try { membership = await manager.IssueSharedWorldMembershipAsync(profileId, device!.Id,
+                request.DevicePublicKey); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or
+                System.Security.Cryptography.CryptographicException or FormatException)
+            { return Results.BadRequest(new { code = "MembershipUnavailable" }); }
+            decision = pairing.AuthorizeReceiveSaves(current, profileId, out _);
+            if (!decision.Ok) return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
+            return Results.Json(membership);
+        });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/versions/{number:long}",
+            async (HttpContext context, Guid profileId, long number) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            decision = pairing.AuthorizeReceiveSaves(device!, profileId, out var current);
+            if (!decision.Ok || current is null)
+                return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
+            var (status, _) = await manager.SharedWorldReadAsync(profileId);
+            if (!status.Enabled || status.Latest is null || number < 1 || number >= status.Latest.Number)
+                return Results.NotFound(new { code = "SharedVersionUnavailable" });
+            SharedWorldVersion prior;
+            try { prior = await Task.Run(() => manager.ReadEarlierSharedVersion(status.Latest, number),
+                context.RequestAborted); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+            { return Results.NotFound(new { code = "SharedVersionUnavailable" }); }
+            var (latest, _) = await manager.SharedWorldReadAsync(profileId);
+            decision = pairing.AuthorizeReceiveSaves(current, profileId, out _);
+            if (!decision.Ok || !latest.Enabled)
+                return Results.Json(new { code = decision.Ok ? "SharingOff" : decision.Code },
+                    statusCode: StatusCodes.Status403Forbidden);
+            return latest.Latest?.VersionHash != status.Latest.VersionHash ?
+                Results.NotFound(new { code = "SharedVersionUnavailable" }) : Results.Json(prior);
+        });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/{versionHash}/files/{fileIndex:int}/chunks/{offset:long}",
+            async (HttpContext context, Guid profileId, string versionHash, int fileIndex, long offset) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            decision = pairing.AuthorizeReceiveSaves(device!, profileId, out var current);
+            if (!decision.Ok || current is null)
+                return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
+            if (versionHash.Length != 64 || !versionHash.All(Uri.IsHexDigit) ||
+                !int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol))
+                return Results.BadRequest(new { code = "InvalidSharedWorldRequest" });
+            var (status, _) = await manager.SharedWorldReadAsync(profileId);
+            if (!status.Enabled || status.Latest?.VersionHash != versionHash)
+                return Results.NotFound(new { code = "SharedVersionUnavailable" });
+            byte[] chunk;
+            try { chunk = await Task.Run(() => manager.ReadSharedChunk(status.Latest, fileIndex, offset),
+                context.RequestAborted); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException)
+            { return Results.BadRequest(new { code = "SharedChunkUnavailable" }); }
+            var (latest, _) = await manager.SharedWorldReadAsync(profileId);
+            decision = pairing.AuthorizeReceiveSaves(current, profileId, out _);
+            if (!decision.Ok || !latest.Enabled)
+                return Results.Json(new { code = decision.Ok ? "SharingOff" : decision.Code },
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (latest.Latest?.VersionHash != versionHash)
+                return Results.NotFound(new { code = "SharedVersionUnavailable" });
+            return Results.Bytes(chunk, "application/octet-stream");
         });
         companion.MapGet("/servers/{profileId:guid}/logs", async (HttpContext context, Guid profileId) =>
         {

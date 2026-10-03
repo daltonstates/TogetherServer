@@ -52,6 +52,7 @@ public sealed class ServerProfile
     public bool Crossplay { get; set; }
     public bool PublicListing { get; set; }
     public string WorldId { get; set; } = "";
+    public bool SharedSavesEnabled { get; set; }
     public string WorldSource { get; set; } = "Existing";
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; } = 2456;
