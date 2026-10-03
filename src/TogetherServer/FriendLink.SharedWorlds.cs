@@ -448,6 +448,13 @@ internal sealed partial class FriendLink
          old.Number == version.Number && old.VersionHash != version.VersionHash ||
          old.Number + 1 == version.Number && version.ParentHash != old.VersionHash);
 
+    internal static bool CanCommitReceivedVersion(FriendConfiguration config, Guid profileId,
+        SharedWorldVersion version) =>
+        config.SharedWorldConflicts?.Contains(profileId) != true &&
+        config.LastSharedHostGroups?.GetValueOrDefault(profileId) == version.GroupId &&
+        config.LastSharedHostVersions?.GetValueOrDefault(profileId) == version.Number &&
+        config.LastSharedHostHashes?.GetValueOrDefault(profileId) == version.VersionHash;
+
     private void RememberSourceReview(Guid profileId, SharedWorldVersion version,
         SharedWorldVersion? old)
     {
@@ -671,11 +678,14 @@ internal sealed partial class FriendLink
                 !AcceptedPins().SequenceEqual(pins) ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != approvedGroup)
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed during transfer.");
+            if (config.SharedWorldConflicts?.Contains(profileId) == true)
+                return SharedFailure("VersionConflict", "A competing signed save was observed during transfer. Review the histories before receiving another save.");
+            if (!CanCommitReceivedVersion(config, profileId, version))
+                return SharedFailure("NewerVersionAvailable", "The checked Host save changed during transfer. Receive the latest version next.");
             transferToken.ThrowIfCancellationRequested();
             if (!CommitSharedReceipt(profileId, stage, destination, root, manifestBytes, transferToken))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
-            config.SharedWorldConflicts?.Remove(profileId);
             SaveConfig();
             gate.Release();
             entered = false;

@@ -2611,18 +2611,24 @@ await Check("checked-only signed Host heads retain a same-number fork across res
     var config = new FriendConfiguration();
     Require(!FriendLink.ObserveHistory(config, profileId, null, first),
         "first checked head was unexpectedly marked conflicting");
+    Require(FriendLink.CanCommitReceivedVersion(config, profileId, first),
+        "a transfer could not commit its unchanged checked head");
+    // Model Pull staging A, Check observing signed fork B, then Pull entering its final commit gate.
     Require(FriendLink.ObserveHistory(config, profileId, null, second!) &&
         config.SharedWorldConflicts.Contains(profileId) &&
         config.LastSharedHostHashes[profileId] == first.VersionHash &&
         config.LastSharedHostManifests[profileId].VersionHash == first.VersionHash &&
         config.CompetingSharedHostManifests[profileId].Single().VersionHash == second!.VersionHash,
         "checked-only fork replaced or lost a signed head");
+    Require(!FriendLink.CanCommitReceivedVersion(config, profileId, first),
+        "a staged transfer could commit after a competing signed head was checked");
     var restored = JsonSerializer.Deserialize<FriendConfiguration>(
         JsonSerializer.Serialize(config, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
         new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
     Require(FriendLink.ObserveHistory(restored, profileId, null, first) &&
         restored.SharedWorldConflicts.Contains(profileId) &&
         restored.LastSharedHostHashes[profileId] == first.VersionHash &&
+        !FriendLink.CanCommitReceivedVersion(restored, profileId, first) &&
         SharedWorldService.VerifySignature(restored.CompetingSharedHostManifests[profileId].Single()),
         "rechecking the original head cleared a persisted fork");
     return Task.CompletedTask;
