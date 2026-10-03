@@ -534,7 +534,9 @@ public sealed class PairingService
     {
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
-            if (!SharedWorldRosterTrust.Verify(roster) ||
+            if (!SharedWorldRosterTrust.VerifySignature(roster) ||
+                roster.Schema == 3 && new SharedWorldRosterChainStore(data).Heads(profileId)
+                    .SingleOrDefault()?.Signature != roster.Signature ||
                 !roster.Members.SequenceEqual(SharedRosterMembers(profileId).OrderBy(item => item.DeviceId)))
                 throw new InvalidDataException("The signed roster no longer matches current access.");
             var path = RosterDirtyPath(profileId);

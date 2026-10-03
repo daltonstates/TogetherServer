@@ -751,6 +751,72 @@ await Check("delegated roster chain enforces owner root, limited grants, and con
     return Task.CompletedTask;
 });
 
+await Check("delegated publication serves current permissions and owner can revoke", async () =>
+{
+    using var host = Data("delegate-publication-host");
+    using var receiver = Data("delegate-publication-friend");
+    var profile = Profile("delegate-publication", "delegate-world", FreePort());
+    profile.SharedSavesEnabled = true;
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    var manager = new HostManager(host,
+        new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "Host fixture setup failed");
+    using var delegateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var targetKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var delegateId = Guid.NewGuid();
+    var targetId = Guid.NewGuid();
+    var delegatePublic = Convert.ToBase64String(delegateKey.ExportSubjectPublicKeyInfo());
+    var targetPublic = Convert.ToBase64String(targetKey.ExportSubjectPublicKeyInfo());
+    var members = new SharedWorldRosterMember[]
+    {
+        new(delegateId, delegatePublic, new SharedWorldGrants(ManageSharing: true), false),
+        new(targetId, targetPublic, new SharedWorldGrants(), false)
+    };
+    var root = await manager.PublishSharedWorldRosterAsync(profile.Id, members);
+    var draft = root with { Schema = 3, Epoch = root.Epoch + 1, Revision = root.Revision + 1,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(root),
+        SignerDeviceId = delegateId, SignerPublicKey = delegatePublic,
+        Members = members.Select(item => item.DeviceId == targetId
+            ? item with { Grants = item.Grants with { Receive = true, EligibleHost = true } } : item).ToArray(),
+        Signature = "" };
+    var revision = draft with { Signature = Convert.ToBase64String(delegateKey.SignData(
+        SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    RequireThrows<InvalidDataException>(() => manager.PublishDelegatedRosterAsync(profile.Id,
+        targetId, targetPublic, revision).GetAwaiter().GetResult(),
+        "a different authenticated PC published the delegate's revision");
+    RequireThrows<InvalidDataException>(() => manager.PublishDelegatedRosterAsync(profile.Id,
+        delegateId, delegatePublic, revision, () => false).GetAwaiter().GetResult(),
+        "a revoked transport credential published during the serialized check");
+    var published = await manager.PublishDelegatedRosterAsync(profile.Id,
+        delegateId, delegatePublic, revision);
+    Require(published.Signature == revision.Signature &&
+        (await manager.SharedWorldRosterAsync(profile.Id))?.Signature == revision.Signature &&
+        (await manager.SharedWorldRosterHistoryAsync(profile.Id))?.Count == 2,
+        "delegated permissions were not the served current roster");
+    var friendChain = new SharedWorldRosterChainStore(receiver);
+    foreach (var item in (await manager.SharedWorldRosterHistoryAsync(profile.Id))!)
+        friendChain.Append(item, root.OwnerPublicKey);
+    Require(new SharedWorldRosterChainStore(receiver).Heads(profile.Id).Single().Members
+        .Single(item => item.DeviceId == targetId).Grants.Receive,
+        "a receiving PC did not retain the signed permission change");
+    var ownerChanged = await manager.PublishSharedWorldRosterAsync(profile.Id,
+        [members[0] with { Revoked = true }, members[1]], ownerOverride: false);
+    Require(ownerChanged.Schema == 3 && !ownerChanged.OwnerOverride &&
+        ownerChanged.Members.Single(item => item.DeviceId == delegateId).Revoked,
+        "the owner could not revoke the delegate and change owner-only control");
+    var rejectedDraft = ownerChanged with { Epoch = ownerChanged.Epoch + 1,
+        Revision = ownerChanged.Revision + 1,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(ownerChanged),
+        SignerDeviceId = delegateId, SignerPublicKey = delegatePublic, Signature = "" };
+    var rejected = rejectedDraft with { Signature = Convert.ToBase64String(delegateKey.SignData(
+        SharedWorldRosterTrust.Basis(rejectedDraft), HashAlgorithmName.SHA256)) };
+    RequireThrows<InvalidDataException>(() => manager.PublishDelegatedRosterAsync(profile.Id,
+        delegateId, delegatePublic, rejected).GetAwaiter().GetResult(),
+        "revoked delegate published another revision");
+    Require((await manager.SharedWorldRosterHistoryAsync(profile.Id))?.Count == 3,
+        "owner revocation did not propagate in signed history");
+});
+
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
 {
     using var data = Data("shared-roster-missing-before-save");

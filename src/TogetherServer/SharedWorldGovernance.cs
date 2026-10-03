@@ -26,6 +26,8 @@ public sealed record SharedWorldEnrollmentRequest(
 public sealed record SharedWorldGovernanceRequest(bool? OwnerOverride = null,
     bool ReviewSourceChange = false);
 public sealed record SharedWorldDeviceGrantsRequest([property: JsonRequired] SharedWorldGrants Grants);
+public sealed record SharedWorldDelegateChangeRequest(Guid DeviceId, bool Receive,
+    bool EligibleHost, bool RecoveryVoter, bool Revoked);
 
 internal static class SharedWorldRosterTrust
 {

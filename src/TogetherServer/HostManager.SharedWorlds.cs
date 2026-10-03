@@ -195,6 +195,56 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    internal async Task<IReadOnlyList<SharedWorldRoster>?> SharedWorldRosterHistoryAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null || SharedAuthorityBlocked(profileId, out _)) return null;
+            var current = sharedWorlds.ReadRoster(profile);
+            if (current is null) return null;
+            var chain = new SharedWorldRosterChainStore(data);
+            return chain.HasState(profileId) ? chain.Read(profileId) : [current];
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<SharedWorldRoster> PublishDelegatedRosterAsync(Guid profileId,
+        Guid deviceId, string enrolledPublicKey, SharedWorldRoster revision,
+        Func<bool>? transportStillAuthorized = null)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            lock (SharedWorldMutationGate.For(data.RootPath))
+            {
+                var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
+                    throw new InvalidDataException("Server not found.");
+                if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom ||
+                    SharedAuthorityBlocked(profileId, out _) ||
+                    authority.HasState(profileId) || transportStillAuthorized?.Invoke() == false)
+                    throw new InvalidDataException("Sharing management is unavailable on this Host.");
+                var parent = sharedWorlds.ReadRoster(profile) ??
+                    throw new InvalidDataException("The current signed roster is unavailable.");
+                var signer = parent.Members.SingleOrDefault(item => item.DeviceId == deviceId);
+                if (signer is null || signer.PublicKey != enrolledPublicKey || signer.Revoked ||
+                    !signer.Grants.ManageSharing ||
+                    signer.AccessExpiresUtc is { } expiry && expiry <= DateTimeOffset.UtcNow ||
+                    revision.SignerDeviceId != deviceId || revision.SignerPublicKey != enrolledPublicKey ||
+                    revision.PreviousRosterHash != SharedWorldRosterTrust.Hash(parent) ||
+                    !SharedWorldRosterTrust.VerifyRevision(revision, parent,
+                        parent.OwnerPublicKey, DateTimeOffset.UtcNow, true))
+                    throw new InvalidDataException("This PC cannot publish that roster change.");
+                var chain = new SharedWorldRosterChainStore(data);
+                if (!chain.HasState(profileId)) chain.Append(parent, parent.OwnerPublicKey);
+                chain.Append(revision, parent.OwnerPublicKey);
+                return sharedWorlds.ReadRoster(profile)!;
+            }
+        }
+        finally { gate.Release(); }
+    }
+
     internal async Task<IReadOnlyList<WorldAuthorityRecord>?> SharedWorldAuthorityAsync(Guid profileId)
     {
         await gate.WaitAsync();

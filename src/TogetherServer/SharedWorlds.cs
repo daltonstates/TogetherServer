@@ -145,6 +145,17 @@ internal sealed partial class SharedWorldService
         lock (sync)
         {
             var binding = ReadBinding(profile.Id);
+            var chain = new SharedWorldRosterChainStore(data);
+            if (chain.HasState(profile.Id))
+            {
+                var heads = chain.Heads(profile.Id);
+                if (heads.Count != 1 || binding is null || !BindingMatches(binding, profile) ||
+                    heads[0].GroupId != binding.GroupId || heads[0].ProfileId != profile.Id ||
+                    heads[0].OwnerPublicKey != LocalAuthorityPublicKey() ||
+                    Authority.HasState(profile.Id))
+                    throw new InvalidDataException("Shared roster revisions need owner review.");
+                return heads[0];
+            }
             var path = binding is not null && File.Exists(GroupRosterPath(profile.Id, binding.GroupId))
                 ? GroupRosterPath(profile.Id, binding.GroupId) : RosterPath(profile.Id);
             if (!File.Exists(path)) return null;
@@ -176,8 +187,30 @@ internal sealed partial class SharedWorldService
             // replace the inherited roster or create a new group from this PC.
             if (Authority.HasState(profile.Id))
                 throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
-            if (new SharedWorldRosterChainStore(data).HasState(profile.Id))
-                throw new InvalidDataException("Signed roster revisions require review before changing sharing permissions.");
+            var chain = new SharedWorldRosterChainStore(data);
+            if (chain.HasState(profile.Id))
+            {
+                var parent = ReadRoster(profile) ??
+                    throw new InvalidDataException("Signed roster history is unavailable.");
+                if (reviewSourceChange || members.Count > 128 ||
+                    members.Select(item => item.DeviceId).Distinct().Count() != members.Count ||
+                    members.Select(item => item.PublicKey).Distinct(StringComparer.Ordinal).Count() != members.Count)
+                    throw new InvalidDataException("Review this world's source and membership before publishing.");
+                var orderedMembers = members.OrderBy(item => item.DeviceId).ToArray();
+                if (parent.Members.SequenceEqual(orderedMembers) &&
+                    parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride)) return parent;
+                using var ownerKey = LoadSigningKey();
+                var draftRevision = parent with { Schema = 3, Epoch = checked(parent.Epoch + 1),
+                    Revision = checked(parent.Revision + 1),
+                    Members = orderedMembers, OwnerOverride = ownerOverride ?? parent.OwnerOverride,
+                    PreviousRosterHash = SharedWorldRosterTrust.Hash(parent),
+                    SignerDeviceId = Guid.Empty, SignerPublicKey = parent.OwnerPublicKey,
+                    Signature = "" };
+                var signedRevision = draftRevision with { Signature = Convert.ToBase64String(
+                    ownerKey.SignData(SharedWorldRosterTrust.Basis(draftRevision), HashAlgorithmName.SHA256)) };
+                chain.Append(signedRevision, parent.OwnerPublicKey);
+                return signedRevision;
+            }
             var oldBinding = ReadBinding(profile.Id);
             var sourceChanged = oldBinding is not null && !BindingMatches(oldBinding, profile);
             if (sourceChanged && !reviewSourceChange)

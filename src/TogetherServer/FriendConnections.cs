@@ -241,6 +241,18 @@ public sealed class FriendService : IDisposable
         }
     }
 
+    public Task<ReceivedSharedWorldResult> ChangeSharedWorldGrantsAsync(Guid profileId,
+        SharedWorldDelegateChangeRequest change, CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) :
+                link.ChangeSharedWorldGrantsAsync(profileId, change, cancellationToken);
+        }
+    }
+
     public Task<FriendActionResult> RequestAsync(Guid profileId, string action)
     {
         lock (sync)
