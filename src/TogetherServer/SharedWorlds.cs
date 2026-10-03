@@ -51,7 +51,9 @@ public sealed record SharedWorldResult(bool Ok, string Code, string Message,
 public sealed record SharedWorldConsentRequest(bool Enabled);
 public sealed record SharedWorldGrantRequest(bool Enabled);
 
-// These versions contain only completed post-Stop backup files. Version 4
+// The production call publishes hash-verified backup files after the exact
+// managed process stopped. A valid hash does not prove the game can load them.
+// Version 4
 // signs Java server JAR identity alongside reviewed setup. Earlier signatures stay readable.
 internal sealed partial class SharedWorldService
 {
@@ -358,7 +360,7 @@ internal sealed partial class SharedWorldService
                     previous.Number < successor.Version.Number))
                     throw new InvalidDataException("Published history does not continue the authority head.");
                 if (previous?.BackupId == backupId)
-                    return new(true, "SharedSavePublished", "The completed post-Stop backup is ready for approved PCs.", previous);
+                    return new(true, "SharedSavePublished", "The hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", previous);
                 var source = capture.ReadVerified(profile, backupId);
                 if (source.Schema != 1 || source.Kind != SharedWorldCaptureKinds.PostStopBackup ||
                     source.Files.Count is < 1 or > MaximumFiles ||
@@ -415,7 +417,7 @@ internal sealed partial class SharedWorldService
                 { /* The latest verified payload remains available; cleanup can retry at next publish. */ }
                 try { if (File.Exists(ErrorPath(profile.Id))) File.Delete(ErrorPath(profile.Id)); }
                 catch (IOException) { }
-                return new(true, "SharedSavePublished", "A completed post-Stop backup is ready for approved PCs.", version);
+                return new(true, "SharedSavePublished", "A hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", version);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
                 CryptographicException or JsonException or OverflowException)

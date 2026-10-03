@@ -59,7 +59,7 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
                 FriendLink.ReadReceivedLatest(receivedRoot)?.VersionHash != offer.Version.VersionHash ||
                 Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo()) !=
                     WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal))
-                throw new InvalidDataException("The separate copy warning or verified save is missing.");
+                throw new InvalidDataException("The separate copy warning or hash-verified post-Stop file copy is missing.");
             var authority = new WorldAuthorityStore(data).Read(offer.Proposal.ProfileId);
             if (authority.Any(record => record.Proposal.Epoch >= offer.Proposal.Epoch))
                 throw new InvalidDataException("Review the recorded authority before making a separate copy.");

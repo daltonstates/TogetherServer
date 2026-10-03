@@ -61,7 +61,7 @@ internal static class SharedWorldLiveSaveAdapters
         var candidate = ForGame(game);
         return new(false, candidate is null
             ? "Live save sharing is unavailable for this server."
-            : "Live save sharing is unavailable for this game. Use its verified post-Stop copy.");
+            : "Live save sharing is unavailable for this game. Use its hash-verified post-Stop file copy. Game load has not been checked.");
     }
 }
 

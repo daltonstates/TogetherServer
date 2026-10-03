@@ -23,7 +23,7 @@ internal static class SharedWorldElection
         if (!loss.MayPropose)
             throw new InvalidDataException("The pinned Host has not been unreachable for two minutes.");
         var version = FriendLink.ReadReceivedLatest(receivedRoot) ??
-            throw new InvalidDataException("This PC has no verified save to offer.");
+            throw new InvalidDataException("This PC has no hash-verified post-Stop file copy to offer.");
         var candidatePublicKey = Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo());
         if (!TrustedRoster(roster, floor, version) ||
             !SharedWorldRosterTrust.HasRole(roster, candidateId, candidatePublicKey,
@@ -71,7 +71,7 @@ internal static class SharedWorldElection
         if (!loss.MayPropose)
             throw new InvalidDataException("This PC has not confirmed two minutes without the pinned Host.");
         var local = FriendLink.ReadReceivedLatest(receivedRoot) ??
-            throw new InvalidDataException("This PC has no verified save history to compare.");
+            throw new InvalidDataException("This PC has no hash-verified post-Stop file copy history to compare.");
         if (!VerifyOffer(offer) || !TrustedRoster(offer.Roster, floor, offer.Version) ||
             offer.Roster.OwnerPublicKey != pinnedOwnerKey ||
             !(local.VersionHash == offer.Version.VersionHash && offer.Ancestors.Count == 0 ||

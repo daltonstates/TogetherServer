@@ -118,7 +118,7 @@ function parseHandoffStatus(value: unknown): HandoffStatus {
 export function parseHostSharedWorldStatus(value: unknown): HostStatus {
   const source = record(value, 'Shared save status')
   const live = source.liveSave === undefined || source.liveSave === null ? null : record(source.liveSave, 'Live save status')
-  const liveSave = live === null ? { available: false, message: 'Live save sharing is unavailable. Use a verified post-Stop copy.' } :
+  const liveSave = live === null ? { available: false, message: 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.' } :
     { available: boolean(live.available, 'Live save availability'), message: textOrNull(live.message, 'Live save message') ?? '' }
   if (liveSave.available || liveSave.message.length === 0) throw new Error('Live save status is invalid.')
   let latest: HostStatus['latest'] = null
@@ -277,13 +277,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     finally { setBusy(false) }
   }
   return <details className="advanced-block"><summary>Shared saves</summary>
-    <p>Send verified backups after a graceful Stop to PCs you approve. Live save capture and automatic takeover are not available yet.</p>
-    <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a verified post-Stop copy.'}</p>
+    <p>After a graceful Stop, send hash-verified world files to approved PCs. Game load and playability have not been checked. Live save capture and automatic takeover are unavailable.</p>
+    <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p>
     <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
-    {status?.canManageSharing === false && <p className="helper-text">This PC can host and share verified saves with the current members. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
+    {status?.canManageSharing === false && <p className="helper-text">This PC may host and share hash-verified post-Stop file copies after its local setup and route checks pass. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
-    {status?.latest ? <p>Copied to {status.confirmedCopies} PCs · latest saved version {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
+    {status?.latest ? <p>Copied to {status.confirmedCopies} PCs · latest post-Stop file copy {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p>No post-Stop save has been published yet.</p>}
     {status?.enabled && <details><summary>Technical details and PC permissions</summary>
     <label><Input type="checkbox" disabled={busy || !roster || !status.canManageSharing}
@@ -308,7 +308,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     </details>}
     {status?.enabled && status.canManageSharing && <section aria-label="Planned handoff">
       <h4>Move hosting to another PC</h4>
-      <p>Choose an approved PC. Preparing stops this server and publishes its final verified save. Keep this PC offline until that PC confirms the exact copy.</p>
+      <p>Choose an approved PC. Preparing stops this server and publishes a hash-verified post-Stop file copy. Game load has not been checked. Keep this PC offline until that PC confirms the exact copy.</p>
       {handoff?.pending && <p role={handoff.code === 'HandoffReviewRequired' ? 'alert' : 'status'}>{handoff.message}
         {handoff.finalVersion != null && ` Final save version ${handoff.finalVersion}.`}
         {handoff.receiptConfirmed && ' Signed receipt confirmed.'}</p>}
@@ -324,8 +324,8 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
           <p>This address is recorded in the signed offer. Confirm the next PC's direct route with its owner.</p>
         </details>
         <div className="actions"><Button className="secondary" disabled={busy || handoff === null || !successorId || !successorAddress.trim()}
-          onClick={() => void runHandoff('prepare')}>Stop and prepare final save</Button></div></>}
-      {handoff?.pending && <><p className="helper-text">Complete only after the exact signed receipt is confirmed.</p>
+          onClick={() => void runHandoff('prepare')}>Stop and prepare file copy</Button></div></>}
+      {handoff?.pending && <><p className="helper-text">After the chosen PC confirms this exact copy, complete the handoff. The app checks its signed receipt before changing who may host. These actions remain available after reopening the app.</p>
         <div className="actions"><Button className="secondary" disabled={busy || !handoff.canComplete} onClick={() => void runHandoff('complete')}>Complete pending handoff</Button>
           <Button className="text-button" disabled={busy || !handoff.canCancel} onClick={() => void runHandoff('cancel')}>Cancel pending handoff</Button></div></>}
       {handoffMessage && <p role="status">{handoffMessage}</p>}
@@ -334,7 +334,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     {status?.error && <p role="alert">{status.error}</p>}
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void refreshHost().catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
-    <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash checked post-Stop backup files are sent over the existing paired HTTPS connection. Previous downloaded copies cannot be recalled.</p>
+    <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash-verified post-Stop backup files are sent over the existing paired HTTPS connection. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
       {status?.canManageSharing && <div className="actions"><Button className="secondary" disabled={busy || !status.enabled}
         onClick={() => void repairRoster(false)}>Retry signed permissions</Button>
         <Button className="secondary" disabled={busy}
@@ -506,7 +506,7 @@ export function FriendSharedWorlds({ profileId, available }:
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
       `${status.hostVersion - status.thisPcVersion} version(s) behind` : status?.state
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds</summary>
-    <p>Receive approved completed saves into this PC's private vault. Live save sharing and automatic takeover are not available yet.</p>
+    <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
     {!available && <p>Update the Host app before receiving shared saves.</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
@@ -521,7 +521,7 @@ export function FriendSharedWorlds({ profileId, available }:
     {message && <p role="status">{message}</p>}
     {status?.consented && status.thisPcVersion != null && <section aria-label="Planned handoff offer">
       <h4>Planned hosting handoff</h4>
-      <p>If the current host signs an offer for this PC, check and stage its exact final save here.</p>
+      <p>If the current host signs an offer for this PC, hash-check and stage its exact post-Stop file copy here. Game load has not been checked.</p>
       <Button className="secondary" disabled={busy || !available} onClick={() => void stage()}>Check signed offer and stage copy</Button>
       {stageMessage && <p role="status">{stageMessage}</p>}
       {staged && <p>Verified copy staged on this PC. Local server setup, save signing, and direct routes still need checking before hosting.</p>}

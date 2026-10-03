@@ -1912,7 +1912,7 @@ public sealed partial class HostManager
                             "This PC must not publish saves after a verified takeover.")
                         : sharedWorlds.PublishAfterStop(profile, backup.Backup.Id);
                     Activity("Backup", published.Ok ? "SharedSavePublished" : "SharedSavePublishFailed",
-                        published.Ok ? "A completed post-Stop backup was published for approved PCs." :
+                        published.Ok ? "A hash-verified post-Stop file copy was published for approved PCs. Game load has not been checked." :
                             "The completed backup remains local; shared save publication failed.",
                         published.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
                 }

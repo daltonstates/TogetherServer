@@ -35,7 +35,7 @@ internal static class SharedWorldReadiness
                 throw new InvalidDataException("The received vault location is invalid.");
             SharedWorldService.EnsureUnlinkedRoot(Path.GetDirectoryName(receivedRoot)!, vaultRoot);
             version = FriendLink.ReadReceivedLatest(vaultRoot);
-            if (version is null) reasons.Add("Receive a verified save first.");
+            if (version is null) reasons.Add("Receive a hash-verified post-Stop file copy first.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
             System.Text.Json.JsonException or CryptographicException)
