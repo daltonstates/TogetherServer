@@ -1902,13 +1902,13 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     driver.StopBehavior = FixtureStopBehavior.Normal;
     Require((await manager.StopAsync(profile.Id)).Ok, "fixture Stop failed");
     var status = await manager.SharedWorldStatusAsync(profile.Id);
-    Require(status.Enabled && status.Latest is { Number: 1, Schema: 3 } &&
+    Require(status.Enabled && status.Latest is { Number: 1, Schema: 4 } &&
         SharedWorldService.VerifySignature(status.Latest), "signed version was not published after Stop");
     Require(!SharedWorldService.VerifySignature(status.Latest! with
         { PortableSetup = status.Latest.PortableSetup with { GameVersion = "9.9.9" } }),
         "changed portable game requirements passed signature verification");
     Require(!SharedWorldService.VerifySignature(status.Latest! with { Schema = 1 }),
-        "a v3 manifest was accepted as the old unsigned-setup schema");
+        "a v4 manifest was accepted as the old unsigned-setup schema");
     Require(!SharedWorldService.VerifySignature(status.Latest! with { CaptureKind = "LiveSave" }),
         "a post-Stop capture was relabeled as a live save");
     var chunk = manager.ReadSharedChunk(status.Latest!, 0, 0);
@@ -2031,6 +2031,22 @@ await Check("new shared manifest reader accepts signed v1 history and rejects al
     Require(!SharedWorldService.VerifySignature(v2 with
         { PortableSetup = v2Setup with { PublicListing = true } }),
         "unsigned settings were injected into signed v2 history");
+    var v3Setup = v2Setup with { PublicListing = true };
+    var v3Basis = JsonSerializer.Serialize(new { schema = 3, group, number = 1L,
+        parent = (string?)null, profile, game = GameKinds.Valheim, world = "world",
+        createdUtc, captureKind = SharedWorldCaptureKinds.PostStopBackup, backup,
+        portableSetup = new { v3Setup.GamePort, v3Setup.Crossplay, v3Setup.GameVersion,
+            v3Setup.AddOns, v3Setup.Allowlist, v3Setup.PublicListing, v3Setup.MaxPlayers,
+            v3Setup.GameMode, v3Setup.Difficulty, v3Setup.AllowlistEnabled },
+        files = new[] { file }, publicKey }, json);
+    var v3Digest = SHA256.HashData(Encoding.UTF8.GetBytes(v3Basis));
+    var v3 = version with { Schema = 3, PortableSetup = v3Setup,
+        VersionHash = Convert.ToHexString(v3Digest),
+        Signature = Convert.ToBase64String(key.SignHash(v3Digest)) };
+    Require(SharedWorldService.VerifySignature(v3), "signed v3 history was not readable");
+    Require(!SharedWorldService.VerifySignature(v3 with
+        { PortableSetup = v3Setup with { JavaServerJarSha256 = new string('A', 64) } }),
+        "unsigned JAR identity was injected into signed v3 history");
     return Task.CompletedTask;
 });
 
@@ -2056,7 +2072,7 @@ await Check("shared setup comes from the verified backup and accepts unknown Jav
     profile.PublicListing = true;
     var service = new SharedWorldService(data, backups);
     var publication = service.PublishAfterStop(profile, backup.Backup!.Id);
-    Require(publication.Ok && publication.Version is { Schema: 3 },
+    Require(publication.Ok && publication.Version is { Schema: 4 },
         "unknown Java server version blocked publication: " + publication.Message);
     var setup = publication.Version!.PortableSetup;
     Require(setup.GameVersion == "Unknown" && setup.MaxPlayers == 8 &&
@@ -2070,6 +2086,40 @@ await Check("shared setup comes from the verified backup and accepts unknown Jav
         !manifest.Contains(profile.WorldDirectory, StringComparison.OrdinalIgnoreCase) &&
         !manifest.Contains("Mallory", StringComparison.Ordinal),
         "raw config, machine path, or later allowlist escaped into the signed manifest");
+    return Task.CompletedTask;
+});
+
+await Check("shared Java setup binds a reviewed server JAR hash without sharing its path", () =>
+{
+    using var data = Data("shared-java-jar-identity");
+    var profile = Profile("shared-java-jar", "world", FreePort());
+    profile.Kind = GameKinds.MinecraftJava;
+    var jar = Path.Combine(profile.WorldDirectory, "server.jar");
+    profile.Minecraft = new MinecraftOptions { ServerJarPath = jar };
+    using (var archive = ZipFile.Open(jar, ZipArchiveMode.Create))
+    using (var writer = new StreamWriter(archive.CreateEntry("META-INF/MANIFEST.MF").Open()))
+        writer.Write("Manifest-Version: 1.0\nMain-Class: net.minecraft.server.Main\n");
+    var expected = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(jar)));
+    MinecraftSetup.WriteManagedJavaProvenance(profile.WorldDirectory, "1.21.0",
+        Convert.ToHexString(SHA1.HashData(File.ReadAllBytes(jar))));
+    var checkpoint = ServerSetupSnapshots.Read(profile, ServerSetupSnapshots.Capture(profile, data));
+    var setup = SharedWorldPortableSetupReader.Capture(checkpoint);
+    Require(setup.GameVersion == "Unknown" && setup.JavaServerJarSha256 == expected &&
+        SharedWorldPortableSetupReader.Valid(GameKinds.MinecraftJava, setup),
+        "reviewed Java server JAR hash was unavailable");
+    Require(!JsonSerializer.Serialize(setup).Contains(jar, StringComparison.OrdinalIgnoreCase),
+        "Java JAR machine path escaped portable setup");
+    Require(!SharedWorldPortableSetupReader.Valid(GameKinds.MinecraftJava,
+        setup with { JavaServerJarSha256 = new string('Z', 64) }),
+        "malformed JAR identity was accepted");
+    profile.Minecraft.ServerJarPath = Path.Combine(root, "outside-server.jar");
+    var unavailable = SharedWorldPortableSetupReader.Capture(
+        ServerSetupSnapshots.Read(profile, ServerSetupSnapshots.Capture(profile, data)));
+    Require(unavailable.JavaServerJarSha256 == "Unknown",
+        "a JAR outside the prepared server folder was identified as ready");
+    File.AppendAllText(jar, "changed after checkpoint");
+    Require(SharedWorldPortableSetupReader.Capture(checkpoint).JavaServerJarSha256 == expected,
+        "Java identity drifted from its backup checkpoint");
     return Task.CompletedTask;
 });
 

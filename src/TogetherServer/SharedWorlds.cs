@@ -12,7 +12,8 @@ public sealed record SharedWorldPortableSetup(int GamePort, bool Crossplay,
     string? GameVersion = null, IReadOnlyList<SharedWorldPortableAddOn>? AddOns = null,
     IReadOnlyList<SharedWorldPortableAllowEntry>? Allowlist = null,
     bool PublicListing = false, int? MaxPlayers = null, string? GameMode = null,
-    string? Difficulty = null, bool? AllowlistEnabled = null);
+    string? Difficulty = null, bool? AllowlistEnabled = null,
+    string? JavaServerJarSha256 = null);
 public static class SharedWorldCaptureKinds
 {
     public const string PostStopBackup = "PostStopBackup";
@@ -53,8 +54,8 @@ public sealed record SharedWorldMembership(int Schema, Guid GroupId, Guid Profil
     Guid DeviceId, string Role, string DevicePublicKey, string OwnerPublicKey, DateTimeOffset SignedUtc,
     string Signature);
 
-// These versions contain only completed post-Stop backup files. Version 3
-// signs reviewed setup, including add-on IDs. Earlier signatures stay readable.
+// These versions contain only completed post-Stop backup files. Version 4
+// signs Java server JAR identity alongside reviewed setup. Earlier signatures stay readable.
 internal sealed class SharedWorldService
 {
     internal const int ChunkBytes = 256 * 1024;
@@ -203,10 +204,10 @@ internal sealed class SharedWorldService
                 var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
                 var basis = VersionBasis(group, number, previous?.VersionHash, profile.Id,
                     profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind,
-                    backupId, portableSetup, files, publicKey, 3);
+                    backupId, portableSetup, files, publicKey, 4);
                 var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(basis)));
                 var signature = Convert.ToBase64String(key.SignHash(Convert.FromHexString(digest)));
-                var version = new SharedWorldVersion(3, group, number, previous?.VersionHash,
+                var version = new SharedWorldVersion(4, group, number, previous?.VersionHash,
                     profile.Id, profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind, backupId,
                     portableSetup, files, publicKey, digest, signature);
                 if (JsonSerializer.SerializeToUtf8Bytes(version, Json).Length > MaximumManifestBytes)
@@ -367,12 +368,13 @@ internal sealed class SharedWorldService
     {
         try
         {
-            if (value.Schema is not (1 or 2 or 3) || value.GroupId == Guid.Empty || value.ProfileId == Guid.Empty ||
+            if (value.Schema is not (1 or 2 or 3 or 4) || value.GroupId == Guid.Empty || value.ProfileId == Guid.Empty ||
                 value.Number < 1 || value.Files.Count is < 1 or > MaximumFiles ||
                 value.CaptureKind != SharedWorldCaptureKinds.PostStopBackup ||
                 value.PortableSetup is null || value.PortableSetup.GamePort is < 1 or > 65535 ||
                 value.Schema == 1 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 1) ||
                 value.Schema == 2 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 2) ||
+                value.Schema == 3 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 3) ||
                 value.Schema >= 2 && !SharedWorldPortableSetupReader.Valid(value.Game, value.PortableSetup, value.Schema) ||
                 value.Files.Any(file => !SafePath(file.Path) || file.Length < 0 ||
                     file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit)) ||
@@ -427,8 +429,18 @@ internal sealed class SharedWorldService
                         AddOns = portableSetup.AddOns?.Select(item => new
                         { item.Name, item.Version, item.RequiredGameVersion, item.Type }).ToArray(),
                         portableSetup.Allowlist }, files, publicKey }, Json)
-                : JsonSerializer.Serialize(new { schema = 3, group, number, parent, profile, game, world,
-                    createdUtc, captureKind, backup, portableSetup, files, publicKey }, Json);
+                : schema == 3
+                    ? JsonSerializer.Serialize(new { schema = 3, group, number, parent, profile, game, world,
+                        createdUtc, captureKind, backup,
+                        portableSetup = new { portableSetup.GamePort, portableSetup.Crossplay,
+                            portableSetup.GameVersion,
+                            AddOns = portableSetup.AddOns?.Select(item => new
+                            { item.Name, item.Version, item.RequiredGameVersion, item.Type, item.Id }).ToArray(),
+                            portableSetup.Allowlist, portableSetup.PublicListing, portableSetup.MaxPlayers,
+                            portableSetup.GameMode, portableSetup.Difficulty, portableSetup.AllowlistEnabled },
+                        files, publicKey }, Json)
+                    : JsonSerializer.Serialize(new { schema = 4, group, number, parent, profile, game, world,
+                        createdUtc, captureKind, backup, portableSetup, files, publicKey }, Json);
 
     internal static bool SafePath(string path) => !string.IsNullOrWhiteSpace(path) && path.Length <= 240 &&
         !Path.IsPathRooted(path) && !path.Contains('\\') &&

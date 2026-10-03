@@ -7,7 +7,7 @@ internal sealed record SetupFileSnapshot(string Key, byte[]? Content);
 internal sealed record ServerSetupSnapshot(int Version, Guid ProfileId, string Kind, string WorldId,
     string GameVersion, string AddOnStateToken, IReadOnlyList<ServerAddOnItem> AddOns,
     IReadOnlyList<SetupFileSnapshot> Files, int GamePort = 0, bool Crossplay = false,
-    bool PublicListing = false);
+    bool PublicListing = false, string? JavaServerJarSha256 = null);
 
 internal static class ServerSetupSnapshots
 {
@@ -28,9 +28,10 @@ internal static class ServerSetupSnapshots
         if (!addons.Ok) throw new InvalidDataException("The add-on inventory is unavailable for a complete setup checkpoint.");
         if (addons.Items.Any(item => item.Type == "External shared pack"))
             throw new InvalidDataException("Active shared Bedrock packs are outside this world's checkpoint.");
-        var snapshot = new ServerSetupSnapshot(2, profile.Id, profile.Kind, profile.WorldId,
+        var snapshot = new ServerSetupSnapshot(3, profile.Id, profile.Kind, profile.WorldId,
             addons.GameVersion, addons.StateToken, addons.Items, files,
-            profile.GamePort, profile.Crossplay, profile.PublicListing);
+            profile.GamePort, profile.Crossplay, profile.PublicListing,
+            profile.Kind == GameKinds.MinecraftJava ? JavaServerJarIdentity(profile) : null);
         var plain = JsonSerializer.SerializeToUtf8Bytes(snapshot);
         if (plain.Length > MaximumSnapshotBytes)
             throw new InvalidDataException("The server setup is too large for a protected checkpoint.");
@@ -43,9 +44,12 @@ internal static class ServerSetupSnapshots
             throw new InvalidDataException("The protected setup checkpoint is too large.");
         var plain = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
         var snapshot = JsonSerializer.Deserialize<ServerSetupSnapshot>(plain);
-        if (snapshot is null || snapshot.Version is not (1 or 2) || snapshot.ProfileId != profile.Id ||
+        if (snapshot is null || snapshot.Version is not (1 or 2 or 3) || snapshot.ProfileId != profile.Id ||
             snapshot.Kind != profile.Kind || snapshot.WorldId != profile.WorldId ||
-            snapshot.Version == 2 && snapshot.GamePort is < 1 or > 65535 ||
+            snapshot.Version >= 2 && snapshot.GamePort is < 1 or > 65535 ||
+            snapshot.Version == 3 && (snapshot.Kind == GameKinds.MinecraftJava &&
+                !ValidJarIdentity(snapshot.JavaServerJarSha256) ||
+                snapshot.Kind != GameKinds.MinecraftJava && snapshot.JavaServerJarSha256 is not null) ||
             snapshot.Files is null || snapshot.AddOns is null)
             throw new InvalidDataException("The setup checkpoint belongs to a different server or format.");
         var paths = ServerFiles.SnapshotPaths(profile);
@@ -54,6 +58,34 @@ internal static class ServerSetupSnapshots
             snapshot.Files.Any(file => !paths.ContainsKey(file.Key) || file.Content?.Length > MaximumFileBytes))
             throw new InvalidDataException("The setup checkpoint contains unexpected files.");
         return snapshot;
+    }
+
+    internal static bool ValidJarIdentity(string? value) => value == "Unknown" ||
+        value is { Length: 64 } && value.All(char.IsAsciiHexDigit) &&
+        value.All(character => !char.IsLetter(character) || char.IsUpper(character));
+
+    private static string JavaServerJarIdentity(ServerProfile profile)
+    {
+        try
+        {
+            var path = profile.Minecraft?.ServerJarPath;
+            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) ||
+                !Path.GetExtension(path).Equals(".jar", StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetDirectoryName(Path.GetFullPath(path))!.Equals(
+                    Path.GetFullPath(profile.WorldDirectory), StringComparison.OrdinalIgnoreCase) ||
+                !PlainFile(path) || new FileInfo(path).Length is < 100 or > 300_000_000 ||
+                !PlainFile(Path.Combine(profile.WorldDirectory, ".togetherserver-java.json")) ||
+                !MinecraftSetup.IsSupportedVanillaServerJar(path, profile.WorldDirectory))
+                return "Unknown";
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length is < 100 or > 300_000_000) return "Unknown";
+            var hash = Convert.ToHexString(SHA256.HashData(stream));
+            return MinecraftSetup.IsSupportedVanillaServerJar(path, profile.WorldDirectory)
+                ? hash : "Unknown";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+            ArgumentException or NotSupportedException or JsonException or InvalidOperationException)
+        { return "Unknown"; }
     }
 
     public static void Restore(ServerProfile profile, ServerSetupSnapshot snapshot)

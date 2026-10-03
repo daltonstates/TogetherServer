@@ -10,7 +10,7 @@ internal static class SharedWorldPortableSetupReader
 
     internal static SharedWorldPortableSetup Capture(ServerSetupSnapshot snapshot)
     {
-        if (snapshot.Version != 2 || snapshot.AddOns is null || snapshot.Files is null)
+        if (snapshot.Version is not (2 or 3) || snapshot.AddOns is null || snapshot.Files is null)
             throw new InvalidDataException("The backup lacks a current reviewed setup checkpoint.");
         var addons = snapshot.AddOns.Where(item => item.Enabled).Select(item =>
         {
@@ -31,19 +31,23 @@ internal static class SharedWorldPortableSetupReader
         var settings = ReadSettings(snapshot);
         var setup = new SharedWorldPortableSetup(snapshot.GamePort, snapshot.Crossplay,
             snapshot.GameVersion, addons, ReadAllowlist(snapshot), snapshot.PublicListing,
-            settings.MaxPlayers, settings.GameMode, settings.Difficulty, settings.AllowlistEnabled);
+            settings.MaxPlayers, settings.GameMode, settings.Difficulty, settings.AllowlistEnabled,
+            snapshot.Kind == GameKinds.MinecraftJava
+                ? snapshot.Version == 3 ? snapshot.JavaServerJarSha256 : "Unknown"
+                : null);
         if (!Valid(snapshot.Kind, setup))
             throw new InvalidDataException("Portable setup has unsupported or oversized values.");
         return setup;
     }
 
     internal static bool LegacyFieldsEmpty(SharedWorldPortableSetup setup, int schema) =>
+        setup.JavaServerJarSha256 is null &&
+        (schema >= 3 || !setup.PublicListing && setup.MaxPlayers is null && setup.GameMode is null &&
+            setup.Difficulty is null && setup.AllowlistEnabled is null) &&
         (schema != 1 || setup.GameVersion is null && setup.AddOns is null && setup.Allowlist is null) &&
-        !setup.PublicListing && setup.MaxPlayers is null && setup.GameMode is null &&
-        setup.Difficulty is null && setup.AllowlistEnabled is null &&
         (schema != 2 || setup.AddOns is null || setup.AddOns.All(item => item?.Id is null));
 
-    internal static bool Valid(string game, SharedWorldPortableSetup setup, int schema = 3)
+    internal static bool Valid(string game, SharedWorldPortableSetup setup, int schema = 4)
     {
         if (game is not (GameKinds.Valheim or GameKinds.MinecraftJava or
             GameKinds.MinecraftBedrock or GameKinds.Factorio or GameKinds.Terraria or GameKinds.Fixture) ||
@@ -66,17 +70,20 @@ internal static class SharedWorldPortableSetupReader
         if (game != GameKinds.Factorio && game != GameKinds.MinecraftBedrock && setup.AddOns.Count != 0 ||
             game is not (GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.MinecraftBedrock) &&
             setup.Allowlist.Count != 0) return false;
-        if (schema == 3 && (game is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock) &&
+        if (schema >= 3 && (game is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock) &&
                 (setup.GameMode is not null || setup.Difficulty is not null || setup.AllowlistEnabled is not null) ||
             game is GameKinds.Valheim or GameKinds.Fixture && setup.MaxPlayers is not null)) return false;
-        if (schema == 3 && setup.AddOns.Any(item =>
+        if (schema >= 3 && setup.AddOns.Any(item =>
             item.Type == "External shared pack" ||
             game == GameKinds.MinecraftBedrock &&
             (!Guid.TryParse(item.Id, out _) || item.Type is not ("behavior pack" or "resource pack")) ||
             game == GameKinds.Factorio && item.Id is not null)) return false;
-        if (schema == 3 && game == GameKinds.MinecraftBedrock &&
+        if (schema >= 3 && game == GameKinds.MinecraftBedrock &&
             setup.AddOns.Select(item => (item.Type, item.Id)).Distinct().Count() != setup.AddOns.Count)
             return false;
+        if (schema == 4 && (game == GameKinds.MinecraftJava &&
+                !ServerSetupSnapshots.ValidJarIdentity(setup.JavaServerJarSha256) ||
+            game != GameKinds.MinecraftJava && setup.JavaServerJarSha256 is not null)) return false;
         return true;
     }
 
