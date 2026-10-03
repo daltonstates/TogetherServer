@@ -15,6 +15,7 @@ public sealed record WorldRecoveryStatus(string State, int Votes, int Required,
     long? Version, string? VersionHash, string? CandidateAddress,
     Guid? CandidateDeviceId, bool MajorityReached,
     int SeparateCopies, string? ProposalHash, string? AuthorityHeadHash);
+public sealed record WorldAuthorityOwnerApproval(string ProposalHash, string OwnerSignature);
 
 // Candidate state is inert until a local user deliberately arms an offer and
 // enables this PC's ordinary companion listener. Voters require only outbound
@@ -42,6 +43,15 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             if (!SharedWorldElection.VerifyOffer(offer) ||
                 FriendLink.ReadReceivedLatest(receivedRoot)?.VersionHash != offer.Version.VersionHash)
                 throw new InvalidDataException("The candidate offer or local verified copy is invalid.");
+            if (offer.Proposal.Schema == 3)
+            {
+                var heads = WorldAuthorityTrust.EffectiveHeads(authority.Read(offer.Proposal.ProfileId));
+                if (!WorldAuthorityTrust.ExactResolutionHeads(new WorldAuthorityRecord(2,
+                        offer.Proposal, offer.Roster, offer.Version, [], null, ""), heads) ||
+                    heads.Single(head => head.RecordHash == offer.Proposal.ParentAuthorityHash)
+                        .Version.VersionHash != offer.Version.VersionHash)
+                    throw new InvalidDataException("The selected verified head or complete split changed.");
+            }
             var candidate = offer.Roster.Members.SingleOrDefault(item =>
                 item.DeviceId == offer.CandidateReceipt.DeviceId);
             if (candidate?.PublicKey != WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal) ||
@@ -66,7 +76,7 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
                 throw new InvalidDataException("A competing offer is already armed on this PC.");
             if (existing is { Retired: true })
             {
-                if (existing.Completed &&
+                if (existing.Completed && offer.Proposal.Schema != 3 &&
                     (offer.Proposal.ParentAuthorityHash is not { } parentHash ||
                      offer.Proposal.Epoch != existing.Offer.Proposal.Epoch + 1 ||
                      !authority.Read(offer.Proposal.ProfileId).Any(record =>
@@ -124,8 +134,9 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     {
         lock (sync)
         {
-            var state = CurrentArmed(profileId);
-            if (state is null || WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
+            var state = CurrentArmed(profileId) ?? CompletedResolution(profileId);
+            if (state is null ||
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
                 state.Offer.Roster.Members.SingleOrDefault(item => item.DeviceId == deviceId) is
                     not { Revoked: false, Grants.RecoveryVoter: true } member ||
                 !SharedWorldRosterTrust.HasRole(state.Offer.Roster, deviceId, member.PublicKey,
@@ -140,8 +151,9 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     {
         lock (sync)
         {
-            var state = CurrentArmed(request.ProfileId);
-            if (state is null || request.Schema != 1 || request.GroupId != state.Offer.Roster.GroupId ||
+            var state = CurrentArmed(request.ProfileId) ?? CompletedResolution(request.ProfileId);
+            if (state is null || request.Schema != 1 ||
+                request.GroupId != state.Offer.Roster.GroupId ||
                 request.ProposalHash != WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) ||
                 !challenges.TryRemove((request.ProfileId, request.VoterDeviceId), out var challenge) ||
                 challenge.Expires < DateTimeOffset.UtcNow || challenge.Nonce != request.Nonce ||
@@ -165,8 +177,24 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     {
         lock (sync)
         {
-            var state = CurrentArmed(profileId);
-            if (state is null || stillUnreachable?.Invoke() == false ||
+            var state = CurrentArmed(profileId) ?? CompletedResolution(profileId);
+            if (state is { Completed: true } && state.Offer.Proposal.Schema == 3 &&
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) == proposalHash &&
+                WorldAuthorityTrust.VerifyVote(vote, state.Offer.Proposal, state.Offer.Roster))
+            {
+                var decision = authority.Read(profileId).SingleOrDefault(record =>
+                    WorldAuthorityTrust.ProposalHash(record.Proposal) == proposalHash);
+                if (decision is not null)
+                {
+                    authority.BindLocalSuccessor(profileId, decision.RecordHash,
+                        state.Offer.CandidateReceipt.DeviceId);
+                    return new(true, "DecisionRecorded", decision.Votes.Count,
+                        decision.Votes.Count, decision);
+                }
+            }
+            if (state is null || state.Retired ||
+                CurrentArmed(profileId) is null ||
+                state.Offer.Proposal.Schema != 3 && stillUnreachable?.Invoke() == false ||
                 WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) != proposalHash ||
                 !WorldAuthorityTrust.VerifyVote(vote, state.Offer.Proposal, state.Offer.Roster) ||
                 !SharedWorldRosterTrust.HasRole(state.Offer.Roster, vote.VoterDeviceId,
@@ -193,6 +221,42 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             data.SaveProtected(Name(profileId), JsonSerializer.SerializeToUtf8Bytes(
                 state with { Votes = votes, Retired = true, Completed = true }, Json));
             return new(true, "MajorityRecorded", votes.Count, required, record);
+        }
+    }
+
+    internal WorldAuthorityVoteResult AcceptOwnerApproval(Guid profileId,
+        WorldAuthorityOwnerApproval approval)
+    {
+        lock (sync)
+        {
+            var state = CurrentArmed(profileId) ?? CompletedResolution(profileId);
+            if (state is { Completed: true } &&
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) == approval.ProposalHash)
+            {
+                var decision = authority.Read(profileId).SingleOrDefault(record =>
+                    WorldAuthorityTrust.ProposalHash(record.Proposal) == approval.ProposalHash);
+                if (decision?.OwnerSignature == approval.OwnerSignature)
+                {
+                    authority.BindLocalSuccessor(profileId, decision.RecordHash,
+                        state.Offer.CandidateReceipt.DeviceId);
+                    return new(true, "OwnerOverrideRecorded", Decision: decision);
+                }
+            }
+            if (state is null || state.Retired || state.Offer.Proposal.Kind !=
+                    "ResolutionOwnerOverride" || !state.Offer.Roster.OwnerOverride ||
+                approval.ProposalHash != WorldAuthorityTrust.ProposalHash(state.Offer.Proposal))
+                return new(false, "OwnerApprovalRejected");
+            var draft = new WorldAuthorityRecord(2, state.Offer.Proposal, state.Offer.Roster,
+                state.Offer.Version, [], approval.OwnerSignature, "");
+            var record = draft with { RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(draft)) };
+            if (!WorldAuthorityTrust.Verify(record)) return new(false, "OwnerApprovalRejected");
+            authority.Append(record);
+            authority.BindLocalSuccessor(profileId, record.RecordHash,
+                state.Offer.CandidateReceipt.DeviceId);
+            data.SaveProtected(Name(profileId), JsonSerializer.SerializeToUtf8Bytes(
+                state with { Retired = true, Completed = true }, Json));
+            return new(true, "OwnerOverrideRecorded", Decision: record);
         }
     }
 
@@ -249,12 +313,16 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     }
 
     private static WorldAuthorityRecord[] Heads(IReadOnlyList<WorldAuthorityRecord> records) =>
-        records.Where(record => !records.Any(child =>
-            child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+        WorldAuthorityTrust.EffectiveHeads(records);
 
     private static bool OfferExtendsHead(WorldAuthorityOffer offer,
         IReadOnlyList<WorldAuthorityRecord> heads)
     {
+        if (offer.Proposal.Schema == 3)
+            return WorldAuthorityTrust.ExactResolutionHeads(new WorldAuthorityRecord(2,
+                offer.Proposal, offer.Roster, offer.Version, [], null, ""), heads) &&
+                heads.Single(head => head.RecordHash == offer.Proposal.ParentAuthorityHash)
+                    .Version.VersionHash == offer.Version.VersionHash;
         if (heads.Count > 1) return false;
         var head = heads.SingleOrDefault();
         return offer.Proposal.ParentAuthorityHash == head?.RecordHash &&
@@ -269,6 +337,17 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             OfferExtendsHead(state.Offer, Heads(authority.Read(profileId))) &&
             authority.HasLocalSuccessorKeys(profileId, state.Offer.Proposal,
                 state.Offer.CandidateReceipt.DeviceId) ? state : null;
+    }
+
+    private InboxState? CompletedResolution(Guid profileId)
+    {
+        var state = ReadState(profileId);
+        return state is { Completed: true } && state.Offer.Proposal.Schema == 3 &&
+            authority.HasLocalSuccessorKeys(profileId, state.Offer.Proposal,
+                state.Offer.CandidateReceipt.DeviceId) &&
+            Heads(authority.Read(profileId)).Any(head =>
+                WorldAuthorityTrust.ProposalHash(head.Proposal) ==
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal)) ? state : null;
     }
 
     private static int Required(SharedWorldRoster roster) =>
@@ -287,6 +366,17 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             !authority.HasLocalSuccessorKeys(profileId, head.Proposal, localDeviceId) ||
             authority.LocalAuthorizedHead(profileId)?.RecordHash == head.RecordHash) return;
         authority.BindLocalSuccessor(profileId, head.RecordHash, localDeviceId);
+    }
+
+    internal WorldAuthorityOffer? OfferForTransport(Guid profileId, string proposalHash)
+    {
+        lock (sync)
+        {
+            var state = CurrentArmed(profileId) ?? CompletedResolution(profileId);
+            return state is not null &&
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal) == proposalHash ?
+                state.Offer : null;
+        }
     }
 
     private InboxState? ReadState(Guid profileId)

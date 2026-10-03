@@ -578,4 +578,54 @@ describe('Shared saves controls', () => {
     finishRead?.(reply(noRecovery))
     await waitFor(() => expect(screen.getByText('No candidate offer is armed on this PC.')).toBeInTheDocument())
   })
+
+  it('offers only a locally verified competing branch and reviews the voting invitation', async () => {
+    const chosen = 'A'.repeat(64)
+    const other = 'B'.repeat(64)
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/resolution/heads')) return reply([
+        { recordHash: chosen, version: 2, availableHere: true },
+        { recordHash: other, version: 3, availableHere: false }])
+      if (url.endsWith(`/resolution/offer/${chosen}`)) return reply({ ok: true,
+        code: 'ResolutionOfferArmed', message: 'Offer ready', offer: {
+          proposal: { kind: 'ResolutionQuorum', competingHeadHashes: [chosen, other] },
+          version: { number: 2 } } })
+      if (url.endsWith('/resolution/invitations')) return reply({ ok: true, code: 'InvitationReviewed',
+        message: 'Invitation reviewed', proposalHash: 'C'.repeat(64) })
+      if (url.endsWith(`/resolution/vote/${'C'.repeat(64)}`))
+        return reply({ ok: true, code: 'VoteRecorded', message: 'Vote recorded' })
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 2, state: 'Competing save histories', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Check signed branches' }))
+    expect(await screen.findByRole('button', { name: 'Ask recovery voters' })).toBeEnabled()
+    expect(screen.getAllByText(/on another PC/)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Ask recovery voters' }))
+    expect(await screen.findByText('Offer ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Vote on an invitation'))
+    fireEvent.change(screen.getByLabelText('Paste signed invitation'), { target: { value: JSON.stringify({
+      proposal: { kind: 'ResolutionQuorum', competingHeadHashes: [chosen, other] }, version: { number: 2 } }) } })
+    expect(screen.queryByRole('button', { name: 'Approve this copy' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Review invitation' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve this copy' }))
+    await waitFor(() => expect(calls).toContain(
+      `POST /api/local/friend/${profile}/shared-world/resolution/vote/${'C'.repeat(64)}`))
+  })
+
+  it('keeps owner resolution approval disabled when the signed roster turns it off', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/governance')) return reply({ revision: 3, ownerOverride: false })
+      if (url.endsWith('/resolution/offers')) return reply([{
+        proposalHash: 'A'.repeat(64), selectedVersion: 2, competingBranches: 2 }])
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Check owner decisions' }))
+    expect(await screen.findByRole('button', { name: 'Approve selected copy' })).toBeDisabled()
+  })
 })

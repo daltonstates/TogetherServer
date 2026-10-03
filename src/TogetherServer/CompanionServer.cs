@@ -122,7 +122,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             nextApp.Use(async (context, next) =>
             {
                 var authorityIngest = context.Request.Path.Value?.EndsWith(
-                    "/shared-world/authority", StringComparison.Ordinal) == true;
+                    "/shared-world/authority", StringComparison.Ordinal) == true ||
+                    context.Request.Path.Value?.EndsWith(
+                        "/shared-world/resolution/owner-offer", StringComparison.Ordinal) == true;
                 var maximumBody = authorityIngest ? 2 * 1024 * 1024 : 4096;
                 if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
                     context.Connection.LocalPort != settings.CompanionPort ||
@@ -325,7 +327,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             try
             {
-                var offer = recoveryVotes.Armed(profileId);
+                var offer = recoveryVotes.OfferForTransport(profileId, proposalHash);
                 if (offer is null || WorldAuthorityTrust.ProposalHash(offer.Proposal) != proposalHash ||
                     certificate is null ||
                     HostIdentity.Fingerprint(certificate) != offer.CandidateTlsFingerprint)
@@ -386,18 +388,40 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 var vote = JsonSerializer.Deserialize<WorldAuthorityVote>(body,
                     new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 if (vote is null) return Results.BadRequest(new { code = "InvalidRecoveryRequest" });
-                if (recoveryLossProbe is null || recoveryLossCurrent is null ||
-                    !await recoveryLossProbe(profileId,
-                        context.RequestAborted))
+                if (recoveryVotes.Armed(profileId)?.Proposal.Schema != 3 &&
+                    (recoveryLossProbe is null || recoveryLossCurrent is null ||
+                     !await recoveryLossProbe!(profileId, context.RequestAborted)))
                     return Results.Json(new WorldAuthorityVoteResult(false, "HostLossNotConfirmed"),
                         statusCode: 403);
                 var result = recoveryVotes.AcceptVote(profileId, proposalHash, vote,
-                    () => recoveryLossCurrent(profileId));
+                    () => recoveryLossCurrent!(profileId));
                 return Results.Json(result, statusCode: result.Ok ? 200 : 403);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
             { return Results.Conflict(new { code = "RecoveryVoteUnavailable" }); }
         });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/resolution/{proposalHash}/owner-approval",
+            async (HttpContext context, Guid profileId, string proposalHash) =>
+        {
+            if (proposalHash.Length != 64 || !proposalHash.All(Uri.IsHexDigit) ||
+                !await CandidateOfferMatchesListener(profileId, proposalHash))
+                return Results.NotFound();
+            var body = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                context.Request.ContentLength, context.RequestAborted);
+            if (body is null) return Results.BadRequest(new { code = "InvalidOwnerApproval" });
+            try
+            {
+                var approval = JsonSerializer.Deserialize<WorldAuthorityOwnerApproval>(body,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (approval is null || approval.ProposalHash != proposalHash)
+                    return Results.BadRequest(new { code = "InvalidOwnerApproval" });
+                var result = recoveryVotes.AcceptOwnerApproval(profileId, approval);
+                return Results.Json(result, statusCode: result.Ok ? 200 : 403);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException)
+            { return Results.Conflict(new { code = "OwnerApprovalUnavailable" }); }
+        }).RequireRateLimiting("pairing");
         companion.MapPost("/servers/{profileId:guid}/shared-world/authority",
             async (HttpContext context, Guid profileId) =>
         {
@@ -433,6 +457,37 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
                                        CryptographicException or UnauthorizedAccessException)
             { return Results.Conflict(new { code = "AuthorityUnavailable" }); }
+        });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/resolution/owner-offer",
+            async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(device!, profileId) || device!.SharedWorldPublicKey is null)
+                return Results.StatusCode(403);
+            var body = await ReadBoundedAuthorityAsync(context.Request.Body,
+                context.Request.ContentLength, context.RequestAborted);
+            if (body is null) return Results.BadRequest(new { code = "InvalidResolutionOffer" });
+            try
+            {
+                var offer = JsonSerializer.Deserialize<WorldAuthorityOffer>(body,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (offer is null || offer.Proposal.ProfileId != profileId ||
+                    offer.Proposal.ProposerDeviceId != device.Id ||
+                    offer.Proposal.ProposerPublicKey != device.SharedWorldPublicKey ||
+                    device.SharedWorldGrants?.GetValueOrDefault(profileId)?.EligibleHost != true ||
+                    !SharedWorldElection.VerifyOffer(offer) ||
+                    !Reauthorize(device, out var current, out decision) || current is null ||
+                    !pairing.CanAccess(current, profileId) ||
+                    current.SharedWorldGrants?.GetValueOrDefault(profileId)?.EligibleHost != true)
+                    return Results.StatusCode(403);
+                new WorldAuthorityStore(data).StageResolutionOffer(offer);
+                return Results.Json(new { code = "ResolutionOfferRecorded",
+                    proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal) });
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException)
+            { return Results.Conflict(new { code = "ResolutionOfferUnavailable" }); }
         });
         companion.MapPost("/pair", (PairingActivation request) =>
         {

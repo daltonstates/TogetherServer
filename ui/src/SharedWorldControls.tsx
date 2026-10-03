@@ -23,6 +23,8 @@ type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'Major
   required: number; version: number | null; versionHash: string | null; candidateAddress: string | null;
   candidateDeviceId: string | null; majorityReached: boolean; separateCopies: number }
   & { proposalHash: string | null; authorityHeadHash: string | null }
+type ResolutionChoice = { recordHash: string; version: number; availableHere: boolean }
+type PendingResolution = { proposalHash: string; selectedVersion: number; competingBranches: number }
 
 function record(value: unknown, where: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${where} is invalid.`)
@@ -214,6 +216,47 @@ function parseVoteResult(value: unknown): BasicResult & { votes: number; require
   if (votes === null || votes > 128 || required === null || required > 129) throw new Error('Vote count is invalid.')
   return { ...parseBasicResult(value), votes, required, majorityReached: source.decision != null }
 }
+function resolutionHash(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9A-F]{64}$/.test(value)) throw new Error('Signed decision ID is invalid.')
+  return value
+}
+function parseResolutionChoices(value: unknown): ResolutionChoice[] {
+  if (!Array.isArray(value) || value.length > 128) throw new Error('Competing copies are invalid.')
+  return value.map(item => { const source = record(item, 'Competing copy')
+    const version = numberOrNull(source.version, 'Copy version')
+    if (version === null || version < 1) throw new Error('Copy version is invalid.')
+    return { recordHash: resolutionHash(source.recordHash), version,
+      availableHere: boolean(source.availableHere, 'Copy availability') } })
+}
+function parsePendingResolutions(value: unknown): PendingResolution[] {
+  if (!Array.isArray(value) || value.length > 16) throw new Error('Pending decisions are invalid.')
+  return value.map(item => { const source = record(item, 'Pending decision')
+    const selectedVersion = numberOrNull(source.selectedVersion, 'Selected version')
+    const competingBranches = numberOrNull(source.competingBranches, 'Competing branches')
+    if (selectedVersion === null || competingBranches === null || competingBranches < 2)
+      throw new Error('Pending decision is invalid.')
+    return { proposalHash: resolutionHash(source.proposalHash), selectedVersion, competingBranches } })
+}
+function parseResolutionOfferResult(value: unknown): BasicResult & { offer: unknown } {
+  const source = record(value, 'Decision offer')
+  return { ...parseBasicResult(value), offer: source.offer }
+}
+function parseSignedOffer(value: unknown): { offer: unknown; selectedVersion: number; branches: number } {
+  const offer = record(value, 'Signed invitation')
+  const proposal = record(offer.proposal, 'Signed proposal')
+  const version = record(offer.version, 'Selected copy')
+  const selectedVersion = numberOrNull(version.number, 'Selected version')
+  if (selectedVersion === null || selectedVersion < 1 || proposal.kind !== 'ResolutionQuorum' ||
+      !Array.isArray(proposal.competingHeadHashes) || proposal.competingHeadHashes.length < 2 ||
+      proposal.competingHeadHashes.length > 128 ||
+      proposal.competingHeadHashes.some(item => typeof item !== 'string' || !/^[0-9A-F]{64}$/.test(item)))
+    throw new Error('This is not a bounded signed voting invitation.')
+  return { offer: value, selectedVersion, branches: proposal.competingHeadHashes.length }
+}
+function parseReviewedInvitation(value: unknown): BasicResult & { proposalHash: string | null } {
+  const source = record(value, 'Reviewed invitation')
+  return { ...parseBasicResult(value), proposalHash: source.proposalHash === null ? null : resolutionHash(source.proposalHash) }
+}
 
 export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged }:
   { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; currentAddress?: string;
@@ -243,6 +286,8 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)])
     setStatus(nextStatus); setHandoff(nextHandoff)
   }
+  const [pendingResolutions, setPendingResolutions] = useState<PendingResolution[]>([])
+  const [resolutionMessage, setResolutionMessage] = useState('')
   useEffect(() => {
     let active = true
     void getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus)
@@ -344,6 +389,22 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     } catch (error) { setHandoffMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
+  const loadPendingResolutions = async () => {
+    try { setPendingResolutions(await getLocalJson(
+      `/api/local/profiles/${profileId}/shared-world/resolution/offers`, parsePendingResolutions)) }
+    catch (error) { setResolutionMessage(errorMessage(error)) }
+  }
+  const approveResolution = async (proposalHash: string) => {
+    setBusy(true); setResolutionMessage('')
+    try {
+      const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/resolution/approve/${proposalHash}`,
+        'POST', value => record(value, 'Owner decision'))
+      setResolutionMessage(result.code === 'OwnerOverrideRecorded' ?
+        'Signed owner decision recorded. This PC is fenced from hosting the selected world.' : 'Decision pending.')
+      await loadPendingResolutions()
+    } catch (error) { setResolutionMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
   const authority = status?.authority
   const fenced = authority?.state === 'OldHostFenced'
   const review = authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
@@ -416,6 +477,17 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     </section>}
     {status?.enabled && !status.canManageSharing && !fenced && !review && <p className="helper-text">Manage sharing grants are recorded for future delegated updates. Only the original owner can change signed membership today.</p>}
     {status?.error && <p role="alert">{status.error}</p>}
+    <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
+      <p>Review signed offers before choosing a saved branch. The selected copy stays on its PC.</p>
+      <Button className="secondary" disabled={busy} onClick={() => void loadPendingResolutions()}>Check owner decisions</Button>
+      {pendingResolutions.map(offer => <div key={offer.proposalHash}>
+        <p>{offer.competingBranches} signed branches · selected saved version {offer.selectedVersion}</p>
+        <Button className="secondary" disabled={busy || !roster?.ownerOverride}
+          onClick={() => void approveResolution(offer.proposalHash)}>Approve selected copy</Button>
+        <details><summary>Technical details</summary><code>{offer.proposalHash}</code></details>
+      </div>)}
+      {resolutionMessage && <p role="status">{resolutionMessage}</p>}
+    </section>
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void refreshHost().catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
     <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash-verified post-Stop backup files are sent over the existing paired HTTPS connection. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
@@ -502,6 +574,11 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     void poll()
     return () => { active = false; window.clearTimeout(timer) }
   }, [open, refreshRecovery])
+  const [choices, setChoices] = useState<ResolutionChoice[]>([])
+  const [resolutionMessage, setResolutionMessage] = useState('')
+  const [offerText, setOfferText] = useState('')
+  const [invitation, setInvitation] = useState('')
+  const [reviewed, setReviewed] = useState<(ReturnType<typeof parseSignedOffer> & { proposalHash: string }) | null>(null)
   useEffect(() => {
     if (!open) return
     const timer = window.setInterval(() => {
@@ -582,6 +659,47 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     } catch (error) { if (identity === recoveryIdentity.current) setRecoveryMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
+  const loadChoices = async () => {
+    try { setChoices(await getLocalJson(
+      `/api/local/friend/${profileId}/shared-world/resolution/heads`, parseResolutionChoices)) }
+    catch (error) { setResolutionMessage(errorMessage(error)) }
+  }
+  const offerResolution = async (choice: ResolutionChoice, owner: boolean) => {
+    setBusy(true); setResolutionMessage('')
+    try {
+      const route = owner ? 'owner-offer' : 'offer'
+      const result = await changeJson(
+        `/api/local/friend/${profileId}/shared-world/resolution/${route}/${choice.recordHash}`,
+        'POST', parseResolutionOfferResult)
+      setResolutionMessage(result.message)
+      if (result.ok && result.offer) setOfferText(JSON.stringify(result.offer))
+    } catch (error) { setResolutionMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+  const voteResolution = async () => {
+    if (!reviewed) return
+    setBusy(true); setResolutionMessage('')
+    try {
+      const result = await changeJson(
+        `/api/local/friend/${profileId}/shared-world/resolution/vote/${reviewed.proposalHash}`,
+        'POST', parseBasicResult)
+      setResolutionMessage(result.message)
+      await loadChoices()
+    } catch (error) { setResolutionMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+  const reviewInvitation = async () => {
+    setBusy(true); setResolutionMessage('')
+    try {
+      const parsed = parseSignedOffer(JSON.parse(invitation))
+      const result = await changeJson(
+        `/api/local/friend/${profileId}/shared-world/resolution/invitations`,
+        'POST', parseReviewedInvitation, parsed.offer)
+      if (result.ok && result.proposalHash) setReviewed({ ...parsed, proposalHash: result.proposalHash })
+      else setResolutionMessage(result.message)
+    } catch (error) { setReviewed(null); setResolutionMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
   const behind = status?.hostVersion != null && status.thisPcVersion != null &&
     status.hostVersion > status.thisPcVersion && !status.state.startsWith('Host save source changed')
   const headline = status?.state === 'Ready' ? 'Verified copy on this PC' :
@@ -651,6 +769,31 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       </details>}
     </details>}
     {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId} />}
+    {status?.consented && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
+      <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override.</p>
+      <Button className="secondary" disabled={busy} onClick={() => void loadChoices()}>Check signed branches</Button>
+      {choices.map(choice => <div key={choice.recordHash}>
+        <p>Saved version {choice.version} {choice.availableHere ? '· verified on this PC' : '· on another PC'}</p>
+        {choice.availableHere && <div className="actions">
+          <Button className="secondary" disabled={busy} onClick={() => void offerResolution(choice, false)}>Ask recovery voters</Button>
+          <Button className="secondary" disabled={busy} onClick={() => void offerResolution(choice, true)}>Ask owner</Button>
+        </div>}
+        <details><summary>Technical details</summary><code>{choice.recordHash}</code></details>
+      </div>)}
+      {offerText && <details><summary>Share signed invitation</summary>
+        <p>Send this invitation only to designated recovery voters. The app checks the signed proposal and exact branches before a vote.</p>
+        <Button className="secondary" onClick={() => void navigator.clipboard.writeText(offerText)}>Copy invitation</Button>
+        <textarea readOnly value={offerText} aria-label="Signed invitation" /></details>}
+      <details><summary>Vote on an invitation</summary>
+        <textarea value={invitation} aria-label="Paste signed invitation" onChange={event => {
+          setInvitation(event.target.value); setReviewed(null) }} />
+        <Button className="secondary" disabled={!invitation || busy}
+          onClick={() => void reviewInvitation()}>Review invitation</Button>
+        {reviewed && <><p>{reviewed.branches} signed branches · proposed saved version {reviewed.selectedVersion}</p>
+          <Button className="secondary" disabled={busy} onClick={() => void voteResolution()}>Approve this copy</Button></>}
+      </details>
+      {resolutionMessage && <p role="status">{resolutionMessage}</p>}
+    </section>}
     <details><summary>Technical details</summary><p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
       {status?.error && <p role="alert">{status.error}</p>}
       <p>Transfers resume in bounded chunks. Each file is checked before an atomic vault receipt. This never replaces a live game save.</p></details>

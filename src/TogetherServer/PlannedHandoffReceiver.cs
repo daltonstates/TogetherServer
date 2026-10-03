@@ -95,8 +95,7 @@ internal static class PlannedHandoffReceiver
             }
         }
         var records = authority.Read(profileId);
-        var heads = records.Where(item => !records.Any(child =>
-            child.Proposal.ParentAuthorityHash == item.RecordHash)).ToArray();
+        var heads = WorldAuthorityTrust.EffectiveHeads(records);
         if (heads.Length != 1 || heads[0].RecordHash != record.RecordHash)
             return new(false, "CompetingAuthority",
                 "Another signed takeover history is present. Keep both copies and review before hosting.");

@@ -1327,6 +1327,61 @@ app.MapPut("/api/local/profiles/{profileId:guid}/shared-world/governance",
     }
     finally { modeGate.Release(); }
 });
+app.MapGet("/api/local/profiles/{profileId:guid}/shared-world/resolution/offers",
+    (HttpContext context, Guid profileId) =>
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(403);
+    if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+    try
+    {
+        var offers = new WorldAuthorityStore(data).PendingResolutionOffers(profileId);
+        return Results.Json(offers.Select(offer => new
+        {
+            proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal),
+            selectedVersion = offer.Version.Number,
+            competingBranches = offer.Proposal.CompetingHeadHashes?.Count ?? 0,
+            candidateDeviceId = offer.Proposal.ProposerDeviceId,
+            candidateAddress = offer.Proposal.CandidateAddress
+        }).ToArray());
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+    { return Results.Conflict(new { code = "ResolutionOffersUnavailable" }); }
+});
+app.MapPost("/api/local/profiles/{profileId:guid}/shared-world/resolution/approve/{proposalHash}",
+    async (HttpContext context, Guid profileId, string proposalHash) =>
+{
+    await modeGate.WaitAsync(context.RequestAborted);
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        if (proposalHash.Length != 64 || !proposalHash.All(Uri.IsHexDigit))
+            return Results.BadRequest(new { code = "InvalidResolutionId" });
+        var offer = new WorldAuthorityStore(data).PendingResolutionOffers(profileId)
+            .SingleOrDefault(item => WorldAuthorityTrust.ProposalHash(item.Proposal) == proposalHash);
+        if (offer is null) return Results.NotFound();
+        var approval = await manager.SignSharedWorldResolutionAsync(profileId, offer);
+        using var client = FriendLink.MakeClient(offer.Proposal.CandidateAddress,
+            [offer.CandidateTlsFingerprint]);
+        using var response = await client.PostAsJsonAsync(
+            $"api/companion/servers/{profileId}/shared-world/resolution/{proposalHash}/owner-approval",
+            approval, context.RequestAborted);
+        var bytes = await FriendLink.ReadBoundedSharedAsync(response.Content,
+            2 * 1024 * 1024, context.RequestAborted);
+        var result = response.IsSuccessStatusCode && bytes is not null ?
+            JsonSerializer.Deserialize<WorldAuthorityVoteResult>(bytes,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)) : null;
+        if (result is not { Ok: true, Decision: not null } ||
+            WorldAuthorityTrust.ProposalHash(result.Decision.Proposal) != proposalHash)
+            return Results.Conflict(new { code = "OwnerApprovalDeliveryPending" });
+        await manager.ApplySharedWorldAuthorityAsync(result.Decision);
+        return Results.Json(new { code = "OwnerOverrideRecorded", result.Decision.RecordHash });
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                               System.Security.Cryptography.CryptographicException or
+                               HttpRequestException or TaskCanceledException)
+    { return Results.Conflict(new { code = "OwnerApprovalDeliveryPending" }); }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/shared-world/repair-rosters", async () =>
 {
     await modeGate.WaitAsync();
@@ -1510,6 +1565,23 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/offer-code", (Http
         proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal), offer
     }) :
     Results.NotFound(new { code = "NoArmedOffer", message = "No signed offer is armed on this PC." }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/offer/{selectedHeadHash}",
+    async (Guid id, string selectedHeadHash) =>
+    friendMode ? Results.Json(await friend.PrepareResolutionOfferAsync(id, selectedHeadHash)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/shared-world/resolution/heads",
+    (HttpContext context, Guid id) =>
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(403);
+    if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+    try { return Results.Json(friend.ResolutionChoices(id)); }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+    { return Results.Conflict(new { code = "ResolutionUnavailable" }); }
+});
+app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/owner-offer/{selectedHeadHash}",
+    async (Guid id, string selectedHeadHash) =>
+    friendMode ? Results.Json(await friend.PrepareResolutionOfferAsync(id, selectedHeadHash, true)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (HttpContext context, Guid id) =>
 {
     if (!friendMode) return Results.Conflict(new { code = "HostMode" });
@@ -1525,6 +1597,26 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (Htt
     }
     catch (JsonException) { return Results.BadRequest(new { code = "InvalidRecoveryOffer" }); }
 });
+app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/invitations",
+    async (HttpContext context, Guid id) =>
+{
+    if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+    var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+        context.Request.ContentLength, 512 * 1024, context.RequestAborted);
+    if (bytes is null) return Results.BadRequest(new { code = "InvalidResolutionInvitation" });
+    try
+    {
+        var offer = JsonSerializer.Deserialize<WorldAuthorityOffer>(bytes,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return offer is null ? Results.BadRequest(new { code = "InvalidResolutionInvitation" }) :
+            Results.Json(await friend.ImportResolutionInvitationAsync(id, offer));
+    }
+    catch (JsonException) { return Results.BadRequest(new { code = "InvalidResolutionInvitation" }); }
+});
+app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/vote/{proposalHash}",
+    async (HttpContext context, Guid id, string proposalHash) =>
+    friendMode ? Results.Json(await friend.VoteOnResolutionIdAsync(id,
+        proposalHash, context.RequestAborted)) : Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate",
     async (Guid id, WorldSeparateCopyConfirmation confirmation) =>
     friendMode ? Results.Json(await friend.DeclareSeparateCopyAsync(id, confirmation.AcceptSplitWarning)) :

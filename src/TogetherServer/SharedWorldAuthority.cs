@@ -10,7 +10,8 @@ public sealed record WorldAuthorityProposal(int Schema, Guid GroupId, Guid Profi
     long Epoch, string? ParentAuthorityHash, string RosterHash, string VersionHash,
     string CandidatePublicKey, string CandidateAddress, string Kind,
     Guid ProposerDeviceId, string ProposerPublicKey, string Signature,
-    WorldSuccessorBinding? SuccessorBinding = null);
+    WorldSuccessorBinding? SuccessorBinding = null,
+    IReadOnlyList<string>? CompetingHeadHashes = null);
 public sealed record WorldSuccessorBinding(Guid DeviceId, string DevicePublicKey,
     string HostingPublicKey, string Signature);
 public sealed record WorldAuthorityVote(int Schema, string ProposalHash, Guid VoterDeviceId,
@@ -24,9 +25,47 @@ public sealed record WorldAuthorityRecord(int Schema, WorldAuthorityProposal Pro
 
 internal static class WorldAuthorityTrust
 {
+    internal static bool IsResolution(WorldAuthorityRecord record) => record.Schema == 2;
+    internal static WorldAuthorityRecord[] EffectiveHeads(IReadOnlyList<WorldAuthorityRecord> records)
+    {
+        var heads = new Dictionary<string, WorldAuthorityRecord>(StringComparer.Ordinal);
+        foreach (var record in records)
+        {
+            if (IsResolution(record))
+            {
+                if (!ExactResolutionHeads(record, heads.Values.ToArray()))
+                    throw new InvalidDataException("The resolution does not name every competing authority head.");
+                foreach (var hash in record.Proposal.CompetingHeadHashes!) heads.Remove(hash);
+            }
+            else if (record.Proposal.ParentAuthorityHash is { } parent)
+                heads.Remove(parent);
+            heads.Add(record.RecordHash, record);
+        }
+        return heads.Values.ToArray();
+    }
+    internal static bool ExactResolutionHeads(WorldAuthorityRecord record,
+        IReadOnlyList<WorldAuthorityRecord> heads)
+    {
+        if (!IsResolution(record) || record.Proposal.CompetingHeadHashes is not { } hashes ||
+            heads.Count < 2 || hashes.Count != heads.Count ||
+            record.Proposal.Epoch != heads.Max(head => head.Proposal.Epoch) + 1 ||
+            !hashes.SequenceEqual(heads.Select(head => head.RecordHash)
+                .Order(StringComparer.Ordinal)) ||
+            heads.Any(head => head.Proposal.GroupId != record.Proposal.GroupId ||
+                head.Proposal.ProfileId != record.Proposal.ProfileId ||
+                head.Roster.OwnerPublicKey != record.Roster.OwnerPublicKey ||
+                head.Roster.Epoch > record.Roster.Epoch ||
+                head.Roster.Revision > record.Roster.Revision ||
+                head.Roster.Epoch == record.Roster.Epoch &&
+                head.Roster.Revision == record.Roster.Revision &&
+                head.Roster.Signature != record.Roster.Signature)) return false;
+        return heads.Any(head => head.RecordHash == record.Proposal.ParentAuthorityHash);
+    }
     internal static string CandidateDevicePublicKey(WorldAuthorityProposal proposal) =>
         proposal.SuccessorBinding?.DevicePublicKey ?? proposal.CandidatePublicKey;
     internal const int PageSize = 4;
+    // Bounds a single competing decision, independently of the paged authority history.
+    internal const int MaximumCompetingHeads = 128;
     internal const int ProofVersionsPerCheck = 128;
     internal const int ChainVersionsPerCheck = 128;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -46,7 +85,15 @@ internal static class WorldAuthorityTrust
             binding.DevicePublicKey,
             binding.HostingPublicKey
         }, Json);
-    internal static byte[] ProposalBasis(WorldAuthorityProposal proposal) => proposal.Schema == 1
+    internal static byte[] ProposalBasis(WorldAuthorityProposal proposal) => proposal.Schema == 3
+        ? JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        domain = "TogetherServer authority resolution proposal v3", proposal.Schema,
+        proposal.GroupId, proposal.ProfileId, proposal.Epoch, proposal.ParentAuthorityHash,
+        proposal.RosterHash, proposal.VersionHash, proposal.CandidatePublicKey,
+        proposal.CandidateAddress, proposal.Kind, proposal.ProposerDeviceId,
+        proposal.ProposerPublicKey, proposal.SuccessorBinding, proposal.CompetingHeadHashes
+    }, Json) : proposal.Schema == 1
         ? JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer authority proposal v1",
@@ -90,7 +137,13 @@ internal static class WorldAuthorityTrust
     }, Json);
     internal static byte[] OwnerBasis(WorldAuthorityProposal proposal) => Encoding.UTF8.GetBytes(
         "TogetherServer authority owner approval v1\n" + ProposalHash(proposal));
-    internal static byte[] RecordBasis(WorldAuthorityRecord record) =>
+    internal static byte[] RecordBasis(WorldAuthorityRecord record) => record.Schema == 2
+        ? JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer authority resolution record v2", record.Schema,
+            record.Proposal, record.Roster, record.Version, record.Votes,
+            record.OwnerSignature, record.VersionLineageDigest
+        }, Json) :
         record.VersionLineageDigest is not null && record.SuccessorReceipt is null
             ? JsonSerializer.SerializeToUtf8Bytes(new
             {
@@ -194,11 +247,18 @@ internal static class WorldAuthorityTrust
         SHA256.HashData([.. digest, .. Convert.FromHexString(version.VersionHash)]);
     internal static bool VerifyProposal(WorldAuthorityProposal proposal, SharedWorldRoster roster)
     {
-        if (proposal.Schema is not (1 or 2) || proposal.Epoch < 1 || proposal.GroupId != roster.GroupId ||
+        if (proposal.Schema is not (1 or 2 or 3) || proposal.Epoch < 1 || proposal.GroupId != roster.GroupId ||
             proposal.ProfileId != roster.ProfileId || proposal.RosterHash != RosterHash(roster) ||
             !Signature(proposal.ProposerPublicKey, ProposalBasis(proposal), proposal.Signature)) return false;
+        if (proposal.Schema != 3 && proposal.CompetingHeadHashes is not null) return false;
+        if (proposal.Schema == 3 && (proposal.Kind is not ("ResolutionQuorum" or "ResolutionOwnerOverride") ||
+            proposal.CompetingHeadHashes is not { Count: >= 2 and <= MaximumCompetingHeads } hashes ||
+            hashes.Any(hash => hash.Length != 64 || !hash.All(Uri.IsHexDigit)) ||
+            hashes.Distinct(StringComparer.Ordinal).Count() != hashes.Count ||
+            !hashes.SequenceEqual(hashes.Order(StringComparer.Ordinal)) ||
+            !hashes.Contains(proposal.ParentAuthorityHash))) return false;
         if (proposal.Schema == 1 && proposal.SuccessorBinding is not null) return false;
-        if (proposal.Schema == 2)
+        if (proposal.Schema is 2 or 3)
         {
             var binding = proposal.SuccessorBinding;
             if (binding is null || binding.DeviceId == Guid.Empty ||
@@ -215,7 +275,8 @@ internal static class WorldAuthorityTrust
             return proposal.ProposerPublicKey == roster.OwnerPublicKey &&
                 proposal.ProposerDeviceId == Guid.Empty;
         var proposer = roster.Members.SingleOrDefault(member => member.DeviceId == proposal.ProposerDeviceId);
-        return proposal.Kind is "Quorum" or "OwnerOverride" &&
+        return proposal.Kind is "Quorum" or "OwnerOverride" or
+            "ResolutionQuorum" or "ResolutionOwnerOverride" &&
             proposer is { Revoked: false, Grants.EligibleHost: true } &&
             proposer.PublicKey == proposal.ProposerPublicKey;
     }
@@ -232,7 +293,11 @@ internal static class WorldAuthorityTrust
     {
         try
         {
-            if (record is null || record.Schema != 1 || record.Proposal.Schema is not (1 or 2) ||
+            if (record is null || record.Schema is not (1 or 2) ||
+                record.Proposal.Schema is not (1 or 2 or 3) ||
+                (record.Schema == 2) != (record.Proposal.Schema == 3) ||
+                record.Schema == 2 && (record.VersionLineage is not null ||
+                    record.SuccessorReceipt is not null) ||
                 record.Proposal.GroupId == Guid.Empty || record.Proposal.ProfileId == Guid.Empty ||
                 record.Proposal.Epoch < 1 || record.Votes.Count > 128 ||
                 record.VersionLineage is { Count: > 64 } ||
@@ -275,8 +340,9 @@ internal static class WorldAuthorityTrust
                     candidate.Grants.Receive && SharedWorldReceiptTrust.Verify(receipt, candidate.PublicKey);
             }
             if (record.SuccessorReceipt is not null) return false;
-            if (record.Proposal.Kind is not ("Quorum" or "OwnerOverride")) return false;
-            if (record.Proposal.Kind == "OwnerOverride")
+            if (record.Proposal.Kind is not ("Quorum" or "OwnerOverride" or
+                "ResolutionQuorum" or "ResolutionOwnerOverride")) return false;
+            if (record.Proposal.Kind is "OwnerOverride" or "ResolutionOwnerOverride")
                 return record.Roster.OwnerOverride && ownerApproved && record.Votes.Count == 0;
             if (record.OwnerSignature is not null ||
                 record.Votes.Select(vote => vote.VoterDeviceId).Distinct().Count() != record.Votes.Count ||
@@ -322,7 +388,8 @@ internal static class WorldAuthorityTrust
                 (digest is null || Convert.ToHexString(digest) == record.VersionLineageDigest);
         }
         if (record.Proposal.ParentAuthorityHash != parent.RecordHash ||
-            record.Proposal.Epoch != parent.Proposal.Epoch + 1 ||
+            (record.Schema == 1 && record.Proposal.Epoch != parent.Proposal.Epoch + 1 ||
+             record.Schema == 2 && record.Proposal.Epoch <= parent.Proposal.Epoch) ||
             record.Proposal.GroupId != parent.Proposal.GroupId ||
             record.Version.Game != parent.Version.Game ||
             record.Version.WorldId != parent.Version.WorldId) return false;
@@ -383,6 +450,73 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     private static string FloorName(Guid profileId) => $"authority-floor-{profileId:N}.protected";
     private static string VoteFloorName(Guid profileId) => $"authority-vote-floor-{profileId:N}.protected";
     private static string HostBindingName(Guid profileId) => $"authority-host-{profileId:N}.protected";
+    private static string PendingResolutionName(Guid profileId) =>
+        $"authority-resolution-offers-{profileId:N}.protected";
+    internal WorldAuthorityOwnerApproval OwnerApproval(Guid profileId,
+        WorldAuthorityProposal proposal, Func<WorldAuthorityOwnerApproval> sign)
+    {
+        lock (sync)
+        {
+            var hash = WorldAuthorityTrust.ProposalHash(proposal);
+            var name = $"authority-resolution-approval-{profileId:N}-{hash}.protected";
+            var prior = data.LoadProtected(name);
+            if (prior is null && data.HasProtected(name))
+                throw new InvalidDataException("Saved owner approval is unreadable.");
+            if (prior is not null)
+            {
+                var saved = JsonSerializer.Deserialize<WorldAuthorityOwnerApproval>(prior, Json);
+                if (saved?.ProposalHash != hash)
+                    throw new InvalidDataException("Saved owner approval changed.");
+                return saved;
+            }
+            var approval = sign();
+            if (approval.ProposalHash != hash)
+                throw new InvalidDataException("Owner approval did not bind this proposal.");
+            data.SaveProtected(name, JsonSerializer.SerializeToUtf8Bytes(approval, Json));
+            return approval;
+        }
+    }
+    internal IReadOnlyList<WorldAuthorityOffer> PendingResolutionOffers(Guid profileId)
+    {
+        var bytes = data.LoadProtected(PendingResolutionName(profileId));
+        if (bytes is null)
+        {
+            if (data.HasProtected(PendingResolutionName(profileId)))
+                throw new InvalidDataException("Pending resolutions are unreadable.");
+            return [];
+        }
+        if (bytes.Length > 1024 * 1024) throw new InvalidDataException("Pending resolutions are oversized.");
+        var offers = JsonSerializer.Deserialize<List<WorldAuthorityOffer>>(bytes, Json) ??
+            throw new InvalidDataException("Pending resolutions are invalid.");
+        if (offers.Count > 16 || offers.Any(offer => !SharedWorldElection.VerifyOffer(offer) ||
+                offer.Proposal.Kind != "ResolutionOwnerOverride" ||
+                offer.Proposal.ProfileId != profileId))
+            throw new InvalidDataException("Pending resolutions failed verification.");
+        var heads = WorldAuthorityTrust.EffectiveHeads(Read(profileId));
+        return offers.Where(offer => WorldAuthorityTrust.ExactResolutionHeads(
+            new WorldAuthorityRecord(2, offer.Proposal, offer.Roster, offer.Version,
+                [], null, ""), heads)).ToArray();
+    }
+    internal void StageResolutionOffer(WorldAuthorityOffer offer)
+    {
+        lock (sync)
+        {
+            var profileId = offer.Proposal.ProfileId;
+            if (!SharedWorldElection.VerifyOffer(offer) ||
+                offer.Proposal.Kind != "ResolutionOwnerOverride" ||
+                !offer.Roster.OwnerOverride ||
+                !WorldAuthorityTrust.ExactResolutionHeads(new WorldAuthorityRecord(2,
+                    offer.Proposal, offer.Roster, offer.Version, [], null, ""),
+                    WorldAuthorityTrust.EffectiveHeads(Read(profileId))))
+                throw new InvalidDataException("The owner offer does not match the verified split.");
+            var existing = PendingResolutionOffers(profileId);
+            if (existing.Any(item => WorldAuthorityTrust.ProposalHash(item.Proposal) ==
+                    WorldAuthorityTrust.ProposalHash(offer.Proposal))) return;
+            if (existing.Count >= 16) throw new InvalidDataException("Pending resolution limit reached.");
+            data.SaveProtected(PendingResolutionName(profileId),
+                JsonSerializer.SerializeToUtf8Bytes(existing.Append(offer).ToArray(), Json));
+        }
+    }
     private string LogPath(Guid profileId) => Path.Combine(Root(profileId), "records.jsonl");
     private string PendingPath(Guid profileId) => Path.Combine(Root(profileId), "append.pending");
     private string VotePath(Guid profileId) => Path.Combine(Root(profileId), "local-votes.jsonl");
@@ -820,14 +954,13 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     {
         var records = Read(profileId);
         if (records.Count == 0) return null;
-        var heads = records.Where(record => !records.Any(child =>
-            child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+        var heads = WorldAuthorityTrust.EffectiveHeads(records);
         return heads.Length == 1 && MatchesLocalSuccessor(heads[0]) ? heads[0] : null;
     }
     internal bool HasLocalSuccessorKeys(Guid profileId, WorldAuthorityProposal proposal,
         Guid deviceId)
     {
-        if (proposal.Schema != 2 || proposal.SuccessorBinding is not { } signed ||
+        if (proposal.Schema is not (2 or 3) || proposal.SuccessorBinding is not { } signed ||
             signed.DeviceId != deviceId || signed.HostingPublicKey != proposal.CandidatePublicKey)
             return false;
         try
@@ -857,7 +990,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 record.Proposal.Kind == "Planned" && record.SuccessorReceipt?.DeviceId == deviceId &&
                 member?.PublicKey == record.Proposal.CandidatePublicKey;
             var signed = record.Proposal.SuccessorBinding;
-            if (!plannedLegacy && (record.Proposal.Schema != 2 || signed is null ||
+            if (!plannedLegacy && (record.Proposal.Schema is not (2 or 3) || signed is null ||
                 signed.DeviceId != deviceId || member?.PublicKey != signed.DevicePublicKey))
                 throw new InvalidDataException("This PC is not the signed successor.");
             var binding = new LocalHostBinding(plannedLegacy ? 1 : 2,
@@ -973,6 +1106,15 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                     throw new InvalidDataException("Authority record failed verification.");
                 var parent = record.Proposal.ParentAuthorityHash is null ? null :
                     byHash.GetValueOrDefault(record.Proposal.ParentAuthorityHash);
+                if (!WorldAuthorityTrust.IsResolution(record) &&
+                    records.Any(WorldAuthorityTrust.IsResolution) &&
+                    (parent is null || !WorldAuthorityTrust.EffectiveHeads(records)
+                        .Any(head => head.RecordHash == parent.RecordHash)))
+                    throw new InvalidDataException("A retired authority head cannot gain a new child.");
+                if (WorldAuthorityTrust.IsResolution(record) &&
+                    !WorldAuthorityTrust.ExactResolutionHeads(record,
+                        WorldAuthorityTrust.EffectiveHeads(records)))
+                    throw new InvalidDataException("Authority resolution head set failed verification.");
                 if (!WorldAuthorityTrust.VerifyLineage(record, parent, ReadProof(record, parent)))
                     throw new InvalidDataException("Authority save signer lineage failed verification.");
                 records.Add(record);
@@ -986,10 +1128,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     }
     internal WorldAuthorityRecord? ReadUniqueHead(Guid profileId)
     {
-        var records = Read(profileId);
-        var parentHashes = records.Select(item => item.Proposal.ParentAuthorityHash)
-            .Where(hash => hash is not null).ToHashSet(StringComparer.Ordinal);
-        var heads = records.Where(item => !parentHashes.Contains(item.RecordHash)).ToArray();
+        var heads = WorldAuthorityTrust.EffectiveHeads(Read(profileId));
         return heads.Length == 1 ? heads[0] : null;
     }
     internal IReadOnlyList<WorldAuthorityRecord> ReadPage(Guid profileId, int offset)
@@ -1048,6 +1187,18 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     internal SharedWorldVersion? FindProvenVersion(Guid profileId, long number)
     {
         var records = Read(profileId);
+        var effective = WorldAuthorityTrust.EffectiveHeads(records);
+        if (effective.Length == 1)
+        {
+            var head = effective[0];
+            if (head.Version.Number == number) return head.Version;
+            var parent = records.SingleOrDefault(item =>
+                item.RecordHash == head.Proposal.ParentAuthorityHash);
+            var proof = head.VersionLineageDigest is null ? head.VersionLineage :
+                ReadProof(head, parent);
+            var chosen = proof?.FirstOrDefault(item => item.Number == number);
+            if (chosen is not null) return chosen;
+        }
         foreach (var record in records)
         {
             if (record.Version.Number == number) return record.Version;
@@ -1080,6 +1231,15 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                     throw new InvalidDataException("A successor, proposer, or voter grant has expired.");
                 var parentRecord = existing.SingleOrDefault(item =>
                     item.RecordHash == record.Proposal.ParentAuthorityHash);
+                var effectiveHeads = WorldAuthorityTrust.EffectiveHeads(existing);
+                if (!WorldAuthorityTrust.IsResolution(record) &&
+                    existing.Any(WorldAuthorityTrust.IsResolution) &&
+                    (parentRecord is null || !effectiveHeads.Any(head =>
+                        head.RecordHash == parentRecord.RecordHash)))
+                    throw new InvalidDataException("A retired authority head cannot gain a new child.");
+                if (WorldAuthorityTrust.IsResolution(record) &&
+                    !WorldAuthorityTrust.ExactResolutionHeads(record, effectiveHeads))
+                    throw new InvalidDataException("Resolution must name the complete verified head set.");
                 if (record.VersionLineageDigest is not null)
                     FirstProofNumber(record, parentRecord);
                 if (record.VersionLineageDigest is not null && externalLineage is null && enforceCurrentGrants)
@@ -1167,7 +1327,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 if (GovernanceUnresolved(profileId))
                     throw new InvalidDataException("Signed membership is unresolved; this PC cannot vote on a takeover.");
                 if (!SharedWorldRosterTrust.Verify(roster) || !WorldAuthorityTrust.VerifyProposal(proposal, roster) ||
-                    proposal.Kind != "Quorum" || proposal.ProfileId != profileId)
+                    proposal.Kind is not ("Quorum" or "ResolutionQuorum") ||
+                    proposal.ProfileId != profileId)
                     throw new InvalidDataException("Vote roster or group is invalid.");
                 var key = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
                 var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(proposal), voterId, key, "");
@@ -1182,8 +1343,11 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                     expiry <= (clock ?? TimeProvider.System).GetUtcNow())
                     throw new InvalidDataException("This PC's recovery vote access expired.");
                 var existing = ReadLocalVotes(profileId);
+                var voteScope = proposal.Schema == 3
+                    ? "resolution:" + string.Join(',', proposal.CompetingHeadHashes!)
+                    : proposal.ParentAuthorityHash;
                 var prior = existing.SingleOrDefault(item => item.Voter == voterId &&
-                    item.Epoch == proposal.Epoch && item.Parent == proposal.ParentAuthorityHash);
+                    item.Epoch == proposal.Epoch && item.Parent == voteScope);
                 if (prior is not null)
                 {
                     if (prior.Vote.ProposalHash == vote.ProposalHash) return prior.Vote;
@@ -1195,7 +1359,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                     data.SaveProtected(VoteFloorName(profileId),
                         JsonSerializer.SerializeToUtf8Bytes(new Floor(1, 0, Digest([])), Json));
                 var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new LocalVoteEntry(
-                    proposal.ParentAuthorityHash, proposal.Epoch, voterId, vote), Json) + "\n");
+                    voteScope, proposal.Epoch, voterId, vote), Json) + "\n");
                 using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None))
                 {
                     stream.Write(bytes);
@@ -1213,8 +1377,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         try
         {
             var records = Read(profileId);
-            var heads = records.Where(record => !records.Any(child =>
-                child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+            var heads = WorldAuthorityTrust.EffectiveHeads(records);
             if (heads.Length == 0) { reason = ""; return false; }
             // A public key string alone is no proof that this installation owns
             // the successor identity. Require the protected local binding.
