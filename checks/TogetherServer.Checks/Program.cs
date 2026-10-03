@@ -1109,6 +1109,20 @@ await Check("takeover votes use the current delegated roster and fence forked go
         Members = delegated.Members.Select(item => item.DeviceId == managerId
             ? item with { Revoked = true } : item).ToArray(), Signature = "" }, ownerKey);
     chain.Append(revoked, root.OwnerPublicKey);
+    using (var lateReceiver = Data("delegated-authority-revoked-replay"))
+    {
+        var lateChain = new SharedWorldRosterChainStore(lateReceiver);
+        lateChain.Append(root, root.OwnerPublicKey);
+        lateChain.Append(delegated, root.OwnerPublicKey);
+        lateChain.Append(revoked, root.OwnerPublicKey);
+        RequireThrows<InvalidDataException>(() =>
+            new WorldAuthorityStore(lateReceiver).AppendReceived(record,
+                profile.Id, root.GroupId, root.OwnerPublicKey),
+            "a first authority receipt replayed revoked, unexpired voter grants");
+    }
+    store.AppendReceived(record, profile.Id, root.GroupId, root.OwnerPublicKey);
+    Require(store.Read(profile.Id).Single().RecordHash == record.RecordHash,
+        "a protected historical decision was lost after roster revocation");
     RequireThrows<InvalidDataException>(() => store.SignLocalVote(profile.Id,
         Propose(revoked), revoked, managerId, managerKey),
         "a revoked delegate retained a recovery vote");

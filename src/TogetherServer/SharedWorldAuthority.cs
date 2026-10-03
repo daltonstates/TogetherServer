@@ -517,14 +517,11 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 throw new InvalidDataException("Authority proof or current roster is invalid.");
             var existing = Read(record.Proposal.ProfileId);
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
-            if (enforceCurrentGrants && !EligibleAtAcceptance(record))
-                throw new InvalidDataException("A successor, proposer, or voter grant has expired.");
-            // Candidate-signed time cannot prove to an offline PC that the
-            // candidate did not backdate after a participant's grant expired.
-            // First receipt must therefore see live grants. An existing
-            // protected record remains readable after later expiry.
-            if (!enforceCurrentGrants && !EligibleAtAcceptance(record))
-                throw new InvalidDataException("A delayed first authority receipt needs active participant grants.");
+            // Historical decisions remain readable, but an unseen decision
+            // cannot arrive after the current roster revoked its participants.
+            // Candidate-signed time is not proof of an earlier decision.
+            if (!TrustedRoster(record.Roster, true) || !EligibleAtAcceptance(record))
+                throw new InvalidDataException("A first authority receipt needs the current roster and active participant grants.");
             var parentRecord = existing.SingleOrDefault(item =>
                 item.RecordHash == record.Proposal.ParentAuthorityHash);
             if (!WorldAuthorityTrust.VerifyLineage(record, parentRecord))
