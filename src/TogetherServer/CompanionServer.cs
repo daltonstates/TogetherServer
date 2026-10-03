@@ -516,11 +516,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
             var offset = int.TryParse(context.Request.Query["offset"], out var parsedOffset) &&
                 parsedOffset >= 0 ? parsedOffset : 0;
-            var records = await manager.SharedWorldAuthorityAsync(profileId);
+            var records = await manager.SharedWorldAuthorityAsync(profileId, offset);
             var recheck = await AuthorizeShared(auth.Current!, profileId);
             return !recheck.Decision.Ok ? Results.Json(recheck.Decision, statusCode: 403) :
                 records is null ? Results.Conflict(new { code = "AuthorityUnavailable" }) :
-                Results.Json(records.Skip(offset).Take(WorldAuthorityTrust.PageSize).ToArray());
+                Results.Json(records);
         });
         companion.MapPost("/servers/{profileId:guid}/shared-world/receipts",
             async (HttpContext context, Guid profileId) =>

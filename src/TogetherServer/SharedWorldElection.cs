@@ -33,7 +33,7 @@ internal static class SharedWorldElection
             !ValidFingerprint(candidateTlsFingerprint))
             throw new InvalidDataException("The candidate, roster, or direct address is not approved.");
         var prior = authority.Read(roster.ProfileId);
-        if (prior.Count > 128 || prior.Any(record => !WorldAuthorityTrust.Verify(record) ||
+        if (prior.Any(record => !WorldAuthorityTrust.Verify(record) ||
                 record.Proposal.GroupId != roster.GroupId || record.Proposal.ProfileId != roster.ProfileId))
             throw new InvalidDataException("Prior authority history is invalid.");
         var heads = prior.Where(record => !prior.Any(child =>

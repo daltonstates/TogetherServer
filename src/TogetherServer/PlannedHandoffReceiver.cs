@@ -80,7 +80,20 @@ internal static class PlannedHandoffReceiver
         if (!await stillConsented())
             return new(false, "ConsentWithdrawn", "This PC stopped receiving this shared world during staging.");
         var authority = new WorldAuthorityStore(data);
-        authority.AppendReceived(record, profileId, groupId, pinnedOwnerKey);
+        var accepted = authority.Read(profileId);
+        if (!accepted.Any(item => item.RecordHash == record.RecordHash))
+        {
+            var parent = accepted.SingleOrDefault(item =>
+                item.RecordHash == record.Proposal.ParentAuthorityHash);
+            if (record.VersionLineageDigest is null)
+                authority.AppendReceived(record, profileId, groupId, pinnedOwnerKey);
+            else
+            {
+                authority.AppendReceivedStaged(record, parent, profileId, groupId, pinnedOwnerKey);
+                try { authority.ClearStagedProof(record, parent); }
+                catch (IOException) { /* Verified authority is already durable. */ }
+            }
+        }
         var records = authority.Read(profileId);
         var heads = records.Where(item => !records.Any(child =>
             child.Proposal.ParentAuthorityHash == item.RecordHash)).ToArray();

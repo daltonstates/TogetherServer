@@ -3256,6 +3256,20 @@ await Check("planned handoff requires exact final save receipt before durable ol
     }
     File.WriteAllBytes(Path.Combine(vault, "latest.json"),
         JsonSerializer.SerializeToUtf8Bytes(version, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    RequireThrows<InvalidDataException>(() => PlannedHandoffReceiver.StageAsync(receivingData,
+        vault, completed.Authority!, profile.Id, version.GroupId, roster.OwnerPublicKey,
+        successorId, successor, () => Task.FromResult(true), CancellationToken.None)
+        .GetAwaiter().GetResult(),
+        "the receiver accepted a handoff before verifying the signed owner lineage");
+    var receivingAuthority = new WorldAuthorityStore(receivingData);
+    var proofBatch = await FriendLink.StageAuthorityProofBatchAsync(receivingAuthority,
+        completed.Authority!, null, WorldAuthorityTrust.ProofVersionsPerCheck,
+        (number, _) => Task.FromResult<SharedWorldVersion?>(number == version.Number ?
+            version : shares.ReadEarlierVersion(version, number)), CancellationToken.None);
+    Require(proofBatch is { Complete: true, Used: 3 } &&
+        FriendLink.VerifyStagedAuthorityProofBatch(receivingAuthority, completed.Authority!,
+            null, WorldAuthorityTrust.ProofVersionsPerCheck, CancellationToken.None).Complete,
+        "the receiver did not complete the bounded signed owner lineage proof");
     var staged = await PlannedHandoffReceiver.StageAsync(receivingData, vault,
         completed.Authority!, profile.Id, version.GroupId, roster.OwnerPublicKey,
         successorId, successor, () => Task.FromResult(true), CancellationToken.None);
@@ -3777,10 +3791,10 @@ await Check("shared world authority requires signed majority, fences old Host, a
             !WorldAuthorityTrust.VerifyLineage(third, nextAuthority,
                 longLineage.Select((item, index) => index == 35 ? item with { ParentHash = "BAD" } : item).ToArray()),
             "missing or tampered handoff proof was accepted");
-        RequireThrows<InvalidDataException>(() => WorldAuthorityStore.FirstProofNumber(
-            third with { Version = third.Version with
-            { Number = nextAuthority.Version.Number + WorldAuthorityTrust.MaximumProofVersions + 1 } },
-            nextAuthority), "an unbounded authority proof window was accepted");
+        Require(WorldAuthorityStore.FirstProofNumber(third with { Version = third.Version with
+            { Number = nextAuthority.Version.Number + 4097 } }, nextAuthority) ==
+            nextAuthority.Version.Number + 1,
+            "a handoff after more than 4096 saves was rejected");
         RequireThrows<InvalidDataException>(() => store.Append(third),
             "second handoff without proof was accepted");
         var linkedProofRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
@@ -3836,6 +3850,91 @@ await Check("shared world authority requires signed majority, fences old Host, a
         store.ClearStagedProof(third, nextAuthority);
         Require(new WorldAuthorityStore(data).Read(profile.Id).Any(item => item.RecordHash == third.RecordHash),
             "resumed proof was not verified and durable after restart");
+        using (var longProofData = Data("authority-proof-over-4096"))
+        {
+            var longStore = new WorldAuthorityStore(longProofData);
+            longStore.AppendReceived(accepted, profile.Id, version.GroupId, roster.OwnerPublicKey);
+            var proofVersions = new List<SharedWorldVersion>(4097);
+            var proofHead = version;
+            for (var index = 0; index < 4097; index++)
+            {
+                proofHead = SharedWorldService.SignVersion(proofHead with
+                { Number = proofHead.Number + 1, ParentHash = proofHead.VersionHash,
+                    BackupId = Guid.NewGuid() }, voters[0].Key);
+                proofVersions.Add(proofHead);
+            }
+            var longDraft = proposal with
+            {
+                Epoch = 2, ParentAuthorityHash = accepted.RecordHash,
+                RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster),
+                VersionHash = proofHead.VersionHash,
+                CandidatePublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()),
+                Signature = ""
+            };
+            var longProposal = SignProposal(longDraft, voters[0].Key);
+            var longRecordDraft = new WorldAuthorityRecord(1, longProposal, noOverrideRoster,
+                proofHead, [SignVote(longProposal, 0), SignVote(longProposal, 1)], null, "", null,
+                null, WorldAuthorityTrust.LineageDigest(proofVersions));
+            var longRecord = longRecordDraft with
+            { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(longRecordDraft)) };
+            Task<SharedWorldVersion?> FetchLongProof(long number, CancellationToken token)
+            {
+                token.ThrowIfCancellationRequested();
+                return Task.FromResult<SharedWorldVersion?>(proofVersions[(int)(number - version.Number - 1)]);
+            }
+            var boundedFirst = await FriendLink.StageAuthorityProofBatchAsync(longStore, longRecord,
+                accepted, WorldAuthorityTrust.ProofVersionsPerCheck, FetchLongProof,
+                CancellationToken.None);
+            Require(!boundedFirst.Complete && boundedFirst.Used == WorldAuthorityTrust.ProofVersionsPerCheck &&
+                longStore.Read(profile.Id).Count == 1,
+                "a 4097-save handoff partially accepted authority or exceeded one proof batch");
+            var resumedStore = new WorldAuthorityStore(longProofData);
+            var proofBatches = 1;
+            (bool Complete, int Used) proofBatch;
+            do
+            {
+                proofBatch = await FriendLink.StageAuthorityProofBatchAsync(resumedStore, longRecord,
+                    accepted, WorldAuthorityTrust.ProofVersionsPerCheck, FetchLongProof,
+                    CancellationToken.None);
+                Require(proofBatch.Used <= WorldAuthorityTrust.ProofVersionsPerCheck && ++proofBatches <= 33,
+                    "long authority proof exceeded the per-check bound");
+            } while (!proofBatch.Complete);
+            RequireThrows<InvalidDataException>(() => resumedStore.AppendReceivedStaged(
+                longRecord, accepted, profile.Id, version.GroupId, roster.OwnerPublicKey),
+                "authority accepted a staged proof before the bounded final scan");
+            var missingBoundary = Path.Combine(longProofData.RootPath, "shared-worlds",
+                profile.Id.ToString("N"), "authority", "proof-stage-" + longRecord.RecordHash,
+                proofVersions[0].Number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json");
+            File.Delete(missingBoundary);
+            RequireThrows<InvalidDataException>(() => FriendLink.VerifyStagedAuthorityProofBatch(
+                resumedStore, longRecord, accepted, WorldAuthorityTrust.ProofVersionsPerCheck,
+                CancellationToken.None),
+                "a missing staged boundary was accepted before committing authority");
+            Require(resumedStore.Read(profile.Id).Count == 1,
+                "a missing boundary partially accepted authority");
+            resumedStore.StageReceivedProofVersion(longRecord, proofVersions[0]);
+            using (var stoppedSeal = new CancellationTokenSource())
+            {
+                stoppedSeal.Cancel();
+                RequireThrows<OperationCanceledException>(() => FriendLink.VerifyStagedAuthorityProofBatch(
+                    resumedStore, longRecord, accepted, WorldAuthorityTrust.ProofVersionsPerCheck,
+                    stoppedSeal.Token), "cancelled final proof verification continued");
+            }
+            var sealBatches = 0;
+            (bool Complete, int Used) sealedBatch;
+            do
+            {
+                sealedBatch = FriendLink.VerifyStagedAuthorityProofBatch(resumedStore, longRecord,
+                    accepted, WorldAuthorityTrust.ProofVersionsPerCheck, CancellationToken.None);
+                Require(sealedBatch.Used <= WorldAuthorityTrust.ProofVersionsPerCheck &&
+                    ++sealBatches <= 33, "final authority scan exceeded its per-check bound");
+            } while (!sealedBatch.Complete);
+            resumedStore.AppendReceivedStaged(longRecord, accepted, profile.Id,
+                version.GroupId, roster.OwnerPublicKey);
+            resumedStore.ClearStagedProof(longRecord, accepted);
+            Require(new WorldAuthorityStore(longProofData).Read(profile.Id).Count == 2,
+                "a subsequent handoff after 4097 saves failed after restart");
+        }
         var afterThird = SharedWorldService.SignVersion(predecessor with
         {
             Number = predecessor.Number + 1, ParentHash = predecessor.VersionHash,
@@ -3876,6 +3975,79 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 item.VersionHash == forkSeven.VersionHash) &&
             !FriendLink.CanCommitReceivedVersion(restartedNoCopyFloor, profile.Id, forkSeven),
             "no-copy checked v5 was overwritten by a signed fork at v7");
+        var gap = new List<SharedWorldVersion>();
+        var gapHead = checkedFive;
+        for (var index = 0; index < 300; index++)
+        {
+            gapHead = SharedWorldService.SignVersion(gapHead with
+            { Number = gapHead.Number + 1, ParentHash = gapHead.VersionHash,
+                BackupId = Guid.NewGuid() }, voters[1].Key);
+            gap.Add(gapHead);
+        }
+        var chainRoot = Path.Combine(root, "chain-catch-up");
+        var chainDevice = Guid.NewGuid();
+        using (var chainData = new LocalData(chainRoot))
+        {
+            var fetched = 0;
+            var firstBatch = await FriendLink.VerifySharedChainBatchAsync(chainData, chainDevice,
+                profile.Id, checkedFive, gapHead, [accepted, nextAuthority],
+                (number, token) =>
+                {
+                    fetched++;
+                    return Task.FromResult<SharedWorldVersion?>(gap[(int)(number - checkedFive.Number - 1)]);
+                }, CancellationToken.None);
+            Require(firstBatch.Pending && fetched == WorldAuthorityTrust.ChainVersionsPerCheck,
+                "a long save gap was checked without a bounded pending result");
+        }
+        using (var resumedData = new LocalData(chainRoot))
+        {
+            var nextNumber = checkedFive.Number + WorldAuthorityTrust.ChainVersionsPerCheck + 1;
+            var forkPiece = SharedWorldService.SignVersion(gap[(int)(nextNumber - checkedFive.Number - 1)] with
+            { ParentHash = "BAD", BackupId = Guid.NewGuid() }, voters[1].Key);
+            var forkResult = await FriendLink.VerifySharedChainBatchAsync(resumedData, chainDevice,
+                profile.Id, checkedFive, gapHead, [accepted, nextAuthority],
+                (number, token) => Task.FromResult<SharedWorldVersion?>(forkPiece), CancellationToken.None);
+            var protectedFloor = new FriendConfiguration();
+            FriendLink.ObserveHistory(protectedFloor, profile.Id, null, checkedFive);
+            Require(forkResult.Conflict && FriendLink.ObserveHistory(protectedFloor, profile.Id,
+                    null, gapHead, ancestryConflict: true) &&
+                protectedFloor.LastSharedHostHashes[profile.Id] == checkedFive.VersionHash &&
+                !FriendLink.CanCommitReceivedVersion(protectedFloor, profile.Id, gapHead),
+                "a fork after partial catch-up replaced the checked head");
+            using var stoppedGap = new CancellationTokenSource();
+            var interruptedFetches = 0;
+            RequireThrows<OperationCanceledException>(() => FriendLink.VerifySharedChainBatchAsync(
+                resumedData, chainDevice, profile.Id, checkedFive, gapHead,
+                [accepted, nextAuthority], (number, token) =>
+                {
+                    if (++interruptedFetches == 5) stoppedGap.Cancel();
+                    return Task.FromResult<SharedWorldVersion?>(gap[(int)(number - checkedFive.Number - 1)]);
+                }, stoppedGap.Token).GetAwaiter().GetResult(),
+                "cancelled save-chain catch-up continued");
+        }
+        using (var resumedAgain = new LocalData(chainRoot))
+        {
+            var firstFetched = long.MaxValue;
+            var calls = 0;
+            FriendLink.SharedChainCheck resumed;
+            do
+            {
+                var batchFetches = 0;
+                resumed = await FriendLink.VerifySharedChainBatchAsync(resumedAgain, chainDevice,
+                    profile.Id, checkedFive, gapHead, [accepted, nextAuthority],
+                    (number, token) =>
+                    {
+                        firstFetched = Math.Min(firstFetched, number);
+                        batchFetches++;
+                        return Task.FromResult<SharedWorldVersion?>(gap[(int)(number - checkedFive.Number - 1)]);
+                    }, CancellationToken.None);
+                Require(batchFetches <= WorldAuthorityTrust.ChainVersionsPerCheck && ++calls <= 3,
+                    "resumed save-chain work exceeded the per-check limit");
+            } while (resumed.Pending);
+            Require(resumed.Valid && firstFetched == checkedFive.Number +
+                WorldAuthorityTrust.ChainVersionsPerCheck + 1,
+                "restart did not resume from the protected signed chain cursor");
+        }
         var ownerSecond = SharedWorldService.SignVersion(version with
         {
             Number = version.Number + 1, ParentHash = version.VersionHash,
@@ -3912,6 +4084,23 @@ await Check("shared world authority requires signed majority, fences old Host, a
         }, voters[0].Key);
         var lateFirst = SignRecord(lateFirstProposal, ownerThird,
             [version, ownerSecond, ownerThird], 0, 1);
+        var unprovenLateHead = SharedWorldService.SignVersion(ownerThird with
+        { Number = 5000, ParentHash = ownerThird.VersionHash, BackupId = Guid.NewGuid() }, ownerKey);
+        var unprovenLateProposal = SignProposal(lateFirstProposal with
+        { VersionHash = unprovenLateHead.VersionHash, Signature = "" }, voters[0].Key);
+        var unprovenLateDraft = new WorldAuthorityRecord(1, unprovenLateProposal,
+            noOverrideRoster, unprovenLateHead,
+            [SignVote(unprovenLateProposal, 0), SignVote(unprovenLateProposal, 1)], null, "");
+        var unprovenLateRecord = unprovenLateDraft with
+        { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(unprovenLateDraft)) };
+        Require(WorldAuthorityTrust.Verify(unprovenLateRecord) &&
+            WorldAuthorityTrust.VerifyLineage(unprovenLateRecord, null),
+            "legacy unproven first record fixture is invalid");
+        using (var freshReceiver = Data("unproven-legacy-first"))
+            RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(freshReceiver)
+                .AppendReceived(unprovenLateRecord, profile.Id, version.GroupId,
+                    noOverrideRoster.OwnerPublicKey),
+                "a fresh receiver accepted an unproven 5000-save first handoff");
         var lateFirstSave = SharedWorldService.SignVersion(ownerThird with
         {
             Number = ownerThird.Number + 1, ParentHash = ownerThird.VersionHash,
@@ -3972,6 +4161,47 @@ await Check("shared world authority requires signed majority, fences old Host, a
             Require(receiverAuthority.FindProvenVersion(profile.Id, ownerSecond.Number)?.VersionHash ==
                 ownerSecond.VersionHash,
                 "successor authority lost an earlier owner manifest needed by a behind receiver");
+        }
+        using (var manyData = Data("authority-over-128-decisions"))
+        {
+            var decisions = new List<WorldAuthorityRecord> { accepted };
+            for (var index = 0; index < 128; index++)
+            {
+                var parentDecision = decisions[^1];
+                var draft = proposal with
+                { Epoch = parentDecision.Proposal.Epoch + 1,
+                    ParentAuthorityHash = parentDecision.RecordHash, Signature = "" };
+                var signedProposal = SignProposal(draft, voters[0].Key);
+                var unsignedRecord = new WorldAuthorityRecord(1, signedProposal, roster, version,
+                    [SignVote(signedProposal, 0), SignVote(signedProposal, 1)], null, "");
+                decisions.Add(unsignedRecord with
+                { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(unsignedRecord)) });
+            }
+            var authorityRoot = Path.Combine(manyData.RootPath, "shared-worlds",
+                profile.Id.ToString("N"), "authority");
+            Directory.CreateDirectory(authorityRoot);
+            var prefix = Encoding.UTF8.GetBytes(string.Join("", decisions.Take(128).Select(item =>
+                JsonSerializer.Serialize(item) + "\n")));
+            File.WriteAllBytes(Path.Combine(authorityRoot, "records.jsonl"), prefix);
+            manyData.SaveProtected($"authority-floor-{profile.Id:N}.protected",
+                JsonSerializer.SerializeToUtf8Bytes(new
+                { Schema = 1, Count = 128, LogHash = Convert.ToHexString(SHA256.HashData(prefix)) }));
+            var manyStore = new WorldAuthorityStore(manyData);
+            Require(manyStore.Read(profile.Id).Count == 128,
+                "a 128-decision signed prefix failed verification");
+            Require(FriendLink.NewAuthorityPage(decisions.Take(128).ToArray(),
+                    [decisions[127], decisions[128]]).Single().RecordHash == decisions[128].RecordHash,
+                "authority pagination did not continue from its verified tail");
+            RequireThrows<InvalidDataException>(() => FriendLink.NewAuthorityPage(
+                decisions.Take(128).ToArray(), [decisions[126], decisions[128]]),
+                "an older or equivocated authority page replaced the verified tail");
+            manyStore.AppendReceived(decisions[128], profile.Id, version.GroupId,
+                roster.OwnerPublicKey);
+            Require(new WorldAuthorityStore(manyData).Read(profile.Id).Count == 129 &&
+                manyStore.ReadPage(profile.Id, 127).Select(item => item.RecordHash)
+                    .SequenceEqual(decisions.Skip(127).Select(item => item.RecordHash)) &&
+                manyStore.ReadPage(profile.Id, 128).Single().RecordHash == decisions[128].RecordHash,
+                "authority stopped accepting decisions after record 128");
         }
         var friendFloor = new FriendConfiguration();
         Require(!FriendLink.ObserveHistory(friendFloor, profile.Id, null, lateSecondSave),
@@ -4521,6 +4751,7 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     var ownerBackup = ownerBackups.Create(owner, BackupKinds.Rolling);
     Require(ownerBackup.Ok && ownerBackup.Backup is not null, "owner backup failed");
     var origin = ownerShares.PublishAfterStop(owner, ownerBackup.Backup!.Id).Version!;
+    var initialOwnerVersion = origin;
     ownerData.SaveSettings(Settings(owner));
     ownerData.SavePairingState(new PairingPersistentState
     {
@@ -4608,7 +4839,8 @@ await Check("successor hosting key continues exact save lineage and stays bound 
             WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
     }
     var recordDraft = new WorldAuthorityRecord(1, proposal, roster, origin,
-        [Vote(deviceId, device, deviceKey), Vote(voterId, voter, voterKey)], null, "");
+        [Vote(deviceId, device, deviceKey), Vote(voterId, voter, voterKey)], null, "",
+        VersionLineage: [initialOwnerVersion, origin]);
     var record = recordDraft with { RecordHash = WorldAuthorityTrust.Hash(
         WorldAuthorityTrust.RecordBasis(recordDraft)) };
     Require(WorldAuthorityTrust.Verify(record), "signed device to hosting key proof failed");

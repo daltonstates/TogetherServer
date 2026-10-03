@@ -104,6 +104,12 @@ internal sealed partial class SharedWorldService
                 WorldAuthorityTrust.OwnerBasis(proposal), HashAlgorithmName.SHA256));
             var unsignedRecord = new WorldAuthorityRecord(1, proposal, roster, version, [],
                 approval, "", receipt);
+            if (version.Number > 1)
+                unsignedRecord = unsignedRecord with
+                {
+                    VersionLineageDigest = WorldAuthorityTrust.LineageDigest(
+                        Authority.ReadLocalPublishedLineage(unsignedRecord, null))
+                };
             var record = unsignedRecord with { RecordHash = WorldAuthorityTrust.Hash(
                 WorldAuthorityTrust.RecordBasis(unsignedRecord)) };
             if (!WorldAuthorityTrust.Verify(record))
