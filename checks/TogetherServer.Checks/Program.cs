@@ -3167,11 +3167,64 @@ await Check("shared world authority requires signed majority, fences old Host, a
             !WorldAuthorityTrust.VerifyLineage(third, nextAuthority,
                 longLineage.Select((item, index) => index == 35 ? item with { ParentHash = "BAD" } : item).ToArray()),
             "missing or tampered handoff proof was accepted");
+        RequireThrows<InvalidDataException>(() => WorldAuthorityStore.FirstProofNumber(
+            third with { Version = third.Version with
+            { Number = nextAuthority.Version.Number + WorldAuthorityTrust.MaximumProofVersions + 1 } },
+            nextAuthority), "an unbounded authority proof window was accepted");
         RequireThrows<InvalidDataException>(() => store.Append(third),
             "second handoff without proof was accepted");
-        store.Append(third, externalLineage: longLineage);
+        var linkedProofRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "authority", "proof-" + third.RecordHash);
+        var outsideProof = Path.Combine(root, "outside-authority-proof");
+        Directory.CreateDirectory(outsideProof);
+        CreateJunction(linkedProofRoot, outsideProof);
+        try
+        {
+            RequireThrows<InvalidDataException>(() => store.Append(third, externalLineage: longLineage),
+                "a linked authority proof root accepted writes");
+            Require(!Directory.EnumerateFileSystemEntries(outsideProof).Any(),
+                "authority proof wrote through a junction outside local data");
+        }
+        finally { Directory.Delete(linkedProofRoot); }
+        Task<SharedWorldVersion?> FetchProof(long number, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            return Task.FromResult(longLineage.FirstOrDefault(item => item.Number == number));
+        }
+        var firstProofBatch = await FriendLink.StageAuthorityProofBatchAsync(store, third,
+            nextAuthority, 10, FetchProof, CancellationToken.None);
+        Require(firstProofBatch == (false, 10),
+            "authority proof was not bounded to the first continuation batch");
+        using (var stoppedProof = new CancellationTokenSource())
+        {
+            stoppedProof.Cancel();
+            RequireThrows<OperationCanceledException>(() => FriendLink.StageAuthorityProofBatchAsync(
+                store, third, nextAuthority, 128, FetchProof, stoppedProof.Token).GetAwaiter().GetResult(),
+                "cancelled proof work continued writing");
+        }
+        Require(store.Read(profile.Id).Count == 4 &&
+            store.ReadStagedProofVersion(third, longLineage[10].Number) is null,
+            "interrupted proof partially accepted authority");
+        var tamperedProofPiece = SharedWorldService.SignVersion(longLineage[10] with
+        { ParentHash = "BAD" }, voters[1].Key);
+        RequireThrows<InvalidDataException>(() => FriendLink.StageAuthorityProofBatchAsync(
+            store, third, nextAuthority, 128,
+            (number, token) => Task.FromResult<SharedWorldVersion?>(
+                number == tamperedProofPiece.Number ? tamperedProofPiece :
+                longLineage.FirstOrDefault(item => item.Number == number)),
+            CancellationToken.None).GetAwaiter().GetResult(),
+            "a signed but disconnected continuation piece was staged");
+        Require(store.ReadStagedProofVersion(third, longLineage[10].Number) is null,
+            "a disconnected proof piece was written before ancestry verification");
+        var resumedProofBatch = await FriendLink.StageAuthorityProofBatchAsync(store, third,
+            nextAuthority, 128, FetchProof, CancellationToken.None);
+        Require(resumedProofBatch == (true, 60),
+            "authority proof did not resume from checked pieces after 64 saves");
+        store.AppendReceived(third, profile.Id, version.GroupId,
+            noOverrideRoster.OwnerPublicKey, store.ReadStagedProof(third, nextAuthority));
+        store.ClearStagedProof(third, nextAuthority);
         Require(new WorldAuthorityStore(data).Read(profile.Id).Any(item => item.RecordHash == third.RecordHash),
-            "restart lost the paged second handoff proof");
+            "resumed proof was not verified and durable after restart");
         var afterThird = SharedWorldService.SignVersion(predecessor with
         {
             Number = predecessor.Number + 1, ParentHash = predecessor.VersionHash,
@@ -3183,6 +3236,35 @@ await Check("shared world authority requires signed majority, fences old Host, a
         Require(!FriendLink.VerifySharedChain(version, afterThird,
             [successorVersion, .. longLineage.Skip(1)], [accepted, nextAuthority, third]),
             "a missing authority boundary was accepted by a catching-up receiver");
+        var checkedFive = longLineage[2];
+        var validSix = longLineage[3];
+        var validSeven = longLineage[4];
+        var noCopyFloor = new FriendConfiguration();
+        Require(!FriendLink.ObserveHistory(noCopyFloor, profile.Id, null, checkedFive) &&
+            FriendLink.NewestTrustedAnchor(noCopyFloor, profile.Id, null, version.GroupId)?.VersionHash ==
+                checkedFive.VersionHash &&
+            FriendLink.VerifySharedChain(checkedFive, validSeven, [validSix],
+                [accepted, nextAuthority]),
+            "no-copy checked v5 did not anchor a valid descendant");
+        var forkFive = SharedWorldService.SignVersion(checkedFive with
+        { BackupId = Guid.NewGuid() }, voters[1].Key);
+        var forkSix = SharedWorldService.SignVersion(validSix with
+        { ParentHash = forkFive.VersionHash, BackupId = Guid.NewGuid() }, voters[1].Key);
+        var forkSeven = SharedWorldService.SignVersion(validSeven with
+        { ParentHash = forkSix.VersionHash, BackupId = Guid.NewGuid() }, voters[1].Key);
+        var restartedNoCopyFloor = JsonSerializer.Deserialize<FriendConfiguration>(
+            JsonSerializer.Serialize(noCopyFloor))!;
+        Require(!FriendLink.VerifySharedChain(checkedFive, forkSeven, [forkSix],
+            [accepted, nextAuthority]) &&
+            FriendLink.NewestTrustedAnchor(restartedNoCopyFloor, profile.Id, null,
+                version.GroupId)?.VersionHash == checkedFive.VersionHash &&
+            FriendLink.ObserveHistory(restartedNoCopyFloor, profile.Id, null, forkSeven,
+                ancestryConflict: true) &&
+            restartedNoCopyFloor.LastSharedHostManifests[profile.Id].VersionHash == checkedFive.VersionHash &&
+            restartedNoCopyFloor.CompetingSharedHostManifests[profile.Id].Any(item =>
+                item.VersionHash == forkSeven.VersionHash) &&
+            !FriendLink.CanCommitReceivedVersion(restartedNoCopyFloor, profile.Id, forkSeven),
+            "no-copy checked v5 was overwritten by a signed fork at v7");
         var ownerSecond = SharedWorldService.SignVersion(version with
         {
             Number = version.Number + 1, ParentHash = version.VersionHash,
@@ -3240,13 +3322,33 @@ await Check("shared world authority requires signed majority, fences old Host, a
             Number = lateSecondHead.Number + 1, ParentHash = lateSecondHead.VersionHash,
             BackupId = Guid.NewGuid(), CreatedUtc = lateSecondHead.CreatedUtc.AddSeconds(1)
         }, voters[1].Key);
+        var afterHandoff = SharedWorldService.SignVersion(lateSecondSave with
+        {
+            Number = lateSecondSave.Number + 1, ParentHash = lateSecondSave.VersionHash,
+            BackupId = Guid.NewGuid()
+        }, voters[1].Key);
+        var afterHandoffNext = SharedWorldService.SignVersion(afterHandoff with
+        {
+            Number = afterHandoff.Number + 1, ParentHash = afterHandoff.VersionHash,
+            BackupId = Guid.NewGuid()
+        }, voters[1].Key);
+        var forkHandoffHead = SharedWorldService.SignVersion(lateSecondSave with
+        { BackupId = Guid.NewGuid() }, voters[1].Key);
+        var forkAfterHandoff = SharedWorldService.SignVersion(afterHandoff with
+        { ParentHash = forkHandoffHead.VersionHash, BackupId = Guid.NewGuid() }, voters[1].Key);
+        var forkAfterHandoffNext = SharedWorldService.SignVersion(afterHandoffNext with
+        { ParentHash = forkAfterHandoff.VersionHash, BackupId = Guid.NewGuid() }, voters[1].Key);
         Require(WorldAuthorityTrust.VerifyLineage(lateFirst, null) &&
             WorldAuthorityTrust.VerifyLineage(lateSecond, lateFirst) &&
             FriendLink.VerifySharedChain(version, lateSecondSave,
                 [ownerSecond, ownerThird, lateFirstSave, lateSecondHead],
                 [lateFirst, lateSecond]) &&
             FriendLink.VerifySharedChain(lateFirst.Version, lateSecondSave,
-                [lateFirstSave, lateSecondHead], [lateFirst, lateSecond]),
+                [lateFirstSave, lateSecondHead], [lateFirst, lateSecond]) &&
+            FriendLink.VerifySharedChain(lateSecondSave, afterHandoffNext,
+                [afterHandoff], [lateFirst, lateSecond]) &&
+            !FriendLink.VerifySharedChain(lateSecondSave, forkAfterHandoffNext,
+                [forkAfterHandoff], [lateFirst, lateSecond]),
             "a behind receiver or a new no-copy receiver could not cross two handoffs");
         using (var receiverData = Data("earlier-owner-version-proof"))
         {

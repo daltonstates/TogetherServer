@@ -24,6 +24,9 @@ public sealed record WorldAuthorityRecord(int Schema, WorldAuthorityProposal Pro
 internal static class WorldAuthorityTrust
 {
     internal const int PageSize = 4;
+    internal const int MaximumAuthorityRecords = 128;
+    internal const int MaximumProofVersions = 4096;
+    internal const int ProofVersionsPerCheck = 128;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     internal static string RosterHash(SharedWorldRoster roster) => Hash(JsonSerializer.SerializeToUtf8Bytes(roster, Json));
@@ -275,6 +278,110 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     private string VotePath(Guid profileId) => Path.Combine(Root(profileId), "local-votes.jsonl");
     private string ProofRoot(Guid profileId, string recordHash) =>
         Path.Combine(Root(profileId), "proof-" + recordHash);
+    private string StagedProofRoot(WorldAuthorityRecord record)
+    {
+        if (record.RecordHash is not { Length: 64 } || !record.RecordHash.All(Uri.IsHexDigit))
+            throw new InvalidDataException("Authority proof record hash is invalid.");
+        return Path.Combine(Root(record.Proposal.ProfileId), "proof-stage-" + record.RecordHash);
+    }
+    internal static long FirstProofNumber(WorldAuthorityRecord record, WorldAuthorityRecord? parent)
+    {
+        if (parent is not null && parent.Version.Number >= record.Version.Number)
+            throw new InvalidDataException("Authority lineage length is invalid.");
+        var first = parent is null && record.Proposal.ParentAuthorityHash is null ? 1 :
+            parent?.Version.Number + 1 ?? throw new InvalidDataException("Authority parent is missing.");
+        if (record.Version.Number < first ||
+            record.Version.Number - first + 1 > WorldAuthorityTrust.MaximumProofVersions)
+            throw new InvalidDataException("Authority lineage exceeds the supported proof window.");
+        return first;
+    }
+    internal SharedWorldVersion? ReadStagedProofVersion(WorldAuthorityRecord record, long number)
+    {
+        var root = StagedProofRoot(record);
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+        var path = SharedWorldService.SafeChild(root,
+            number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json");
+        if (!File.Exists(path)) return null;
+        if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes)
+            throw new InvalidDataException("Staged authority proof is oversized.");
+        var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        if (version is null || !SharedWorldService.VerifySignature(version) ||
+            version.Number != number || version.GroupId != record.Version.GroupId ||
+            version.ProfileId != record.Version.ProfileId || version.Game != record.Version.Game ||
+            version.WorldId != record.Version.WorldId)
+            throw new InvalidDataException("Staged authority proof failed verification.");
+        return version;
+    }
+    internal void StageReceivedProofVersion(WorldAuthorityRecord record, SharedWorldVersion version,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!WorldAuthorityTrust.Verify(record) || !SharedWorldService.VerifySignature(version) ||
+            version.GroupId != record.Version.GroupId || version.ProfileId != record.Version.ProfileId ||
+            version.Game != record.Version.Game || version.WorldId != record.Version.WorldId ||
+            version.Number < 1 || version.Number > record.Version.Number)
+            throw new InvalidDataException("Authority proof piece is invalid.");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(version, Json);
+        if (bytes.Length > SharedWorldService.MaximumManifestBytes)
+            throw new InvalidDataException("Authority proof piece is oversized.");
+        var root = StagedProofRoot(record);
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+        Directory.CreateDirectory(root);
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+        var name = version.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json";
+        var path = SharedWorldService.SafeChild(root, name);
+        if (File.Exists(path))
+        {
+            if (!File.ReadAllBytes(path).AsSpan().SequenceEqual(bytes))
+                throw new InvalidDataException("Staged authority proof changed.");
+            return;
+        }
+        var temporary = SharedWorldService.SafeChild(root, Guid.NewGuid().ToString("N") + ".new");
+        try
+        {
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                file.Write(bytes);
+                file.Flush(true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+            SharedWorldService.SafeChild(root, name);
+            File.Move(temporary, path, false);
+        }
+        finally
+        {
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+            SharedWorldService.SafeChild(root, Path.GetFileName(temporary));
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+    internal IEnumerable<SharedWorldVersion> ReadStagedProof(WorldAuthorityRecord record,
+        WorldAuthorityRecord? parent)
+    {
+        var first = FirstProofNumber(record, parent);
+        for (var number = first; ; number++)
+        {
+            yield return ReadStagedProofVersion(record, number) ??
+                throw new InvalidDataException("Staged authority proof is incomplete.");
+            if (number == record.Version.Number) yield break;
+        }
+    }
+    internal void ClearStagedProof(WorldAuthorityRecord record, WorldAuthorityRecord? parent)
+    {
+        var root = StagedProofRoot(record);
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+        if (!Directory.Exists(root)) return;
+        var first = FirstProofNumber(record, parent);
+        for (var number = first; ; number++)
+        {
+            var path = SharedWorldService.SafeChild(root,
+                number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json");
+            if (File.Exists(path)) File.Delete(path);
+            if (number == record.Version.Number) break;
+        }
+        if (!Directory.EnumerateFileSystemEntries(root).Any()) Directory.Delete(root);
+    }
     private IEnumerable<SharedWorldVersion>? ReadProof(WorldAuthorityRecord record,
         WorldAuthorityRecord? parent)
     {
@@ -546,10 +653,14 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             if (!WorldAuthorityTrust.Verify(record)) throw new InvalidDataException("Authority proof is invalid.");
             var existing = Read(record.Proposal.ProfileId);
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
+            if (existing.Count >= WorldAuthorityTrust.MaximumAuthorityRecords)
+                throw new InvalidDataException("Authority history reached its supported record limit.");
             if (enforceCurrentGrants && !EligibleAtAcceptance(record))
                 throw new InvalidDataException("A successor, proposer, or voter grant has expired.");
             var parentRecord = existing.SingleOrDefault(item =>
                 item.RecordHash == record.Proposal.ParentAuthorityHash);
+            if (record.VersionLineageDigest is not null)
+                FirstProofNumber(record, parentRecord);
             if (record.VersionLineageDigest is not null && externalLineage is null && enforceCurrentGrants)
                 externalLineage = ReadLocalPublishedLineage(record, parentRecord);
             if (!WorldAuthorityTrust.VerifyLineage(record, parentRecord, externalLineage))
@@ -565,17 +676,29 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             if (record.VersionLineageDigest is not null)
             {
                 var proofRoot = ProofRoot(record.Proposal.ProfileId, record.RecordHash);
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, proofRoot);
                 Directory.CreateDirectory(proofRoot);
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, proofRoot);
                 foreach (var version in externalLineage!)
                 {
-                    var proofPath = Path.Combine(proofRoot,
+                    SharedWorldService.EnsureUnlinkedRoot(data.RootPath, proofRoot);
+                    var proofPath = SharedWorldService.SafeChild(proofRoot,
                         version.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json");
                     var proofBytes = JsonSerializer.SerializeToUtf8Bytes(version, Json);
                     if (proofBytes.Length > SharedWorldService.MaximumManifestBytes)
                         throw new InvalidDataException("Authority lineage manifest is oversized.");
-                    if (File.Exists(proofPath) && !File.ReadAllBytes(proofPath).AsSpan().SequenceEqual(proofBytes))
-                        throw new InvalidDataException("Authority lineage proof changed.");
-                    if (!File.Exists(proofPath)) File.WriteAllBytes(proofPath, proofBytes);
+                    if (File.Exists(proofPath))
+                    {
+                        if (!File.ReadAllBytes(proofPath).AsSpan().SequenceEqual(proofBytes))
+                            throw new InvalidDataException("Authority lineage proof changed.");
+                    }
+                    else
+                    {
+                        using var proof = new FileStream(proofPath, FileMode.CreateNew,
+                            FileAccess.Write, FileShare.None);
+                        proof.Write(proofBytes);
+                        proof.Flush(true);
+                    }
                 }
             }
             if (!data.HasProtected(FloorName(record.Proposal.ProfileId)))
