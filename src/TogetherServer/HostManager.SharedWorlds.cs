@@ -58,16 +58,30 @@ public sealed partial class HostManager
     internal SharedWorldVersion ReadEarlierSharedVersion(SharedWorldVersion latest, long number) =>
         sharedWorlds.ReadEarlierVersion(latest, number);
 
-    internal async Task<SharedWorldMembership> IssueSharedWorldMembershipAsync(Guid profileId,
-        Guid deviceId, string devicePublicKey)
+    public async Task<SharedWorldRoster?> SharedWorldRosterAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            return profile is null ? null : sharedWorlds.ReadRoster(profile);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<SharedWorldRoster> PublishSharedWorldRosterAsync(Guid profileId,
+        IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null)
     {
         await gate.WaitAsync();
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
                 throw new InvalidDataException("Server not found.");
-            return sharedWorlds.IssueMembership(profile, deviceId, devicePublicKey);
+            if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
+                throw new InvalidDataException("Shared saves are not enabled for this server.");
+            return sharedWorlds.PublishRoster(profile, members, ownerOverride);
         }
         finally { gate.Release(); }
     }
+
 }

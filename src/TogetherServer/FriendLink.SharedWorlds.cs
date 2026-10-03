@@ -6,7 +6,8 @@ using System.Text.Json;
 namespace TogetherServer;
 
 public sealed record ReceivedSharedWorldStatus(bool Consented, long? HostVersion, long? ThisPcVersion,
-    string State, string? Error = null, long ReceivedBytes = 0, long TotalBytes = 0);
+    string State, string? Error = null, long ReceivedBytes = 0, long TotalBytes = 0,
+    long? RosterRevision = null, string Trust = "Roster not verified");
 public sealed record ReceivedSharedWorldResult(bool Ok, string Code, string Message,
     ReceivedSharedWorldStatus? Status = null);
 
@@ -16,6 +17,67 @@ internal sealed partial class FriendLink
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedTransfers = new();
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();
     private readonly object sharedReceiptSync = new();
+
+    private async Task<ReceivedSharedWorldResult?> TrustSharedRosterAsync(Guid profileId,
+        CancellationToken cancellationToken)
+    {
+        using var pcKey = LoadPcSigningKey();
+        var publicKey = Convert.ToBase64String(pcKey.ExportSubjectPublicKeyInfo());
+        using var challengeResponse = await HostClient().GetAsync(
+            $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
+        if (!challengeResponse.IsSuccessStatusCode)
+            return SharedFailure("EnrollmentDenied", "The Host did not allow this PC to enroll for this server.");
+        var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
+        var challenge = challengeBytes is null ? null :
+            JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json);
+        if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+            return SharedFailure("InvalidChallenge", "The Host sent an invalid enrollment challenge.");
+        var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+            Convert.ToBase64String(pcKey.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                config!.DeviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+        using var enrollment = await HostClient().PostAsJsonAsync(
+            $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json, cancellationToken);
+        if (!enrollment.IsSuccessStatusCode)
+            return SharedFailure("KeyReviewRequired", "The Host did not accept this PC's signing identity. Ask the owner to review it.");
+        using var response = await HostClient().GetAsync(
+            $"api/companion/servers/{profileId}/shared-world/roster",
+            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var bytes = await ReadBoundedSharedAsync(response.Content,
+            SharedWorldService.MaximumManifestBytes, cancellationToken);
+        if (!response.IsSuccessStatusCode || bytes is null)
+            return SharedFailure("RosterUnavailable", "The current owner-signed roster is unavailable.");
+        var roster = JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json);
+        if (!SharedWorldRosterTrust.Verify(roster) || roster!.ProfileId != profileId)
+            return SharedFailure("RosterRejected", "The owner-signed roster failed verification.");
+        config.SharedWorldSigningKeys ??= [];
+        config.SharedRosterFloors ??= [];
+        var pinned = config.SharedWorldSigningKeys.GetValueOrDefault(profileId);
+        if (pinned is not null && roster?.OwnerPublicKey != pinned)
+            return SharedFailure("SigningIdentityChanged", "The Host's world signing identity changed. Ask the owner to review it.");
+        var floor = config.SharedRosterFloors.GetValueOrDefault(profileId);
+        if (roster is not null && floor is not null && floor.GroupId != roster.GroupId &&
+            config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != roster.GroupId)
+        {
+            config.PendingSharedWorldGroups ??= [];
+            config.PendingSharedWorldGroups[profileId] = roster.GroupId;
+            SaveConfig();
+            return SharedFailure("SourceReviewRequired",
+                "The Host changed this save source. Turn Allow saves off, then on to review the new signed group.");
+        }
+        if (roster is not null && floor?.GroupId != roster.GroupId) floor = null;
+        if (roster is null || !SharedWorldRosterTrust.Accept(roster, profileId, config.DeviceId,
+                publicKey, pinned ?? roster.OwnerPublicKey, floor?.Epoch ?? 0, floor?.Revision ?? 0) ||
+            floor is not null && roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
+                roster.Signature != floor.Signature)
+            return SharedFailure("RosterRejected", "The signed roster is invalid, older, or does not grant this PC Receive access.");
+        if (withdrawnSharedConsent.ContainsKey(profileId))
+            return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
+        // Persist the rollback floor before any manifest or chunks are trusted.
+        config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
+        config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature);
+        SaveConfig();
+        return null;
+    }
 
     private string ReceivedRoot(Guid profileId)
     {
@@ -93,6 +155,8 @@ internal sealed partial class FriendLink
             if (profile is null) return SharedFailure("UnknownProfile", "This server is not assigned to this PC.");
             if (!view.HostCapabilities.Contains(CompanionProtocol.SharedWorldsCapability, StringComparer.Ordinal))
                 return SharedFailure("SharedWorldsUpdateRequired", "Update the Host app to receive shared saves.");
+            var trustFailure = await TrustSharedRosterAsync(profileId, cancellationToken);
+            if (trustFailure is not null) return trustFailure;
             using var response = await HostClient().GetAsync($"api/companion/servers/{profileId}/shared-world",
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             var bytes = await ReadBoundedSharedAsync(response.Content,
@@ -105,13 +169,20 @@ internal sealed partial class FriendLink
             if (version is null || !SharedWorldService.VerifySignature(version) ||
                 version.ProfileId != profileId || version.Game != profile.Kind)
                 return SharedFailure("InvalidManifest", "The Host's shared save failed verification.");
+            if (config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != version.GroupId)
+                return SharedFailure("GroupMismatch", "The save version does not match the verified shared roster.");
             config.SharedWorldSigningKeys ??= [];
             if (config.SharedWorldSigningKeys.TryGetValue(profileId, out var pinned) &&
                 pinned != version.SigningPublicKey)
                 return SharedFailure("SigningIdentityChanged", "The Host's world signing identity changed.");
+            config.LastSharedHostGroups ??= [];
+            if (config.LastSharedHostGroups.GetValueOrDefault(profileId) == version.GroupId &&
+                config.LastSharedHostVersions?.GetValueOrDefault(profileId) > version.Number)
+                return SharedFailure("VersionRollback", "The Host returned an older save version for this group.");
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             config.LastSharedHostVersions ??= [];
             config.LastSharedHostVersions[profileId] = version.Number;
+            config.LastSharedHostGroups[profileId] = version.GroupId;
             RememberSourceReview(profileId, version);
             SaveConfig();
             return new(true, "SharedWorldChecked", "Latest Host version checked securely.",
@@ -137,11 +208,14 @@ internal sealed partial class FriendLink
         { error = "The stored save failed verification. The live world was not changed."; }
         var hostVersion = config?.LastSharedHostVersions?.GetValueOrDefault(profileId);
         var review = config?.PendingSharedWorldGroups?.ContainsKey(profileId) == true;
+        var floor = config?.SharedRosterFloors?.GetValueOrDefault(profileId);
         return new(consent, hostVersion, received,
             !consent ? "Consent off" : error is not null ? "Error" :
             review ? "Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here." :
             hostVersion is null ? "Host version not checked" :
-            hostVersion == received ? "Up to date when last checked" : "Ready to pull", error);
+            hostVersion == received ? "Up to date when last checked" : "Ready to pull", error,
+            RosterRevision: floor?.Revision,
+            Trust: floor is null ? "Roster not verified" : "Owner signature and this PC's Receive grant verified when last checked");
     }
 
     private void RememberSourceReview(Guid profileId, SharedWorldVersion version)
@@ -173,6 +247,8 @@ internal sealed partial class FriendLink
                 return SharedFailure("SharingUnsupported", "Custom game worlds cannot be shared.");
             if (!view.HostCapabilities.Contains(CompanionProtocol.SharedWorldsCapability, StringComparer.Ordinal))
                 return SharedFailure("SharedWorldsUpdateRequired", "Update the Host app to receive shared saves.");
+            var trustFailure = await TrustSharedRosterAsync(profileId, cancellationToken);
+            if (trustFailure is not null) return trustFailure;
             using var response = await HostClient().GetAsync($"api/companion/servers/{profileId}/shared-world",
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             var manifestBytes = await ReadBoundedSharedAsync(response.Content,
@@ -188,14 +264,21 @@ internal sealed partial class FriendLink
             if (version is null || !SharedWorldService.VerifySignature(version) || version.ProfileId != profileId ||
                 version.Game != profile.Kind || !SharedWorldSizeAllowed(version.Files))
                 return SharedFailure("InvalidManifest", "The published version failed integrity or identity checks.");
-            config.LastSharedHostVersions ??= [];
-            config.LastSharedHostVersions[profileId] = version.Number;
-            RememberSourceReview(profileId, version);
-            SaveConfig();
+            if (config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != version.GroupId)
+                return SharedFailure("GroupMismatch", "The save version does not match the verified shared roster.");
             config.SharedWorldSigningKeys ??= [];
             if (config.SharedWorldSigningKeys.TryGetValue(profileId, out var pinnedKey) &&
                 pinnedKey != version.SigningPublicKey)
                 return SharedFailure("SigningIdentityChanged", "The Host's world signing identity changed. Ask the owner to review it.");
+            config.LastSharedHostGroups ??= [];
+            if (config.LastSharedHostGroups.GetValueOrDefault(profileId) == version.GroupId &&
+                config.LastSharedHostVersions?.GetValueOrDefault(profileId) > version.Number)
+                return SharedFailure("VersionRollback", "The Host returned an older save version for this group.");
+            config.LastSharedHostVersions ??= [];
+            config.LastSharedHostVersions[profileId] = version.Number;
+            config.LastSharedHostGroups[profileId] = version.GroupId;
+            RememberSourceReview(profileId, version);
+            SaveConfig();
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             SaveConfig();
             var root = ReceivedRoot(profileId);
@@ -214,26 +297,10 @@ internal sealed partial class FriendLink
                 return SharedFailure("VersionConflict", "The published version does not continue this PC's verified world history.");
             if (old?.VersionHash == version.VersionHash)
                 return new(true, "AlreadyReceived", "This PC already has the latest verified save.",
-                    new(true, version.Number, old.Number, "Up to date when last checked"));
+                    LocalSharedWorldStatus(profileId));
             if (old is not null && !newWorldGroup && version.Number - old.Number > 1 &&
                 !await VerifySharedChainAsync(profileId, old, version, cancellationToken))
                 return SharedFailure("VersionChainInvalid", "This PC could not verify every missed version's parent hash.");
-            using var pcKey = LoadPcSigningKey();
-            var publicKey = Convert.ToBase64String(pcKey.ExportSubjectPublicKeyInfo());
-            using var membershipResponse = await HostClient().PostAsJsonAsync(
-                $"api/companion/servers/{profileId}/shared-world/membership",
-                new SharedWorldMembershipRequest(publicKey), Json, cancellationToken);
-            var memberBytes = await ReadBoundedSharedAsync(membershipResponse.Content, 4096, cancellationToken);
-            if (!membershipResponse.IsSuccessStatusCode || memberBytes is null)
-                return RemoteSharedDenial(memberBytes);
-            SharedWorldMembership? member;
-            try { member = JsonSerializer.Deserialize<SharedWorldMembership>(memberBytes, Json); }
-            catch (JsonException) { return SharedFailure("InvalidMembership", "The Host sent an invalid membership record."); }
-            if (member is null || !SharedWorldService.VerifyMembership(member) ||
-                member.GroupId != version.GroupId || member.ProfileId != profileId ||
-                member.DeviceId != config.DeviceId || member.DevicePublicKey != publicKey ||
-                member.OwnerPublicKey != version.SigningPublicKey)
-                return SharedFailure("InvalidMembership", "The owner-signed membership record failed verification.");
             var stage = Path.Combine(root, ".partial-" + version.VersionHash);
             if (Directory.Exists(stage) && (File.GetAttributes(stage) & FileAttributes.ReparsePoint) != 0)
                 return SharedFailure("LinkedVault", "The receiving vault contains a linked folder.");
@@ -244,7 +311,9 @@ internal sealed partial class FriendLink
             var totalBytes = SharedWorldService.BoundedTotalBytes(version.Files);
             var receivedBytes = totalBytes - remaining;
             sharedTransfers[profileId] = new(true, version.Number, old?.Number,
-                "Receiving", null, receivedBytes, totalBytes);
+                "Receiving", null, receivedBytes, totalBytes,
+                config.SharedRosterFloors[profileId].Revision,
+                "Owner signature and this PC's Receive grant verified when last checked");
             var driveRoot = Path.GetPathRoot(root)!;
             if (!HasReceiverReserve(new DriveInfo(driveRoot).AvailableFreeSpace, remaining))
                 return SharedFailure("InsufficientSpace", "Keep at least 1 GiB free after receiving this save. Existing verified copies were kept.");
@@ -292,7 +361,9 @@ internal sealed partial class FriendLink
                     offset += chunk.Length;
                     receivedBytes += chunk.Length;
                     sharedTransfers[profileId] = new(true, version.Number, old?.Number,
-                        "Receiving", null, receivedBytes, totalBytes);
+                        "Receiving", null, receivedBytes, totalBytes,
+                        config.SharedRosterFloors[profileId].Revision,
+                        "Owner signature and this PC's Receive grant verified when last checked");
                 }
                 await output.FlushAsync(cancellationToken);
                 await output.DisposeAsync();
@@ -303,7 +374,6 @@ internal sealed partial class FriendLink
             if (withdrawnSharedConsent.ContainsKey(profileId))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             File.WriteAllBytes(Path.Combine(stage, "version.json"), manifestBytes);
-            File.WriteAllBytes(Path.Combine(stage, "membership.json"), memberBytes);
             var destination = Path.Combine(root, version.VersionHash);
             if (Directory.Exists(destination)) throw new InvalidDataException("Received version already exists.");
             if (!CommitSharedReceipt(profileId, stage, destination, root, manifestBytes))
@@ -314,7 +384,7 @@ internal sealed partial class FriendLink
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             { /* A verified receipt is kept even if old-version cleanup fails. */ }
             return new(true, "SaveReceived", "A completed save was verified in this PC's non-live vault.",
-                new(true, version.Number, version.Number, "Up to date when last checked"));
+                LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or

@@ -341,7 +341,7 @@ await Check("staging refuses overlapping or pre-populated data roots", () =>
     return Task.CompletedTask;
 });
 
-await Check("storage v1 migrates pairing to v2 and rejects downgrade or newer schemas", () =>
+await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer schemas", () =>
 {
     var migrationRoot = Path.Combine(root, "storage-v1-to-v2");
     Directory.CreateDirectory(migrationRoot);
@@ -363,6 +363,7 @@ await Check("storage v1 migrates pairing to v2 and rejects downgrade or newer sc
                 Name = "Migrated Friend PC",
                 CanStart = true,
                 CanStop = false,
+                SaveReceiveProfileIds = [profileId],
                 CredentialHash = new string('A', 64),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30)
             }
@@ -404,7 +405,7 @@ await Check("storage v1 migrates pairing to v2 and rejects downgrade or newer sc
     using (var migratedData = new LocalData(migrationRoot))
     {
         var migrated = migratedData.LoadPairingState();
-        Require(migrated.SchemaVersion == 2 && migrated.Devices.Count == 1 &&
+        Require(migrated.SchemaVersion == 3 && migrated.Devices.Count == 1 &&
             migrated.Devices[0].Id == deviceId && migrated.Devices[0].Name == "Migrated Friend PC" &&
             migrated.Devices[0].AssignedProfileIds!.SequenceEqual([profileId]) &&
             migrated.Devices[0].CanStart && !migrated.Devices[0].CanStop &&
@@ -412,12 +413,17 @@ await Check("storage v1 migrates pairing to v2 and rejects downgrade or newer sc
             migrated.ServerInvites[0].Generation == generation && migrated.CredentialRenewals.Count == 1,
             "v1 pairing devices, assignment, permissions, invite lineage, or renewal receipt were lost");
         using var marker = JsonDocument.Parse(File.ReadAllText(Path.Combine(migrationRoot, "storage-schema.json")));
-        Require(marker.RootElement.GetProperty("version").GetInt32() == 2,
-            "the directory schema marker did not advance to v2");
+        Require(marker.RootElement.GetProperty("version").GetInt32() == 3,
+            "the directory schema marker did not advance to v3");
         var migratedBytes = migratedData.LoadProtected("pairing-state.protected")!;
         var migratedSnapshot = JsonSerializer.Deserialize<PairingPersistentState>(migratedBytes, json);
-        Require(migratedSnapshot?.SchemaVersion == 2,
-            "the protected pairing snapshot did not migrate to schema v2");
+        Require(migratedSnapshot?.SchemaVersion == 3,
+            "the protected pairing snapshot did not migrate to schema v3");
+        var migratedPairing = new PairingService(migratedData);
+        var migratedView = migratedPairing.Views().Single();
+        Require(migratedView.SaveReceiveProfileIds?.Count == 0 &&
+            migratedView.SharedWorldGrants?.Count == 0,
+            "legacy Receive membership silently became a v3 sharing grant");
     }
 
     var pairingBeforeDowngrade = File.ReadAllBytes(Path.Combine(migrationRoot, "pairing-state.protected"));
@@ -428,28 +434,115 @@ await Check("storage v1 migrates pairing to v2 and rejects downgrade or newer sc
     Require(File.ReadAllBytes(Path.Combine(migrationRoot, "pairing-state.protected"))
             .SequenceEqual(pairingBeforeDowngrade),
         "the rejected downgrade modified protected pairing data");
+    RequireThrows<InvalidDataException>(() =>
+    {
+        using var _ = new LocalData(migrationRoot, 5131, supportedStorageSchemaVersion: 2);
+    }, "a simulated v2 binary opened v3 sharing authorization state");
 
-    var interruptedRoot = Path.Combine(root, "storage-v2-interrupted-pairing-v1");
+    var interruptedRoot = Path.Combine(root, "storage-v3-interrupted-pairing-v1");
     Directory.CreateDirectory(interruptedRoot);
     File.WriteAllText(Path.Combine(interruptedRoot, "pairing-state.protected"), protectedPayload);
-    File.WriteAllText(Path.Combine(interruptedRoot, "storage-schema.json"), "{\"version\":2}");
+    File.WriteAllText(Path.Combine(interruptedRoot, "storage-schema.json"), "{\"version\":3}");
     using (var resumedData = new LocalData(interruptedRoot))
     {
         var resumed = resumedData.LoadPairingState();
-        Require(resumed.SchemaVersion == 2 && resumed.Devices.Single().Id == deviceId &&
+        Require(resumed.SchemaVersion == 3 && resumed.Devices.Single().Id == deviceId &&
             resumed.ServerInvites.Single().Generation == generation && resumed.CredentialRenewals.Count == 1,
             "a marker-first interrupted migration did not preserve and upgrade its v1 pairing snapshot");
     }
 
     var newerRoot = Path.Combine(root, "storage-newer-schema");
     Directory.CreateDirectory(newerRoot);
-    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":3}");
+    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":4}");
     RequireThrows<InvalidDataException>(() =>
     {
         using var _ = new LocalData(newerRoot);
     }, "the current binary opened an unknown newer storage schema");
-    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("3", StringComparison.Ordinal),
+    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("4", StringComparison.Ordinal),
         "newer-schema rejection rewrote the unsupported marker");
+    return Task.CompletedTask;
+});
+
+await Check("shared roster separates grants, proves PC key, and rejects rollback or tampering", () =>
+{
+    using var data = Data("shared-governance");
+    var profile = Profile("governance", "world", FreePort());
+    profile.SharedSavesEnabled = true;
+    var deviceId = Guid.NewGuid();
+    var inviteGeneration = Guid.NewGuid();
+    data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+    {
+        Id = deviceId, ProfileId = profile.Id, InviteGeneration = inviteGeneration,
+        AssignedProfileIds = [profile.Id],
+        CredentialHash = new string('A', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+        CanStart = true, CanStop = true, CanViewLogs = true
+    }], ServerInvites = [new ServerInviteState { ProfileId = profile.Id,
+        Generation = inviteGeneration, Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }] });
+    var pairing = new PairingService(data);
+    using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var other = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var publicKey = Convert.ToBase64String(pc.ExportSubjectPublicKeyInfo());
+    var challenges = new SharedWorldEnrollmentNonces();
+    var nonce = challenges.Issue(deviceId, profile.Id);
+    Require(!challenges.Consume(Guid.NewGuid(), profile.Id, nonce) &&
+        challenges.Consume(deviceId, profile.Id, nonce) &&
+        !challenges.Consume(deviceId, profile.Id, nonce),
+        "enrollment nonce was not device-bound and one-use");
+    var basis = SharedWorldRosterTrust.EnrollmentBasis(deviceId, nonce, publicKey);
+    var forged = new SharedWorldEnrollmentRequest(nonce, publicKey,
+        Convert.ToBase64String(other.SignData(basis, HashAlgorithmName.SHA256)));
+    Require(!pairing.BindSharedWorldKey(deviceId, forged).Ok, "a forged proof bound a PC key");
+    var proof = forged with { Signature = Convert.ToBase64String(pc.SignData(basis, HashAlgorithmName.SHA256)) };
+    Require(pairing.BindSharedWorldKey(deviceId, proof).Ok, "valid PC proof did not bind its key");
+    var otherKey = Convert.ToBase64String(other.ExportSubjectPublicKeyInfo());
+    var changed = new SharedWorldEnrollmentRequest(nonce, otherKey, Convert.ToBase64String(other.SignData(
+        SharedWorldRosterTrust.EnrollmentBasis(deviceId, nonce, otherKey), HashAlgorithmName.SHA256)));
+    Require(pairing.BindSharedWorldKey(deviceId, changed).Code == "KeyReviewRequired",
+        "a key change bypassed explicit owner review");
+    var service = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
+    var roster = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(SharedWorldRosterTrust.Verify(roster) && roster.OwnerOverride &&
+        !roster.Members.Single().Grants.Receive && !roster.Members.Single().Grants.EligibleHost &&
+        !roster.Members.Single().Grants.RecoveryVoter && !roster.Members.Single().Grants.ManageSharing,
+        "Start/Stop/log permissions leaked into sharing grants");
+    Require(pairing.SetSharedWorldGrants(deviceId, profile.Id,
+        new SharedWorldGrants(EligibleHost: true, RecoveryVoter: true, ManageSharing: true)).Ok,
+        "separate governance grants failed");
+    var governanceOnly = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(governanceOnly.Members.Single().Grants.EligibleHost &&
+        governanceOnly.Members.Single().Grants.RecoveryVoter &&
+        governanceOnly.Members.Single().Grants.ManageSharing &&
+        !governanceOnly.Members.Single().Grants.Receive &&
+        !pairing.AuthorizeReceiveSaves(new PairedDevice { Id = deviceId }, profile.Id, out _).Ok,
+        "governance roles inherited Receive transfer access");
+    Require(pairing.SetSharedWorldGrants(deviceId, profile.Id,
+        new SharedWorldGrants(Receive: true)).Ok, "Receive grant failed");
+    var granted = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(granted.Revision > roster.Revision && granted.Members.Single().Grants.Receive &&
+        !granted.Members.Single().Grants.EligibleHost,
+        "signed roster did not record the separate Receive grant");
+    var disabled = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id), false);
+    Require(!disabled.OwnerOverride && SharedWorldRosterTrust.Verify(disabled) &&
+        service.ReadRoster(profile)?.OwnerOverride == false,
+        "owner override toggle was not signed");
+    Require(!SharedWorldRosterTrust.Verify(disabled with { OwnerOverride = true }) &&
+        !SharedWorldRosterTrust.Accept(granted, profile.Id, deviceId, publicKey,
+            disabled.OwnerPublicKey, disabled.Epoch, disabled.Revision),
+        "tampering or a lower roster revision was accepted");
+    Require(SharedWorldRosterTrust.Accept(disabled, profile.Id, deviceId, publicKey,
+        disabled.OwnerPublicKey, disabled.Epoch, disabled.Revision),
+        "the current signed roster was rejected");
+    Require(pairing.SetSharedWorldGrants(deviceId, profile.Id, new()).Ok,
+        "Receive revocation failed");
+    var revoked = service.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(!revoked.Members.Single().Grants.Receive &&
+        !SharedWorldRosterTrust.Accept(revoked, profile.Id, deviceId, publicKey,
+            revoked.OwnerPublicKey, disabled.Epoch, disabled.Revision),
+        "revocation did not block new reads");
+    var rosterPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), "roster.json");
+    File.WriteAllBytes(rosterPath, JsonSerializer.SerializeToUtf8Bytes(revoked with { OwnerOverride = true }));
+    RequireThrows<InvalidDataException>(() => service.ReadRoster(profile),
+        "a tampered persisted roster was loaded");
     return Task.CompletedTask;
 });
 
@@ -2158,6 +2251,13 @@ await Check("shared save grant is separate and revoked at access deadline or una
     var pairing = new PairingService(data);
     Require(!pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
         "default receive permission was not off");
+    using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    Require(pairing.BindSharedWorldKey(device.Id, new SharedWorldEnrollmentRequest(nonce, publicKey,
+        Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+            device.Id, nonce, publicKey), HashAlgorithmName.SHA256)))).Ok,
+        "PC identity could not be enrolled");
     Require(pairing.SetReceiveSaves(device.Id, profileId, true).Ok &&
         pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
         "explicit per-server save grant failed");
@@ -2451,7 +2551,7 @@ await Check("shared save chunks detect later tampering without rescanning earlie
     return Task.CompletedTask;
 });
 
-await Check("shared save authorization is rechecked after asynchronous read and membership is signed", async () =>
+await Check("shared save authorization is rechecked after asynchronous read", async () =>
 {
     using var data = Data("shared-world-revocation");
     var profile = Profile("shared-revocation", "signed-world", FreePort());
@@ -2474,14 +2574,13 @@ await Check("shared save authorization is rechecked after asynchronous read and 
         "explicit grant failed");
     using var pcKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var pcPublicKey = Convert.ToBase64String(pcKey.ExportSubjectPublicKeyInfo());
-    var member = shares.IssueMembership(profile, device.Id, pcPublicKey);
-    Require(SharedWorldService.VerifyMembership(member) &&
-        member.OwnerPublicKey == published.Version!.SigningPublicKey,
-        "group membership signature failed");
-    Require(!SharedWorldService.VerifyMembership(member with { DeviceId = Guid.NewGuid() }),
-        "membership accepted a tampered device ID");
-    Require(!SharedWorldService.VerifyMembership(member with { Role = "Writer" }),
-        "receive-only membership was escalated to writer");
+    var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    var proof = new SharedWorldEnrollmentRequest(nonce, pcPublicKey, Convert.ToBase64String(pcKey.SignData(
+        SharedWorldRosterTrust.EnrollmentBasis(device.Id, nonce, pcPublicKey), HashAlgorithmName.SHA256)));
+    Require(pairing.BindSharedWorldKey(device.Id, proof).Ok, "PC identity enrollment failed");
+    var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require(SharedWorldRosterTrust.Accept(roster, profile.Id, device.Id, pcPublicKey,
+        published.Version!.SigningPublicKey, 0, 0), "signed Receive roster did not allow this PC");
     var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var delayedRead = Task.Run(async () =>

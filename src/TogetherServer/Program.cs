@@ -657,8 +657,13 @@ app.MapGet("/api/local/profiles/{id:guid}/shared-world", async (HttpContext cont
     friendMode ? Results.Conflict(new { code = "FriendMode" }) :
     Results.Json(await manager.SharedWorldStatusAsync(id)));
 app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedWorldConsentRequest request) =>
-    friendMode ? Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first.")) :
-    Results.Json(await manager.SetSharedSavesAsync(id, request.Enabled)));
+{
+    if (friendMode) return Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first."));
+    var result = await manager.SetSharedSavesAsync(id, request.Enabled);
+    if (result.Ok && request.Enabled)
+        await manager.PublishSharedWorldRosterAsync(id, pairing.SharedRosterMembers(id));
+    return Results.Json(result);
+});
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>
@@ -1214,7 +1219,12 @@ app.MapPost("/api/local/servers/{profileId:guid}/pairing/emergency-revoke", asyn
 {
     await modeGate.WaitAsync();
     PairingDecision result;
-    try { result = friendMode ? new(false, "FriendMode", "Switch to Host mode first.") : pairing.EmergencyRevoke(profileId); }
+    try
+    {
+        result = friendMode ? new(false, "FriendMode", "Switch to Host mode first.") : pairing.EmergencyRevoke(profileId);
+        if (result.Ok && (await manager.SharedWorldStatusAsync(profileId)).Enabled)
+            await manager.PublishSharedWorldRosterAsync(profileId, pairing.SharedRosterMembers(profileId));
+    }
     finally { modeGate.Release(); }
     if (result.Ok) await companionServer.SyncAsync();
     return Results.Json(result);
@@ -1222,7 +1232,14 @@ app.MapPost("/api/local/servers/{profileId:guid}/pairing/emergency-revoke", asyn
 app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
 {
     await modeGate.WaitAsync();
-    try { return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) : Results.Json(pairing.Revoke(id)); }
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.Revoke(id);
+        if (result.Ok) foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled))
+            await manager.PublishSharedWorldRosterAsync(profile.Id, pairing.SharedRosterMembers(profile.Id));
+        return Results.Json(result);
+    }
     finally { modeGate.Release(); }
 });
 app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
@@ -1241,7 +1258,55 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}",
         var status = await manager.SharedWorldStatusAsync(profileId);
         if (request.Enabled && !status.Enabled)
             return Results.Conflict(new { code = "SharingOff", message = "Enable sharing for this server first." });
-        return Results.Json(pairing.SetReceiveSaves(id, profileId, request.Enabled));
+        var result = pairing.SetReceiveSaves(id, profileId, request.Enabled);
+        if (result.Ok && status.Enabled)
+            await manager.PublishSharedWorldRosterAsync(profileId, pairing.SharedRosterMembers(profileId));
+        return Results.Json(result);
+    }
+    finally { modeGate.Release(); }
+});
+app.MapGet("/api/local/profiles/{profileId:guid}/shared-world/governance", async (HttpContext context, Guid profileId) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Conflict(new { code = "FriendMode" }) :
+        Results.Json(await manager.SharedWorldRosterAsync(profileId)));
+app.MapPut("/api/local/profiles/{profileId:guid}/shared-world/governance",
+    async (Guid profileId, SharedWorldGovernanceRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        return Results.Json(await manager.PublishSharedWorldRosterAsync(profileId,
+            pairing.SharedRosterMembers(profileId), request.OwnerOverride));
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}/grants",
+    async (Guid id, Guid profileId, SharedWorldDeviceGrantsRequest request) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        if (!(await manager.SharedWorldStatusAsync(profileId)).Enabled)
+            return Results.Conflict(new { code = "SharingOff" });
+        var result = pairing.SetSharedWorldGrants(id, profileId, request.Grants);
+        if (result.Ok) await manager.PublishSharedWorldRosterAsync(profileId,
+            pairing.SharedRosterMembers(profileId));
+        return Results.Json(result);
+    }
+    finally { modeGate.Release(); }
+});
+app.MapPost("/api/local/devices/{id:guid}/shared-world/re-enroll", async (Guid id) =>
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+        var result = pairing.ResetSharedWorldKey(id);
+        if (result.Ok) foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled))
+            await manager.PublishSharedWorldRosterAsync(profile.Id, pairing.SharedRosterMembers(profile.Id));
+        return Results.Json(result);
     }
     finally { modeGate.Release(); }
 });
@@ -1296,9 +1361,12 @@ app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerA
     await modeGate.WaitAsync();
     try
     {
-        return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
-        Results.Json(pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
-            data.LoadSettings().Profiles.Select(profile => profile.Id)));
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
+            data.LoadSettings().Profiles.Select(profile => profile.Id));
+        if (result.Ok) foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled))
+            await manager.PublishSharedWorldRosterAsync(profile.Id, pairing.SharedRosterMembers(profile.Id));
+        return Results.Json(result);
     }
     finally { modeGate.Release(); }
 });

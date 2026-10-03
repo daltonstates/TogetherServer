@@ -231,6 +231,8 @@ export type Device = {
   canExtendTimer: boolean
   canViewLogs: boolean
   saveReceiveProfileIds?: string[]
+  sharedWorldGrants?: Record<string, { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }>
+  sharedWorldKeyEnrolled?: boolean
   revoked: boolean
   paired: boolean
   approvalPending: boolean
@@ -1190,6 +1192,14 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
     canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`), canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
     saveReceiveProfileIds: source.saveReceiveProfileIds === undefined || source.saveReceiveProfileIds === null ? [] :
       textList(source.saveReceiveProfileIds, `${context}.saveReceiveProfileIds`),
+    sharedWorldGrants: source.sharedWorldGrants === undefined || source.sharedWorldGrants === null ? {} :
+      Object.fromEntries(Object.entries(object(source.sharedWorldGrants, `${context}.sharedWorldGrants`)).map(([id, value]) => {
+        const grants = object(value, `${context}.sharedWorldGrants.${id}`)
+        return [id, { receive: flag(grants.receive, 'Receive'), eligibleHost: flag(grants.eligibleHost, 'Eligible host'),
+          recoveryVoter: flag(grants.recoveryVoter, 'Recovery voter'), manageSharing: flag(grants.manageSharing, 'Manage sharing') }]
+      })),
+    sharedWorldKeyEnrolled: source.sharedWorldKeyEnrolled === undefined ? false :
+      flag(source.sharedWorldKeyEnrolled, `${context}.sharedWorldKeyEnrolled`),
     revoked: flag(source.revoked, `${context}.revoked`),
     paired: flag(source.paired, `${context}.paired`), approvalPending: flag(source.approvalPending, `${context}.approvalPending`),
     credentialExpiresUtc: nullableText(source.credentialExpiresUtc, `${context}.credentialExpiresUtc`),

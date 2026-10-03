@@ -49,10 +49,6 @@ public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);
 public sealed record SharedWorldGrantRequest(bool Enabled);
-public sealed record SharedWorldMembershipRequest(string DevicePublicKey);
-public sealed record SharedWorldMembership(int Schema, Guid GroupId, Guid ProfileId,
-    Guid DeviceId, string Role, string DevicePublicKey, string OwnerPublicKey, DateTimeOffset SignedUtc,
-    string Signature);
 
 // These versions contain only completed post-Stop backup files. Version 4
 // signs Java server JAR identity alongside reviewed setup. Earlier signatures stay readable.
@@ -95,6 +91,7 @@ internal sealed class SharedWorldService
     private string LatestPath(Guid profileId) => Path.Combine(Root(profileId), "latest.json");
     private string ErrorPath(Guid profileId) => Path.Combine(Root(profileId), "last-error.txt");
     private string BindingPath(Guid profileId) => Path.Combine(Root(profileId), "source.json");
+    private string RosterPath(Guid profileId) => Path.Combine(Root(profileId), "roster.json");
     private static string SourceDirectory(ServerProfile profile) =>
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(profile.WorldDirectory));
 
@@ -129,6 +126,59 @@ internal sealed class SharedWorldService
     private static bool BindingMatches(SourceBinding binding, ServerProfile profile) =>
         binding.Directory.Equals(SourceDirectory(profile), StringComparison.OrdinalIgnoreCase) &&
         binding.Game == profile.Kind && binding.WorldId == profile.WorldId;
+
+    internal SharedWorldRoster? ReadRoster(ServerProfile profile)
+    {
+        lock (sync)
+        {
+            var path = RosterPath(profile.Id);
+            if (!File.Exists(path)) return null;
+            if (new FileInfo(path).Length > MaximumManifestBytes ||
+                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Shared roster is oversized or linked.");
+            var roster = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(path), Json);
+            var binding = ReadBinding(profile.Id);
+            using var key = LoadSigningKey();
+            if (!SharedWorldRosterTrust.Verify(roster) || binding is null ||
+                !BindingMatches(binding, profile) || roster!.GroupId != binding.GroupId ||
+                roster.ProfileId != profile.Id ||
+                roster.OwnerPublicKey != Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()))
+                throw new InvalidDataException("Shared roster failed verification.");
+            return roster;
+        }
+    }
+
+    internal SharedWorldRoster PublishRoster(ServerProfile profile,
+        IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null)
+    {
+        lock (sync)
+        {
+            var oldBinding = ReadBinding(profile.Id);
+            var binding = BindSource(profile);
+            var prior = oldBinding?.GroupId == binding.GroupId ? ReadRoster(profile) : null;
+            if (members.Count > 128 || members.Any(member => member.DeviceId == Guid.Empty ||
+                member.Grants is null || !SharedWorldRosterTrust.ValidKey(member.PublicKey)) ||
+                members.Select(member => member.DeviceId).Distinct().Count() != members.Count)
+                throw new InvalidDataException("Shared roster members are invalid.");
+            using var key = LoadSigningKey();
+            var ordered = members.OrderBy(member => member.DeviceId).ToArray();
+            if (prior is not null && prior.OwnerOverride == (ownerOverride ?? prior.OwnerOverride) &&
+                prior.Members.SequenceEqual(ordered)) return prior;
+            var draft = new SharedWorldRoster(1, binding.GroupId, profile.Id,
+                checked((prior?.Epoch ?? 0) + 1), checked((prior?.Revision ?? 0) + 1),
+                ownerOverride ?? prior?.OwnerOverride ?? true,
+                Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
+                ordered, "");
+            var roster = draft with { Signature = Convert.ToBase64String(key.SignData(
+                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            var path = RosterPath(profile.Id);
+            Directory.CreateDirectory(Root(profile.Id));
+            var stage = path + ".new";
+            File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
+            File.Move(stage, path, true);
+            return roster;
+        }
+    }
 
     public SharedWorldStatus Status(ServerProfile profile)
     {
@@ -311,58 +361,6 @@ internal sealed class SharedWorldService
             return prior;
         }
     }
-
-    public SharedWorldMembership IssueMembership(ServerProfile profile, Guid deviceId, string devicePublicKey)
-    {
-        lock (sync)
-        {
-            var latest = Status(profile);
-            if (!latest.Enabled || latest.Latest is null)
-                throw new InvalidDataException("No published world group is available.");
-            if (devicePublicKey.Length is < 80 or > 512)
-                throw new InvalidDataException("The PC signing identity is invalid.");
-            using var pcKey = ECDsa.Create();
-            pcKey.ImportSubjectPublicKeyInfo(Convert.FromBase64String(devicePublicKey), out _);
-            if (pcKey.KeySize != 256)
-                throw new InvalidDataException("The PC signing identity must use P-256.");
-            using var ownerKey = LoadSigningKey();
-            var signedUtc = DateTimeOffset.UtcNow;
-            var ownerPublicKey = Convert.ToBase64String(ownerKey.ExportSubjectPublicKeyInfo());
-            var basis = MembershipBasis(latest.Latest.GroupId, profile.Id, deviceId,
-                "Receiver", devicePublicKey, ownerPublicKey, signedUtc);
-            var signature = Convert.ToBase64String(ownerKey.SignData(
-                Encoding.UTF8.GetBytes(basis), HashAlgorithmName.SHA256));
-            var membership = new SharedWorldMembership(1, latest.Latest.GroupId, profile.Id, deviceId,
-                "Receiver", devicePublicKey, ownerPublicKey, signedUtc, signature);
-            var path = Path.Combine(Root(profile.Id), "member-" + deviceId.ToString("N") + ".json");
-            File.WriteAllBytes(path, JsonSerializer.SerializeToUtf8Bytes(membership, Json));
-            return membership;
-        }
-    }
-
-    internal static bool VerifyMembership(SharedWorldMembership member)
-    {
-        try
-        {
-            if (member.Schema != 1 || member.Role != "Receiver" || member.GroupId == Guid.Empty || member.ProfileId == Guid.Empty ||
-                member.DeviceId == Guid.Empty || member.DevicePublicKey.Length is < 80 or > 512)
-                return false;
-            using var key = ECDsa.Create();
-            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(member.OwnerPublicKey), out _);
-            if (key.KeySize != 256) return false;
-            return key.VerifyData(Encoding.UTF8.GetBytes(MembershipBasis(member.GroupId,
-                member.ProfileId, member.DeviceId, member.Role, member.DevicePublicKey,
-                member.OwnerPublicKey, member.SignedUtc)),
-                Convert.FromBase64String(member.Signature), HashAlgorithmName.SHA256);
-        }
-        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException or NullReferenceException)
-        { return false; }
-    }
-
-    private static string MembershipBasis(Guid groupId, Guid profileId, Guid deviceId,
-        string role, string devicePublicKey, string ownerPublicKey, DateTimeOffset signedUtc) =>
-        JsonSerializer.Serialize(new { schema = 1, groupId, profileId, deviceId,
-            role, devicePublicKey, ownerPublicKey, signedUtc }, Json);
 
     internal static bool VerifySignature(SharedWorldVersion value)
     {
