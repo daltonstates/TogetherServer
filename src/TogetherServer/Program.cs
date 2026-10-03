@@ -116,7 +116,8 @@ using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
-    () => updatePending, () => shutdownPending);
+    () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
+    friend.CurrentRecoveryHostLoss);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
@@ -1456,6 +1457,28 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/stage",
     Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext context, Guid id) =>
     friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/offer", async (Guid id) =>
+    friendMode ? Results.Json(await friend.PrepareRecoveryOfferAsync(id)) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (HttpContext context, Guid id) =>
+{
+    if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+    var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+        context.Request.ContentLength, 512 * 1024, context.RequestAborted);
+    if (bytes is null) return Results.BadRequest(new { code = "InvalidRecoveryOffer" });
+    try
+    {
+        var offer = JsonSerializer.Deserialize<WorldAuthorityOffer>(bytes,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return offer is null ? Results.BadRequest(new { code = "InvalidRecoveryOffer" }) :
+            Results.Json(await friend.VoteOnRecoveryOfferAsync(id, offer, context.RequestAborted));
+    }
+    catch (JsonException) { return Results.BadRequest(new { code = "InvalidRecoveryOffer" }); }
+});
+app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate",
+    async (Guid id, WorldSeparateCopyConfirmation confirmation) =>
+    friendMode ? Results.Json(await friend.DeclareSeparateCopyAsync(id, confirmation.AcceptSplitWarning)) :
     Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {

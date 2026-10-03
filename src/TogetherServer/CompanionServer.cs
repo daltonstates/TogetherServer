@@ -20,7 +20,9 @@ public static class CompanionListenerStates
 // material is ready; the local GUI remains bound to loopback.
 public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
     GameServerRegistry games, ServerLogService serverLogs, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
-    Func<bool>? isShuttingDown = null)
+    Func<bool>? isShuttingDown = null,
+    Func<Guid, CancellationToken, Task<bool>>? recoveryLossProbe = null,
+    Func<Guid, bool>? recoveryLossCurrent = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -30,6 +32,24 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     private readonly RemoteOperationCoordinator operations = new(data);
     private readonly AuthenticatedDeviceRateLimiter deviceRateLimiter = new(180, TimeSpan.FromMinutes(1));
     private readonly SharedWorldEnrollmentNonces sharedEnrollment = new();
+    private readonly SharedWorldVoteInbox recoveryVotes = new(data);
+    private const int MaximumAuthorityRecordBytes = 2 * 1024 * 1024;
+
+    private static async Task<byte[]?> ReadBoundedAuthorityAsync(Stream body, long? declaredLength,
+        CancellationToken cancellationToken)
+    {
+        if (declaredLength is > MaximumAuthorityRecordBytes) return null;
+        using var output = new MemoryStream();
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var read = await body.ReadAsync(buffer, cancellationToken);
+            if (read == 0) break;
+            if (output.Length + read > MaximumAuthorityRecordBytes) return null;
+            output.Write(buffer, 0, read);
+        }
+        return output.Length == 0 ? null : output.ToArray();
+    }
 
     public bool Active => active is not null && manager.CompanionListeningEnabled;
     public string ListenerState { get; private set; } = CompanionListenerStates.Off;
@@ -62,7 +82,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 endpoint.Port != settings.CompanionPort || !IPAddress.TryParse(settings.CompanionBindAddress, out var bind) ||
                 settings.CompanionPort < 1024 || settings.CompanionPort == localPort)
                 throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
-            if (!pairing.HasInviteOrCredential())
+            if (!pairing.HasInviteOrCredential() && !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint))
             {
                 await StopCoreAsync();
                 Warning = null;
@@ -101,17 +121,21 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             nextApp = builder.Build();
             nextApp.Use(async (context, next) =>
             {
+                var authorityIngest = context.Request.Path.Value?.EndsWith(
+                    "/shared-world/authority", StringComparison.Ordinal) == true;
+                var maximumBody = authorityIngest ? 2 * 1024 * 1024 : 4096;
                 if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
                     context.Connection.LocalPort != settings.CompanionPort ||
                     !context.Request.Path.StartsWithSegments("/api/companion") ||
                     !string.Equals(context.Request.Host.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase) ||
-                    context.Request.Host.Port != settings.CompanionPort || context.Request.ContentLength > 4096)
+                    context.Request.Host.Port != settings.CompanionPort ||
+                    context.Request.ContentLength > maximumBody)
                 {
                     context.Response.StatusCode = StatusCodes.Status403Forbidden;
                     return;
                 }
                 if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
-                    bodySize.MaxRequestBodySize = 4096;
+                    bodySize.MaxRequestBodySize = maximumBody;
                 context.Response.Headers["X-Content-Type-Options"] = "nosniff";
                 context.Response.Headers["Cache-Control"] = "no-store";
                 await next();
@@ -126,7 +150,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             ListenerState = CompanionListenerStates.Listening;
             DiagnosticOutput.WriteLine($"Companion HTTPS listener: {address}");
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or
             System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or
             System.Security.SecurityException or System.Security.Cryptography.CryptographicException)
         {
@@ -286,6 +310,119 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         }
 
         var companion = app.MapGroup("/api/companion");
+        async Task<bool> CandidateOfferMatchesListener(Guid profileId, string proposalHash)
+        {
+            try
+            {
+                var offer = recoveryVotes.Armed(profileId);
+                if (offer is null || WorldAuthorityTrust.ProposalHash(offer.Proposal) != proposalHash ||
+                    certificate is null ||
+                    HostIdentity.Fingerprint(certificate) != offer.CandidateTlsFingerprint)
+                    return false;
+                var current = (await manager.SnapshotAsync()).Settings;
+                return current.CompanionListeningEnabled &&
+                    current.CompanionEndpoint == offer.Proposal.CandidateAddress;
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
+            { return false; }
+        }
+        companion.MapGet("/servers/{profileId:guid}/shared-world/recovery/{proposalHash}/challenge/{deviceId:guid}",
+            async (Guid profileId, string proposalHash, Guid deviceId) =>
+        {
+            if (proposalHash.Length != 64 || !proposalHash.All(Uri.IsHexDigit) ||
+                !await CandidateOfferMatchesListener(profileId, proposalHash))
+                return Results.NotFound();
+            try
+            {
+                var challenge = recoveryVotes.Challenge(profileId, proposalHash, deviceId);
+                return challenge is null ? Results.StatusCode(403) : Results.Json(challenge);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
+            { return Results.Conflict(new { code = "RecoveryOfferUnavailable" }); }
+        });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/recovery/{proposalHash}/offer",
+            async (HttpContext context, Guid profileId, string proposalHash) =>
+        {
+            if (proposalHash.Length != 64 || !proposalHash.All(Uri.IsHexDigit) ||
+                !await CandidateOfferMatchesListener(profileId, proposalHash))
+                return Results.NotFound();
+            var body = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                context.Request.ContentLength, context.RequestAborted);
+            if (body is null) return Results.BadRequest(new { code = "InvalidRecoveryRequest" });
+            try
+            {
+                var request = JsonSerializer.Deserialize<WorldAuthorityOfferRequest>(body,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (request is null || request.ProfileId != profileId || request.ProposalHash != proposalHash)
+                    return Results.BadRequest(new { code = "InvalidRecoveryRequest" });
+                var offer = recoveryVotes.ReadOffer(request);
+                return offer is null ? Results.StatusCode(403) : Results.Json(offer);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { return Results.Conflict(new { code = "RecoveryOfferUnavailable" }); }
+        });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/recovery/{proposalHash}/vote",
+            async (HttpContext context, Guid profileId, string proposalHash) =>
+        {
+            if (proposalHash.Length != 64 || !proposalHash.All(Uri.IsHexDigit) ||
+                !await CandidateOfferMatchesListener(profileId, proposalHash))
+                return Results.NotFound();
+            var body = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                context.Request.ContentLength, context.RequestAborted);
+            if (body is null) return Results.BadRequest(new { code = "InvalidRecoveryRequest" });
+            try
+            {
+                var vote = JsonSerializer.Deserialize<WorldAuthorityVote>(body,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (vote is null) return Results.BadRequest(new { code = "InvalidRecoveryRequest" });
+                if (recoveryLossProbe is null || recoveryLossCurrent is null ||
+                    !await recoveryLossProbe(profileId,
+                        context.RequestAborted))
+                    return Results.Json(new WorldAuthorityVoteResult(false, "HostLossNotConfirmed"),
+                        statusCode: 403);
+                var result = recoveryVotes.AcceptVote(profileId, proposalHash, vote,
+                    () => recoveryLossCurrent(profileId));
+                return Results.Json(result, statusCode: result.Ok ? 200 : 403);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { return Results.Conflict(new { code = "RecoveryVoteUnavailable" }); }
+        });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/authority",
+            async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(device!, profileId) ||
+                device!.SharedWorldPublicKey is null)
+                return Results.StatusCode(403);
+            var body = await ReadBoundedAuthorityAsync(context.Request.Body,
+                context.Request.ContentLength, context.RequestAborted);
+            if (body is null) return Results.BadRequest(new { code = "InvalidAuthorityRecord" });
+            try
+            {
+                var record = JsonSerializer.Deserialize<WorldAuthorityRecord>(body,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (record is null || record.Proposal.ProfileId != profileId ||
+                    record.Roster.Members.SingleOrDefault(member => member.DeviceId == device.Id) is
+                        not { Revoked: false } member ||
+                    member.PublicKey != device.SharedWorldPublicKey ||
+                    !(member.Grants.Receive || member.Grants.RecoveryVoter || member.Grants.EligibleHost) ||
+                    member.AccessExpiresUtc is { } expires && expires <= DateTimeOffset.UtcNow ||
+                    !WorldAuthorityTrust.Verify(record))
+                    return Results.StatusCode(403);
+                if (!Reauthorize(device, out var currentDevice, out decision) ||
+                    currentDevice is null || !pairing.CanAccess(currentDevice, profileId) ||
+                    currentDevice.SharedWorldPublicKey != member.PublicKey)
+                    return Results.StatusCode(403);
+                await manager.ApplySharedWorldAuthorityAsync(record,
+                    commit => pairing.CommitSharedWorldAuthority(device.Id, profileId,
+                        member.PublicKey, commit));
+                return Results.Json(new { code = "AuthorityRecorded", record.RecordHash });
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException or UnauthorizedAccessException)
+            { return Results.Conflict(new { code = "AuthorityUnavailable" }); }
+        });
         companion.MapPost("/pair", (PairingActivation request) =>
         {
             var credential = pairing.Activate(request);

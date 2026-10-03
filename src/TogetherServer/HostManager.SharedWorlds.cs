@@ -235,7 +235,8 @@ public sealed partial class HostManager
         return sharedWorlds.ReadEarlierVersion(latest, number);
     }
 
-    internal async Task ApplySharedWorldAuthorityAsync(WorldAuthorityRecord record)
+    internal async Task ApplySharedWorldAuthorityAsync(WorldAuthorityRecord record,
+        Func<Action, bool>? authorizeCommit = null)
     {
         await gate.WaitAsync();
         try
@@ -249,7 +250,9 @@ public sealed partial class HostManager
                 record.Roster.OwnerPublicKey != roster.OwnerPublicKey ||
                 record.Roster.Epoch < roster.Epoch || record.Roster.Revision < roster.Revision)
                 throw new InvalidDataException("Authority roster is older or belongs to another group.");
-            authority.Append(record);
+            if (authorizeCommit is null) authority.Append(record);
+            else if (!authorizeCommit(() => authority.Append(record)))
+                throw new UnauthorizedAccessException("The Friend PC's current sharing access changed.");
             var active = runs.SingleOrDefault(run => run.ProfileId == profile.Id);
             Activity("Backup", "SharedWorldAuthorityApplied",
                 active is not null && Identity(active) == "Matched"
