@@ -456,8 +456,9 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             var heads = records.Where(record => !records.Any(child =>
                 child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
             if (heads.Length == 0) { reason = ""; return false; }
-            if (heads.Length > 1 || heads.Any(head =>
-                head.Proposal.CandidatePublicKey != localPublicKey && !MatchesLocalSuccessor(head)))
+            // A public key string alone is no proof that this installation owns
+            // the successor identity. Require the protected local binding.
+            if (heads.Length > 1 || heads.Any(head => !MatchesLocalSuccessor(head)))
             {
                 reason = "A verified takeover or competing authority was recorded. Keep this copy and gracefully stop the exact managed server before reviewing the histories.";
                 return true;

@@ -2934,6 +2934,16 @@ await Check("planned handoff requires exact final save receipt before durable ol
         $"final Stop did not publish and hold the old Host offline: {prepared.Code}, version={prepared.Version?.Number}, start={pendingStart.Code}, {prepared.Message}");
     Require((await manager.CompletePlannedHandoffAsync(profile.Id)).Code ==
         "WaitingForSuccessorCopy", "handoff succeeded before receipt");
+    Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled" &&
+        !new WorldAuthorityStore(data).HasState(profile.Id) &&
+        (await manager.StartAsync(profile.Id)).Ok,
+        "owner could not cancel an unsigned handoff and resume its exact world");
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second final marker");
+    prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
+        "https://127.0.0.1:5132");
+    Require(prepared.Ok && prepared.Version is { Number: 2 } &&
+        (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
+        "retry did not capture a fresh final save and hold Start");
     var version = prepared.Version!;
     var receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
         version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
@@ -2957,6 +2967,32 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require((await restarted.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked" &&
         (await restarted.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
         "old Host resumed Start or sharing after restart");
+    using var receivingData = Data("planned-receiver");
+    receivingData.SaveProtected($"shared-world-pc-signing-{successorId:N}.protected",
+        successor.ExportPkcs8PrivateKey());
+    var vault = Path.Combine(receivingData.RootPath, "received-shared-worlds",
+        successorId.ToString("N"), profile.Id.ToString("N"));
+    foreach (var file in version.Files)
+    {
+        var target = SharedWorldService.SafeChild(Path.Combine(vault, version.VersionHash,
+            SharedWorldService.PayloadDirectory), file.Path);
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        var published = SharedWorldService.SafeChild(Path.Combine(data.RootPath,
+            "shared-worlds", profile.Id.ToString("N"), version.GroupId.ToString("N"),
+            version.Number.ToString(), SharedWorldService.PayloadDirectory), file.Path);
+        File.Copy(published, target);
+    }
+    File.WriteAllBytes(Path.Combine(vault, "latest.json"),
+        JsonSerializer.SerializeToUtf8Bytes(version, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    var staged = await PlannedHandoffReceiver.StageAsync(receivingData, vault,
+        completed.Authority!, profile.Id, version.GroupId, roster.OwnerPublicKey,
+        successorId, successor, () => Task.FromResult(true), CancellationToken.None);
+    Require(staged.Ok && staged.Code == "StagedForSetup" &&
+        new WorldAuthorityStore(receivingData).Read(profile.Id).Single().RecordHash ==
+            completed.Authority!.RecordHash &&
+        new WorldAuthorityStore(receivingData).Fenced(profile.Id,
+            Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo()), out _),
+        $"receiver did not preserve proof and remain fenced before local setup: {staged.Code} {staged.Message}");
 });
 
 await Check("shared world authority requires signed majority, fences old Host, and survives restart", async () =>

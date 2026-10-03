@@ -230,6 +230,18 @@ public sealed class FriendService : IDisposable
         }
     }
 
+    public Task<PlannedHandoffStageResult> StagePlannedHandoffAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new PlannedHandoffStageResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) :
+                link.StagePlannedHandoffAsync(profileId, cancellationToken);
+        }
+    }
+
     public Task<ReceivedSharedWorldResult> CheckSharedWorldAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {

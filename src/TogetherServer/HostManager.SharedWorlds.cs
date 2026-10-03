@@ -95,6 +95,36 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<PlannedHandoffResult> CancelPlannedHandoffAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var name = PlannedHandoffName(profileId);
+            if (!data.HasProtected(name))
+                return new(false, "NoPendingHandoff", "There is no pending planned handoff to cancel.");
+            var bytes = data.LoadProtected(name);
+            var pending = bytes is null ? null : JsonSerializer.Deserialize<PendingPlannedHandoff>(bytes);
+            if (pending is not { Schema: 1 } || pending.ProfileId != profileId ||
+                authority.HasState(profileId) || runs.Any(run => run.ProfileId == profileId))
+                return new(false, "HandoffReviewRequired", "The pending handoff or managed process needs review. Keep this world offline.");
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            var roster = profile is null ? null : sharedWorlds.ReadRoster(profile);
+            var version = profile is null ? null : sharedWorlds.Status(profile).Latest;
+            if (roster is null || version is null || roster.GroupId != pending.GroupId ||
+                version.GroupId != pending.GroupId || version.VersionHash != pending.VersionHash ||
+                WorldAuthorityTrust.RosterHash(roster) != pending.RosterHash)
+                return new(false, "HandoffReviewRequired", "The final save or signed permissions changed. Keep this world offline until reviewed.");
+            data.DeleteProtected(name);
+            Activity("Backup", "PlannedHandoffCanceled",
+                "The owner canceled the unsigned handoff. Copies already received remain with their PCs.",
+                ActivitySeverity.Important, profileId);
+            return new(true, "HandoffCanceled",
+                "The handoff was canceled before any signed authority change. This PC may host again; copies already received remain with their PCs.", version);
+        }
+        finally { gate.Release(); }
+    }
+
     internal async Task<WorldAuthorityRecord?> ReadPlannedHandoffOfferAsync(Guid profileId,
         Guid successorDeviceId)
     {
@@ -102,9 +132,11 @@ public sealed partial class HostManager
         try
         {
             var records = authority.Read(profileId);
-            return records.LastOrDefault(record => record.Proposal.Kind == "Planned" &&
-                record.SuccessorReceipt?.DeviceId == successorDeviceId &&
-                WorldAuthorityTrust.Verify(record));
+            var heads = records.Where(record => !records.Any(child =>
+                child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+            return heads.Length == 1 && heads[0].Proposal.Kind == "Planned" &&
+                heads[0].SuccessorReceipt?.DeviceId == successorDeviceId &&
+                WorldAuthorityTrust.Verify(heads[0]) ? heads[0] : null;
         }
         finally { gate.Release(); }
     }
