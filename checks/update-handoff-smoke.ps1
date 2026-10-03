@@ -54,7 +54,7 @@ $checkpointManifest = [ordered]@{
     createdUtc = [DateTimeOffset]::UtcNow.ToString('O')
     currentVersion = '0.2.1'
     targetVersion = '0.2.1'
-    storageSchemaVersion = 3
+    storageSchemaVersion = 4
     previousExecutableSha256 = $previousHash
     files = @()
 } | ConvertTo-Json -Depth 4
