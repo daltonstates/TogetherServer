@@ -2581,6 +2581,59 @@ await Check("shared save grant is separate and revoked at access deadline or una
     return Task.CompletedTask;
 });
 
+await Check("checked-only signed Host heads retain a same-number fork across restart", () =>
+{
+    using var data = Data("shared-checked-head-fork");
+    var profile = Profile("checked-head-fork", "checked-head-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0, RetentionCount = 5 };
+    profile.SharedSavesEnabled = true;
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var shares = new SharedWorldService(data, backups);
+    shares.PublishRoster(profile, []);
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first fork");
+    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
+    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version;
+    Require(first is not null && SharedWorldService.VerifySignature(first), "first signed head missing");
+    var sharedRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
+    Directory.Move(Path.Combine(sharedRoot, first!.GroupId.ToString("N"), "1"),
+        Path.Combine(data.RootPath, "held-first-signed-head"));
+    File.Delete(Path.Combine(sharedRoot, "latest.json"));
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second fork");
+    var secondBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(secondBackup.Ok && secondBackup.Backup is not null, "second backup failed");
+    var second = shares.PublishAfterStop(profile, secondBackup.Backup!.Id).Version;
+    Require(second is not null && SharedWorldService.VerifySignature(second) &&
+        first.GroupId == second.GroupId && first.Number == second.Number &&
+        first.VersionHash != second.VersionHash, "two valid competing signed heads were not created");
+    var profileId = profile.Id;
+    var config = new FriendConfiguration();
+    Require(!FriendLink.ObserveHistory(config, profileId, null, first),
+        "first checked head was unexpectedly marked conflicting");
+    Require(FriendLink.CanCommitReceivedVersion(config, profileId, first),
+        "a transfer could not commit its unchanged checked head");
+    // Model Pull staging A, Check observing signed fork B, then Pull entering its final commit gate.
+    Require(FriendLink.ObserveHistory(config, profileId, null, second!) &&
+        config.SharedWorldConflicts.Contains(profileId) &&
+        config.LastSharedHostHashes[profileId] == first.VersionHash &&
+        config.LastSharedHostManifests[profileId].VersionHash == first.VersionHash &&
+        config.CompetingSharedHostManifests[profileId].Single().VersionHash == second!.VersionHash,
+        "checked-only fork replaced or lost a signed head");
+    Require(!FriendLink.CanCommitReceivedVersion(config, profileId, first),
+        "a staged transfer could commit after a competing signed head was checked");
+    var restored = JsonSerializer.Deserialize<FriendConfiguration>(
+        JsonSerializer.Serialize(config, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+        new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    Require(FriendLink.ObserveHistory(restored, profileId, null, first) &&
+        restored.SharedWorldConflicts.Contains(profileId) &&
+        restored.LastSharedHostHashes[profileId] == first.VersionHash &&
+        !FriendLink.CanCommitReceivedVersion(restored, profileId, first) &&
+        SharedWorldService.VerifySignature(restored.CompetingSharedHostManifests[profileId].Single()),
+        "rechecking the original head cleared a persisted fork");
+    return Task.CompletedTask;
+});
+
 await Check("shared save receipt resumes bounded chunks, keeps three verified copies, and preserves reserve", () =>
 {
     using var data = Data("shared-world-receipt");

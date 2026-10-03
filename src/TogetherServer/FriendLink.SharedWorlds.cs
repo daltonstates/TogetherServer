@@ -338,13 +338,8 @@ internal sealed partial class FriendLink
                 config.LastSharedHostVersions?.GetValueOrDefault(profileId) > version.Number)
                 return SharedFailure("VersionRollback", "The Host returned an older save version for this group.");
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
-            config.LastSharedHostVersions ??= [];
-            config.LastSharedHostVersions[profileId] = version.Number;
-            config.LastSharedHostHashes ??= [];
-            config.LastSharedHostHashes[profileId] = version.VersionHash;
             RememberSourceReview(profileId, version, old);
-            var conflict = ObserveHistory(profileId, old, version);
-            config.LastSharedHostGroups[profileId] = version.GroupId;
+            var conflict = ObserveHistory(config, profileId, old, version);
             SaveConfig();
             gate.Release();
             entered = false;
@@ -412,12 +407,38 @@ internal sealed partial class FriendLink
         hostVersion == receivedVersion && hostHash is not null && hostHash == receivedHash ?
             "Up to date when last checked" : "Ready to pull";
 
-    private bool ObserveHistory(Guid profileId, SharedWorldVersion? old, SharedWorldVersion version)
+    internal static bool ObserveHistory(FriendConfiguration config, Guid profileId,
+        SharedWorldVersion? old, SharedWorldVersion version)
     {
-        config!.SharedWorldConflicts ??= [];
-        var conflict = IsReceivedHistoryConflict(old, version);
+        config.SharedWorldConflicts ??= [];
+        config.LastSharedHostGroups ??= [];
+        config.LastSharedHostVersions ??= [];
+        config.LastSharedHostHashes ??= [];
+        config.LastSharedHostManifests ??= [];
+        config.CompetingSharedHostManifests ??= [];
+        var sameGroup = config.LastSharedHostGroups.GetValueOrDefault(profileId) == version.GroupId;
+        var hasPriorHash = config.LastSharedHostHashes.TryGetValue(profileId, out var priorHash);
+        var priorNumber = config.LastSharedHostVersions.GetValueOrDefault(profileId);
+        var observedFork = sameGroup && hasPriorHash &&
+            (priorNumber == version.Number && priorHash != version.VersionHash ||
+             priorNumber + 1 == version.Number && version.ParentHash != priorHash);
+        var conflict = observedFork || IsReceivedHistoryConflict(old, version) ||
+            config.SharedWorldConflicts.Contains(profileId);
         if (conflict) config.SharedWorldConflicts.Add(profileId);
-        else if (old?.VersionHash == version.VersionHash) config.SharedWorldConflicts.Remove(profileId);
+        if (observedFork)
+        {
+            if (!config.CompetingSharedHostManifests.TryGetValue(profileId, out var competing))
+                config.CompetingSharedHostManifests[profileId] = competing = [];
+            if (competing.All(head => head.VersionHash != version.VersionHash) && competing.Count < 8)
+                competing.Add(version);
+        }
+        else if (!conflict)
+        {
+            config.LastSharedHostGroups[profileId] = version.GroupId;
+            config.LastSharedHostVersions[profileId] = version.Number;
+            config.LastSharedHostHashes[profileId] = version.VersionHash;
+            config.LastSharedHostManifests[profileId] = version;
+        }
         return conflict;
     }
 
@@ -426,6 +447,13 @@ internal sealed partial class FriendLink
         (old.Number > version.Number ||
          old.Number == version.Number && old.VersionHash != version.VersionHash ||
          old.Number + 1 == version.Number && version.ParentHash != old.VersionHash);
+
+    internal static bool CanCommitReceivedVersion(FriendConfiguration config, Guid profileId,
+        SharedWorldVersion version) =>
+        config.SharedWorldConflicts?.Contains(profileId) != true &&
+        config.LastSharedHostGroups?.GetValueOrDefault(profileId) == version.GroupId &&
+        config.LastSharedHostVersions?.GetValueOrDefault(profileId) == version.Number &&
+        config.LastSharedHostHashes?.GetValueOrDefault(profileId) == version.VersionHash;
 
     private void RememberSourceReview(Guid profileId, SharedWorldVersion version,
         SharedWorldVersion? old)
@@ -518,25 +546,22 @@ internal sealed partial class FriendLink
             if (config.LastSharedHostGroups.GetValueOrDefault(profileId) == version.GroupId &&
                 config.LastSharedHostVersions?.GetValueOrDefault(profileId) > version.Number)
                 return SharedFailure("VersionRollback", "The Host returned an older save version for this group.");
-            config.LastSharedHostVersions ??= [];
-            config.LastSharedHostVersions[profileId] = version.Number;
-            config.LastSharedHostHashes ??= [];
-            config.LastSharedHostHashes[profileId] = version.VersionHash;
             RememberSourceReview(profileId, version, old);
-            var conflict = ObserveHistory(profileId, old, version);
-            config.LastSharedHostGroups[profileId] = version.GroupId;
+            var conflict = ObserveHistory(config, profileId, old, version);
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             var approvedGroup = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
             SaveConfig();
             gate.Release();
             entered = false;
+            if (conflict)
+                return SharedFailure("VersionConflict", "The Host and this PC have competing signed save histories. Review them before receiving another save.");
             PrunePartialStages(root, version.VersionHash);
             var newWorldGroup = old is not null && old.GroupId != version.GroupId &&
                 approvedGroup == version.GroupId;
             if (old is not null && old.GroupId != version.GroupId && !newWorldGroup)
                 return SharedFailure("SourceReviewRequired",
                     "The Host changed this save source. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here.");
-            if (old is not null && !newWorldGroup && (old.GroupId != version.GroupId || conflict))
+            if (old is not null && !newWorldGroup && old.GroupId != version.GroupId)
                 return SharedFailure("VersionConflict", "The published version does not continue this PC's verified world history.");
             if (old?.VersionHash == version.VersionHash)
             {
@@ -653,11 +678,14 @@ internal sealed partial class FriendLink
                 !AcceptedPins().SequenceEqual(pins) ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != approvedGroup)
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed during transfer.");
+            if (config.SharedWorldConflicts?.Contains(profileId) == true)
+                return SharedFailure("VersionConflict", "A competing signed save was observed during transfer. Review the histories before receiving another save.");
+            if (!CanCommitReceivedVersion(config, profileId, version))
+                return SharedFailure("NewerVersionAvailable", "The checked Host save changed during transfer. Receive the latest version next.");
             transferToken.ThrowIfCancellationRequested();
             if (!CommitSharedReceipt(profileId, stage, destination, root, manifestBytes, transferToken))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
-            config.SharedWorldConflicts?.Remove(profileId);
             SaveConfig();
             gate.Release();
             entered = false;
