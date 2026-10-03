@@ -3030,10 +3030,12 @@ await Check("planned handoff requires exact final save receipt before durable ol
         new WorldAuthorityStore(receivingData).Fenced(profile.Id,
             Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo()), out _),
         $"receiver did not preserve proof and remain fenced before local setup: {staged.Code} {staged.Message}");
+    var receiverControlPort = FreePort();
+    receivingData.SaveSettings(new HostSettings { CompanionPort = receiverControlPort });
     var receiver = new HostManager(receivingData,
         new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
     var setup = new TakeoverLocalSetup(fixture, version.PortableSetup.GameVersion,
-        [], true, FreePort(), FreePort());
+        [], true, receiverControlPort, FreePort());
     var restoreRequest = new SuccessorRestoreRequest(completed.Authority!.RecordHash,
         setup, "Recovered fixture", "Recovered fixture");
     var destination = receivingData.NewWorldDirectory(profile.Id);
@@ -3041,6 +3043,14 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(stagedStatus.Staged && !stagedStatus.Restored &&
         stagedStatus.RecordHash == completed.Authority.RecordHash,
         "staged handoff was not available after receiving the signed offer");
+    Require((await receiver.RestoreSharedSuccessorAsync(profile.Id,
+        restoreRequest with { Setup = setup with { ControlPort = receiverControlPort + 1 } })).Code ==
+        "ControlPortMismatch" && !Directory.Exists(destination),
+        "restore accepted a control port that this Host will not use");
+    Require((await receiver.RestoreSharedSuccessorAsync(profile.Id,
+        restoreRequest with { Setup = setup with { GamePort = 1023 } })).Code ==
+        "InvalidGamePort" && !Directory.Exists(destination),
+        "restore copied a world before rejecting an invalid Host game port");
     var missing = await receiver.RestoreSharedSuccessorAsync(profile.Id,
         restoreRequest with { Setup = setup with { ServerFile = null } });
     Require(missing.Code == "LocalSetupIncomplete" && !Directory.Exists(destination),
@@ -3079,6 +3089,66 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(resumedStatus.Staged && resumedStatus.Restored &&
         resumedStatus.RecordHash == completed.Authority.RecordHash,
         "restored successor status did not survive app restart");
+    receivingData.SaveSettings(new HostSettings { CompanionPort = receiverControlPort });
+    var interrupted = new HostManager(receivingData,
+        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+    Require((await interrupted.RestoreSharedSuccessorAsync(profile.Id, restoreRequest)).Code ==
+        "RestoredPendingChecks" &&
+        File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
+        receivingData.LoadSettings().Profiles.Single().Id == profile.Id,
+        "interrupted settings commit could not safely resume without replacing the verified world");
+});
+
+await Check("Minecraft successor requires owner-prepared local server roots", () =>
+{
+    using var data = Data("minecraft-successor-roots");
+    var worldId = "restored-world";
+    var javaRoot = Path.Combine(data.MinecraftInstallRoot, Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(javaRoot);
+    var jar = Path.Combine(javaRoot, "server.jar");
+    using (var zip = ZipFile.Open(jar, ZipArchiveMode.Create))
+    {
+        using (var writer = new StreamWriter(zip.CreateEntry("META-INF/MANIFEST.MF").Open()))
+            writer.Write("Manifest-Version: 1.0\nMain-Class: net.minecraft.server.Main\n");
+        using (var writer = new StreamWriter(zip.CreateEntry("version.json").Open()))
+            writer.Write(new string('A', 150));
+    }
+    MinecraftSetup.WriteManagedJavaProvenance(javaRoot, "1.20", Convert.ToHexString(SHA1.HashData(File.ReadAllBytes(jar))));
+    File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=25565\n");
+    File.WriteAllText(Path.Combine(javaRoot, "eula.txt"), "eula=false\n");
+    var javaExe = Path.Combine(data.RootPath, "java.exe");
+    File.WriteAllText(javaExe, "local owner-installed test stand-in");
+    var dummy = new SharedWorldVersion(4, Guid.NewGuid(), 1, null, Guid.NewGuid(),
+        GameKinds.MinecraftJava, worldId, DateTimeOffset.UtcNow,
+        SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(),
+        new SharedWorldPortableSetup(25565, false, "1.20", [], []),
+        [new SharedWorldFile("level.dat", 1, new string('A', 64))], "", "", "");
+    var javaSetup = new TakeoverLocalSetup(jar, "1.20", [], true, 5131, 25565);
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        dummy, javaSetup, javaExe)?.Contains("EULA") == true,
+        "Java prepared root bypassed local owner terms review");
+    File.WriteAllText(Path.Combine(javaRoot, "eula.txt"), "eula=true\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        dummy, javaSetup, javaExe) is null &&
+        MinecraftPreparedRoot.Check(data.RootPath, javaRoot, data.RootPath,
+            dummy, javaSetup, javaExe) is not null,
+        "Java accepted a wrong prepared root or rejected separate runtime and reviewed JAR");
+    var bedrockRoot = Path.Combine(data.MinecraftInstallRoot, Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(bedrockRoot);
+    File.WriteAllText(Path.Combine(bedrockRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=19132\n");
+    var bedrockExe = Path.Combine(bedrockRoot, "bedrock_server.exe");
+    File.WriteAllText(bedrockExe, "local owner-installed test stand-in");
+    var bedrock = dummy with { Game = GameKinds.MinecraftBedrock };
+    var bedrockSetup = javaSetup with { ServerFile = bedrockExe, GamePort = 19132 };
+    Require(MinecraftPreparedRoot.Check(data.RootPath, bedrockRoot, bedrockRoot,
+        bedrock, bedrockSetup, bedrockExe) is null &&
+        MinecraftPreparedRoot.Check(data.RootPath, bedrockRoot, bedrockRoot,
+            bedrock, bedrockSetup, javaExe) is not null &&
+        !Directory.Exists(Path.Combine(bedrockRoot, "worlds", worldId)),
+        "Bedrock accepted an external executable or changed the prepared root before a verified copy");
+    return Task.CompletedTask;
 });
 
 await Check("shared world authority requires signed majority, fences old Host, and survives restart", async () =>

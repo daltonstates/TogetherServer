@@ -5,7 +5,7 @@ import { Button, Input } from './Controls'
 type Readiness = { ready: boolean; reasons: string[]; version: number | null;
   versionHash: string | null; rehearsalPassed: boolean }
 type RestoreStatus = { staged: boolean; restored: boolean; recordHash: string | null;
-  message: string; pendingChecks: string[] }
+  message: string; pendingChecks: string[]; preparedServerRoot: string | null }
 type RestoreResult = { ok: boolean; code: string; message: string;
   pendingChecks: string[] | null }
 
@@ -15,7 +15,9 @@ function parseRestoreStatus(value: unknown): RestoreStatus {
   if (typeof item.staged !== 'boolean' || typeof item.restored !== 'boolean' ||
     (item.recordHash !== null && (typeof item.recordHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.recordHash))) ||
     typeof item.message !== 'string' || !Array.isArray(item.pendingChecks) ||
-    item.pendingChecks.some(check => typeof check !== 'string')) throw new Error('Handoff status is invalid.')
+    item.pendingChecks.some(check => typeof check !== 'string') ||
+    (item.preparedServerRoot !== null && item.preparedServerRoot !== undefined &&
+      typeof item.preparedServerRoot !== 'string')) throw new Error('Handoff status is invalid.')
   return item as RestoreStatus
 }
 
@@ -58,6 +60,8 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
   const [gamePort, setGamePort] = useState('')
   const [serverName, setServerName] = useState('Recovered world')
   const [executable, setExecutable] = useState('')
+  const [preparedServerRoot, setPreparedServerRoot] = useState('')
+  const [factorioRconPort, setFactorioRconPort] = useState('27015')
   const [gamePassword, setGamePassword] = useState('')
   const [handoff, setHandoff] = useState<RestoreStatus | null>(null)
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
@@ -67,7 +71,8 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
   useEffect(() => {
     let active = true
     void getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus)
-      .then(status => { if (active) setHandoff(status) }).catch(() => {})
+      .then(status => { if (active) { setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '') } })
+      .catch(() => {})
     return () => { active = false }
   }, [profileId])
   const setup = () => ({ serverFile: serverFile || null, gameVersion: gameVersion || null,
@@ -87,8 +92,9 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/stage`,
         'POST', parseStageResult)
       if (!result.ok) throw new Error(result.message)
-      setHandoff(await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
-        parseRestoreStatus))
+      const status = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
+        parseRestoreStatus)
+      setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
@@ -99,7 +105,8 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
         'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
           name: serverName, serverName, gamePassword: gamePassword || null,
-          executablePath: executable || null })
+          executablePath: executable || null, preparedServerRoot: preparedServerRoot || null,
+          factorioRconPort: Number(factorioRconPort) })
       setRestoreResult(result)
       if (result.ok) setHandoff(await getLocalJson(
         `/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus))
@@ -126,6 +133,11 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
         onChange={event => setServerName(event.target.value)} /></label>
         <label>Installed game executable, if different from the server file<Input value={executable}
           onChange={event => setExecutable(event.target.value)} /></label>
+        <label>Prepared Minecraft server folder, if using Minecraft<Input value={preparedServerRoot}
+          onChange={event => setPreparedServerRoot(event.target.value)} /></label>
+        {handoff.preparedServerRoot && <small>Install the matching Minecraft server in this separate folder. Review its terms and configuration yourself. The world folder must be empty.</small>}
+        <label>Factorio local RCON port, if using Factorio<Input inputMode="numeric" value={factorioRconPort}
+          onChange={event => setFactorioRconPort(event.target.value)} /></label>
         <label>New game password, if this game uses one<Input type="password" value={gamePassword}
           onChange={event => setGamePassword(event.target.value)} /></label>
         <Button disabled={busy} onClick={() => void restore()}>Create separate Host copy</Button></>}
