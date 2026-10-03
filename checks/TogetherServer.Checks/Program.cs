@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO.Compression;
 using System.IO.Pipes;
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -2745,6 +2746,16 @@ await Check("shared save retention follows signed numbers despite skewed capture
         Require(Directory.Exists(Path.Combine(receiver, version.VersionHash)) == (number >= 3),
             "Friend retention used capture time instead of signed version number");
     }
+    var branchHead = shares.ReadEarlierVersion(head, 1);
+    var branchRoot = Path.Combine(receiver, branchHead.VersionHash);
+    Directory.CreateDirectory(Path.Combine(branchRoot, "payload"));
+    File.WriteAllText(Path.Combine(branchRoot, "payload", "world.dat"), "skew payload 1");
+    File.WriteAllBytes(Path.Combine(branchRoot, "version.json"),
+        JsonSerializer.SerializeToUtf8Bytes(branchHead, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    FriendLink.PruneReceived(receiver, head.VersionHash,
+        new HashSet<string> { branchHead.VersionHash });
+    Require(Directory.Exists(branchRoot) && Directory.EnumerateDirectories(receiver).Count() == 4,
+        "retention deleted a separately preserved verified history");
     return Task.CompletedTask;
 });
 
@@ -3039,6 +3050,26 @@ await Check("shared world authority requires signed majority, fences old Host, a
         Require(store.Fenced(profile.Id, shares.LocalAuthorityPublicKey(), out _),
             "old Host was unfenced without explicit successor binding");
         {
+            using var oldPortReservation = new TcpListener(IPAddress.Loopback, 0);
+            oldPortReservation.Start();
+            var oldPort = ((IPEndPoint)oldPortReservation.LocalEndpoint).Port;
+            oldPortReservation.Stop();
+            var oldAddress = $"https://127.0.0.1:{oldPort}";
+            using var oldCertificate = new HostIdentity(data).Ensure(oldAddress);
+            var oldSettings = data.LoadSettings();
+            oldSettings.CompanionBindAddress = "127.0.0.1";
+            oldSettings.CompanionEndpoint = oldAddress;
+            oldSettings.CompanionPort = oldPort;
+            oldSettings.CompanionListeningEnabled = true;
+            data.SaveSettings(oldSettings);
+            var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+            {
+                Id = voters[1].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldPublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo())
+            }] });
             var manager = new HostManager(data, Games(data));
             var newerDraft = proposal with
             { RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster), Signature = "" };
@@ -3054,7 +3085,34 @@ await Check("shared world authority requires signed majority, fences old Host, a
             var newer = new WorldAuthorityRecord(1, newerProposal, noOverrideRoster, version,
                 [NewVote(0), NewVote(1)], null, "");
             newer = newer with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(newer)) };
-            await manager.ApplySharedWorldAuthorityAsync(newer);
+            using var oldModeGate = new SemaphoreSlim(1, 1);
+            var oldListener = new CompanionServer(data, manager, new PairingService(data),
+                Games(data), new ServerLogService(data, manager), oldModeGate, oldPort + 2);
+            try
+            {
+                await oldListener.SyncAsync();
+                Require(oldListener.ListenerState == CompanionListenerStates.Listening,
+                    "the old Host's owner-enabled HTTPS listener did not open");
+                using var handler = new HttpClientHandler
+                {
+                    ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
+                        certificate is not null && HostIdentity.Fingerprint(certificate) ==
+                        HostIdentity.Fingerprint(oldCertificate)
+                };
+                using var client = new HttpClient(handler) { BaseAddress = new Uri(oldAddress + "/") };
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+                client.DefaultRequestHeaders.Add("X-Device-Id", voters[1].Id.ToString());
+                var route = $"api/companion/servers/{profile.Id}/shared-world/authority";
+                using var invalid = await client.PostAsJsonAsync(route,
+                    newer with { RecordHash = new string('0', 64) });
+                Require(invalid.StatusCode == HttpStatusCode.Forbidden,
+                    "old Host accepted a tampered authority decision");
+                using var valid = await client.PostAsJsonAsync(route, newer);
+                Require(valid.IsSuccessStatusCode,
+                    "old Host did not ingest the signed newer authority over authenticated HTTPS");
+            }
+            finally { await oldListener.StopAsync(); }
             Require(store.Read(profile.Id).Count == 2, "newer signed roster authority was not applied");
             Require((await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
                 "local or remote Start path bypassed authority");
@@ -3200,7 +3258,7 @@ await Check("Host-loss eligibility uses two minutes of monotonic transport failu
     return Task.CompletedTask;
 });
 
-await Check("three disposable PCs compare exact save heads before majority takeover", () =>
+await Check("three disposable PCs compare exact save heads before majority takeover", async () =>
 {
     using var host = Data("quorum-host");
     var profile = Profile("quorum", "quorum-world", FreePort());
@@ -3239,31 +3297,133 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         }
         for (var i = 0; i < 3; i++) pcs.Add(Data("quorum-pc-" + i));
         var vaults = pcs.Select((pc, index) => Vault(pc, index)).ToArray();
+        using var portReservation = new TcpListener(IPAddress.Loopback, 0);
+        portReservation.Start();
+        var candidatePort = ((IPEndPoint)portReservation.LocalEndpoint).Port;
+        portReservation.Stop();
+        var candidateAddress = $"https://127.0.0.1:{candidatePort}";
+        using var candidateCertificate = new HostIdentity(pcs[0]).Ensure(candidateAddress);
+        var candidatePin = HostIdentity.Fingerprint(candidateCertificate);
         long ticks = 0;
         var losses = Enumerable.Range(0, 3).Select(_ =>
             new SharedWorldHostLoss(() => ticks, TimeSpan.TicksPerSecond)).ToArray();
         foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
         RequireThrows<InvalidDataException>(() => SharedWorldElection.PrepareOffer(losses[0], vaults[0],
-            roster, floor, ids[0], keys[0], "https://127.0.0.1:5132", new string('A', 64),
+            roster, floor, ids[0], keys[0], candidateAddress, candidatePin,
             new WorldAuthorityStore(pcs[0])),
             "candidate proposed before the two-minute loss check");
         ticks += TimeSpan.FromSeconds(119).Ticks;
         foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
         ticks += TimeSpan.FromSeconds(1).Ticks;
         var offer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
-            ids[0], keys[0], "https://127.0.0.1:5132", new string('A', 64),
+            ids[0], keys[0], candidateAddress, candidatePin,
             new WorldAuthorityStore(pcs[0]));
+        var separate = new SharedWorldSeparateCopyStore(pcs[0]);
+        RequireThrows<InvalidDataException>(() => separate.Declare(losses[0], offer,
+            vaults[0], keys[0], false), "a separate copy skipped its explicit split warning");
+        var separateBranch = separate.Declare(losses[0], offer, vaults[0], keys[0], true);
+        Require(SharedWorldSeparateCopyStore.Verify(separateBranch) &&
+            separate.Read(profile.Id).Single().BranchHash == separateBranch.BranchHash &&
+            separate.Declare(losses[0], offer, vaults[0], keys[0], true).BranchHash ==
+                separateBranch.BranchHash &&
+            new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 0,
+            "warned separate copy changed authority or lost its preserved branch");
+        var branchName = $"shared-world-separate-{profile.Id:N}.protected";
+        var branchBytes = pcs[0].LoadProtected(branchName)!;
+        pcs[0].DeleteProtected(branchName);
+        RequireThrows<InvalidDataException>(() => separate.Read(profile.Id),
+            "a deleted separate branch silently disappeared despite its protected floor");
+        pcs[0].SaveProtected(branchName, branchBytes);
         var vote0 = SharedWorldElection.Vote(losses[0], vaults[0], floor, roster.OwnerPublicKey,
             offer, ids[0], keys[0], new WorldAuthorityStore(pcs[0]));
         RequireThrows<InvalidDataException>(() => SharedWorldElection.ConfirmQuorum(offer, [vote0],
             new WorldAuthorityStore(pcs[0])), "one of three designated voters made a majority");
         var vote1 = SharedWorldElection.Vote(losses[1], vaults[1], floor, roster.OwnerPublicKey,
             offer, ids[1], keys[1], new WorldAuthorityStore(pcs[1]));
+        pcs[0].SaveProtected($"shared-world-pc-signing-{ids[0]:N}.protected",
+            keys[0].ExportPkcs8PrivateKey());
+        var inbox = new SharedWorldVoteInbox(pcs[0]);
+        inbox.Arm(offer, vaults[0]);
+        var proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
+        var candidateSettings = pcs[0].LoadSettings();
+        candidateSettings.CompanionBindAddress = "127.0.0.1";
+        candidateSettings.CompanionEndpoint = candidateAddress;
+        candidateSettings.CompanionPort = candidatePort;
+        candidateSettings.CompanionListeningEnabled = true;
+        pcs[0].SaveSettings(candidateSettings);
+        using var modeGate = new SemaphoreSlim(1, 1);
+        var candidateManager = Manager(pcs[0]);
+        var candidateListener = new CompanionServer(pcs[0], candidateManager,
+            new PairingService(pcs[0]), Games(pcs[0]),
+            new ServerLogService(pcs[0], candidateManager), modeGate, candidatePort + 2);
+        try
+        {
+            await candidateListener.SyncAsync();
+            Require(candidateListener.ListenerState == CompanionListenerStates.Listening,
+                "owner-enabled candidate HTTPS listener did not open for an armed offer");
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
+                    certificate is not null && HostIdentity.Fingerprint(certificate) == candidatePin
+            };
+            using var client = new HttpClient(handler) { BaseAddress = new Uri(candidateAddress + "/") };
+            var route = $"api/companion/servers/{profile.Id}/shared-world/recovery/{proposalHash}";
+            using var overWireChallenge = await client.GetAsync($"{route}/challenge/{ids[1]}");
+            Require(overWireChallenge.IsSuccessStatusCode,
+                "signed roster voter could not reach candidate HTTPS challenge");
+            var wireNonce = await overWireChallenge.Content.ReadFromJsonAsync<WorldAuthorityChallenge>();
+            Require(wireNonce?.Nonce is { Length: 44 }, "candidate HTTPS challenge was invalid");
+            using var deniedOffer = await client.PostAsJsonAsync(route + "/offer",
+                new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id, proposalHash,
+                    ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
+                    wireNonce!.Nonce, ""));
+            Require(deniedOffer.StatusCode == HttpStatusCode.Forbidden,
+                "unsigned HTTPS offer request was accepted");
+            using var renewedChallenge = await client.GetAsync($"{route}/challenge/{ids[1]}");
+            var validNonce = await renewedChallenge.Content.ReadFromJsonAsync<WorldAuthorityChallenge>();
+            Require(validNonce?.Nonce is { Length: 44 }, "candidate did not renew its challenge");
+            var wireDraft = new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id,
+                proposalHash, ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
+                validNonce!.Nonce, "");
+            var wireRequest = wireDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
+                SharedWorldVoteInbox.RequestBasis(wireDraft), HashAlgorithmName.SHA256)) };
+            using var wireOffer = await client.PostAsJsonAsync(route + "/offer", wireRequest);
+            Require(wireOffer.IsSuccessStatusCode &&
+                (await wireOffer.Content.ReadFromJsonAsync<WorldAuthorityOffer>())?.Proposal == offer.Proposal,
+                "signed voter did not get the exact offer over pinned HTTPS");
+            using var wireVote = await client.PostAsJsonAsync(route + "/vote", vote0);
+            Require((await wireVote.Content.ReadFromJsonAsync<WorldAuthorityVoteResult>())?.Code ==
+                "VoteRecorded", "candidate HTTPS endpoint did not durably record the signed vote");
+        }
+        finally { await candidateListener.StopAsync(); }
+        var challenge = inbox.Challenge(profile.Id, proposalHash, ids[1])
+            ?? throw new Exception("designated voter could not request the candidate offer");
+        var requestDraft = new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id,
+            proposalHash, ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
+            challenge.Nonce, "");
+        var request = requestDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
+            SharedWorldVoteInbox.RequestBasis(requestDraft), HashAlgorithmName.SHA256)) };
+        Require(inbox.ReadOffer(request)?.Proposal == offer.Proposal,
+            "signed voter did not receive the exact candidate offer");
+        Require(inbox.ReadOffer(request) is null, "candidate challenge was reusable");
+        Require(inbox.AcceptVote(profile.Id, proposalHash, vote0).Code == "VoteRecorded",
+            "candidate did not retain the first signed vote");
+        var inboxAfterRestart = new SharedWorldVoteInbox(pcs[0]);
+        Require(inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote0).Votes == 1,
+            "candidate lost or duplicated a vote on restart");
+        var quorumResult = inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote1);
+        Require(quorumResult.Code == "MajorityRecorded" && quorumResult.Decision is not null,
+            "candidate did not retain a valid majority decision");
+        Require(new WorldAuthorityStore(pcs[0]).Fenced(profile.Id,
+            Convert.ToBase64String(keys[0].ExportSubjectPublicKeyInfo()), out _) == false,
+            "signed successor stayed fenced after proving its local PC identity");
         var accepted = SharedWorldElection.ConfirmQuorum(offer, [vote0, vote1],
             new WorldAuthorityStore(pcs[0]));
         Require(WorldAuthorityTrust.Verify(accepted) &&
             new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 1,
             "two of three designated voters did not produce a durable signed decision");
+        Require(separate.Read(profile.Id).Single().BranchHash == separateBranch.BranchHash,
+            "majority authority overwrote the warned separate history");
         var fakeReceipt = offer with { CandidateReceipt = offer.CandidateReceipt with
             { VersionHash = new string('0', 64) } };
         RequireThrows<InvalidDataException>(() => SharedWorldElection.Vote(losses[2], vaults[2],
@@ -3274,7 +3434,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             ids[2], keys[2], new WorldAuthorityStore(pcs[2])),
             "an unsigned change to the candidate TLS pin was accepted");
         var competing = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
-            ids[0], keys[0], "https://127.0.0.1:5133", new string('A', 64),
+            ids[0], keys[0], $"https://127.0.0.1:{candidatePort + 1}", candidatePin,
             new WorldAuthorityStore(pcs[2]));
         RequireThrows<InvalidDataException>(() => SharedWorldElection.Vote(losses[1], vaults[1],
             floor, roster.OwnerPublicKey, competing, ids[1], keys[1],
@@ -3290,7 +3450,6 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         foreach (var pc in pcs) pc.Dispose();
         foreach (var key in keys) key.Dispose();
     }
-    return Task.CompletedTask;
 });
 
 await Check("signed copy receipts count only the exact latest verified version", () =>

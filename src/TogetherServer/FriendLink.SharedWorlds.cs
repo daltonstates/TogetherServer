@@ -10,9 +10,197 @@ public sealed record ReceivedSharedWorldStatus(bool Consented, long? HostVersion
     long? RosterRevision = null, string Trust = "Roster not verified");
 public sealed record ReceivedSharedWorldResult(bool Ok, string Code, string Message,
     ReceivedSharedWorldStatus? Status = null);
+public sealed record WorldAuthorityOfferResult(bool Ok, string Code, string Message,
+    WorldAuthorityOffer? Offer = null);
+public sealed record WorldAuthorityVoteAction(bool Ok, string Code, string Message,
+    int Votes = 0, int Required = 0, WorldAuthorityRecord? Decision = null);
 
 internal sealed partial class FriendLink
 {
+    private readonly HashSet<string> deliveredAuthority = new(StringComparer.Ordinal);
+
+    private async Task ReturnAuthorityToOriginalHostAsync(CancellationToken cancellationToken = default)
+    {
+        if (config is null) return;
+        var store = new WorldAuthorityStore(data);
+        foreach (var profileId in config.ConsentedSharedWorldProfiles.Take(20))
+        {
+            IReadOnlyList<WorldAuthorityRecord> records;
+            try
+            {
+                if (!store.HasState(profileId)) continue;
+                records = store.Read(profileId);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
+            { continue; }
+            foreach (var record in records.Where(record => !deliveredAuthority.Contains(record.RecordHash)).Take(2))
+            {
+                if (config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) !=
+                    record.Proposal.GroupId ||
+                    config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) !=
+                    record.Roster.OwnerPublicKey) continue;
+                try
+                {
+                    using var response = await HostClient().PostAsJsonAsync(
+                        $"api/companion/servers/{profileId}/shared-world/authority",
+                        record, Json, cancellationToken);
+                    if (response.IsSuccessStatusCode) deliveredAuthority.Add(record.RecordHash);
+                }
+                catch (Exception ex) when (ex is IOException or HttpRequestException or TaskCanceledException)
+                { return; }
+            }
+        }
+    }
+    public async Task<WorldAuthorityOfferResult> PrepareRecoveryOfferAsync(Guid profileId)
+    {
+        if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
+        await gate.WaitAsync();
+        try
+        {
+            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
+            if (!sharedHostLoss.MayPropose)
+                return new(false, "HostLossNotConfirmed",
+                    "Wait for two minutes of failed secure Host checks before proposing takeover.");
+            if (config.SharedWorldConflicts?.Contains(profileId) == true ||
+                config.PendingSharedWorldGroups?.ContainsKey(profileId) == true)
+                return new(false, "HistoryReviewRequired", "Review the competing or changed save history first.");
+            var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
+            var pinnedOwner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
+            if (floor is null || pinnedOwner is null ||
+                config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != floor.GroupId)
+                return new(false, "RosterUnavailable", "A trusted owner-signed roster is unavailable on this PC.");
+            var rosterBytes = data.LoadProtected(
+                $"shared-world-roster-{config.DeviceId:N}-{profileId:N}.protected");
+            if (rosterBytes is null || rosterBytes.Length > SharedWorldService.MaximumManifestBytes)
+                return new(false, "RosterUnavailable", "Check the Host roster again before a future takeover.");
+            var roster = JsonSerializer.Deserialize<SharedWorldRoster>(rosterBytes, Json);
+            if (roster is null || roster.OwnerPublicKey != pinnedOwner)
+                return new(false, "RosterRejected", "The saved roster does not match this world identity.");
+            var settings = data.LoadSettings();
+            if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out _))
+                return new(false, "CandidateRouteUnavailable",
+                    "Set this PC's direct HTTPS address before proposing takeover. Open Friend connections only when ready to receive votes.");
+            using var certificate = new HostIdentity(data).Ensure(settings.CompanionEndpoint);
+            using var key = LoadPcSigningKey();
+            var offer = SharedWorldElection.PrepareOffer(sharedHostLoss, ReceivedRoot(profileId),
+                roster, floor, config.DeviceId, key, settings.CompanionEndpoint,
+                HostIdentity.Fingerprint(certificate), new WorldAuthorityStore(data));
+            offer = new SharedWorldVoteInbox(data).Arm(offer, ReceivedRoot(profileId));
+            return new(true, "RecoveryOfferArmed",
+                "This PC prepared a signed offer. Other approved PCs can vote only through its pinned HTTPS address; no game server has started.",
+                offer);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                   CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return new(false, "RecoveryOfferUnavailable", "A safe recovery offer could not be prepared: " + ex.Message); }
+        finally { gate.Release(); ReleaseRetained(); }
+    }
+
+    public async Task<WorldAuthorityVoteAction> VoteOnRecoveryOfferAsync(Guid profileId,
+        WorldAuthorityOffer offer, CancellationToken cancellationToken = default)
+    {
+        if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
+            if (!sharedHostLoss.MayPropose)
+                return new(false, "HostLossNotConfirmed",
+                    "This PC must also confirm two minutes without the pinned Host before voting.");
+            if (!SharedWorldElection.VerifyOffer(offer) || offer.Proposal.ProfileId != profileId ||
+                config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
+                config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != offer.Roster.OwnerPublicKey ||
+                config.SharedRosterFloors?.GetValueOrDefault(profileId) is not { } floor ||
+                config.SharedWorldConflicts?.Contains(profileId) == true)
+                return new(false, "RecoveryOfferRejected", "This offer does not match the trusted shared world on this PC.");
+            using var signer = LoadPcSigningKey();
+            using var candidate = MakeClient(offer.Proposal.CandidateAddress,
+                [offer.CandidateTlsFingerprint]);
+            var hash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
+            var path = $"api/companion/servers/{profileId}/shared-world/recovery/{hash}";
+            using var challengeResponse = await candidate.GetAsync(
+                $"{path}/challenge/{config.DeviceId}", cancellationToken);
+            var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
+                cancellationToken);
+            var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
+                JsonSerializer.Deserialize<WorldAuthorityChallenge>(challengeBytes, Json) : null;
+            if (challenge?.Nonce is not { Length: 44 })
+                return new(false, "CandidateUnavailable", "The candidate did not provide a valid secure challenge.");
+            var publicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+            var requestDraft = new WorldAuthorityOfferRequest(1, offer.Roster.GroupId, profileId,
+                hash, config.DeviceId, publicKey, challenge.Nonce, "");
+            var request = requestDraft with { Signature = Convert.ToBase64String(signer.SignData(
+                SharedWorldVoteInbox.RequestBasis(requestDraft), HashAlgorithmName.SHA256)) };
+            using var offerResponse = await candidate.PostAsJsonAsync(path + "/offer", request, Json,
+                cancellationToken);
+            var offerBytes = await ReadBoundedSharedAsync(offerResponse.Content, 512 * 1024,
+                cancellationToken);
+            var received = offerResponse.IsSuccessStatusCode && offerBytes is not null ?
+                JsonSerializer.Deserialize<WorldAuthorityOffer>(offerBytes, Json) : null;
+            if (!SharedWorldElection.VerifyOffer(received) ||
+                WorldAuthorityTrust.ProposalHash(received!.Proposal) != hash ||
+                received.CandidateTlsFingerprint != offer.CandidateTlsFingerprint ||
+                received.Roster.Signature != offer.Roster.Signature ||
+                received.Version.VersionHash != offer.Version.VersionHash)
+                return new(false, "CandidateOfferChanged", "The candidate's signed offer changed during review.");
+            var store = new WorldAuthorityStore(data);
+            var vote = SharedWorldElection.Vote(sharedHostLoss, ReceivedRoot(profileId), floor,
+                offer.Roster.OwnerPublicKey, received, config.DeviceId, signer, store);
+            using var voteResponse = await candidate.PostAsJsonAsync(path + "/vote", vote, Json,
+                cancellationToken);
+            var resultBytes = await ReadBoundedSharedAsync(voteResponse.Content, 2 * 1024 * 1024,
+                cancellationToken);
+            var result = voteResponse.IsSuccessStatusCode && resultBytes is not null ?
+                JsonSerializer.Deserialize<WorldAuthorityVoteResult>(resultBytes, Json) : null;
+            if (result is not { Ok: true })
+                return new(false, "VoteNotConfirmed", "The signed vote is saved on this PC. Retry with the same offer to confirm delivery.");
+            if (result.Decision is { } decision)
+                store.AppendReceived(decision, profileId, offer.Roster.GroupId,
+                    offer.Roster.OwnerPublicKey);
+            return new(true, result.Code,
+                result.Decision is null ? "Your recovery vote was recorded." :
+                    "A majority approved this exact save. The game server has not started.",
+                result.Votes, result.Required, result.Decision);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                   CryptographicException or UnauthorizedAccessException or
+                                   HttpRequestException or TaskCanceledException or ArgumentException)
+        { return new(false, "RecoveryVoteUnavailable", "The secure recovery vote could not finish: " + ex.Message); }
+        finally { gate.Release(); ReleaseRetained(); }
+    }
+
+    public async Task<WorldSeparateCopyResult> DeclareSeparateCopyAsync(Guid profileId,
+        bool acceptSplitWarning)
+    {
+        if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
+        await gate.WaitAsync();
+        try
+        {
+            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
+            if (!acceptSplitWarning)
+                return new(false, "SplitWarningRequired",
+                    "Confirm that another game server may still be running and histories will remain separate.");
+            var offer = new SharedWorldVoteInbox(data).Armed(profileId);
+            if (offer is null ||
+                config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
+                config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != offer.Roster.OwnerPublicKey ||
+                config.SharedWorldConflicts?.Contains(profileId) == true)
+                return new(false, "RecoveryOfferRejected", "Prepare and review this PC's signed offer first.");
+            using var key = LoadPcSigningKey();
+            var branch = new SharedWorldSeparateCopyStore(data).Declare(sharedHostLoss, offer,
+                ReceivedRoot(profileId), key, acceptSplitWarning);
+            return new(true, "SeparateCopyRecorded",
+                "A warned separate history was recorded. It is not authoritative and has not started a game server. Keep both histories for later group review.", branch);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                   CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return new(false, "SeparateCopyUnavailable", "A separate history could not be recorded: " + ex.Message); }
+        finally { gate.Release(); ReleaseRetained(); }
+    }
     internal TakeoverReadiness CheckTakeoverReadiness(Guid profileId, TakeoverLocalSetup setup)
     {
         string? vault;
@@ -190,6 +378,9 @@ internal sealed partial class FriendLink
         config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
         config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature);
         SaveConfig();
+        // Keep the signed roster for a later Host outage. The protected floor
+        // above is authoritative if this copy is missing or rolled back.
+        data.SaveProtected($"shared-world-roster-{deviceId:N}-{profileId:N}.protected", bytes);
         return null;
         }
         finally { gate.Release(); }
@@ -662,7 +853,15 @@ internal sealed partial class FriendLink
             gate.Release();
             entered = false;
             var copyConfirmed = await SendSharedReceiptAsync(profileId, version, deviceId, transferClient, transferToken);
-            try { PruneReceived(root, version.VersionHash); }
+            try
+            {
+                var protectedHashes = new SharedWorldSeparateCopyStore(data).Read(profileId)
+                    .Select(branch => branch.Offer.Version.VersionHash)
+                    .Concat(new WorldAuthorityStore(data).Read(profileId)
+                        .Select(record => record.Version.VersionHash))
+                    .ToHashSet(StringComparer.Ordinal);
+                PruneReceived(root, version.VersionHash, protectedHashes);
+            }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             { /* A verified receipt is kept even if old-version cleanup fails. */ }
             return new(true, "SaveReceived", copyConfirmed ?
@@ -864,7 +1063,8 @@ internal sealed partial class FriendLink
         return version;
     }
 
-    internal static void PruneReceived(string root, string newest)
+    internal static void PruneReceived(string root, string newest,
+        IReadOnlySet<string>? preservedHistoryHashes = null)
     {
         var versions = Directory.EnumerateDirectories(root)
             .Where(path => Path.GetFileName(path).Length == 64 &&
@@ -877,6 +1077,10 @@ internal sealed partial class FriendLink
             var keep = group.OrderByDescending(item => item.Version!.Number)
                 .Take(3).Select(item => item.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
             keep.Add(Path.Combine(root, newest));
+            if (preservedHistoryHashes is not null)
+                foreach (var hash in preservedHistoryHashes.Where(hash => hash.Length == 64 &&
+                    hash.All(Uri.IsHexDigit)))
+                    keep.Add(Path.Combine(root, hash));
             foreach (var old in group.Where(item => !keep.Contains(item.Path)))
                 if (!ContainsReparsePoint(old.Path)) Directory.Delete(old.Path, true);
         }

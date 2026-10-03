@@ -241,6 +241,40 @@ public sealed class FriendService : IDisposable
         }
     }
 
+    public Task<WorldAuthorityOfferResult> PrepareRecoveryOfferAsync(Guid profileId)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new WorldAuthorityOfferResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) : link.PrepareRecoveryOfferAsync(profileId);
+        }
+    }
+
+    public Task<WorldAuthorityVoteAction> VoteOnRecoveryOfferAsync(Guid profileId,
+        WorldAuthorityOffer offer, CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false, "NotPaired",
+                "Choose a saved Host connection first.")) :
+                link.VoteOnRecoveryOfferAsync(profileId, offer, cancellationToken);
+        }
+    }
+
+    public Task<WorldSeparateCopyResult> DeclareSeparateCopyAsync(Guid profileId,
+        bool acceptSplitWarning)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new WorldSeparateCopyResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) :
+                link.DeclareSeparateCopyAsync(profileId, acceptSplitWarning);
+        }
+    }
+
     public Task<FriendActionResult> RequestAsync(Guid profileId, string action)
     {
         lock (sync)

@@ -66,21 +66,8 @@ internal static class SharedWorldElection
             throw new InvalidDataException("This PC has not confirmed two minutes without the pinned Host.");
         var local = FriendLink.ReadReceivedLatest(receivedRoot) ??
             throw new InvalidDataException("This PC has no verified save history to compare.");
-        if (!TrustedRoster(offer.Roster, floor, offer.Version) ||
+        if (!VerifyOffer(offer) || !TrustedRoster(offer.Roster, floor, offer.Version) ||
             offer.Roster.OwnerPublicKey != pinnedOwnerKey ||
-            !WorldAuthorityTrust.VerifyProposal(offer.Proposal, offer.Roster) ||
-            offer.Proposal.Kind != "Quorum" || offer.Proposal.VersionHash != offer.Version.VersionHash ||
-            offer.Proposal.CandidatePublicKey != offer.CandidateReceipt.DeviceIdKey(offer.Roster) ||
-            offer.CandidateReceipt.GroupId != offer.Roster.GroupId ||
-            offer.CandidateReceipt.ProfileId != offer.Roster.ProfileId ||
-            offer.CandidateReceipt.VersionHash != offer.Version.VersionHash ||
-            offer.CandidateReceipt.RosterEpoch != offer.Roster.Epoch ||
-            offer.CandidateReceipt.RosterRevision != offer.Roster.Revision ||
-            !SharedWorldReceiptTrust.Verify(offer.CandidateReceipt,
-                offer.Proposal.CandidatePublicKey) ||
-            !VerifyTransportPin(offer) ||
-            !HostIdentity.TryEndpoint(offer.Proposal.CandidateAddress, out _) ||
-            offer.Ancestors.Count > 64 ||
             !(local.VersionHash == offer.Version.VersionHash && offer.Ancestors.Count == 0 ||
               local.Number < offer.Version.Number &&
               FriendLink.VerifySharedChain(local, offer.Version, offer.Ancestors)))
@@ -125,6 +112,27 @@ internal static class SharedWorldElection
         roster.GroupId == version.GroupId && roster.ProfileId == version.ProfileId &&
         roster.OwnerPublicKey == version.SigningPublicKey &&
         SharedWorldService.VerifySignature(version);
+
+    internal static bool VerifyOffer(WorldAuthorityOffer? offer)
+    {
+        if (offer?.Proposal is null || offer.Roster is null || offer.Version is null ||
+            offer.CandidateReceipt is null || offer.Ancestors is null ||
+            !WorldAuthorityTrust.VerifyProposal(offer.Proposal, offer.Roster) ||
+            offer.Proposal.Kind != "Quorum" || offer.Proposal.VersionHash != offer.Version.VersionHash ||
+            offer.Proposal.CandidatePublicKey != offer.CandidateReceipt.DeviceIdKey(offer.Roster) ||
+            offer.CandidateReceipt.GroupId != offer.Roster.GroupId ||
+            offer.CandidateReceipt.ProfileId != offer.Roster.ProfileId ||
+            offer.CandidateReceipt.VersionHash != offer.Version.VersionHash ||
+            offer.CandidateReceipt.RosterEpoch != offer.Roster.Epoch ||
+            offer.CandidateReceipt.RosterRevision != offer.Roster.Revision ||
+            !SharedWorldReceiptTrust.Verify(offer.CandidateReceipt,
+                offer.Proposal.CandidatePublicKey) ||
+            !VerifyTransportPin(offer) ||
+            !HostIdentity.TryEndpoint(offer.Proposal.CandidateAddress, out _) ||
+            offer.Ancestors.Count > 64 || !SharedWorldService.VerifySignature(offer.Version))
+            return false;
+        return offer.Ancestors.All(SharedWorldService.VerifySignature);
+    }
 
     private static bool ValidFingerprint(string? fingerprint) =>
         fingerprint is { Length: 64 } && fingerprint.All(Uri.IsHexDigit);

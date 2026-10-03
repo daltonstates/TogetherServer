@@ -302,6 +302,7 @@ internal sealed partial class FriendLink : IDisposable
                 if (await PollPendingOperationsAsync())
                 {
                     sharedHostLoss.Observe(HostReachabilityObservation.Authenticated);
+                    await ReturnAuthorityToOriginalHostAsync();
                     return view;
                 }
                 var hostClient = HostClient();
@@ -365,11 +366,13 @@ internal sealed partial class FriendLink : IDisposable
                 if (status is null) throw new IOException("Host status was empty.");
                 sharedHostLoss.Observe(HostReachabilityObservation.Authenticated);
                 ApplyStatus(status);
+                await ReturnAuthorityToOriginalHostAsync();
                 return view;
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
                 var issue = ConnectionFailure(ex);
+                deliveredAuthority.Clear();
                 sharedHostLoss.Observe(issue.Code is "HostPortClosed" or "HostPortTimedOut" or
                     "HostUnreachable" or "HostTimedOut" or "FriendNetworkUnavailable"
                     ? HostReachabilityObservation.TransportFailure

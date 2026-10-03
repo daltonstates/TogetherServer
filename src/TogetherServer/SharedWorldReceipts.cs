@@ -21,10 +21,14 @@ internal static class SharedWorldReceiptTrust
     }
 
     internal static async Task<byte[]?> ReadBoundedAsync(Stream body, long? declaredLength,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        await ReadBoundedAsync(body, declaredLength, MaximumRequestBytes, cancellationToken);
+
+    internal static async Task<byte[]?> ReadBoundedAsync(Stream body, long? declaredLength,
+        int maximumBytes, CancellationToken cancellationToken)
     {
-        if (declaredLength is > MaximumRequestBytes) return null;
-        var buffer = new byte[MaximumRequestBytes + 1];
+        if (maximumBytes is < 1 or > 2 * 1024 * 1024 || declaredLength > maximumBytes) return null;
+        var buffer = new byte[maximumBytes + 1];
         var length = 0;
         while (length < buffer.Length)
         {
@@ -32,7 +36,7 @@ internal static class SharedWorldReceiptTrust
             if (read == 0) break;
             length += read;
         }
-        return length is 0 or > MaximumRequestBytes ? null : buffer[..length];
+        return length == 0 || length > maximumBytes ? null : buffer[..length];
     }
 
     internal static byte[] Basis(SharedWorldReceipt receipt) => Encoding.UTF8.GetBytes(
