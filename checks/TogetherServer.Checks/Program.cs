@@ -751,6 +751,46 @@ await Check("delegated roster chain enforces owner root, limited grants, and con
     return Task.CompletedTask;
 });
 
+await Check("offline Friend accepts a Host-attested pre-expiry delegation", () =>
+{
+    using var data = Data("delegation-expiry-reconnect");
+    using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var delegateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var start = DateTimeOffset.UtcNow;
+    var clock = new ManualTimeProvider(start);
+    var ownerPublic = Convert.ToBase64String(owner.ExportSubjectPublicKeyInfo());
+    var delegatePublic = Convert.ToBase64String(delegateKey.ExportSubjectPublicKeyInfo());
+    var profileId = Guid.NewGuid();
+    var deviceId = Guid.NewGuid();
+    var rootDraft = new SharedWorldRoster(2, Guid.NewGuid(), profileId, 1, 1, true,
+        ownerPublic, [new(deviceId, delegatePublic,
+            new(ManageSharing: true), false, start.AddMinutes(1))], "");
+    var root = rootDraft with { Signature = Convert.ToBase64String(owner.SignData(
+        SharedWorldRosterTrust.Basis(rootDraft), HashAlgorithmName.SHA256)) };
+    var childDraft = root with { Schema = 3, Epoch = 2, Revision = 2,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(root),
+        SignerDeviceId = deviceId, SignerPublicKey = delegatePublic,
+        Signature = "" };
+    var child = childDraft with { Signature = Convert.ToBase64String(delegateKey.SignData(
+        SharedWorldRosterTrust.Basis(childDraft), HashAlgorithmName.SHA256)) };
+    var acceptedAt = start.AddSeconds(20);
+    var accepted = child with { HostAcceptedUtc = acceptedAt,
+        HostAcceptanceSignature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.HostAcceptanceBasis(child, acceptedAt), HashAlgorithmName.SHA256)) };
+    clock.Advance(TimeSpan.FromMinutes(2));
+    var chain = new SharedWorldRosterChainStore(data, clock);
+    chain.Append(root, ownerPublic);
+    RequireThrows<InvalidDataException>(() => chain.Append(child, ownerPublic),
+        "an expired unstamped delegation was accepted on first reconnect");
+    RequireThrows<InvalidDataException>(() => chain.Append(accepted with
+    { HostAcceptanceSignature = child.Signature }, ownerPublic),
+        "a forged Host acceptance was trusted");
+    chain.Append(accepted, ownerPublic);
+    Require(new SharedWorldRosterChainStore(data, clock).Heads(profileId).Single().Signature ==
+        child.Signature, "a signed pre-expiry publication was lost after reconnect");
+    return Task.CompletedTask;
+});
+
 await Check("delegated publication serves current permissions and owner can revoke", async () =>
 {
     using var host = Data("delegate-publication-host");
@@ -815,6 +855,75 @@ await Check("delegated publication serves current permissions and owner can revo
         "revoked delegate published another revision");
     Require((await manager.SharedWorldRosterHistoryAsync(profile.Id))?.Count == 3,
         "owner revocation did not propagate in signed history");
+});
+
+await Check("owner edit preserves a delegated revoke across repair and restart", async () =>
+{
+    using var data = Data("delegated-owner-delta");
+    var profile = Profile("owner-delta", "owner-delta-world", FreePort());
+    profile.SharedSavesEnabled = true;
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    var games = new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly);
+    var manager = new HostManager(data, games);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "Host setup failed");
+    using var delegateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var aKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var bKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var delegateId = Guid.NewGuid();
+    var aId = Guid.NewGuid();
+    var bId = Guid.NewGuid();
+    var delegatePublic = Convert.ToBase64String(delegateKey.ExportSubjectPublicKeyInfo());
+    var local = new SharedWorldRosterMember[]
+    {
+        new(delegateId, delegatePublic, new(ManageSharing: true), false),
+        new(aId, Convert.ToBase64String(aKey.ExportSubjectPublicKeyInfo()), new(Receive: true), false),
+        new(bId, Convert.ToBase64String(bKey.ExportSubjectPublicKeyInfo()), new(), false)
+    };
+    var root = await manager.PublishSharedWorldRosterAsync(profile.Id, local);
+    var draft = root with { Schema = 3, Epoch = root.Epoch + 1,
+        Revision = root.Revision + 1, PreviousRosterHash = SharedWorldRosterTrust.Hash(root),
+        SignerDeviceId = delegateId, SignerPublicKey = delegatePublic,
+        Members = local.Select(item => item.DeviceId == aId ? item with { Revoked = true } : item).ToArray(),
+        Signature = "" };
+    var revoke = draft with { Signature = Convert.ToBase64String(delegateKey.SignData(
+        SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    await manager.PublishDelegatedRosterAsync(profile.Id, delegateId, delegatePublic, revoke);
+    var inviteGeneration = Guid.NewGuid();
+    data.SavePairingState(new PairingPersistentState { Devices = local.Select(item => new PairedDevice
+    {
+        Id = item.DeviceId, ProfileId = profile.Id, InviteGeneration = inviteGeneration,
+        AssignedProfileIds = [profile.Id],
+        SharedWorldPublicKey = item.PublicKey,
+        SharedWorldGrants = new Dictionary<Guid, SharedWorldGrants> { [profile.Id] = item.Grants },
+        CredentialHash = new string('A', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
+    }).ToList(), ServerInvites = [new ServerInviteState
+    { ProfileId = profile.Id, Generation = inviteGeneration,
+        Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }] });
+    var pairing = new PairingService(data);
+    var editedB = pairing.SetSharedWorldGrants(bId, profile.Id, new(Receive: true));
+    Require(editedB.Ok, "owner could not edit B's local grant: " + editedB.Code);
+    var ownerLocal = pairing.SharedRosterMembers(profile.Id);
+    var ownerB = await manager.PublishSharedWorldRosterAsync(profile.Id, ownerLocal,
+        ownerEdit: new(bId, Grants: ownerLocal.Single(item => item.DeviceId == bId).Grants));
+    pairing.ConfirmSharedRosterPublished(profile.Id, ownerB);
+    Require(ownerB.Members.Single(item => item.DeviceId == aId).Revoked &&
+        ownerB.Members.Single(item => item.DeviceId == bId).Grants.Receive,
+        "editing B silently restored A's delegated revoke");
+    var restarted = new HostManager(data, games);
+    var restartedPairing = new PairingService(data);
+    restartedPairing.RequireSharedRosterPublication(profile.Id);
+    var repaired = await restarted.PublishSharedWorldRosterAsync(profile.Id,
+        restartedPairing.SharedRosterMembers(profile.Id));
+    restartedPairing.ConfirmSharedRosterPublished(profile.Id, repaired);
+    Require(repaired.Signature == ownerB.Signature &&
+        repaired.Members.Single(item => item.DeviceId == aId).Revoked,
+        "interrupted confirmation or restart restored A from stale local grants");
+    var regranted = await restarted.PublishSharedWorldRosterAsync(profile.Id, ownerLocal,
+        ownerEdit: new(aId, Receive: true, Revoked: false));
+    restartedPairing.ConfirmSharedRosterPublished(profile.Id, regranted);
+    Require(!regranted.Members.Single(item => item.DeviceId == aId).Revoked &&
+        regranted.Members.Single(item => item.DeviceId == aId).Grants.Receive,
+        "the owner could not intentionally regrant A");
 });
 
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>

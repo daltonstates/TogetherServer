@@ -79,10 +79,11 @@ using var hostingPower = new WindowsHostingPowerGuard();
 var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
 var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery);
 async Task<SharedWorldRoster> PublishRosterAndConfirmAsync(Guid profileId,
-    bool? ownerOverride = null, bool reviewSourceChange = false)
+    bool? ownerOverride = null, bool reviewSourceChange = false,
+    SharedWorldOwnerEdit? ownerEdit = null)
 {
     var roster = await manager.PublishSharedWorldRosterAsync(profileId,
-        pairing.SharedRosterMembers(profileId), ownerOverride, reviewSourceChange);
+        pairing.SharedRosterMembers(profileId), ownerOverride, reviewSourceChange, ownerEdit);
     pairing.ConfirmSharedRosterPublished(profileId, roster);
     return roster;
 }
@@ -1291,7 +1292,8 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}",
         if (request.Enabled && !status.Enabled)
             return Results.Conflict(new { code = "SharingOff", message = "Enable sharing for this server first." });
         var result = pairing.SetReceiveSaves(id, profileId, request.Enabled);
-        if (result.Ok && status.Enabled) await RepairDirtyRostersAsync();
+        if (result.Ok && status.Enabled) await PublishRosterAndConfirmAsync(profileId,
+            ownerEdit: new(id, Receive: request.Enabled, Revoked: request.Enabled ? false : null));
         return Results.Json(result);
     }
     finally { modeGate.Release(); }
@@ -1344,7 +1346,8 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}/grants",
         if (!(await manager.SharedWorldStatusAsync(profileId)).Enabled)
             return Results.Conflict(new { code = "SharingOff" });
         var result = pairing.SetSharedWorldGrants(id, profileId, request.Grants);
-        if (result.Ok) await RepairDirtyRostersAsync();
+        if (result.Ok) await PublishRosterAndConfirmAsync(profileId,
+            ownerEdit: new(id, Grants: request.Grants, Revoked: false));
         return Results.Json(result);
     }
     finally { modeGate.Release(); }

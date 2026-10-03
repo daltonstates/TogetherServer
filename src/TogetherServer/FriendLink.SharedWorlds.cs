@@ -99,6 +99,7 @@ internal sealed partial class FriendLink
                     PreviousRosterHash = SharedWorldRosterTrust.Hash(parent),
                     SignerDeviceId = config.DeviceId, SignerPublicKey = publicKey,
                     Members = parent.Members.Select(item => item.DeviceId == change.DeviceId ? changed : item).ToArray(),
+                    HostAcceptedUtc = null, HostAcceptanceSignature = null,
                     Signature = "" };
                 revision = revision with { Signature = Convert.ToBase64String(key.SignData(
                     SharedWorldRosterTrust.Basis(revision), HashAlgorithmName.SHA256)) };
@@ -110,9 +111,16 @@ internal sealed partial class FriendLink
                     revision, Json, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                     return SharedFailure("RosterRevisionRejected", "The Host did not accept this sharing change. Check the world and try again.");
-                chain.Append(revision, parent.OwnerPublicKey);
-                config.SharedRosterFloors![profileId] = new(revision.GroupId,
-                    revision.Epoch, revision.Revision, revision.Signature);
+                var body = await ReadBoundedSharedAsync(response.Content,
+                    SharedWorldService.MaximumManifestBytes, cancellationToken);
+                var accepted = body is null ? null : JsonSerializer.Deserialize<SharedWorldRoster>(body, Json);
+                if (accepted is null || accepted.Signature != revision.Signature ||
+                    accepted.PreviousRosterHash != revision.PreviousRosterHash ||
+                    !SharedWorldRosterTrust.VerifyHostAcceptance(accepted))
+                    return SharedFailure("RosterRevisionRejected", "The Host's signed acceptance was invalid.");
+                chain.Append(accepted, parent.OwnerPublicKey);
+                config.SharedRosterFloors![profileId] = new(accepted.GroupId,
+                    accepted.Epoch, accepted.Revision, accepted.Signature);
                 SaveConfig();
                 return new(true, "SharingChanged", "Sharing updated on the Host.");
             }

@@ -231,6 +231,7 @@ public sealed partial class HostManager
                 if (signer is null || signer.PublicKey != enrolledPublicKey || signer.Revoked ||
                     !signer.Grants.ManageSharing ||
                     signer.AccessExpiresUtc is { } expiry && expiry <= DateTimeOffset.UtcNow ||
+                    revision.HostAcceptedUtc is not null || revision.HostAcceptanceSignature is not null ||
                     revision.SignerDeviceId != deviceId || revision.SignerPublicKey != enrolledPublicKey ||
                     revision.PreviousRosterHash != SharedWorldRosterTrust.Hash(parent) ||
                     !SharedWorldRosterTrust.VerifyRevision(revision, parent,
@@ -238,7 +239,8 @@ public sealed partial class HostManager
                     throw new InvalidDataException("This PC cannot publish that roster change.");
                 var chain = new SharedWorldRosterChainStore(data);
                 if (!chain.HasState(profileId)) chain.Append(parent, parent.OwnerPublicKey);
-                chain.Append(revision, parent.OwnerPublicKey);
+                var accepted = sharedWorlds.CountersignDelegatedRoster(revision, DateTimeOffset.UtcNow);
+                chain.Append(accepted, parent.OwnerPublicKey);
                 return sharedWorlds.ReadRoster(profile)!;
             }
         }
@@ -259,7 +261,7 @@ public sealed partial class HostManager
 
     public async Task<SharedWorldRoster> PublishSharedWorldRosterAsync(Guid profileId,
         IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
-        bool reviewSourceChange = false)
+        bool reviewSourceChange = false, SharedWorldOwnerEdit? ownerEdit = null)
     {
         await gate.WaitAsync();
         try
@@ -270,7 +272,7 @@ public sealed partial class HostManager
                 throw new InvalidDataException("Shared saves are not enabled for this server.");
             if (SharedAuthorityBlocked(profileId, out _))
                 throw new InvalidDataException("Shared world authority blocks roster publication from this PC.");
-            return sharedWorlds.PublishRoster(profile, members, ownerOverride, reviewSourceChange);
+            return sharedWorlds.PublishRoster(profile, members, ownerOverride, reviewSourceChange, ownerEdit);
         }
         finally { gate.Release(); }
     }

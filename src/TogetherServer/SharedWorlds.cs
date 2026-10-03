@@ -177,7 +177,7 @@ internal sealed partial class SharedWorldService
 
     internal SharedWorldRoster PublishRoster(ServerProfile profile,
         IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
-        bool reviewSourceChange = false)
+        bool reviewSourceChange = false, SharedWorldOwnerEdit? ownerEdit = null)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
@@ -197,14 +197,22 @@ internal sealed partial class SharedWorldService
                     members.Select(item => item.PublicKey).Distinct(StringComparer.Ordinal).Count() != members.Count)
                     throw new InvalidDataException("Review this world's source and membership before publishing.");
                 var orderedMembers = members.OrderBy(item => item.DeviceId).ToArray();
-                if (parent.Members.SequenceEqual(orderedMembers) &&
+                var history = chain.Read(profile.Id);
+                if (history.Skip(1).Any(item => item.Schema == 3 &&
+                    item.SignerDeviceId == Guid.Empty && item.OwnerLocalBaselineMembers is null))
+                    throw new InvalidDataException("Earlier owner edits need sharing review before another change.");
+                var baseline = parent.OwnerLocalBaselineMembers ?? history[0].Members;
+                var mergedMembers = MergeOwnerChanges(parent.Members, baseline, orderedMembers, ownerEdit);
+                if (parent.Members.SequenceEqual(mergedMembers) &&
                     parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride)) return parent;
                 using var ownerKey = LoadSigningKey();
                 var draftRevision = parent with { Schema = 3, Epoch = checked(parent.Epoch + 1),
                     Revision = checked(parent.Revision + 1),
-                    Members = orderedMembers, OwnerOverride = ownerOverride ?? parent.OwnerOverride,
+                    Members = mergedMembers, OwnerOverride = ownerOverride ?? parent.OwnerOverride,
                     PreviousRosterHash = SharedWorldRosterTrust.Hash(parent),
                     SignerDeviceId = Guid.Empty, SignerPublicKey = parent.OwnerPublicKey,
+                    OwnerLocalBaselineMembers = orderedMembers,
+                    HostAcceptedUtc = null, HostAcceptanceSignature = null,
                     Signature = "" };
                 var signedRevision = draftRevision with { Signature = Convert.ToBase64String(
                     ownerKey.SignData(SharedWorldRosterTrust.Basis(draftRevision), HashAlgorithmName.SHA256)) };
@@ -258,6 +266,69 @@ internal sealed partial class SharedWorldService
             }
             return roster;
         }
+    }
+
+    private static SharedWorldRosterMember[] MergeOwnerChanges(
+        IReadOnlyList<SharedWorldRosterMember> signed,
+        IReadOnlyList<SharedWorldRosterMember> baseline,
+        IReadOnlyList<SharedWorldRosterMember> local,
+        SharedWorldOwnerEdit? edit)
+    {
+        if (baseline.Select(item => item.DeviceId).Distinct().Count() != baseline.Count ||
+            local.Select(item => item.DeviceId).Distinct().Count() != local.Count ||
+            edit is not null && local.All(item => item.DeviceId != edit.DeviceId))
+            throw new InvalidDataException("The owner's local roster baseline is invalid.");
+        var prior = baseline.ToDictionary(item => item.DeviceId);
+        var result = signed.ToDictionary(item => item.DeviceId);
+        foreach (var item in local)
+        {
+            if (!prior.TryGetValue(item.DeviceId, out var before))
+            {
+                result[item.DeviceId] = item;
+                continue;
+            }
+            if (!result.TryGetValue(item.DeviceId, out var current))
+                throw new InvalidDataException("A signed member is missing from the current roster.");
+            var grants = current.Grants with
+            {
+                Receive = before.Grants.Receive != item.Grants.Receive ? item.Grants.Receive : current.Grants.Receive,
+                EligibleHost = before.Grants.EligibleHost != item.Grants.EligibleHost ? item.Grants.EligibleHost : current.Grants.EligibleHost,
+                RecoveryVoter = before.Grants.RecoveryVoter != item.Grants.RecoveryVoter ? item.Grants.RecoveryVoter : current.Grants.RecoveryVoter,
+                ManageSharing = before.Grants.ManageSharing != item.Grants.ManageSharing ? item.Grants.ManageSharing : current.Grants.ManageSharing
+            };
+            if (edit?.DeviceId == item.DeviceId)
+            {
+                if (edit.Grants is not null) grants = edit.Grants;
+                if (edit.Receive is { } receive) grants = grants with { Receive = receive };
+            }
+            result[item.DeviceId] = current with
+            {
+                PublicKey = before.PublicKey != item.PublicKey ? item.PublicKey : current.PublicKey,
+                Revoked = edit?.DeviceId == item.DeviceId && edit.Revoked is { } revoked
+                    ? revoked : before.Revoked != item.Revoked ? item.Revoked : current.Revoked,
+                AccessExpiresUtc = before.AccessExpiresUtc != item.AccessExpiresUtc
+                    ? item.AccessExpiresUtc : current.AccessExpiresUtc,
+                Grants = grants
+            };
+        }
+        foreach (var removed in prior.Keys.Except(local.Select(item => item.DeviceId))) result.Remove(removed);
+        return result.Values.OrderBy(item => item.DeviceId).ToArray();
+    }
+
+    internal SharedWorldRoster CountersignDelegatedRoster(SharedWorldRoster revision,
+        DateTimeOffset acceptedUtc)
+    {
+        if (revision.Schema != 3 || revision.SignerDeviceId is null ||
+            revision.SignerDeviceId == Guid.Empty ||
+            revision.HostAcceptedUtc is not null || revision.HostAcceptanceSignature is not null)
+            throw new InvalidDataException("Only a new delegated revision can receive Host acceptance.");
+        using var ownerKey = LoadSigningKey();
+        if (revision.OwnerPublicKey != Convert.ToBase64String(ownerKey.ExportSubjectPublicKeyInfo()))
+            throw new InvalidDataException("The Host does not own this sharing group.");
+        return revision with { HostAcceptedUtc = acceptedUtc,
+            HostAcceptanceSignature = Convert.ToBase64String(ownerKey.SignData(
+                SharedWorldRosterTrust.HostAcceptanceBasis(revision, acceptedUtc),
+                HashAlgorithmName.SHA256)) };
     }
 
     private SharedWorldRoster? ReadRosterForBinding(ServerProfile profile, SourceBinding binding)

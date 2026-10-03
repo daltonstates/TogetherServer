@@ -18,7 +18,16 @@ public sealed record SharedWorldRoster(int Schema, Guid GroupId, Guid ProfileId,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     Guid? SignerDeviceId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? SignerPublicKey = null);
+    string? SignerPublicKey = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<SharedWorldRosterMember>? OwnerLocalBaselineMembers = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DateTimeOffset? HostAcceptedUtc = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HostAcceptanceSignature = null);
+public sealed record SharedWorldOwnerEdit(Guid DeviceId,
+    SharedWorldGrants? Grants = null, bool? Receive = null,
+    bool? Revoked = null);
 public sealed record SharedWorldEnrollmentChallenge(string Nonce);
 public sealed record SharedWorldEnrollmentRequest(
     [property: JsonRequired] string Nonce, [property: JsonRequired] string PublicKey,
@@ -45,16 +54,47 @@ internal static class SharedWorldRosterTrust
         {
             roster.Schema, roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
             roster.OwnerOverride, roster.OwnerPublicKey, roster.Members
-        }, Json) : JsonSerializer.SerializeToUtf8Bytes(new
+        }, Json) : roster.OwnerLocalBaselineMembers is null ? JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer shared roster revision v3", roster.Schema,
             roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
             roster.OwnerOverride, roster.OwnerPublicKey, roster.Members,
             roster.PreviousRosterHash, roster.SignerDeviceId, roster.SignerPublicKey
+        }, Json) : JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer shared roster revision v3", roster.Schema,
+            roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
+            roster.OwnerOverride, roster.OwnerPublicKey, roster.Members,
+            roster.PreviousRosterHash, roster.SignerDeviceId, roster.SignerPublicKey,
+            roster.OwnerLocalBaselineMembers
         }, Json);
 
     internal static string Hash(SharedWorldRoster roster) => Convert.ToHexString(
         SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(roster, Json)));
+
+    internal static byte[] HostAcceptanceBasis(SharedWorldRoster roster, DateTimeOffset acceptedUtc) =>
+        JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            domain = "TogetherServer delegated roster Host acceptance v1",
+            roster.ProfileId, roster.GroupId, roster.Epoch, roster.Revision,
+            roster.PreviousRosterHash, roster.SignerDeviceId, roster.Signature,
+            AcceptedUtc = acceptedUtc
+        }, Json);
+
+    internal static bool VerifyHostAcceptance(SharedWorldRoster roster)
+    {
+        try
+        {
+            if (roster.HostAcceptedUtc is not { } accepted ||
+                string.IsNullOrEmpty(roster.HostAcceptanceSignature)) return false;
+            using var key = ECDsa.Create();
+            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(roster.OwnerPublicKey), out _);
+            return key.VerifyData(HostAcceptanceBasis(roster, accepted),
+                Convert.FromBase64String(roster.HostAcceptanceSignature), HashAlgorithmName.SHA256);
+        }
+        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
+        { return false; }
+    }
 
     internal static bool Verify(SharedWorldRoster? roster) => VerifySignature(roster) &&
         (roster!.Schema < 3 || roster.SignerDeviceId == Guid.Empty &&
@@ -73,6 +113,7 @@ internal static class SharedWorldRosterTrust
                     roster.Members.Count ||
                 roster.Schema == 3 && (roster.SignerDeviceId is null ||
                     !ValidKey(roster.SignerPublicKey) ||
+                    roster.OwnerLocalBaselineMembers is { Count: > 128 } ||
                     roster.PreviousRosterHash is not null &&
                     (roster.PreviousRosterHash.Length != 64 ||
                      !roster.PreviousRosterHash.All(Uri.IsHexDigit))))
@@ -106,10 +147,16 @@ internal static class SharedWorldRosterTrust
         if (roster.SignerDeviceId == Guid.Empty)
             return roster.SignerPublicKey == pinnedOwnerPublicKey;
         var signer = parent.Members.SingleOrDefault(member => member.DeviceId == roster.SignerDeviceId);
+        if (roster.HostAcceptedUtc is not null || roster.HostAcceptanceSignature is not null)
+        {
+            if (!VerifyHostAcceptance(roster)) return false;
+        }
         if (signer is null || signer.Revoked || !signer.Grants.ManageSharing ||
             signer.PublicKey != roster.SignerPublicKey ||
-            firstAcceptance && signer.AccessExpiresUtc is { } expiry && expiry <= acceptedUtc ||
+            firstAcceptance && signer.AccessExpiresUtc is { } expiry &&
+                expiry <= (roster.HostAcceptedUtc ?? acceptedUtc) ||
             roster.OwnerOverride != parent.OwnerOverride ||
+            !((roster.OwnerLocalBaselineMembers ?? []).SequenceEqual(parent.OwnerLocalBaselineMembers ?? [])) ||
             roster.Members.Count != parent.Members.Count) return false;
         var before = parent.Members.ToDictionary(member => member.DeviceId);
         foreach (var member in roster.Members)
