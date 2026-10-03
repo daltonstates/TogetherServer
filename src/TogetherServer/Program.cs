@@ -1498,6 +1498,18 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/offer", async (Guid id) =>
     friendMode ? Results.Json(await friend.PrepareRecoveryOfferAsync(id)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery", (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Json(new SharedWorldVoteInbox(data).Status(id, friend.RecoveryDeviceId(id))) :
+    Results.Conflict(new { code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/offer-code", (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    !friendMode ? Results.Conflict(new { code = "HostMode" }) :
+    new SharedWorldVoteInbox(data).Armed(id) is { } offer ? Results.Json(new
+    {
+        proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal), offer
+    }) :
+    Results.NotFound(new { code = "NoArmedOffer", message = "No signed offer is armed on this PC." }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (HttpContext context, Guid id) =>
 {
     if (!friendMode) return Results.Conflict(new { code = "HostMode" });

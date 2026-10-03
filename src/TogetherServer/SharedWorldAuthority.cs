@@ -639,6 +639,28 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
         return heads.Length == 1 && MatchesLocalSuccessor(heads[0]) ? heads[0] : null;
     }
+    internal bool HasLocalSuccessorKeys(Guid profileId, WorldAuthorityProposal proposal,
+        Guid deviceId)
+    {
+        if (proposal.Schema != 2 || proposal.SuccessorBinding is not { } signed ||
+            signed.DeviceId != deviceId || signed.HostingPublicKey != proposal.CandidatePublicKey)
+            return false;
+        try
+        {
+            var deviceBytes = data.LoadProtected($"shared-world-pc-signing-{deviceId:N}.protected");
+            var hostBytes = data.LoadProtected(HostingKeyName(profileId));
+            if (deviceBytes is null || hostBytes is null) return false;
+            using var deviceKey = ECDsa.Create();
+            using var hostKey = ECDsa.Create();
+            deviceKey.ImportPkcs8PrivateKey(deviceBytes, out _);
+            hostKey.ImportPkcs8PrivateKey(hostBytes, out _);
+            return ProvesPossession(deviceKey, signed.DevicePublicKey) &&
+                ProvesPossession(hostKey, signed.HostingPublicKey);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                   CryptographicException or UnauthorizedAccessException)
+        { return false; }
+    }
     internal void BindLocalSuccessor(Guid profileId, string recordHash, Guid deviceId)
     {
         lock (sync)
@@ -657,14 +679,17 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 record.Proposal.GroupId, recordHash, deviceId, member!.PublicKey,
                 signed?.HostingPublicKey ?? member.PublicKey);
             // The proof of possession is checked before writing and again at each Start.
-            var keyBytes = data.LoadProtected($"shared-world-pc-signing-{deviceId:N}.protected");
-            if (keyBytes is null) throw new InvalidDataException("Successor PC identity is missing.");
-            using var key = ECDsa.Create();
-            key.ImportPkcs8PrivateKey(keyBytes, out _);
-            if (!ProvesPossession(key, member.PublicKey))
-                throw new InvalidDataException("Successor PC identity does not match the signed roster.");
-            if (!plannedLegacy && PrepareLocalHostingKey(profileId) != signed!.HostingPublicKey)
-                throw new InvalidDataException("This PC does not own the authorized hosting key.");
+            if (plannedLegacy)
+            {
+                var keyBytes = data.LoadProtected($"shared-world-pc-signing-{deviceId:N}.protected");
+                if (keyBytes is null) throw new InvalidDataException("Successor PC identity is missing.");
+                using var key = ECDsa.Create();
+                key.ImportPkcs8PrivateKey(keyBytes, out _);
+                if (!ProvesPossession(key, member.PublicKey))
+                    throw new InvalidDataException("Successor PC identity does not match the signed roster.");
+            }
+            else if (!HasLocalSuccessorKeys(profileId, record.Proposal, deviceId))
+                throw new InvalidDataException("This PC does not own the signed successor keys.");
             data.SaveProtected(HostBindingName(profileId), JsonSerializer.SerializeToUtf8Bytes(binding, Json));
         }
     }
