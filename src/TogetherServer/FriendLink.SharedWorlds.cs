@@ -10,6 +10,33 @@ public sealed record ReceivedSharedWorldStatus(bool Consented, long? HostVersion
     long? RosterRevision = null, string Trust = "Roster not verified");
 public sealed record ReceivedSharedWorldResult(bool Ok, string Code, string Message,
     ReceivedSharedWorldStatus? Status = null);
+public sealed record SharedWorldSharingMember(Guid DeviceId, SharedWorldGrants Grants,
+    bool Revoked, DateTimeOffset? AccessExpiresUtc, bool IsSelf, string? Name = null);
+public sealed record SharedWorldSharingView(bool Available, bool CanManage,
+    Guid SelfDeviceId, long? Revision, string Code, string Message,
+    IReadOnlyList<SharedWorldSharingMember> Members, DateTimeOffset? CheckedUtc = null);
+
+internal static class SharedWorldSharingProjection
+{
+    internal static SharedWorldSharingView Build(SharedWorldRoster roster, Guid selfId,
+        string selfPublicKey, DateTimeOffset now)
+    {
+        var self = roster.Members.SingleOrDefault(item => item.DeviceId == selfId);
+        var canManage = self is { Revoked: false, Grants.ManageSharing: true } &&
+            self.PublicKey == selfPublicKey &&
+            (self.AccessExpiresUtc is null || self.AccessExpiresUtc > now);
+        var message = canManage ? "You can manage sharing for this world." :
+            self?.Revoked == true ? "This PC was removed from sharing." :
+            self?.AccessExpiresUtc is { } expiry && expiry <= now
+                ? "This PC's sharing access expired." :
+                "The owner has not granted this PC sharing management.";
+        var members = canManage ? roster.Members.Select(item => new SharedWorldSharingMember(
+            item.DeviceId, item.Grants, item.Revoked, item.AccessExpiresUtc,
+            item.DeviceId == selfId)).ToArray() : [];
+        return new(true, canManage, selfId, roster.Revision,
+            canManage ? "CanManage" : "PermissionDenied", message, members, now);
+    }
+}
 
 internal sealed partial class FriendLink
 {
@@ -64,6 +91,94 @@ internal sealed partial class FriendLink
     private readonly Dictionary<Guid, DateTimeOffset> sharedRetryAfter = [];
     private readonly Dictionary<Guid, int> sharedFailures = [];
 
+    internal async Task<SharedWorldSharingView> CheckSharedWorldSharingAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryRetain()) return SharingFailure(Guid.Empty, "ConnectionClosed", "This connection is closing.");
+        try
+        {
+            await gate.WaitAsync(cancellationToken);
+            try { return (await SyncSharingRosterAsync(profileId, cancellationToken)).View; }
+            finally { gate.Release(); }
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
+            CryptographicException or InvalidDataException or UnauthorizedAccessException)
+        { return SharingFailure(config?.DeviceId ?? Guid.Empty, "RosterUnavailable",
+            "This PC could not verify the current sharing permissions."); }
+        finally { ReleaseRetained(); }
+    }
+
+    private static SharedWorldSharingView SharingFailure(Guid self, string code, string message) =>
+        new(false, false, self, null, code, message, []);
+
+    private async Task<(SharedWorldRoster? Roster, SharedWorldSharingView View)> SyncSharingRosterAsync(
+        Guid profileId, CancellationToken cancellationToken)
+    {
+        if (config is null)
+            return (null, SharingFailure(Guid.Empty, "NotPaired", "Connect to a Host first."));
+        var selfId = config.DeviceId;
+        if (!view.Profiles.Any(item => item.Id == profileId))
+            return (null, SharingFailure(selfId, "UnknownProfile", "This server is not assigned to this PC."));
+        if (!view.HostCapabilities.Contains(CompanionProtocol.SharedWorldsCapability, StringComparer.Ordinal))
+            return (null, SharingFailure(selfId, "UpdateRequired", "Update the Host app to manage sharing."));
+        using var key = LoadPcSigningKey(selfId);
+        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        var client = HostClient();
+        var path = $"api/companion/servers/{profileId}/shared-world";
+        using var challengeResponse = await client.GetAsync(path + "/enrollment", cancellationToken);
+        if (!challengeResponse.IsSuccessStatusCode)
+            return (null, SharingFailure(selfId, "EnrollmentDenied", "The Host has not approved this PC for the world."));
+        var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
+        var challenge = challengeBytes is null ? null :
+            JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json);
+        if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+            return (null, SharingFailure(selfId, "InvalidChallenge", "The Host sent an invalid identity check."));
+        var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+            Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                selfId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+        using var enrollment = await client.PostAsJsonAsync(path + "/enrollment",
+            proof, Json, cancellationToken);
+        if (!enrollment.IsSuccessStatusCode)
+            return (null, SharingFailure(selfId, "KeyReviewRequired",
+                "The owner needs to review this PC's sharing identity."));
+        using var response = await client.GetAsync(path + "/roster/revisions",
+            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var bytes = await ReadBoundedSharedAsync(response.Content, 4 * 1024 * 1024, cancellationToken);
+        if (!response.IsSuccessStatusCode || bytes is null)
+            return (null, SharingFailure(selfId, "RosterUnavailable", "The Host's sharing list is unavailable."));
+        List<SharedWorldRoster>? revisions;
+        try { revisions = JsonSerializer.Deserialize<List<SharedWorldRoster>>(bytes, Json); }
+        catch (JsonException)
+        { return (null, SharingFailure(selfId, "RosterRejected", "The signed sharing list was invalid.")); }
+        if (revisions is null || revisions.Count is < 1 or > 256 ||
+            revisions.Any(item => item is null) || revisions[0].ProfileId != profileId ||
+            !SharedWorldRosterTrust.Verify(revisions[0]))
+            return (null, SharingFailure(selfId, "RosterRejected", "The signed sharing list was invalid."));
+        var pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
+        if (pinned is not null && revisions[0].OwnerPublicKey != pinned)
+            return (null, SharingFailure(selfId, "SigningIdentityChanged",
+                "The Host's world identity changed. Ask the owner to review it."));
+        var chain = new SharedWorldRosterChainStore(data);
+        if (chain.HasState(profileId) && chain.Read(profileId).Count > revisions.Count)
+            return (null, SharingFailure(selfId, "RosterRollback", "The Host sent an older sharing list."));
+        foreach (var revision in revisions)
+            chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
+        var heads = chain.Heads(profileId);
+        if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
+            SharedWorldRosterTrust.Hash(revisions[^1]))
+            return (null, SharingFailure(selfId, "RosterConflict",
+                "Competing sharing changes need owner review."));
+        var roster = heads[0];
+        config.SharedWorldSigningKeys ??= [];
+        config.SharedRosterFloors ??= [];
+        config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
+        config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch,
+            roster.Revision, roster.Signature);
+        SaveConfig();
+        return (roster, SharedWorldSharingProjection.Build(roster, selfId, publicKey,
+            DateTimeOffset.UtcNow));
+    }
+
     internal async Task<ReceivedSharedWorldResult> ChangeSharedWorldGrantsAsync(Guid profileId,
         SharedWorldDelegateChangeRequest change, CancellationToken cancellationToken = default)
     {
@@ -76,13 +191,10 @@ internal sealed partial class FriendLink
                 if (config is null || change.DeviceId == Guid.Empty || change.DeviceId == config.DeviceId)
                     return SharedFailure("InvalidSharingChange", "Choose another approved PC.");
                 var chain = new SharedWorldRosterChainStore(data);
-                var heads = chain.Heads(profileId);
-                if (heads.Count != 1)
-                    return SharedFailure("RosterUnavailable", "Check this shared world before changing access.");
-                var parent = heads[0];
-                if (config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != parent.OwnerPublicKey ||
-                    config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != parent.GroupId)
-                    return SharedFailure("RosterUnavailable", "Check this shared world before changing access.");
+                var synced = await SyncSharingRosterAsync(profileId, cancellationToken);
+                if (!synced.View.CanManage || synced.Roster is null)
+                    return SharedFailure(synced.View.Code, synced.View.Message);
+                var parent = synced.Roster;
                 using var key = LoadPcSigningKey(config.DeviceId);
                 var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
                 var self = parent.Members.SingleOrDefault(item => item.DeviceId == config.DeviceId);

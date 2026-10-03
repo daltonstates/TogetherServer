@@ -1474,6 +1474,9 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/sharing", async (HttpConte
     Guid id, SharedWorldDelegateChangeRequest change) =>
     friendMode ? Results.Json(await friend.ChangeSharedWorldGrantsAsync(id, change, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/sharing/check", async (HttpContext context,
+    Guid id) => friendMode ? Results.Json(await friend.CheckSharedWorldSharingAsync(id,
+        context.RequestAborted)) : Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>
 {
     if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);

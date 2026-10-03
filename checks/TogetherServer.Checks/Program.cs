@@ -1073,6 +1073,36 @@ await Check("takeover votes use the current delegated roster and fence forked go
     return Task.CompletedTask;
 });
 
+await Check("sharing manager can inspect grants without Receive access", () =>
+{
+    using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var target = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var selfId = Guid.NewGuid();
+    var targetId = Guid.NewGuid();
+    var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    var member = new SharedWorldRosterMember(selfId, publicKey,
+        new(ManageSharing: true), false);
+    var roster = new SharedWorldRoster(2, Guid.NewGuid(), Guid.NewGuid(), 1, 1, true,
+        publicKey, [member, new(targetId,
+            Convert.ToBase64String(target.ExportSubjectPublicKeyInfo()), new(Receive: true), false)], "");
+    var now = DateTimeOffset.UtcNow;
+    var view = SharedWorldSharingProjection.Build(roster, selfId, publicKey, now);
+    Require(view.CanManage && view.Members.Count == 2 &&
+        !view.Members.Single(item => item.IsSelf).Grants.Receive &&
+        view.Members.Single(item => item.DeviceId == targetId).Grants.Receive,
+        "ManageSharing incorrectly required save receiving or hid the editable roster");
+    Require(!SharedWorldSharingProjection.Build(roster with
+    { Members = [member with { Revoked = true }, roster.Members[1]] },
+        selfId, publicKey, now).CanManage &&
+        !SharedWorldSharingProjection.Build(roster with
+        { Members = [member with { AccessExpiresUtc = now }, roster.Members[1]] },
+        selfId, publicKey, now).CanManage &&
+        !SharedWorldSharingProjection.Build(roster, selfId,
+            Convert.ToBase64String(target.ExportSubjectPublicKeyInfo()), now).CanManage,
+        "revoked, expired, or mismatched PC identity kept management access");
+    return Task.CompletedTask;
+});
+
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
 {
     using var data = Data("shared-roster-missing-before-save");
