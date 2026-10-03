@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
-import { Button, Input } from './Controls'
+import { Button, Input, Select, TextArea } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 
@@ -458,9 +458,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
         {handoff.finalVersion != null && ` Final save version ${handoff.finalVersion}.`}
         {handoff.receiptConfirmed && ' Signed receipt confirmed.'}</p>}
       {!handoff?.pending && handoff !== null && <p className="helper-text">No pending handoff. If this PC was fenced, review its shared-world status before hosting.</p>}
-      {!handoff?.pending && <><label>Next host PC <select value={successorId} disabled={busy || handoff === null}
+      {!handoff?.pending && <><label>Next host PC <Select value={successorId} disabled={busy || handoff === null}
         onChange={event => setSuccessorId(event.target.value)}><option value="">Choose a PC</option>
-        {successors.map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label>
+        {successors.map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</Select></label>
         {successors.length === 0 && <p className="helper-text">Give an approved PC Receive and Eligible host access, then enroll its signing identity.</p>}
         <details><summary>Direct route details</summary>
           <label>Next PC direct HTTPS IP address and port<Input value={successorAddress}
@@ -747,7 +747,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
             recovery?.state === 'OfferClosed' ? <p role="status">The earlier offer is closed. No recovery offer is active.</p> :
               <p className="helper-text">No candidate offer is armed on this PC.</p>}
       {recovery?.separateCopies ? <p role="status">Separate history recorded on this PC. It has not started a game server.</p> : null}
-      <label>Offer code from candidate PC<textarea className="ui-textarea" rows={3} value={offerCode} maxLength={512 * 1024}
+      <label>Offer code from candidate PC<TextArea rows={3} value={offerCode} maxLength={512 * 1024}
         onChange={event => { setOfferCode(event.target.value); setReviewedOffer(null); setVoteCount(null) }} /></label>
       <Button className="secondary" disabled={busy || !offerCode.trim()} onClick={reviewOffer}>Review offer code</Button>
       {reviewedOffer && <div><p>Candidate PC {reviewedOffer.candidateReceipt.deviceId} · save version {reviewedOffer.version.number} · {reviewedOffer.proposal.candidateAddress}</p>
@@ -764,7 +764,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
         <p>Share this signed offer code with approved voters. It names the candidate address and exact completed save. It does not authorize game Start.</p>
         <Button className="secondary" disabled={busy} onClick={() => void showCandidateCode()}>Show signed offer code</Button>
         {candidateCode?.proposalHash === recovery.proposalHash &&
-          <textarea className="ui-textarea" rows={3} aria-label="Signed offer code" readOnly value={JSON.stringify(candidateCode.offer)} />}
+          <TextArea rows={3} aria-label="Signed offer code" readOnly value={JSON.stringify(candidateCode.offer)} />}
         <p>Save hash: {recovery.versionHash}</p>
       </details>}
     </details>}
@@ -783,9 +783,9 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       {offerText && <details><summary>Share signed invitation</summary>
         <p>Send this invitation only to designated recovery voters. The app checks the signed proposal and exact branches before a vote.</p>
         <Button className="secondary" onClick={() => void navigator.clipboard.writeText(offerText)}>Copy invitation</Button>
-        <textarea readOnly value={offerText} aria-label="Signed invitation" /></details>}
+        <TextArea readOnly value={offerText} aria-label="Signed invitation" /></details>}
       <details><summary>Vote on an invitation</summary>
-        <textarea value={invitation} aria-label="Paste signed invitation" onChange={event => {
+        <TextArea value={invitation} aria-label="Paste signed invitation" onChange={event => {
           setInvitation(event.target.value); setReviewed(null) }} />
         <Button className="secondary" disabled={!invitation || busy}
           onClick={() => void reviewInvitation()}>Review invitation</Button>
