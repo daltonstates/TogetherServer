@@ -3217,6 +3217,11 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(prepared.Ok && prepared.Version is { Number: 3 },
         "reviewed retry did not publish another final save");
     version = prepared.Version!;
+    // The old Host is fenced when the handoff commits, so retain the signed
+    // ancestry while it is still authorized to serve the final save.
+    var signedHistory = Enumerable.Range(1, checked((int)version.Number - 1))
+        .Select(number => shares.ReadEarlierVersion(version, number))
+        .ToDictionary(item => item.Number);
     receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
         version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
     receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
@@ -3294,7 +3299,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var proofBatch = await FriendLink.StageAuthorityProofBatchAsync(receivingAuthority,
         completed.Authority!, null, WorldAuthorityTrust.ProofVersionsPerCheck,
         (number, _) => Task.FromResult<SharedWorldVersion?>(number == version.Number ?
-            version : shares.ReadEarlierVersion(version, number)), CancellationToken.None);
+            version : signedHistory.GetValueOrDefault(number)), CancellationToken.None);
     Require(proofBatch is { Complete: true, Used: 3 } &&
         FriendLink.VerifyStagedAuthorityProofBatch(receivingAuthority, completed.Authority!,
             null, WorldAuthorityTrust.ProofVersionsPerCheck, CancellationToken.None).Complete,
