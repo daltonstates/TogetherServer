@@ -33,6 +33,7 @@ describe('Shared saves controls', () => {
     expect(sharing).not.toBeChecked()
     fireEvent.click(sharing)
     await waitFor(() => expect(calls).toContain(`PUT /api/local/profiles/${profile}/shared-world`))
+    fireEvent.click(screen.getByText('Technical details and PC permissions'))
     const grant = await screen.findByLabelText('Receive for Friend PC')
     fireEvent.click(grant)
     await waitFor(() => expect(calls).toContain(
@@ -40,7 +41,7 @@ describe('Shared saves controls', () => {
     expect(screen.getByLabelText('Eligible host for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Recovery voter for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Manage sharing for Friend PC')).not.toBeChecked()
-    expect(screen.getByText(/Live save capture and takeover are not available yet/)).toBeInTheDocument()
+    expect(screen.getByText(/Live save capture and automatic takeover are not available yet/)).toBeInTheDocument()
     expect(screen.getByText(/Use its verified post-Stop copy/)).toBeInTheDocument()
   })
 
@@ -67,7 +68,7 @@ describe('Shared saves controls', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
     expect(await screen.findByText(/1 version\(s\) behind/)).toBeInTheDocument()
-    expect(screen.getByText(/takeover are not available yet/)).toBeInTheDocument()
+    expect(screen.getByText(/automatic takeover are not available yet/)).toBeInTheDocument()
   })
 
   it('rejects malformed status responses', () => {
@@ -136,7 +137,7 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    fireEvent.click(screen.getByText('Technical details'))
+    fireEvent.click(screen.getAllByText('Technical details').at(-1)!)
     fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
     await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
     expect(screen.getByLabelText('Owner recovery override (future recovery only)')).not.toBeChecked()
@@ -154,7 +155,7 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    fireEvent.click(screen.getByText('Technical details'))
+    fireEvent.click(screen.getAllByText('Technical details').at(-1)!)
     fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
     await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
   })
@@ -167,5 +168,57 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByText('Shared worlds'))
     expect(await screen.findByRole('alert')).toHaveTextContent('Earlier verified copies stay here')
     expect(screen.queryByText(/version\(s\) behind/)).not.toBeInTheDocument()
+  })
+
+  it('prepares only for an eligible PC and waits for its exact signed receipt', async () => {
+    const requests: { url: string; body?: unknown }[] = []
+    const successor = { ...device, sharedWorldKeyEnrolled: true,
+      sharedWorldGrants: { [profile]: { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false } } }
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        requests.push({ url, body: init.body ? JSON.parse(String(init.body)) : undefined })
+        if (url.endsWith('/prepare')) return reply({ ok: true, code: 'WaitingForSuccessorCopy', message: 'Final save ready.' })
+        if (url.endsWith('/complete')) return reply({ ok: false, code: 'WaitingForSuccessorCopy', message: 'Exact receipt missing.' })
+        if (url.endsWith('/cancel')) return reply({ ok: true, code: 'HandoffCanceled', message: 'Canceled safely.' })
+      }
+      if (url.endsWith('/governance')) return reply({ revision: 1, ownerOverride: true })
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[successor]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    await screen.findByText('Move hosting to another PC')
+    const prepare = screen.getByRole('button', { name: 'Stop and prepare final save' })
+    expect(prepare).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Next host PC'), { target: { value: device.id } })
+    fireEvent.click(screen.getAllByText('Technical details')[0])
+    fireEvent.change(screen.getByLabelText('Next PC direct HTTPS IP address and port'),
+      { target: { value: 'https://192.0.2.10:5131' } })
+    fireEvent.click(prepare)
+    await waitFor(() => expect(requests[0]).toEqual({ url: `/api/local/profiles/${profile}/shared-world/handoff/prepare`,
+      body: { successorDeviceId: device.id, successorAddress: 'https://192.0.2.10:5131' } }))
+    expect(await screen.findByText(/Signed receipt pending from the chosen PC/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Complete pending handoff' }))
+    expect(await screen.findByText('Exact receipt missing.')).toBeInTheDocument()
+    expect(screen.queryByText(/Handoff signed/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel pending handoff' }))
+    expect(await screen.findByText('Canceled safely.')).toBeInTheDocument()
+  })
+
+  it('stages only a signed Friend offer and keeps hosting setup pending', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/stage')) return reply({ ok: true, code: 'StagedForSetup',
+        message: 'The signed final copy is staged.' })
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(await screen.findByText('Verified copy on this PC')).toBeInTheDocument()
+    expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Check signed offer and stage copy' }))
+    await waitFor(() => expect(calls).toContain(`POST /api/local/friend/${profile}/shared-world/handoff/stage`))
+    expect(await screen.findByText(/Local server setup, save signing, and direct routes still need checking/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
   })
 })
