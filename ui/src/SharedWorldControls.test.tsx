@@ -331,7 +331,8 @@ describe('Shared saves controls', () => {
               'No takeover is recorded for this world.',
           head: state === 'OldHostFenced' ? head : null, competingHeads: null,
           exactManagedProcessRunning: state === 'OldHostFenced' } })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      currentAddress="https://192.0.2.10:5131" onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
     await screen.findByText(/No pending handoff/)
     state = 'OldHostFenced'
@@ -341,6 +342,7 @@ describe('Shared saves controls', () => {
     expect(screen.queryByText(/latest saved version 3/)).not.toBeInTheDocument()
     expect(screen.getByText(/exact game process managed by this PC is still running/)).toBeInTheDocument()
     expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Share current address' })).not.toBeInTheDocument()
     expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
     const technical = screen.getAllByText('Technical details').at(-1)!.closest('details')!
     expect(technical).not.toHaveAttribute('open')
@@ -361,7 +363,7 @@ describe('Shared saves controls', () => {
             competingHeads: null, exactManagedProcessRunning: false } })))
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/Copied to 2 PCs · latest saved version 4/)).toBeInTheDocument()
+    expect(await screen.findByText(/Copied to 2 PCs · latest post-Stop file copy 4/)).toBeInTheDocument()
     expect(screen.getByText('This PC holds the verified current hosting decision.')).toBeInTheDocument()
     expect(screen.queryByText(/Preserved version/)).not.toBeInTheDocument()
   })
