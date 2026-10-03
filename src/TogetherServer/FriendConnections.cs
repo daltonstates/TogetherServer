@@ -263,6 +263,12 @@ public sealed class FriendService : IDisposable
         }
     }
 
+    internal Guid? RecoveryDeviceId(Guid profileId)
+    {
+        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+            .RecoveryDeviceId(profileId);
+    }
+
     internal Task<bool> ProbeRecoveryHostLossAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {

@@ -14,7 +14,8 @@ type HandoffStatus = { pending: boolean; code: string; message: string; successo
   finalVersion: number | null; receiptConfirmed: boolean; canComplete: boolean; canCancel: boolean }
 type RecoveryOffer = { proposal: { profileId: string; candidateAddress: string; candidatePublicKey: string };
   version: { number: number; versionHash: string; captureKind: string }; candidateReceipt: { deviceId: string } }
-type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'MajorityRecorded'; votes: number;
+type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'MajorityRecorded' |
+  'ObservedMajority' | 'HistoricalRecovery' | 'HistoryReviewRequired'; votes: number;
   required: number; version: number | null; versionHash: string | null; candidateAddress: string | null;
   candidateDeviceId: string | null; majorityReached: boolean; separateCopies: number }
 
@@ -74,7 +75,8 @@ export function parseRecoveryOffer(value: unknown, profileId: string): RecoveryO
 }
 function parseRecoveryStatus(value: unknown): RecoveryStatus {
   const source = record(value, 'Recovery status')
-  if (!['NoOffer', 'OfferArmed', 'OfferClosed', 'MajorityRecorded'].includes(String(source.state)))
+  if (!['NoOffer', 'OfferArmed', 'OfferClosed', 'MajorityRecorded', 'ObservedMajority',
+    'HistoricalRecovery', 'HistoryReviewRequired'].includes(String(source.state)))
     throw new Error('Recovery state is invalid.')
   const votes = numberOrNull(source.votes, 'Votes')
   const required = numberOrNull(source.required, 'Required votes')
@@ -88,6 +90,8 @@ function parseRecoveryStatus(value: unknown): RecoveryStatus {
   const majorityReached = boolean(source.majorityReached, 'Majority decision')
   if (source.state === 'OfferArmed' && (version === null || versionHash === null ||
     candidateAddress === null || candidateDeviceId === null)) throw new Error('Armed offer status is incomplete.')
+  if ((source.state === 'MajorityRecorded' || source.state === 'ObservedMajority') !== majorityReached)
+    throw new Error('Majority state is invalid.')
   return { state: source.state as RecoveryStatus['state'], votes, required, separateCopies,
     version, versionHash, candidateAddress, candidateDeviceId, majorityReached }
 }
@@ -343,10 +347,15 @@ export function FriendSharedWorlds({ profileId, available }:
   const [reviewedOffer, setReviewedOffer] = useState<RecoveryOffer | null>(null)
   const [splitAccepted, setSplitAccepted] = useState(false)
   const [voteCount, setVoteCount] = useState<{ votes: number; required: number; majorityReached: boolean } | null>(null)
-  const refreshRecovery = async () => setRecovery(await getLocalJson(
-    `/api/local/friend/${profileId}/shared-world/recovery`, parseRecoveryStatus))
+  const refreshRecovery = async () => {
+    const next = await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery`, parseRecoveryStatus)
+    setRecovery(next)
+    if (next.state !== 'OfferArmed') setCandidateCode(null)
+    if (next.state === 'HistoricalRecovery' || next.state === 'HistoryReviewRequired' ||
+      next.state === 'OfferClosed') setVoteCount(null)
+  }
   const showCandidateCode = async () => {
-    setRecoveryMessage('')
+    setRecoveryMessage(''); setCandidateCode(null)
     try { setCandidateCode(await getLocalJson(
       `/api/local/friend/${profileId}/shared-world/recovery/offer-code`, value => parseRecoveryOffer(value, profileId))) }
     catch (error) { setRecoveryMessage(errorMessage(error)) }
@@ -467,10 +476,17 @@ export function FriendSharedWorlds({ profileId, available }:
       <summary>Recover after Host loss</summary>
       <p>A candidate can offer this PC's completed save after two minutes without the Host. Each approved PC checks the signed offer before voting. No game starts here.</p>
       <Button className="secondary" disabled={busy || !available} onClick={() => void prepareOffer()}>Prepare signed offer</Button>
-      {recovery?.candidateAddress && <p>Candidate PC {recovery.candidateDeviceId} · save version {recovery.version} · {recovery.candidateAddress}</p>}
-      {recovery?.required ? <p role="status">Votes {recovery.votes}/{recovery.required}. {recovery.majorityReached ?
-        'Majority decision recorded. Game setup and route checks remain.' : 'Majority decision pending.'}</p> :
-        <p className="helper-text">No candidate offer is armed on this PC.</p>}
+      {recovery?.candidateAddress && <p>{recovery.state === 'HistoricalRecovery' || recovery.state === 'OfferClosed' ?
+        'Earlier candidate PC' : 'Current candidate PC'} {recovery.candidateDeviceId} · save version {recovery.version} · {recovery.candidateAddress}</p>}
+      {recovery?.required ? <p role="status">Votes {recovery.votes}/{recovery.required}. {recovery.state === 'MajorityRecorded' ?
+        'This PC’s current majority decision is recorded. Game setup and route checks remain.' :
+        recovery.state === 'ObservedMajority' ?
+          'Another PC’s current majority decision is recorded here. Game setup and route checks remain.' :
+          'Majority decision pending.'}</p> :
+        recovery?.state === 'HistoryReviewRequired' ? <p role="alert">Competing authority histories need review. No recovery offer is active.</p> :
+          recovery?.state === 'HistoricalRecovery' ? <p role="status">Earlier recovery history is preserved. It is no longer current.</p> :
+            recovery?.state === 'OfferClosed' ? <p role="status">The earlier offer is closed. No recovery offer is active.</p> :
+              <p className="helper-text">No candidate offer is armed on this PC.</p>}
       {recovery?.separateCopies ? <p role="status">Separate history recorded on this PC. It has not started a game server.</p> : null}
       <label>Offer code from candidate PC<textarea className="ui-textarea" rows={3} value={offerCode} maxLength={512 * 1024}
         onChange={event => { setOfferCode(event.target.value); setReviewedOffer(null); setVoteCount(null) }} /></label>

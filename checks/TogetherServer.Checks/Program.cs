@@ -3802,7 +3802,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             keys[0].ExportPkcs8PrivateKey());
         var inbox = new SharedWorldVoteInbox(pcs[0]);
         inbox.Arm(offer, vaults[0]);
-        var armedStatus = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id);
+        var armedStatus = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
         Require(armedStatus.State == "OfferArmed" && armedStatus.Votes == 0 &&
             armedStatus.Required == 2 && inbox.Armed(profile.Id)?.Proposal == offer.Proposal &&
             armedStatus.Version == offer.Version.Number &&
@@ -3892,10 +3892,51 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var quorumResult = inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote1);
         Require(quorumResult.Code == "MajorityRecorded" && quorumResult.Decision is not null,
             "candidate did not retain a valid majority decision");
-        var decidedStatus = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id);
+        var decidedStatus = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
         Require(decidedStatus.State == "MajorityRecorded" && decidedStatus.MajorityReached &&
-            decidedStatus.Votes == 2 && decidedStatus.Required == 2 && inboxAfterRestart.Armed(profile.Id) is null,
+            decidedStatus.Votes == 2 && decidedStatus.Required == 2 &&
+            decidedStatus.CandidateDeviceId == offer.Proposal.ProposerDeviceId &&
+            inboxAfterRestart.Armed(profile.Id) is null,
             "reopened recovery status did not verify the durable majority fence");
+        var bindingName = $"authority-host-{profile.Id:N}.protected";
+        var originalBinding = pcs[0].LoadProtected(bindingName)!;
+        pcs[0].DeleteProtected(bindingName);
+        Require(new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]).State == "ObservedMajority",
+            "an unbound successor identity claimed this PC's majority");
+        pcs[0].SaveProtected(bindingName, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            schema = 1, groupId = roster.GroupId, recordHash = quorumResult.Decision!.RecordHash,
+            deviceId = ids[1], publicKey = Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo())
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Require(new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]).State == "ObservedMajority",
+            "a mismatched protected successor binding claimed this PC's majority");
+        pcs[0].SaveProtected(bindingName, originalBinding);
+        new WorldAuthorityStore(pcs[1]).AppendReceived(quorumResult.Decision!, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        var observed = new SharedWorldVoteInbox(pcs[1]).Status(profile.Id, ids[1]);
+        Require(observed.State == "ObservedMajority" && observed.MajorityReached &&
+            observed.CandidateDeviceId == quorumResult.Decision!.Proposal.ProposerDeviceId &&
+            observed.CandidateDeviceId == ids[0] && observed.Votes == 2,
+            "an observing Friend PC claimed another candidate's signed majority");
+        using (var historyObserver = Data("quorum-history-observer"))
+        {
+            var historyStore = new WorldAuthorityStore(historyObserver);
+            historyStore.AppendReceived(quorumResult.Decision!, profile.Id,
+                roster.GroupId, roster.OwnerPublicKey);
+            var receiptDraft = new SharedWorldReceipt(1, roster.GroupId, profile.Id,
+                version.VersionHash, ids[2], roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+            var receipt = receiptDraft with { Signature = Convert.ToBase64String(keys[2].SignData(
+                SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+            var plannedChild = shares.SignPlannedHandoff(roster, version, receipt, ids[2],
+                $"https://127.0.0.1:{candidatePort + 1}", 2, quorumResult.Decision!.RecordHash);
+            historyStore.AppendReceived(plannedChild, profile.Id, roster.GroupId,
+                roster.OwnerPublicKey);
+            var historical = new SharedWorldVoteInbox(historyObserver).Status(profile.Id, ids[1]);
+            Require(historical.State == "HistoricalRecovery" && !historical.MajorityReached &&
+                historical.Votes == 0 && historical.CandidateDeviceId is null &&
+                historyStore.Read(profile.Id).Count == 2,
+                "an old quorum was presented as current after a planned child authority");
+        }
         Require(inboxAfterRestart.Challenge(profile.Id, proposalHash, ids[1]) is null &&
             !inboxAfterRestart.HasArmedOffer(candidateAddress),
             "a completed offer remained reachable for another vote");
@@ -3939,6 +3980,90 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         RequireThrows<InvalidDataException>(() => SharedWorldElection.Vote(losses[2], vaults[2],
             floor, roster.OwnerPublicKey, offer, ids[2], keys[2],
             new WorldAuthorityStore(pcs[2])), "a tampered local copy could vote");
+
+        // A different signed child can advance the head while the first PC's
+        // child offer and companion listener remain armed. Keep both histories.
+        inboxAfterRestart.Arm(childOffer, vaults[0]);
+        var staleHash = WorldAuthorityTrust.ProposalHash(childOffer.Proposal);
+        var staleChallenge = inboxAfterRestart.Challenge(profile.Id, staleHash, ids[1])
+            ?? throw new Exception("child candidate challenge was unavailable before supersession");
+        var staleDraft = new WorldAuthorityOfferRequest(1, roster.GroupId, profile.Id,
+            staleHash, ids[1], Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()),
+            staleChallenge.Nonce, "");
+        var staleRequest = staleDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
+            SharedWorldVoteInbox.RequestBasis(staleDraft), HashAlgorithmName.SHA256)) };
+        var staleVote = SharedWorldElection.Vote(losses[0], vaults[0], floor,
+            roster.OwnerPublicKey, childOffer, ids[0], keys[0], new WorldAuthorityStore(pcs[0]));
+        new WorldAuthorityStore(pcs[2]).AppendReceived(quorumResult.Decision!, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        var otherAddress = $"https://127.0.0.1:{candidatePort + 1}";
+        var otherChild = SharedWorldElection.PrepareOffer(losses[1], vaults[1], roster, floor,
+            ids[1], keys[1], otherAddress, candidatePin, new WorldAuthorityStore(pcs[1]));
+        var otherVote1 = SharedWorldElection.Vote(losses[1], vaults[1], floor,
+            roster.OwnerPublicKey, otherChild, ids[1], keys[1], new WorldAuthorityStore(pcs[1]));
+        // Repair only the disposable third PC's tampered vault file before a
+        // valid child vote; the earlier tamper rejection remains covered.
+        File.WriteAllBytes(SharedWorldService.SafeChild(Path.Combine(vaults[2], version.VersionHash,
+            SharedWorldService.PayloadDirectory), version.Files[0].Path),
+            shares.ReadChunk(version, 0, 0));
+        var otherVote2 = SharedWorldElection.Vote(losses[2], vaults[2], floor,
+            roster.OwnerPublicKey, otherChild, ids[2], keys[2], new WorldAuthorityStore(pcs[2]));
+        var staleListener = new CompanionServer(pcs[0], candidateManager,
+            new PairingService(pcs[0]), Games(pcs[0]),
+            new ServerLogService(pcs[0], candidateManager), modeGate, candidatePort + 2,
+            recoveryLossProbe: (_, _) => Task.FromResult(losses[0].MayPropose),
+            recoveryLossCurrent: _ => losses[0].MayPropose);
+        try
+        {
+            await staleListener.SyncAsync();
+            Require(staleListener.ListenerState == CompanionListenerStates.Listening,
+                "child candidate listener did not open before authority advanced");
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
+                    certificate is not null && HostIdentity.Fingerprint(certificate) == candidatePin
+            };
+            using var client = new HttpClient(handler) { BaseAddress = new Uri(candidateAddress + "/") };
+            var route = $"api/companion/servers/{profile.Id}/shared-world/recovery/{staleHash}";
+            var next = SharedWorldElection.ConfirmQuorum(otherChild, [otherVote1, otherVote2],
+                new WorldAuthorityStore(pcs[0]));
+            Require(next.Proposal.ParentAuthorityHash == quorumResult.Decision!.RecordHash &&
+                new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 2,
+                "different signed child authority did not supersede the armed offer");
+            var after = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
+            Require(after.State == "ObservedMajority" && after.CandidateDeviceId == ids[1] &&
+                after.Votes == 2 && after.MajorityReached &&
+                inboxAfterRestart.Armed(profile.Id) is null &&
+                !inboxAfterRestart.HasArmedOffer(candidateAddress),
+                "stale candidate offer or older quorum remained current after child authority");
+            RequireThrows<InvalidDataException>(() => inboxAfterRestart.Arm(childOffer, vaults[0]),
+                "preparing the same stale signed offer returned a shareable code");
+            Require(inboxAfterRestart.Challenge(profile.Id, staleHash, ids[1]) is null &&
+                inboxAfterRestart.ReadOffer(staleRequest) is null &&
+                !inboxAfterRestart.AcceptVote(profile.Id, staleHash, staleVote).Ok,
+                "stale candidate inbox served an offer or accepted a vote");
+            using var deniedChallenge = await client.GetAsync($"{route}/challenge/{ids[1]}");
+            using var deniedOffer = await client.PostAsJsonAsync(route + "/offer", staleRequest);
+            using var deniedVote = await client.PostAsJsonAsync(route + "/vote", staleVote);
+            Require(deniedChallenge.StatusCode == HttpStatusCode.NotFound &&
+                deniedOffer.StatusCode == HttpStatusCode.NotFound &&
+                deniedVote.StatusCode == HttpStatusCode.NotFound,
+                "candidate companion served a superseded challenge, offer, or vote route");
+            // A deliberately double-signed fixture ballot creates competing
+            // heads. The read projection must refuse to pick either as current.
+            var forkDraft = new WorldAuthorityVote(1, staleHash, ids[1],
+                Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()), "");
+            var forkVote = forkDraft with { Signature = Convert.ToBase64String(keys[1].SignData(
+                WorldAuthorityTrust.VoteBasis(forkDraft), HashAlgorithmName.SHA256)) };
+            SharedWorldElection.ConfirmQuorum(childOffer, [staleVote, forkVote],
+                new WorldAuthorityStore(pcs[0]));
+            var conflict = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
+            Require(conflict.State == "HistoryReviewRequired" && !conflict.MajorityReached &&
+                conflict.CandidateDeviceId is null && inboxAfterRestart.Armed(profile.Id) is null &&
+                new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 3,
+                "competing verified heads were reduced to a current majority or erased");
+        }
+        finally { await staleListener.StopAsync(); }
     }
     finally
     {

@@ -335,4 +335,42 @@ describe('Shared saves controls', () => {
     expect(await screen.findByText('A separate history was recorded.')).toBeInTheDocument()
     expect(separateButton).toBeDisabled()
   })
+
+  it('labels another PC’s current majority and superseded history without keeping an old offer code', async () => {
+    let state: 'OfferArmed' | 'ObservedMajority' | 'HistoricalRecovery' | 'HistoryReviewRequired' = 'OfferArmed'
+    const otherPc = '33333333-3333-4333-8333-333333333333'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/offer-code')) return reply(offer)
+      if (url.endsWith('/recovery')) return reply({ ...noRecovery, state,
+        votes: state === 'ObservedMajority' ? 2 : 0,
+        required: state === 'OfferArmed' || state === 'ObservedMajority' ? 2 : 0,
+        version: state === 'HistoryReviewRequired' ? null : 3,
+        versionHash: state === 'HistoryReviewRequired' ? null : 'A'.repeat(64),
+        candidateAddress: state === 'HistoryReviewRequired' ? null : offer.proposal.candidateAddress,
+        candidateDeviceId: state === 'HistoryReviewRequired' ? null : otherPc,
+        majorityReached: state === 'ObservedMajority' })
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(screen.getAllByText('Technical details')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
+    expect(await screen.findByLabelText('Signed offer code')).toBeInTheDocument()
+    state = 'ObservedMajority'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
+    expect(await screen.findByText(/Another PC’s current majority decision/)).toBeInTheDocument()
+    expect(screen.getByText(/Current candidate PC 33333333/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Signed offer code')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Record separate history' })).not.toBeInTheDocument()
+    state = 'HistoricalRecovery'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
+    expect(await screen.findByText(/Earlier recovery history is preserved/)).toBeInTheDocument()
+    expect(screen.getByText(/Earlier candidate PC 33333333/)).toBeInTheDocument()
+    expect(screen.queryByText(/Majority decision pending/)).not.toBeInTheDocument()
+    state = 'HistoryReviewRequired'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
+    expect(await screen.findByText(/Competing authority histories need review/)).toBeInTheDocument()
+    expect(screen.queryByText(/Current candidate PC/)).not.toBeInTheDocument()
+  })
 })

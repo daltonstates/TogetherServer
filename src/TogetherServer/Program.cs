@@ -1474,7 +1474,7 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/offer", async (Gu
     Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
-    friendMode ? Results.Json(new SharedWorldVoteInbox(data).Status(id)) :
+    friendMode ? Results.Json(new SharedWorldVoteInbox(data).Status(id, friend.RecoveryDeviceId(id))) :
     Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/offer-code", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
