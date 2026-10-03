@@ -4,7 +4,7 @@ using System.Text;
 namespace TogetherServer;
 
 public sealed record SeparateCopyRouteChallenge(int Schema, Guid ProfileId,
-    string BranchHash, string Nonce, Guid ObserverDeviceId,
+    string BranchHash, string Nonce, DateTimeOffset IssuedUtc, Guid ObserverDeviceId,
     string ObserverPublicKey, string Signature);
 public sealed record SeparateCopyRouteProof(int Schema, Guid ProfileId,
     string BranchHash, string Nonce, string Endpoint, string TlsFingerprint,
@@ -22,7 +22,7 @@ internal static class SharedWorldSeparateRoute
 {
     internal static byte[] ChallengeBasis(SeparateCopyRouteChallenge item) => Encoding.UTF8.GetBytes(
         $"TogetherServer separate-copy route observer v1\n{item.ProfileId:N}\n" +
-        $"{item.BranchHash}\n{item.Nonce}\n{item.ObserverDeviceId:N}\n" +
+        $"{item.BranchHash}\n{item.Nonce}\n{item.IssuedUtc:O}\n{item.ObserverDeviceId:N}\n" +
         item.ObserverPublicKey);
 
     internal static byte[] ProofBasis(SeparateCopyRouteProof item) => Encoding.UTF8.GetBytes(
@@ -37,7 +37,7 @@ internal static class SharedWorldSeparateRoute
         var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
         var draft = new SeparateCopyRouteChallenge(1, branch.Offer.Proposal.ProfileId,
-            branch.BranchHash, nonce, observerId,
+            branch.BranchHash, nonce, DateTimeOffset.UtcNow, observerId,
             Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()), "");
         return draft with { Signature = Convert.ToBase64String(observerKey.SignData(
             ChallengeBasis(draft), HashAlgorithmName.SHA256)) };
@@ -47,6 +47,8 @@ internal static class SharedWorldSeparateRoute
         WorldSeparateCopyBranch branch, DateTimeOffset now)
     {
         if (challenge is null || challenge.Schema != 1 || !ValidNonce(challenge.Nonce) ||
+            challenge.IssuedUtc > now.AddMinutes(1) ||
+            now - challenge.IssuedUtc > TimeSpan.FromMinutes(10) ||
             !SharedWorldSeparateCopyStore.Verify(branch) ||
             challenge.ProfileId != branch.Offer.Proposal.ProfileId ||
             challenge.BranchHash != branch.BranchHash ||

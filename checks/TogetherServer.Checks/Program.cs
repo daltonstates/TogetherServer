@@ -4251,8 +4251,15 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             new WorldAuthorityStore(pcs[0]));
         var routeBranch = SharedWorldSeparateCopyStore.Sign(routeOffer, keys[0]);
         var routeChallenge = SharedWorldSeparateRoute.SignChallenge(routeBranch, ids[1], keys[1]);
+        var staleSeparateChallengeDraft = routeChallenge with
+        { IssuedUtc = DateTimeOffset.UtcNow.AddHours(-1), Signature = "" };
+        var staleSeparateChallenge = staleSeparateChallengeDraft with
+        { Signature = Convert.ToBase64String(keys[1].SignData(
+            SharedWorldSeparateRoute.ChallengeBasis(staleSeparateChallengeDraft), HashAlgorithmName.SHA256)) };
         var routeProof = SharedWorldSeparateRoute.SignProof(routeBranch, routeChallenge, keys[0]);
         Require(SharedWorldSeparateRoute.VerifyChallenge(routeChallenge, routeBranch,
+                DateTimeOffset.UtcNow) &&
+            !SharedWorldSeparateRoute.VerifyChallenge(staleSeparateChallenge, routeBranch,
                 DateTimeOffset.UtcNow) &&
             SharedWorldSeparateRoute.VerifyProof(routeProof, routeChallenge, routeBranch) &&
             !SharedWorldSeparateRoute.VerifyProof(routeProof with { Endpoint = candidateAddress },
