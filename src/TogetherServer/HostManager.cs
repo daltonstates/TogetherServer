@@ -437,7 +437,7 @@ public sealed partial class HostManager
             (!data.HasProtected("host-certificate.protected") ||
              !(serverInvites.Count > 0 || devices.Any(device =>
                 (device.InviteHash is not null || device.CredentialHash is not null)) ||
-               new SharedWorldVoteInbox(data).HasArmedOffer())))
+               new SharedWorldVoteInbox(data).HasArmedOffer(next.CompanionEndpoint))))
             return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
         if (next.RemoteControlsEnabled &&
             !(serverInvites.Any(invite => invite.CanStart || invite.CanStop) ||

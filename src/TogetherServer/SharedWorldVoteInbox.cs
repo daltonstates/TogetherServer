@@ -72,9 +72,10 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
         }
     }
 
-    internal bool HasArmedOffer()
+    internal bool HasArmedOffer(string endpoint)
     {
-        lock (sync) return ReadIndex().Any(id => ReadState(id) is not null);
+        lock (sync) return ReadIndex().Any(id =>
+            ReadState(id)?.Offer.Proposal.CandidateAddress == endpoint);
     }
 
     internal WorldAuthorityChallenge? Challenge(Guid profileId, string proposalHash, Guid deviceId)

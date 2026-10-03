@@ -120,6 +120,8 @@ internal static class SharedWorldElection
             !WorldAuthorityTrust.VerifyProposal(offer.Proposal, offer.Roster) ||
             offer.Proposal.Kind != "Quorum" || offer.Proposal.VersionHash != offer.Version.VersionHash ||
             offer.Proposal.CandidatePublicKey != offer.CandidateReceipt.DeviceIdKey(offer.Roster) ||
+            !SharedWorldRosterTrust.HasRole(offer.Roster, offer.CandidateReceipt.DeviceId,
+                offer.Proposal.CandidatePublicKey, grants => grants.EligibleHost && grants.Receive) ||
             offer.CandidateReceipt.GroupId != offer.Roster.GroupId ||
             offer.CandidateReceipt.ProfileId != offer.Roster.ProfileId ||
             offer.CandidateReceipt.VersionHash != offer.Version.VersionHash ||

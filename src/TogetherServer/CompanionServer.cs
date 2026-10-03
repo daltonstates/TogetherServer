@@ -80,7 +80,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 endpoint.Port != settings.CompanionPort || !IPAddress.TryParse(settings.CompanionBindAddress, out var bind) ||
                 settings.CompanionPort < 1024 || settings.CompanionPort == localPort)
                 throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
-            if (!pairing.HasInviteOrCredential() && !recoveryVotes.HasArmedOffer())
+            if (!pairing.HasInviteOrCredential() && !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint))
             {
                 await StopCoreAsync();
                 Warning = null;

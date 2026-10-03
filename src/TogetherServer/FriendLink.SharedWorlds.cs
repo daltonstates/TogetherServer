@@ -23,7 +23,9 @@ internal sealed partial class FriendLink
     {
         if (config is null) return;
         var store = new WorldAuthorityStore(data);
-        foreach (var profileId in config.ConsentedSharedWorldProfiles.Take(20))
+        foreach (var profileId in (config.ApprovedSharedWorldGroups?.Keys.AsEnumerable() ??
+            Enumerable.Empty<Guid>())
+            .Take(20))
         {
             IReadOnlyList<WorldAuthorityRecord> records;
             try
