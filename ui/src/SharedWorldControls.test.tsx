@@ -281,8 +281,8 @@ describe('Shared saves controls', () => {
   })
 
   it('shows the verified old-Host fence and labels the retained save as this PC\'s copy', async () => {
-    const head = { groupId: profile, epoch: 1, recordHash: 'B'.repeat(64),
-      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
+    const head = { groupId: profile, epoch: 2, recordHash: 'B'.repeat(64),
+      versionHash: 'C'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
       hostAddress: 'https://192.0.2.10:5131' }
     let state = 'NoTakeover'
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
@@ -300,13 +300,33 @@ describe('Shared saves controls', () => {
     state = 'OldHostFenced'
     fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
     expect(await screen.findByRole('heading', { name: 'Another PC now hosts this world' })).toBeInTheDocument()
-    expect(screen.getByText(/Preserved local copy on this PC · latest saved version 3/)).toBeInTheDocument()
+    expect(screen.getByText(/Preserved version 3 on this PC/)).toBeInTheDocument()
+    expect(screen.queryByText(/latest saved version 3/)).not.toBeInTheDocument()
     expect(screen.getByText(/exact game process managed by this PC is still running/)).toBeInTheDocument()
     expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
     expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
     const technical = screen.getAllByText('Technical details').at(-1)!.closest('details')!
     expect(technical).not.toHaveAttribute('open')
     expect(technical).toHaveTextContent(head.hostAddress)
+    expect(technical).toHaveTextContent(head.versionHash)
+  })
+
+  it('reserves latest for the verified current local Host', async () => {
+    const head = { groupId: profile, epoch: 2, recordHash: 'B'.repeat(64),
+      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
+      hostAddress: 'https://192.0.2.10:5131' }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
+        reply({ enabled: true, latest: { number: 4, versionHash: head.versionHash,
+          createdUtc: '2026-10-03T12:00:00Z' }, confirmedCopies: 2,
+          canManageSharing: false, error: null, authority: { state: 'ThisPcHost',
+            message: 'This PC holds hosting authority for this world.', head,
+            competingHeads: null, exactManagedProcessRunning: false } })))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByText(/Copied to 2 PCs · latest saved version 4/)).toBeInTheDocument()
+    expect(screen.getByText('This PC holds the verified current hosting decision.')).toBeInTheDocument()
+    expect(screen.queryByText(/Preserved version/)).not.toBeInTheDocument()
   })
 
   it('keeps competing verified heads and damaged history in review', async () => {

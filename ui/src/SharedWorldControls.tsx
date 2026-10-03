@@ -340,7 +340,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
     {status?.canManageSharing === false && !fenced && !review && <p className="helper-text">This PC can host and share verified saves with the current members. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
-    {status?.latest ? <p>{fenced || review ? 'Preserved local copy on this PC' : `Copied to ${status.confirmedCopies} PCs`} · latest saved version {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
+    {status?.latest ? <p>{fenced || review ?
+      `Preserved version ${status.latest.number} on this PC` :
+      `Copied to ${status.confirmedCopies} PCs · latest saved version ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p>{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' : 'No post-Stop save has been published yet.'}</p>}
     {status?.enabled && <details><summary>Technical details and PC permissions</summary>
     <label><Input type="checkbox" disabled={busy || !roster || !status.canManageSharing}
