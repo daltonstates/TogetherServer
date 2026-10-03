@@ -197,8 +197,7 @@ public sealed partial class HostManager
         try
         {
             var records = authority.Read(profileId);
-            var heads = records.Where(record => !records.Any(child =>
-                child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+            var heads = WorldAuthorityTrust.EffectiveHeads(records);
             return heads.Length == 1 && heads[0].Proposal.Kind == "Planned" &&
                 heads[0].SuccessorReceipt?.DeviceId == successorDeviceId &&
                 WorldAuthorityTrust.Verify(heads[0]) ? heads[0] : null;
@@ -315,7 +314,8 @@ public sealed partial class HostManager
             if (roster is null || !SharedWorldRosterTrust.Verify(record.Roster) ||
                 record.Roster.GroupId != roster.GroupId ||
                 record.Roster.OwnerPublicKey != roster.OwnerPublicKey ||
-                record.Roster.Epoch < roster.Epoch || record.Roster.Revision < roster.Revision)
+                record.Roster.Epoch < roster.Epoch || record.Roster.Revision < roster.Revision ||
+                record.Schema == 2 && record.Roster.Signature != roster.Signature)
                 throw new InvalidDataException("Authority roster is older or belongs to another group.");
             void Commit() => authority.Append(record, externalLineage: lineageProof);
             if (authorizeCommit is null) Commit();
@@ -384,6 +384,35 @@ public sealed partial class HostManager
             if (settings.Profiles.All(item => item.Id != profileId) ||
                 SharedAuthorityBlocked(profileId, out _)) return null;
             return authority.Read(profileId);
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<WorldAuthorityOwnerApproval> SignSharedWorldResolutionAsync(
+        Guid profileId, WorldAuthorityOffer offer)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
+                throw new InvalidDataException("The shared world is unavailable.");
+            var roster = sharedWorlds.ReadRoster(profile) ??
+                throw new InvalidDataException("The signed roster is unavailable.");
+            if (!roster.OwnerOverride || offer.Proposal.Kind != "ResolutionOwnerOverride" ||
+                offer.Proposal.ProfileId != profileId ||
+                offer.Roster.Signature != roster.Signature ||
+                !SharedWorldElection.VerifyOffer(offer))
+                throw new InvalidDataException("The current roster does not allow this owner approval.");
+            var records = authority.Read(profileId);
+            var heads = WorldAuthorityTrust.EffectiveHeads(records);
+            var draft = new WorldAuthorityRecord(2, offer.Proposal, offer.Roster,
+                offer.Version, [], null, "");
+            if (!WorldAuthorityTrust.ExactResolutionHeads(draft, heads) ||
+                !WorldAuthorityTrust.VerifyLineage(draft, heads.Single(head =>
+                    head.RecordHash == offer.Proposal.ParentAuthorityHash)))
+                throw new InvalidDataException("The selected save or complete head set changed.");
+            return authority.OwnerApproval(profileId, offer.Proposal,
+                () => sharedWorlds.SignResolutionOwnerApproval(offer.Proposal));
         }
         finally { gate.Release(); }
     }

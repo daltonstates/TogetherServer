@@ -1056,7 +1056,7 @@ internal sealed partial class FriendLink : IDisposable
         return new("Disconnected", "Could not verify the Host over HTTPS. Check this PC's internet connection and the invite address.");
     }
 
-    private static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints)
+    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints)
     {
         var pins = fingerprints.Where(ValidFingerprint).Select(Convert.FromHexString).ToList();
         if (pins.Count == 0) throw new AuthenticationException("No valid Host certificate pin is saved.");

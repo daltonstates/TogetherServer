@@ -274,6 +274,24 @@ public sealed class FriendService : IDisposable
         }
     }
 
+    public Task<WorldAuthorityOfferResult> PrepareResolutionOfferAsync(Guid profileId,
+        string selectedHeadHash, bool ownerOverride = false)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new WorldAuthorityOfferResult(false, "NotPaired",
+                "Choose a saved Host connection first.")) :
+                link.PrepareResolutionOfferAsync(profileId, selectedHeadHash, ownerOverride);
+        }
+    }
+
+    public IReadOnlyList<WorldResolutionChoice> ResolutionChoices(Guid profileId)
+    {
+        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+            .ResolutionChoices(profileId) ?? [];
+    }
+
     internal Task<bool> ProbeRecoveryHostLossAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
@@ -299,6 +317,30 @@ public sealed class FriendService : IDisposable
             return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false, "NotPaired",
                 "Choose a saved Host connection first.")) :
                 link.VoteOnRecoveryOfferAsync(profileId, offer, cancellationToken);
+        }
+    }
+
+    public Task<WorldResolutionInvitationResult> ImportResolutionInvitationAsync(Guid profileId,
+        WorldAuthorityOffer offer)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new WorldResolutionInvitationResult(false,
+                "NotPaired", "Choose a saved Host connection first.")) :
+                link.ImportResolutionInvitationAsync(profileId, offer);
+        }
+    }
+
+    public Task<WorldAuthorityVoteAction> VoteOnResolutionIdAsync(Guid profileId,
+        string proposalHash, CancellationToken cancellationToken = default)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false,
+                "NotPaired", "Choose a saved Host connection first.")) :
+                link.VoteOnResolutionIdAsync(profileId, proposalHash, cancellationToken);
         }
     }
 

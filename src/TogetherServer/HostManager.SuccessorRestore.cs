@@ -71,8 +71,7 @@ public sealed partial class HostManager
         try
         {
             var records = authority.Read(profileId);
-            var heads = records.Where(item => !records.Any(child =>
-                child.Proposal.ParentAuthorityHash == item.RecordHash)).ToArray();
+            var heads = WorldAuthorityTrust.EffectiveHeads(records);
             if (heads.Length != 1 || heads[0].Proposal.Kind != "Planned")
                 return new(false, false, null,
                     "No single signed planned handoff is staged for this world.", []);
@@ -119,8 +118,7 @@ public sealed partial class HostManager
                 settings.Profiles.Any(item => item.Id == profileId) && previousRestore is null)
                 return new(false, "WorldAlreadyManaged", "This world already has local Host setup. Keep the existing copy and review it.");
             var records = authority.Read(profileId);
-            var heads = records.Where(item => !records.Any(child =>
-                child.Proposal.ParentAuthorityHash == item.RecordHash)).ToArray();
+            var heads = WorldAuthorityTrust.EffectiveHeads(records);
             var record = heads.Length == 1 ? heads[0] : null;
             if (record is null || record.RecordHash != request.RecordHash ||
                 record.Proposal.Kind != "Planned" || !WorldAuthorityTrust.Verify(record) ||

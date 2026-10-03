@@ -75,6 +75,14 @@ internal sealed partial class SharedWorldService
         return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
     }
 
+    internal WorldAuthorityOwnerApproval SignResolutionOwnerApproval(WorldAuthorityProposal proposal)
+    {
+        using var key = LoadSigningKey();
+        var hash = WorldAuthorityTrust.ProposalHash(proposal);
+        return new(hash, Convert.ToBase64String(key.SignData(
+            WorldAuthorityTrust.OwnerBasis(proposal), HashAlgorithmName.SHA256)));
+    }
+
     internal WorldAuthorityRecord SignPlannedHandoff(SharedWorldRoster roster,
         SharedWorldVersion version, SharedWorldReceipt receipt, Guid successorId,
         string successorAddress, long epoch, string? parentHash)
@@ -881,6 +889,8 @@ internal sealed partial class SharedWorldService
     {
         foreach (var file in latest.Files)
             VerifyFile(SafeChild(Path.Combine(VersionRoot(latest), PayloadDirectory), file.Path), file);
+        // A resolution records a branch choice without deleting other branches.
+        if (Authority.Read(latest.ProfileId).Any(record => record.Schema == 2)) return;
         var candidates = new List<SharedWorldVersion>();
         foreach (var group in Directory.EnumerateDirectories(Root(latest.ProfileId)))
         {

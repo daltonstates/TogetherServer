@@ -3671,13 +3671,300 @@ await Check("shared world authority requires signed majority, fences old Host, a
             WorldAuthorityTrust.VoteBasis(conflictVotes[0]), HashAlgorithmName.SHA256)) };
         competingVote1 = competingVote1 with { Signature = Convert.ToBase64String(voters[1].Key.SignData(
             WorldAuthorityTrust.VoteBasis(competingVote1), HashAlgorithmName.SHA256)) };
-        store.Append(Record(competing, [signedCompeting, competingVote1]), stopAfterLogForChecks: true);
+        var competingRecord = Record(competing, [signedCompeting, competingVote1]);
+        store.Append(competingRecord, stopAfterLogForChecks: true);
         Require(File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
             "authority", "append.pending")), "interrupted append did not retain its journal");
         Require(new WorldAuthorityStore(data).Read(profile.Id).Count == 3 &&
             !File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
                 "authority", "append.pending")) && store.Fenced(profile.Id, candidateKey, out _),
             "same-epoch competing histories were silently selected");
+        using (var resolutionData = Data("authority-resolution"))
+        {
+            var resolution = new WorldAuthorityStore(resolutionData);
+            var losingVersion = SharedWorldService.SignVersion(version with
+            { BackupId = Guid.NewGuid() }, ownerKey);
+            var losingDraft = competing with { VersionHash = losingVersion.VersionHash, Signature = "" };
+            var losingProposal = losingDraft with { Signature = Convert.ToBase64String(
+                voters[0].Key.SignData(WorldAuthorityTrust.ProposalBasis(losingDraft),
+                    HashAlgorithmName.SHA256)) };
+            WorldAuthorityVote LosingVote(int index)
+            {
+                var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(losingProposal),
+                    voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
+                return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            }
+            var losingDraftRecord = new WorldAuthorityRecord(1, losingProposal, roster,
+                losingVersion, [LosingVote(0), LosingVote(1)], null, "");
+            var losingRecord = losingDraftRecord with { RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(losingDraftRecord)) };
+            resolution.Append(accepted);
+            resolution.Append(losingRecord);
+            Require(resolution.ReadUniqueHead(profile.Id) is null &&
+                WorldAuthorityTrust.EffectiveHeads(resolution.Read(profile.Id)).Length == 2,
+                "split authority was silently selected before a decision");
+            var selectedDevice = Convert.ToBase64String(voters[0].Key.ExportSubjectPublicKeyInfo());
+            var hostingKey = resolution.PrepareLocalHostingKey(profile.Id);
+            var hashes = new[] { accepted.RecordHash, losingRecord.RecordHash }
+                .Order(StringComparer.Ordinal).ToArray();
+            WorldAuthorityProposal ResolutionProposal(SharedWorldRoster selectedRoster,
+                IReadOnlyList<string> namedHeads, string kind = "ResolutionQuorum",
+                WorldAuthorityRecord? selected = null,
+                SharedWorldVersion? versionChoice = null)
+            {
+                selected ??= accepted;
+                var draft = new WorldAuthorityProposal(3, selectedRoster.GroupId, profile.Id, 2,
+                    selected.RecordHash, WorldAuthorityTrust.RosterHash(selectedRoster),
+                    versionChoice?.VersionHash ?? selected.Version.VersionHash, hostingKey,
+                    "https://127.0.0.1:5132", kind,
+                    voters[0].Id, selectedDevice, "", CompetingHeadHashes: namedHeads);
+                var bindingDraft = new WorldSuccessorBinding(voters[0].Id, selectedDevice,
+                    hostingKey, "");
+                var binding = bindingDraft with { Signature = Convert.ToBase64String(
+                    voters[0].Key.SignData(WorldAuthorityTrust.BindingBasis(draft, bindingDraft),
+                        HashAlgorithmName.SHA256)) };
+                draft = draft with { SuccessorBinding = binding };
+                return draft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
+                    WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            }
+            WorldAuthorityVote ResolutionVote(WorldAuthorityProposal forProposal, int index)
+            {
+                var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(forProposal),
+                    voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
+                return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            }
+            WorldAuthorityRecord ResolutionRecord(WorldAuthorityProposal forProposal,
+                SharedWorldRoster selectedRoster, IReadOnlyList<WorldAuthorityVote> signedVotes,
+                string? approval = null, SharedWorldVersion? selectedVersion = null)
+            {
+                var draft = new WorldAuthorityRecord(2, forProposal, selectedRoster,
+                    selectedVersion ?? version,
+                    signedVotes, approval, "");
+                return draft with { RecordHash = WorldAuthorityTrust.Hash(
+                    WorldAuthorityTrust.RecordBasis(draft)) };
+            }
+            var resolutionProposal = ResolutionProposal(roster, hashes);
+            var resolved = ResolutionRecord(resolutionProposal, roster,
+                [ResolutionVote(resolutionProposal, 0), ResolutionVote(resolutionProposal, 1)]);
+            Require(WorldAuthorityTrust.Verify(resolved), "valid exact-head majority was rejected");
+            Require(!WorldAuthorityTrust.Verify(ResolutionRecord(resolutionProposal, roster,
+                [ResolutionVote(resolutionProposal, 0)])), "minority resolved a split");
+            Require(!WorldAuthorityTrust.Verify(ResolutionRecord(resolutionProposal, roster,
+                [ResolutionVote(resolutionProposal, 0), ResolutionVote(resolutionProposal, 0)])),
+                "duplicate resolution votes counted twice");
+            Require(!WorldAuthorityTrust.Verify(ResolutionRecord(resolutionProposal, roster,
+                [ResolutionVote(resolutionProposal, 0), ResolutionVote(resolutionProposal, 1) with
+                    { Signature = ResolutionVote(resolutionProposal, 2).Signature }])),
+                "forged resolution vote was accepted");
+            RequireThrows<InvalidDataException>(() => resolution.Append(ResolutionRecord(
+                ResolutionProposal(roster, [accepted.RecordHash]), roster,
+                [ResolutionVote(resolutionProposal, 0), ResolutionVote(resolutionProposal, 1)])),
+                "incomplete head set was accepted");
+            var extraHeads = hashes.Append(new string('A', 64)).Order(StringComparer.Ordinal).ToArray();
+            var extraProposal = ResolutionProposal(roster, extraHeads);
+            RequireThrows<InvalidDataException>(() => resolution.Append(ResolutionRecord(extraProposal,
+                roster, [ResolutionVote(extraProposal, 0), ResolutionVote(extraProposal, 1)])),
+                "extra head was accepted");
+            var forgedHeads = new[] { accepted.RecordHash, new string('F', 64) }
+                .Order(StringComparer.Ordinal).ToArray();
+            var forgedProposal = ResolutionProposal(roster, forgedHeads);
+            RequireThrows<InvalidDataException>(() => resolution.Append(ResolutionRecord(forgedProposal,
+                roster, [ResolutionVote(forgedProposal, 0), ResolutionVote(forgedProposal, 1)])),
+                "forged competing head was accepted");
+            var unverifiedChoice = ResolutionProposal(roster, hashes,
+                versionChoice: losingVersion);
+            RequireThrows<InvalidDataException>(() => resolution.Append(ResolutionRecord(
+                unverifiedChoice, roster,
+                [ResolutionVote(unverifiedChoice, 0), ResolutionVote(unverifiedChoice, 1)],
+                selectedVersion: losingVersion)),
+                "a signed save outside the selected parent's lineage was accepted");
+            var duplicateProposal = ResolutionProposal(roster,
+                [accepted.RecordHash, accepted.RecordHash]);
+            Require(!WorldAuthorityTrust.VerifyProposal(duplicateProposal, roster),
+                "duplicate named heads were accepted");
+            var ownerProposal = ResolutionProposal(roster, hashes, "ResolutionOwnerOverride");
+            var ownerSignature = Convert.ToBase64String(ownerKey.SignData(
+                WorldAuthorityTrust.OwnerBasis(ownerProposal), HashAlgorithmName.SHA256));
+            Require(WorldAuthorityTrust.Verify(ResolutionRecord(ownerProposal, roster, [],
+                ownerSignature)), "owner override of exact heads was rejected");
+            var disabledResolutionProposal = ResolutionProposal(noOverrideRoster, hashes,
+                "ResolutionOwnerOverride");
+            Require(!WorldAuthorityTrust.Verify(ResolutionRecord(disabledResolutionProposal,
+                noOverrideRoster, [], Convert.ToBase64String(ownerKey.SignData(
+                    WorldAuthorityTrust.OwnerBasis(disabledResolutionProposal), HashAlgorithmName.SHA256)))),
+                "disabled resolution owner override was accepted");
+            var receivedRoot = Path.Combine(resolutionData.RootPath, "verified-candidate-copy");
+            var receivedPayload = Path.Combine(receivedRoot, version.VersionHash,
+                SharedWorldService.PayloadDirectory);
+            Directory.CreateDirectory(receivedPayload);
+            foreach (var file in version.Files)
+            {
+                var destination = SharedWorldService.SafeChild(receivedPayload, file.Path);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(SharedWorldService.SafeChild(profile.WorldDirectory, file.Path),
+                    destination);
+            }
+            File.WriteAllBytes(Path.Combine(receivedRoot, "latest.json"),
+                JsonSerializer.SerializeToUtf8Bytes(version, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            void StoreVerifiedPayload(SharedWorldVersion manifest)
+            {
+                var branchRoot = Path.Combine(receivedRoot, manifest.VersionHash);
+                var payloadRoot = Path.Combine(branchRoot, SharedWorldService.PayloadDirectory);
+                Directory.CreateDirectory(payloadRoot);
+                foreach (var file in manifest.Files)
+                {
+                    var destination = SharedWorldService.SafeChild(payloadRoot, file.Path);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.Copy(SharedWorldService.SafeChild(profile.WorldDirectory, file.Path),
+                        destination, true);
+                }
+                File.WriteAllBytes(Path.Combine(branchRoot, "version.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(manifest,
+                        new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            }
+            StoreVerifiedPayload(version);
+            StoreVerifiedPayload(losingVersion);
+            var later = version;
+            for (var i = 0; i < 4; i++)
+            {
+                later = SharedWorldService.SignVersion(later with
+                { Number = later.Number + 1, ParentHash = later.VersionHash,
+                  BackupId = Guid.NewGuid() }, ownerKey);
+                StoreVerifiedPayload(later);
+            }
+            FriendLink.PruneReceived(receivedRoot, later.VersionHash,
+                new HashSet<string>([version.VersionHash, losingVersion.VersionHash]));
+            Require(Directory.Exists(Path.Combine(receivedRoot, losingVersion.VersionHash)) &&
+                Directory.Exists(Path.Combine(receivedRoot, version.VersionHash)),
+                "resolution retention pruned a losing verified payload");
+            resolutionData.SaveProtected($"shared-world-pc-signing-{voters[0].Id:N}.protected",
+                voters[0].Key.ExportPkcs8PrivateKey());
+            var floor = new SharedRosterFloor(roster.GroupId, roster.Epoch,
+                roster.Revision, roster.Signature);
+            RequireThrows<InvalidDataException>(() => SharedWorldElection.PrepareResolutionOffer(
+                receivedRoot, roster,
+                new SharedRosterFloor(noOverrideRoster.GroupId, noOverrideRoster.Epoch,
+                    noOverrideRoster.Revision, noOverrideRoster.Signature), voters[0].Id,
+                voters[0].Key, "https://127.0.0.1:5132", new string('A', 64),
+                resolution, accepted.RecordHash), "stale signed roster armed a resolution");
+            var offered = SharedWorldElection.PrepareResolutionOffer(receivedRoot, roster, floor,
+                voters[0].Id, voters[0].Key, "https://127.0.0.1:5132", new string('A', 64),
+                resolution, accepted.RecordHash);
+            var inbox = new SharedWorldVoteInbox(resolutionData);
+            inbox.Arm(offered, receivedRoot);
+            var signed0 = resolution.SignLocalVote(profile.Id, offered.Proposal, roster,
+                voters[0].Id, voters[0].Key);
+            var signed1 = resolution.SignLocalVote(profile.Id, offered.Proposal, roster,
+                voters[1].Id, voters[1].Key);
+            Require(inbox.AcceptVote(profile.Id,
+                WorldAuthorityTrust.ProposalHash(offered.Proposal), signed0).Code == "VoteRecorded",
+                "candidate did not retain the first signed vote");
+            var majority = inbox.AcceptVote(profile.Id,
+                WorldAuthorityTrust.ProposalHash(offered.Proposal), signed1);
+            Require(majority is { Ok: true, Decision: not null } &&
+                majority.Decision.Schema == 2 && WorldAuthorityTrust.Verify(majority.Decision),
+                "candidate did not append a valid exact-head majority decision");
+            Require(inbox.AcceptVote(profile.Id,
+                WorldAuthorityTrust.ProposalHash(offered.Proposal), signed1).Decision?.RecordHash ==
+                majority.Decision!.RecordHash &&
+                inbox.OfferForTransport(profile.Id,
+                    WorldAuthorityTrust.ProposalHash(offered.Proposal)) is not null,
+                "completed decision could not be retried by a voter");
+            resolution.Append(majority.Decision!);
+            Require(resolution.Read(profile.Id).Count == 3 &&
+                resolution.ReadUniqueHead(profile.Id)?.RecordHash == majority.Decision!.RecordHash &&
+                WorldAuthorityTrust.EffectiveHeads(resolution.Read(profile.Id)).Length == 1,
+                "resolution did not retire exactly the competing leaves or retry idempotently");
+            using (var hostingSigner = ECDsa.Create())
+            {
+                hostingSigner.ImportPkcs8PrivateKey(resolutionData.LoadProtected(
+                    WorldAuthorityStore.HostingKeyName(profile.Id))!, out _);
+                var afterDecision = SharedWorldService.SignVersion(version with
+                { Number = version.Number + 1, ParentHash = version.VersionHash,
+                  BackupId = Guid.NewGuid() }, hostingSigner);
+                Require(FriendLink.AuthorizedVersionSignerForRecords(roster.OwnerPublicKey,
+                        afterDecision, resolution.Read(profile.Id)) &&
+                    FriendLink.VerifySharedChain(version, afterDecision, [],
+                        resolution.Read(profile.Id)) &&
+                    !FriendLink.VerifySharedChain(losingVersion, afterDecision, [],
+                        resolution.Read(profile.Id)),
+                    "Friend receive did not follow only the selected signed branch");
+            }
+            Require(resolution.Read(profile.Id).Any(item => item.RecordHash == losingRecord.RecordHash),
+                "losing authority record was removed");
+            using (var selectedLoserData = Data("selected-losing-branch"))
+            {
+                var selectedLoser = new WorldAuthorityStore(selectedLoserData);
+                selectedLoser.Append(accepted);
+                selectedLoser.Append(losingRecord);
+                var selectLoser = ResolutionProposal(roster, hashes,
+                    selected: losingRecord);
+                selectedLoser.Append(ResolutionRecord(selectLoser, roster,
+                    [ResolutionVote(selectLoser, 0), ResolutionVote(selectLoser, 1)],
+                    selectedVersion: losingVersion));
+                Require(selectedLoser.FindProvenVersion(profile.Id, losingVersion.Number)?.VersionHash ==
+                    losingVersion.VersionHash,
+                    "authority pages returned the losing same-number version after selection");
+            }
+            using (var ownerData = Data("authority-owner-resolution"))
+            {
+                var ownerStore = new WorldAuthorityStore(ownerData);
+                ownerStore.Append(accepted);
+                ownerStore.Append(losingRecord);
+                ownerData.SaveProtected($"shared-world-pc-signing-{voters[0].Id:N}.protected",
+                    voters[0].Key.ExportPkcs8PrivateKey());
+                RequireThrows<InvalidDataException>(() => SharedWorldElection.PrepareResolutionOffer(
+                    receivedRoot, noOverrideRoster,
+                    new SharedRosterFloor(noOverrideRoster.GroupId, noOverrideRoster.Epoch,
+                        noOverrideRoster.Revision, noOverrideRoster.Signature), voters[0].Id,
+                    voters[0].Key, "https://127.0.0.1:5132", new string('A', 64),
+                    ownerStore, accepted.RecordHash, ownerOverride: true),
+                    "disabled owner override produced an offer");
+                var ownerOffer = SharedWorldElection.PrepareResolutionOffer(receivedRoot,
+                    roster, floor, voters[0].Id, voters[0].Key, "https://127.0.0.1:5132",
+                    new string('A', 64), ownerStore, accepted.RecordHash, ownerOverride: true);
+                ownerStore.StageResolutionOffer(ownerOffer);
+                Require(ownerStore.PendingResolutionOffers(profile.Id).Count == 1,
+                    "owner offer did not persist for review");
+                var ownerInbox = new SharedWorldVoteInbox(ownerData);
+                ownerInbox.Arm(ownerOffer, receivedRoot);
+                var approval = new WorldAuthorityOwnerApproval(
+                    WorldAuthorityTrust.ProposalHash(ownerOffer.Proposal),
+                    Convert.ToBase64String(ownerKey.SignData(
+                        WorldAuthorityTrust.OwnerBasis(ownerOffer.Proposal), HashAlgorithmName.SHA256)));
+                var ownerResult = ownerInbox.AcceptOwnerApproval(profile.Id, approval);
+                Require(ownerResult is { Ok: true, Decision: not null } &&
+                    ownerStore.ReadUniqueHead(profile.Id)?.RecordHash == ownerResult.Decision.RecordHash &&
+                    ownerInbox.AcceptOwnerApproval(profile.Id, approval).Decision?.RecordHash ==
+                    ownerResult.Decision.RecordHash,
+                    "owner override was not durable and retryable");
+            }
+            using (var oldHostData = Data("returned-resolution-host"))
+            {
+                oldHostData.SaveSettings(Settings(profile));
+                var oldHostAuthority = new WorldAuthorityStore(oldHostData);
+                oldHostAuthority.AppendReceived(accepted, profile.Id, roster.GroupId,
+                    roster.OwnerPublicKey);
+                oldHostAuthority.AppendReceived(losingRecord, profile.Id, roster.GroupId,
+                    roster.OwnerPublicKey);
+                Require(oldHostAuthority.ReadUniqueHead(profile.Id) is null,
+                    "old Host selected a branch before receiving a decision");
+                oldHostAuthority.AppendReceived(majority.Decision!, profile.Id, roster.GroupId,
+                    roster.OwnerPublicKey);
+                Require(oldHostAuthority.Fenced(profile.Id, roster.OwnerPublicKey, out _) &&
+                    oldHostAuthority.ReadUniqueHead(profile.Id)?.RecordHash ==
+                    majority.Decision!.RecordHash,
+                    "old Host did not fence after verifying the returned decision");
+                var oldHostManager = Manager(oldHostData);
+                Require((await oldHostManager.StartAsync(profile.Id)).Code ==
+                    "SharedWorldAuthorityBlocked" &&
+                    (await oldHostManager.SetSharedSavesAsync(profile.Id, true)).Code ==
+                    "SharedWorldAuthorityBlocked",
+                    "old Host accepted Start or sharing after the signed decision");
+            }
+        }
         var successorVersion = SharedWorldService.SignVersion(version with
         {
             Number = version.Number + 1, ParentHash = version.VersionHash,
