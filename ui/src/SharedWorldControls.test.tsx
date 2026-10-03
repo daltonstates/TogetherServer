@@ -134,6 +134,7 @@ describe('Shared saves controls', () => {
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
     expect(await screen.findByText(/successor management is not available yet/)).toBeInTheDocument()
+    expect(screen.getByText(/may host and share hash-verified post-Stop file copies after its local setup and route checks pass/)).toBeInTheDocument()
     expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
     expect(screen.getByLabelText('Owner recovery override (future recovery only)')).toBeDisabled()
     expect(screen.getByLabelText('Receive for Friend PC')).toBeDisabled()

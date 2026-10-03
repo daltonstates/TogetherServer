@@ -173,7 +173,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
     <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p>
     <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
-    {status?.canManageSharing === false && <p className="helper-text">This PC can host and share verified saves with the current members. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
+    {status?.canManageSharing === false && <p className="helper-text">This PC may host and share hash-verified post-Stop file copies after its local setup and route checks pass. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
     {status?.latest ? <p>Copied to {status.confirmedCopies} PCs · latest post-Stop file copy {status.latest.number} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p>No post-Stop save has been published yet.</p>}

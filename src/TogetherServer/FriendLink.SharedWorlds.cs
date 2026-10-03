@@ -1139,8 +1139,8 @@ internal sealed partial class FriendLink
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             { /* A verified receipt is kept even if old-version cleanup fails. */ }
             return new(true, "SaveReceived", copyConfirmed ?
-                    "A completed save was verified here and confirmed to the Host." :
-                    "A completed save was verified here. Host confirmation is pending; retry when connected.",
+                    "A post-Stop file copy passed its hash checks here and was confirmed to the Host. Game load has not been checked." :
+                    "A post-Stop file copy passed its hash checks here. Game load has not been checked. Host confirmation is pending; retry when connected.",
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
