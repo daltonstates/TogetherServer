@@ -2244,6 +2244,21 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
         latest!.ParentHash == thirdManifest.VersionHash,
         "a missed-version chain did not retain signed parent hashes");
     var firstManifest = shares.ReadEarlierVersion(latest!, 1);
+    Require(FriendLink.IsReceivedHistoryConflict(firstManifest,
+            firstManifest with { VersionHash = latest!.VersionHash }) &&
+        FriendLink.IsReceivedHistoryConflict(firstManifest,
+            secondManifest with { ParentHash = latest!.VersionHash }) &&
+        !FriendLink.IsReceivedHistoryConflict(firstManifest, firstManifest),
+        "same-number fork or broken parent was not classified as a conflict");
+    Require(FriendLink.DescribeReceivedHistory(true, null, false, false, 1,
+            latest!.VersionHash, 1, firstManifest.VersionHash).StartsWith("Competing save histories") &&
+        FriendLink.DescribeReceivedHistory(true, null, false, true, 2,
+            secondManifest.VersionHash, 1, firstManifest.VersionHash).StartsWith("Competing save histories") &&
+        FriendLink.DescribeReceivedHistory(true, null, false, false, 1,
+            firstManifest.VersionHash, 1, firstManifest.VersionHash) == "Up to date when last checked" &&
+        FriendLink.DescribeReceivedHistory(true, null, false, false, 1,
+            null, 1, firstManifest.VersionHash) != "Up to date when last checked",
+        "received-save status inferred currency from a version number without the signed hash");
     Require(FriendLink.VerifySharedChain(firstManifest, latest!, [secondManifest, thirdManifest]) &&
         !FriendLink.VerifySharedChain(firstManifest, latest!, [thirdManifest, secondManifest]) &&
         !FriendLink.VerifySharedChain(firstManifest, latest!, [secondManifest]) &&
@@ -2418,6 +2433,12 @@ await Check("shared save consent withdrawal prevents final receipt pointer", () 
     Require(!link.CommitSharedReceipt(profileId, stage, Path.Combine(root, "received"), root, [1]) &&
         !File.Exists(Path.Combine(root, "latest.json")) && Directory.Exists(stage),
         "withdrawal allowed a completed receipt to be recorded");
+    using var shutdown = new CancellationTokenSource();
+    shutdown.Cancel();
+    var another = Guid.NewGuid();
+    Require(!link.CommitSharedReceipt(another, stage, Path.Combine(root, "received"), root, [1], shutdown.Token) &&
+        !File.Exists(Path.Combine(root, "latest.json")) && Directory.Exists(stage),
+        "shutdown allowed a completed receipt to be recorded");
     return Task.CompletedTask;
 });
 

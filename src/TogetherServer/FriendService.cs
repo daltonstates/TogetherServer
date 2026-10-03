@@ -28,6 +28,8 @@ public sealed class FriendConfiguration
     public List<Guid> ConsentedSharedWorldProfiles { get; set; } = [];
     public Dictionary<Guid, string> SharedWorldSigningKeys { get; set; } = [];
     public Dictionary<Guid, long> LastSharedHostVersions { get; set; } = [];
+    public Dictionary<Guid, string> LastSharedHostHashes { get; set; } = [];
+    public HashSet<Guid> SharedWorldConflicts { get; set; } = [];
     public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];
     public Dictionary<Guid, Guid> ApprovedSharedWorldGroups { get; set; } = [];
 }
@@ -373,6 +375,7 @@ internal sealed partial class FriendLink : IDisposable
     public async Task<FriendActionResult> RecoverEndpointAsync(string endpoint)
     {
         if (!TryRetain()) return ClosedAction();
+        CancelSharedTransfers();
         await gate.WaitAsync();
         try
         {
@@ -443,6 +446,7 @@ internal sealed partial class FriendLink : IDisposable
     public async Task<FriendActionResult> ForgetAsync()
     {
         if (!TryRetain()) return ClosedAction();
+        CancelSharedTransfers();
         await gate.WaitAsync();
         try
         {
@@ -904,6 +908,7 @@ internal sealed partial class FriendLink : IDisposable
             config.CertificateExpiresUtc = certificates.ActiveExpiresUtc;
             if (pinsChanged)
             {
+                CancelSharedTransfers();
                 client?.Dispose();
                 client = null;
             }
@@ -1043,6 +1048,7 @@ internal sealed partial class FriendLink : IDisposable
 
     public void Dispose()
     {
+        CancelSharedTransfers();
         var cleanup = false;
         lock (lifetimeSync)
         {

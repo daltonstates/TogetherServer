@@ -840,13 +840,21 @@ try
         $"/api/local/profiles/{profile.Id}/shared-world");
     Require(publishedShared.Enabled && publishedShared.Latest is { Number: 1 },
         "Host did not publish a signed post-Stop version");
-    var receivedShared = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
-        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
-    var receivedStatus = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+    // The app-owned poll discovers the publication after reconnect; no user pull is sent.
+    StopApp(friendA);
+    friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
+    await WaitLocal(friendAPort);
+    await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    ReceivedSharedWorldStatus receivedStatus = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world");
-    Require(receivedShared.Ok && receivedStatus.ThisPcVersion == 1 &&
-        receivedStatus.HostVersion == 1,
-        $"pinned HTTPS receipt failed: {receivedShared.Code} {receivedShared.Message}");
+    for (var attempt = 0; attempt < 20 && receivedStatus.ThisPcVersion != 1; attempt++)
+    {
+        await Task.Delay(1000);
+        receivedStatus = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+            $"/api/local/friend/{profile.Id}/shared-world");
+    }
+    Require(receivedStatus.ThisPcVersion == 1 && receivedStatus.HostVersion == 1,
+        $"pinned HTTPS automatic receipt did not catch up: {receivedStatus.State} {receivedStatus.Error}");
     var receiverRoot = Path.Combine(friendAData, "received-shared-worlds",
         deviceAId.ToString("N"), profile.Id.ToString("N"));
     Require(File.ReadAllText(Path.Combine(receiverRoot,
@@ -866,6 +874,60 @@ try
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
     Require(rereadShared.Ok && rereadShared.Code == "AlreadyReceived",
         "Friend could not re-verify the collision-named payload files");
+    StopApp(friendA);
+    using (var larger = new FileStream(Path.Combine(world, "world.dat"), FileMode.Create, FileAccess.Write))
+        larger.SetLength(3L * SharedWorldService.ChunkBytes);
+    Require((await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profile.Id}/start", new { })).Ok &&
+        (await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
+        "second disposable completed save was not published");
+    var secondShared = await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world");
+    Require(secondShared.Latest is { Number: 2 }, "second signed version was absent");
+    friendA = StartApp(appPath, "--friend", friendAPort, friendAData, receiveDelayMs: 3000);
+    await WaitLocal(friendAPort);
+    var slowView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
+    Require(slowView.State is "Connected" or "Disabled",
+        "Friend did not reconnect before the interrupted transfer fixture: " + slowView.State + " " + slowView.ConnectionCode);
+    var partial = Path.Combine(receiverRoot, ".partial-" + secondShared.Latest!.VersionHash,
+        "payload", "world.dat");
+    for (var attempt = 0; attempt < 150 &&
+        (!File.Exists(partial) || new FileInfo(partial).Length < SharedWorldService.ChunkBytes); attempt++)
+        await Task.Delay(100);
+    Require(File.Exists(partial) && new FileInfo(partial).Length >= SharedWorldService.ChunkBytes,
+        "slow transfer did not retain its first completed chunk");
+    var responsive = Stopwatch.StartNew();
+    Require((await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { })).State is "Connected" or "Disabled",
+        "heartbeat failed during a slow shared-save transfer");
+    await FriendAction(aLocal, profile.Id, "stop");
+    Require(responsive.Elapsed < TimeSpan.FromSeconds(2),
+        "heartbeat or remote Stop waited behind the slow shared-save transfer");
+    Require((await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(false))).Ok,
+        "fixture grant withdrawal failed during transfer");
+    await Task.Delay(3500);
+    Require((await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world")).ThisPcVersion == 1 &&
+        File.Exists(partial) && new FileInfo(partial).Length >= SharedWorldService.ChunkBytes,
+        "revocation advanced the receipt or removed resumable chunks");
+    Require((await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(true))).Ok,
+        "fixture grant could not be restored");
+    ReceivedSharedWorldStatus resumed = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world");
+    for (var attempt = 0; attempt < 100 && resumed.ThisPcVersion != 2; attempt++)
+    {
+        await Task.Delay(500);
+        resumed = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+            $"/api/local/friend/{profile.Id}/shared-world");
+    }
+    Require(resumed.ThisPcVersion == 2 &&
+        File.Exists(Path.Combine(receiverRoot, secondShared.Latest.VersionHash, "payload", "world.dat")),
+        $"automatic retry did not resume and verify version 2: {resumed.State} {resumed.Error}");
+    StopApp(friendA);
+    friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
+    await WaitLocal(friendAPort);
     var rotatedWorld = Path.Combine(root, "rotated-world");
     Directory.CreateDirectory(rotatedWorld);
     File.WriteAllText(Path.Combine(rotatedWorld, "world.dat"), "same WorldId, replacement source");
@@ -917,7 +979,7 @@ try
     Require(removedGrant.Ok && !(await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { })).Ok,
         "removing a save grant did not deny a new transfer");
-    Console.WriteLine("PASS pinned HTTPS shared save receipt requires Stop, Host grant, and Friend consent"); passes++;
+    Console.WriteLine("PASS pinned HTTPS automatic receipt, interrupted resume, grant revocation, and slow-transfer controls"); passes++;
     if (args.Skip(1).Contains("--shared-worlds-only", StringComparer.OrdinalIgnoreCase))
     {
         Console.WriteLine($"Shared-world HTTPS checks: {passes} groups passed, 0 failed. Data: {root}");
@@ -2128,7 +2190,7 @@ static int FreeTcpPort(params int[] exclude)
 }
 
 static Process StartApp(string path, string mode, int port, string data, int stopDelayMs = 0,
-    bool drainDiagnostics = true)
+    bool drainDiagnostics = true, int receiveDelayMs = 0)
 {
     Directory.CreateDirectory(data);
     var info = new ProcessStartInfo(path)
@@ -2143,6 +2205,7 @@ static Process StartApp(string path, string mode, int port, string data, int sto
     info.Environment["TOGETHERSERVER_FIXTURE_ROOT"] = data;
     info.Environment[GameServerRegistry.FixtureOptInEnvironmentVariable] = "1";
     if (stopDelayMs > 0) info.Environment["TOGETHERSERVER_FIXTURE_STOP_DELAY_MS"] = stopDelayMs.ToString();
+    if (receiveDelayMs > 0) info.Environment["TOGETHERSERVER_FIXTURE_RECEIVE_DELAY_MS"] = receiveDelayMs.ToString();
     info.Environment["Logging__LogLevel__Default"] = "Warning";
     info.Environment["Logging__EventLog__LogLevel__Default"] = "None";
     var process = Process.Start(info) ?? throw new Exception("App did not start.");

@@ -79,6 +79,18 @@ public sealed class FriendService : IDisposable
         return View();
     }
 
+    public void ScheduleSharedCatchUp(CancellationToken shutdown)
+    {
+        (Guid Id, FriendLink Link)[] current;
+        lock (sync) current = disposed ? [] : [.. links];
+        foreach (var (_, link) in current) link.ScheduleSharedCatchUp(shutdown);
+    }
+
+    public Task WaitForSharedCatchUpAsync()
+    {
+        lock (sync) return Task.WhenAll(links.Select(item => item.Link.ScheduledSharedCatchUp()));
+    }
+
     public FriendActionResult Select(Guid connectionId)
     {
         lock (sync)
@@ -183,9 +195,9 @@ public sealed class FriendService : IDisposable
 
     public ReceivedSharedWorldStatus SharedWorldStatus(Guid profileId)
     {
-        lock (sync)
-            return links.FirstOrDefault(item => item.Id == selectedId).Link?.SharedWorldStatus(profileId)
-                ?? new(false, null, null, "Not paired");
+        FriendLink? link;
+        lock (sync) link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+        return link?.SharedWorldStatus(profileId) ?? new(false, null, null, "Not paired");
     }
 
     public Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
