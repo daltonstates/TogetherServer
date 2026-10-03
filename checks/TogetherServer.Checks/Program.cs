@@ -2047,6 +2047,33 @@ await Check("backup staging, integrity, retention, and free-space checks fail cl
         "backup ignored the configured destination free-space boundary");
 });
 
+await Check("shared Stop before first signed roster leaves setup recoverable", async () =>
+{
+    using var data = Data("shared-stop-before-roster");
+    var profile = Profile("roster-race", "roster-race", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first stop");
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()]));
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok &&
+        (await manager.StartAsync(profile.Id)).Ok &&
+        (await manager.StopAsync(profile.Id)).Ok, "the first graceful Stop failed");
+    var sharedRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
+    Require(!File.Exists(Path.Combine(sharedRoot, "source.json")) &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
+        "Stop published a binding or save before the signed roster");
+    var roster = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System))
+        .PublishRoster(profile, []);
+    Require(SharedWorldRosterTrust.Verify(roster) && roster.Revision == 1,
+        "the first signed roster could not recover after Stop");
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second stop");
+    Require((await manager.StartAsync(profile.Id)).Ok &&
+        (await manager.StopAsync(profile.Id)).Ok &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest is { Number: 1 },
+        "a later confirmed Stop did not publish after roster setup");
+});
+
 await Check("shared save publishes only after confirmed Stop and rejects changed payload", async () =>
 {
     using var data = Data("shared-world-stop");
@@ -2274,6 +2301,7 @@ await Check("shared setup comes from the verified backup and accepts unknown Jav
     File.WriteAllText(allow, "[{\"name\":\"Mallory\"}]");
     profile.PublicListing = true;
     var service = new SharedWorldService(data, backups);
+    service.PublishRoster(profile, []);
     var publication = service.PublishAfterStop(profile, backup.Backup!.Id);
     Require(publication.Ok && publication.Version is { Schema: 4 },
         "unknown Java server version blocked publication: " + publication.Message);
@@ -2398,6 +2426,7 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
     profile.SharedSavesEnabled = true;
     var backupService = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backupService);
+    shares.PublishRoster(profile, []);
     var receiver = Path.Combine(data.RootPath, "disposable-receiver");
     Directory.CreateDirectory(receiver);
     SharedWorldVersion? latest = null;
@@ -2568,6 +2597,7 @@ await Check("shared save retention follows signed numbers despite skewed capture
     profile.SharedSavesEnabled = true;
     var capture = new SkewedSharedCapture(profile.WorldDirectory);
     var shares = new SharedWorldService(data, capture);
+    shares.PublishRoster(profile, []);
     var receiver = Path.Combine(data.RootPath, "skew-receiver");
     Directory.CreateDirectory(receiver);
     SharedWorldVersion? head = null;
@@ -2619,6 +2649,7 @@ await Check("shared save totals reject overflow and over-limit payloads", () =>
     profile.SharedSavesEnabled = true;
     var vault = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
     var shares = new SharedWorldService(data, new OversizedSharedCapture(data.RootPath));
+    shares.PublishRoster(profile, []);
     Require(!shares.PublishAfterStop(profile, Guid.NewGuid()).Ok &&
         !File.Exists(Path.Combine(vault, "latest.json")) &&
         !Directory.EnumerateDirectories(vault, ".stage-*", SearchOption.TopDirectoryOnly).Any(),
@@ -2655,6 +2686,7 @@ await Check("shared save chunks detect later tampering without rescanning earlie
     var backup = backups.Create(profile, BackupKinds.Rolling);
     Require(backup.Ok && backup.Backup is not null, "chunk fixture backup failed");
     var shares = new SharedWorldService(data, backups);
+    shares.PublishRoster(profile, []);
     var result = shares.PublishAfterStop(profile, backup.Backup!.Id);
     Require(result.Ok && result.Version is not null, "chunk fixture publication failed");
     var version = result.Version!;

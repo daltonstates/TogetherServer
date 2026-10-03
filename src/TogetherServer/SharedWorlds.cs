@@ -269,6 +269,11 @@ internal sealed class SharedWorldService
             try
             {
                 var oldBinding = ReadBinding(profile.Id);
+                // Enabling sharing and a graceful Stop can race. Publication must
+                // wait for the signed roster to establish the group; a save must
+                // never create a bare binding that strands first setup.
+                if (oldBinding is null || ReadRoster(profile) is null)
+                    throw new InvalidDataException("Sign the shared world roster before publishing a save.");
                 var sameSource = oldBinding is not null && BindingMatches(oldBinding, profile);
                 var priorStatus = Status(profile);
                 if (sameSource && File.Exists(LatestPath(profile.Id)) && priorStatus.Latest is null &&
