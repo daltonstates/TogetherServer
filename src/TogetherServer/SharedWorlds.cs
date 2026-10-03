@@ -496,25 +496,40 @@ internal sealed partial class SharedWorldService
         {
             if (!VerifySignature(latest) || number < 1 || number >= latest.Number)
                 throw new InvalidDataException("Shared version number is invalid.");
-            var proven = Authority.FindProvenVersion(latest.ProfileId, number);
             var head = Authority.LocalAuthorizedHead(latest.ProfileId);
-            if (proven is not null && head is not null &&
-                proven.GroupId == latest.GroupId && proven.ProfileId == latest.ProfileId &&
-                proven.Game == latest.Game && proven.WorldId == latest.WorldId &&
-                AuthorizedPublishedLineageForLatest(latest, head))
-                return proven;
-            var versionRoot = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
-                number.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            var path = SafeChild(versionRoot, "version.json");
-            if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes ||
-                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("Earlier shared version is missing or linked.");
-            var prior = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
-            if (prior is null || !VerifySignature(prior) || prior.Number != number ||
-                prior.GroupId != latest.GroupId || prior.ProfileId != latest.ProfileId ||
-                prior.Game != latest.Game || prior.WorldId != latest.WorldId)
-                throw new InvalidDataException("Earlier shared version is invalid.");
-            return prior;
+            if (head is null && Authority.Read(latest.ProfileId).Count > 0)
+                throw new InvalidDataException("No local authority is authorized to serve this save.");
+            if (head is not null && (!AuthorizedPublishedLineageForLatest(latest, head) ||
+                latest.Number < head.Version.Number ||
+                latest.Number == head.Version.Number && latest.VersionHash != head.Version.VersionHash))
+                throw new InvalidDataException("The published save is outside the selected authority lineage.");
+            var current = latest;
+            while (current.Number > number)
+            {
+                var priorNumber = current.Number - 1;
+                var prior = head is not null && priorNumber <= head.Version.Number
+                    ? Authority.FindProvenVersion(latest.ProfileId, priorNumber)
+                    : null;
+                if (prior is null)
+                {
+                    var versionRoot = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
+                        priorNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    var path = SafeChild(versionRoot, "version.json");
+                    if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes ||
+                        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException("Earlier shared version is missing or linked.");
+                    prior = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+                }
+                if (prior is null || !VerifySignature(prior) || prior.Number != priorNumber ||
+                    prior.GroupId != latest.GroupId || prior.ProfileId != latest.ProfileId ||
+                    prior.Game != latest.Game || prior.WorldId != latest.WorldId ||
+                    current.ParentHash != prior.VersionHash ||
+                    head is not null && priorNumber == head.Version.Number &&
+                    prior.VersionHash != head.Version.VersionHash)
+                    throw new InvalidDataException("Earlier shared version is outside the selected lineage.");
+                current = prior;
+            }
+            return current;
         }
     }
 
