@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus,
-  parseHostSharedWorldStatus } from './SharedWorldControls'
+  parseHostSharedWorldStatus, parseSharingView } from './SharedWorldControls'
 import type { Device } from './contracts'
 
 const profile = '11111111-1111-4111-8111-111111111111'
@@ -115,7 +115,7 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    const toggle = await screen.findByLabelText('Owner recovery override (future recovery only)')
+    const toggle = await screen.findByLabelText('Owner has final say on save conflicts')
     await waitFor(() => expect(toggle).toBeEnabled())
     fireEvent.click(toggle)
     await waitFor(() => expect(bodies).toEqual([{ ownerOverride: false }]))
@@ -129,9 +129,9 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/successor management is not available yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/Owner controls stay with the original owner/)).toBeInTheDocument()
     expect(screen.getByLabelText('Share completed saves from this server')).toBeDisabled()
-    expect(screen.getByLabelText('Owner recovery override (future recovery only)')).toBeDisabled()
+    expect(screen.getByLabelText('Owner has final say on save conflicts')).toBeDisabled()
     expect(screen.getByLabelText('Receive for Friend PC')).toBeDisabled()
     fireEvent.click(screen.getByText('Technical details'))
     expect(screen.queryByRole('button', { name: 'Retry signed permissions' })).not.toBeInTheDocument()
@@ -152,7 +152,89 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByText('Technical details'))
     fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
     await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
-    expect(screen.getByLabelText('Owner recovery override (future recovery only)')).not.toBeChecked()
+    expect(screen.getByLabelText('Owner has final say on save conflicts')).not.toBeChecked()
+  })
+
+  it('uses the current signed roster before the owner changes one grant', async () => {
+    const bodies: unknown[] = []
+    const signedGrants = { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false }
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/governance')) return reply({ revision: 7, ownerOverride: true,
+        members: [{ deviceId: device.id, grants: signedGrants, revoked: false, accessExpiresUtc: null }] })
+      if (url.endsWith('/grants')) {
+        bodies.push(JSON.parse(String(init?.body)))
+        return reply({ ok: true, code: 'Saved', message: 'Saved' })
+      }
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[{ ...device, sharedWorldGrants: {
+      [profile]: { receive: false, eligibleHost: false, recoveryVoter: false, manageSharing: false }
+    } }]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByText(/Verified sharing list: 1 active PCs, revision 7/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Receive for Friend PC')).toBeChecked()
+    expect(screen.getByLabelText('Eligible host for Friend PC')).toBeChecked()
+    fireEvent.click(screen.getByLabelText('Manage sharing for Friend PC'))
+    await waitFor(() => expect(bodies).toEqual([{ grants: {
+      receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: true
+    } }]))
+  })
+
+  it('lets a Manage sharing Friend edit another PC without Receive consent', async () => {
+    const otherId = '33333333-3333-4333-8333-333333333333'
+    const calls: { path: string; body?: unknown }[] = []
+    const sharing = { available: true, canManage: true, selfDeviceId: device.id,
+      revision: 5, code: 'SharingReady', message: 'Sharing verified.',
+      checkedUtc: '2026-10-03T12:00:00Z', members: [
+        { deviceId: device.id, isSelf: true, grants: { receive: false, eligibleHost: false,
+          recoveryVoter: false, manageSharing: true }, revoked: false, accessExpiresUtc: null, name: null },
+        { deviceId: otherId, isSelf: false, grants: { receive: true, eligibleHost: true,
+          recoveryVoter: false, manageSharing: false }, revoked: false, accessExpiresUtc: null, name: null }
+      ] }
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ path: url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (url.endsWith('/sharing/check')) return reply(sharing)
+      if (url.endsWith('/sharing')) return reply({ ok: true, code: 'SharingChanged', message: 'Sharing updated.' })
+      return reply({ consented: false, hostVersion: null, thisPcVersion: null,
+        state: 'Consent off', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(screen.getByText('Manage sharing'))
+    const vote = await screen.findByLabelText('Recovery voter for PC ending 333333')
+    fireEvent.click(vote)
+    await waitFor(() => expect(calls).toContainEqual({
+      path: `/api/local/friend/${profile}/shared-world/sharing`,
+      body: { deviceId: otherId, receive: true, eligibleHost: true,
+        recoveryVoter: true, revoked: false }
+    }))
+    expect(calls.some(call => call.path.endsWith('/consent') || call.path.endsWith('/pull'))).toBe(false)
+    expect(screen.queryByLabelText('Manage sharing for PC ending 333333')).not.toBeInTheDocument()
+  })
+
+  it('shows expired management access and does not offer member edits', async () => {
+    const paths: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      paths.push(url)
+      if (url.endsWith('/sharing/check')) return reply({ available: true, canManage: false,
+        selfDeviceId: device.id, revision: null, code: 'AccessExpired',
+        message: 'The owner ended this PC\'s sharing access.', members: [], checkedUtc: null })
+      return reply({ consented: false, hostVersion: null, thisPcVersion: null,
+        state: 'Consent off', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(screen.getByText('Manage sharing'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('owner ended this PC')
+    expect(screen.queryByLabelText(/Receive for PC ending/)).not.toBeInTheDocument()
+    expect(paths.some(path => path.endsWith('/sharing'))).toBe(false)
+  })
+
+  it('rejects malformed delegated sharing grants before showing controls', () => {
+    expect(() => parseSharingView({ available: true, canManage: true,
+      selfDeviceId: device.id, revision: 1, code: 'SharingReady', message: 'Ready', checkedUtc: null,
+      members: [{ deviceId: device.id, isSelf: false, grants: { receive: 'yes' },
+        revoked: false, accessExpiresUtc: null }] })).toThrow()
   })
 
   it('explains how to review a changed Host source without comparing group version numbers', async () => {
