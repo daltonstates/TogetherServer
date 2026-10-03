@@ -42,6 +42,19 @@ function textOrNull(value: unknown, where: string): string | null {
   if (typeof value !== 'string' || value.length > 300) throw new Error(`${where} is invalid.`)
   return value
 }
+export function normalizedDirectIpHttpsEndpoint(value: string): string | null {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || !url.port || url.pathname !== '/' || url.search || url.hash ||
+      url.username || url.password) return null
+    const host = url.hostname.toLowerCase()
+    const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(host)
+    const ipv6 = /^\[[0-9a-f:.]+\]$/.test(host) && host.includes(':')
+    if (!ipv4 && !ipv6 || host === '0.0.0.0' || host.startsWith('127.') ||
+      host === '[::]' || host === '[::1]' || host.includes('ffff:')) return null
+    return url.origin
+  } catch { return null }
+}
 function shortText(value: unknown, where: string, max = 300): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > max) throw new Error(`${where} is invalid.`)
   return value
@@ -202,8 +215,9 @@ function parseVoteResult(value: unknown): BasicResult & { votes: number; require
   return { ...parseBasicResult(value), votes, required, majorityReached: source.decision != null }
 }
 
-export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGrantChanged }:
-  { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; onGrantChanged: () => Promise<void> }) {
+export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged }:
+  { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; currentAddress?: string;
+    onGrantChanged: () => Promise<void> }) {
   const [status, setStatus] = useState<HostStatus | null>(null)
   const [open, setOpen] = useState(false)
   const [roster, setRoster] = useState<Roster | null>(null)
@@ -213,6 +227,14 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
   const [successorId, setSuccessorId] = useState('')
   const [successorAddress, setSuccessorAddress] = useState('')
   const [handoffMessage, setHandoffMessage] = useState('')
+  const shareAddress = normalizedDirectIpHttpsEndpoint(currentAddress ?? '')
+  const copyAddress = async () => {
+    if (!shareAddress) return
+    try {
+      await navigator.clipboard.writeText(shareAddress)
+      setMessage('Current Host address copied. Send it privately; Friends will check the saved Host identity before changing their address.')
+    } catch { setMessage('Could not copy the Host address. Check the saved direct IP address in Host settings under Friend route.') }
+  }
   const refreshHandoff = async () => setHandoff(await getLocalJson(
     `/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus))
   const refreshHost = async () => {
@@ -340,6 +362,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
     {status?.canManageSharing === false && !fenced && !review && <p className="helper-text">This PC may host and share hash-verified post-Stop file copies after its local setup and route checks pass. Only the original owner can change sharing permissions; successor management is not available yet.</p>}
     {!rollingBackupEnabled && <p className="helper-text">Enable rolling backup after Stop in protection settings first.</p>}
+    {status?.enabled && !fenced && !review && <div className="actions"><Button className="secondary" disabled={!shareAddress}
+      onClick={() => void copyAddress()}>Share current address</Button></div>}
+    {status?.enabled && !shareAddress && !fenced && !review && <p className="helper-text">Save a direct IP HTTPS address in Host settings under Friend route before sharing an address change.</p>}
     {status?.latest ? <p>{fenced || review ?
       `Preserved version ${status.latest.number} on this PC` :
       `Copied to ${status.confirmedCopies} PCs · latest post-Stop file copy ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
@@ -405,8 +430,8 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, onGr
   </details>
 }
 
-export function FriendSharedWorlds({ profileId, available }:
-  { profileId: string; available: boolean }) {
+export function FriendSharedWorlds({ profileId, available, onAddressChange }:
+  { profileId: string; available: boolean; onAddressChange?: () => void }) {
   const [status, setStatus] = useState<FriendStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
@@ -568,6 +593,7 @@ export function FriendSharedWorlds({ profileId, available }:
       `${status.hostVersion - status.thisPcVersion} version(s) behind` : status?.state
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds</summary>
     <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
+    {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>Update the Host app before receiving shared saves.</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>

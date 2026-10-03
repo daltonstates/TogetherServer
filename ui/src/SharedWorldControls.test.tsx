@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus,
-  parseHostSharedWorldStatus } from './SharedWorldControls'
+  parseHostSharedWorldStatus, normalizedDirectIpHttpsEndpoint } from './SharedWorldControls'
 import type { Device } from './contracts'
 
 const profile = '11111111-1111-4111-8111-111111111111'
@@ -113,6 +113,41 @@ describe('Shared saves controls', () => {
     expect(screen.getByText(/app cannot prove its current availability/)).toBeInTheDocument()
     expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
       error: null, confirmedCopies: -1 })).toThrow()
+  })
+
+  it('copies only a normalized direct IP address for the current shared Host', async () => {
+    expect(normalizedDirectIpHttpsEndpoint('https://192.0.2.10:5131/')).toBe('https://192.0.2.10:5131')
+    expect(normalizedDirectIpHttpsEndpoint('https://[2001:db8::1]:5131/')).toBe('https://[2001:db8::1]:5131')
+    for (const invalid of ['https://example.test:5131', 'http://192.0.2.10:5131',
+      'https://127.0.0.1:5131', 'https://192.0.2.10:5131/path',
+      'https://user@192.0.2.10:5131'])
+      expect(normalizedDirectIpHttpsEndpoint(invalid)).toBeNull()
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
+        reply({ enabled: true, latest: null, error: null })))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      currentAddress="https://192.0.2.10:5131/" onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Share current address' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://192.0.2.10:5131'))
+    expect(screen.getByText(/Friends will check the saved Host identity/)).toBeInTheDocument()
+  })
+
+  it('opens the saved identity recovery flow for a changed Host address', async () => {
+    const openRecovery = vi.fn()
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.includes('/shared-world') || init?.method === 'PUT') throw new Error('Unexpected request')
+      return reply({ consented: false, hostVersion: null,
+        thisPcVersion: null, state: 'Consent off', error: null })
+    })
+    vi.stubGlobal('fetch', fetch)
+    render(<FriendSharedWorlds profileId={profile} available onAddressChange={openRecovery} />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(screen.getByRole('button', { name: 'Host address changed?' }))
+    expect(openRecovery).toHaveBeenCalledOnce()
+    expect(fetch.mock.calls.every(([, init]) => init?.method !== 'PUT')).toBe(true)
   })
 
   it('sends owner override changes through the signed governance route', async () => {
