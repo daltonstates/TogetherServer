@@ -3802,6 +3802,17 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             keys[0].ExportPkcs8PrivateKey());
         var inbox = new SharedWorldVoteInbox(pcs[0]);
         inbox.Arm(offer, vaults[0]);
+        var armedStatus = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id);
+        Require(armedStatus.State == "OfferArmed" && armedStatus.Votes == 0 &&
+            armedStatus.Required == 2 && inbox.Armed(profile.Id)?.Proposal == offer.Proposal &&
+            armedStatus.Version == offer.Version.Number &&
+            armedStatus.CandidateAddress == candidateAddress && armedStatus.SeparateCopies == 1,
+            "candidate recovery status did not reopen from verified durable records");
+        var statusJson = JsonSerializer.Serialize(armedStatus);
+        Require(!statusJson.Contains("Files", StringComparison.OrdinalIgnoreCase) &&
+            !statusJson.Contains("SigningPublicKey", StringComparison.OrdinalIgnoreCase) &&
+            !statusJson.Contains("CandidatePublicKey", StringComparison.OrdinalIgnoreCase),
+            "recovery status exposed a signed manifest or signing identity");
         var proposalHash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
         var candidateSettings = pcs[0].LoadSettings();
         candidateSettings.CompanionBindAddress = "127.0.0.1";
@@ -3869,6 +3880,9 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         Require(inbox.AcceptVote(profile.Id, proposalHash, vote0).Code == "VoteRecorded",
             "candidate did not retain the first signed vote");
         var inboxAfterRestart = new SharedWorldVoteInbox(pcs[0]);
+        Require(inboxAfterRestart.Status(profile.Id).Votes == 1 &&
+            !inboxAfterRestart.Status(profile.Id).MajorityReached,
+            "reopened recovery status lost or overstated the first vote");
         Require(inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote0).Votes == 1,
             "candidate lost or duplicated a vote on restart");
         Require(inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote1,
@@ -3878,6 +3892,10 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var quorumResult = inboxAfterRestart.AcceptVote(profile.Id, proposalHash, vote1);
         Require(quorumResult.Code == "MajorityRecorded" && quorumResult.Decision is not null,
             "candidate did not retain a valid majority decision");
+        var decidedStatus = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id);
+        Require(decidedStatus.State == "MajorityRecorded" && decidedStatus.MajorityReached &&
+            decidedStatus.Votes == 2 && decidedStatus.Required == 2 && inboxAfterRestart.Armed(profile.Id) is null,
+            "reopened recovery status did not verify the durable majority fence");
         Require(inboxAfterRestart.Challenge(profile.Id, proposalHash, ids[1]) is null &&
             !inboxAfterRestart.HasArmedOffer(candidateAddress),
             "a completed offer remained reachable for another vote");

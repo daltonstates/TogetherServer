@@ -11,6 +11,10 @@ public sealed record WorldAuthorityOfferRequest(int Schema, Guid GroupId, Guid P
 public sealed record WorldAuthorityChallenge(string Nonce);
 public sealed record WorldAuthorityVoteResult(bool Ok, string Code,
     int Votes = 0, int Required = 0, WorldAuthorityRecord? Decision = null);
+public sealed record WorldRecoveryStatus(string State, int Votes, int Required,
+    long? Version, string? VersionHash, string? CandidateAddress,
+    Guid? CandidateDeviceId, bool MajorityReached,
+    int SeparateCopies);
 
 // Candidate state is inert until a local user deliberately arms an offer and
 // enables this PC's ordinary companion listener. Voters require only outbound
@@ -184,6 +188,34 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     internal WorldAuthorityOffer? Armed(Guid profileId)
     {
         lock (sync) return ReadState(profileId) is { Retired: false } state ? state.Offer : null;
+    }
+
+    internal WorldRecoveryStatus Status(Guid profileId)
+    {
+        lock (sync)
+        {
+            var state = ReadState(profileId);
+            var records = authority.Read(profileId);
+            var decisions = records.Where(record => record.Proposal.Kind == "Quorum").ToArray();
+            var decision = state is null ? decisions.LastOrDefault() : decisions.LastOrDefault(record =>
+                WorldAuthorityTrust.ProposalHash(record.Proposal) ==
+                WorldAuthorityTrust.ProposalHash(state.Offer.Proposal));
+            var offer = state is { Retired: false } ? state.Offer : null;
+            var source = state?.Offer;
+            var roster = state?.Offer.Roster ?? decision?.Roster;
+            var votes = state?.Votes.Count ?? decision?.Votes.Count ?? 0;
+            var required = roster is null ? 0 : roster.Members.Count(item =>
+                !item.Revoked && item.Grants.RecoveryVoter) / 2 + 1;
+            var separate = new SharedWorldSeparateCopyStore(data).Read(profileId).Count;
+            return new(offer is not null ? "OfferArmed" : decision is not null ? "MajorityRecorded" :
+                state is not null ? "OfferClosed" : "NoOffer", votes, required,
+                source?.Version.Number ?? decision?.Version.Number,
+                source?.Version.VersionHash ?? decision?.Version.VersionHash,
+                source?.Proposal.CandidateAddress ?? decision?.Proposal.CandidateAddress,
+                source?.CandidateReceipt.DeviceId ?? decision?.Roster.Members.SingleOrDefault(item =>
+                    item.PublicKey == decision.Proposal.CandidatePublicKey)?.DeviceId,
+                decision is not null, separate);
+        }
     }
 
     private InboxState? ReadState(Guid profileId)
