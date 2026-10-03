@@ -56,6 +56,18 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     public string? Warning { get; private set; }
     public IReadOnlyList<RemoteOperationView> RecentOperations() => operations.Recent();
 
+    // Lets local takeover checks distinguish this app's HTTPS listener from an
+    // unrelated process occupying the same control port.
+    internal bool OwnsListener(string endpoint, int port, string fingerprint,
+        string bindAddress)
+    {
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)) return false;
+        var key = bindAddress + ":" + port + "|" +
+            uri.GetLeftPart(UriPartial.Authority) + "|" + fingerprint;
+        return Active && ListenerState == CompanionListenerStates.Listening &&
+            Volatile.Read(ref activeAddress) == key;
+    }
+
     public async Task SyncAsync()
     {
         await listenerGate.WaitAsync();

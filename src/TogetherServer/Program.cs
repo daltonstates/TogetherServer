@@ -123,6 +123,7 @@ var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
     () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
     friend.CurrentRecoveryHostLoss);
+manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
@@ -1566,7 +1567,8 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/separate/hosting/{
     !friendMode ? Results.Conflict(new { code = "HostMode" }) :
     !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == branchHash) ?
         Results.NotFound() :
-        Results.Json(await manager.SeparateCopyHostStatusAsync(id, branchHash)));
+        Results.Json(await manager.SeparateCopyHostStatusAsync(id, branchHash,
+            friend.CurrentRecoveryHostLoss(id))));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/restore",
     async (HttpContext context, Guid id, SeparateCopyHostRestoreRequest request) =>
     !friendMode ? Results.Conflict(new { code = "HostMode" }) :

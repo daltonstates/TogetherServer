@@ -27,6 +27,15 @@ internal sealed record SeparateCopyHostState(int Schema, Guid SourceProfileId,
 
 public sealed partial class HostManager
 {
+    internal Func<string, int, string, string, bool>? CompanionListenerOwnershipProbe { get; set; }
+
+    private bool OwnsSeparateControlListener(WorldSeparateCopyBranch branch) =>
+        settings.CompanionListeningEnabled &&
+        settings.CompanionEndpoint == branch.Offer.Proposal.CandidateAddress &&
+        CompanionListenerOwnershipProbe?.Invoke(settings.CompanionEndpoint,
+            settings.CompanionPort, branch.Offer.CandidateTlsFingerprint,
+            settings.CompanionBindAddress) == true;
+
     private static string SeparateHostName(Guid localProfileId) =>
         $"separate-host-{localProfileId:N}.protected";
     private static string SeparateRouteName(Guid sourceProfileId, string branchHash) =>
@@ -121,18 +130,30 @@ public sealed partial class HostManager
         try
         {
             var branch = CurrentSeparateBranch(sourceProfileId, branchHash);
-            if (branch is null || confirmation?.Challenge is null || confirmation.Proof is null ||
+            var now = clock.GetUtcNow();
+            if (branch is null || confirmation?.Challenge is null ||
                 !settings.CompanionListeningEnabled ||
                 settings.CompanionEndpoint != branch.Offer.Proposal.CandidateAddress ||
                 tlsFingerprint != branch.Offer.CandidateTlsFingerprint ||
                 data.HasProtected($"shared-world-pc-signing-{confirmation.Challenge.ObserverDeviceId:N}.protected") ||
-                !SharedWorldSeparateRoute.VerifyChallenge(confirmation.Challenge, branch,
-                    clock.GetUtcNow()) ||
-                !SharedWorldSeparateRoute.VerifyProof(confirmation.Proof,
-                    confirmation.Challenge, branch)) return false;
-            data.SaveProtected(SeparateRouteName(sourceProfileId, branchHash),
-                JsonSerializer.SerializeToUtf8Bytes(new SeparateCopyRouteObservation(1,
-                    branchHash, confirmation.Challenge, tlsFingerprint, clock.GetUtcNow())));
+                !SharedWorldSeparateRoute.VerifyConfirmation(confirmation, branch, now))
+                return false;
+            var name = SeparateRouteName(sourceProfileId, branchHash);
+            var priorBytes = data.LoadProtected(name);
+            if (priorBytes is null && data.HasProtected(name)) return false;
+            if (priorBytes is { Length: > 32 * 1024 }) return false;
+            var prior = priorBytes is null ? null :
+                JsonSerializer.Deserialize<SeparateCopyRouteObservation>(priorBytes);
+            if (priorBytes is not null &&
+                !ValidSeparateRouteObservation(prior, branch, now)) return false;
+            var used = prior?.UsedNonces.Where(item =>
+                now - item.ConfirmedUtc <= TimeSpan.FromMinutes(11)).ToList() ?? [];
+            if (used.Count >= 128 || used.Any(item =>
+                item.Nonce == confirmation.Challenge.Nonce)) return false;
+            used.Add(new(confirmation.Challenge.Nonce, now));
+            data.SaveProtected(name,
+                JsonSerializer.SerializeToUtf8Bytes(new SeparateCopyRouteObservation(2,
+                    branchHash, confirmation, tlsFingerprint, now, used)));
             return true;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
@@ -145,16 +166,28 @@ public sealed partial class HostManager
     {
         var bytes = data.LoadProtected(SeparateRouteName(branch.Offer.Proposal.ProfileId,
             branch.BranchHash));
-        if (bytes is null) return false;
+        if (bytes is null || bytes.Length > 32 * 1024) return false;
         var observation = JsonSerializer.Deserialize<SeparateCopyRouteObservation>(bytes);
-        if (observation is not { Schema: 1 } ||
+        return ValidSeparateRouteObservation(observation, branch, clock.GetUtcNow()) &&
+            clock.GetUtcNow() - observation!.ObservedUtc <= TimeSpan.FromHours(1);
+    }
+
+    private static bool ValidSeparateRouteObservation(SeparateCopyRouteObservation? observation,
+        WorldSeparateCopyBranch branch, DateTimeOffset now)
+    {
+        if (observation is not { Schema: 2 } ||
             observation.BranchHash != branch.BranchHash ||
             observation.TlsFingerprint != branch.Offer.CandidateTlsFingerprint ||
-            observation.ObservedUtc > clock.GetUtcNow() ||
-            clock.GetUtcNow() - observation.ObservedUtc > TimeSpan.FromHours(1) ||
-            !SharedWorldSeparateRoute.VerifyChallenge(observation.Challenge, branch,
-                observation.ObservedUtc)) return false;
-        return true;
+            observation.ObservedUtc > now ||
+            observation.Confirmation?.Challenge is not { } challenge ||
+            observation.UsedNonces is not { Count: > 0 and <= 128 } used ||
+            used.Any(item => item is null || item.ConfirmedUtc > observation.ObservedUtc ||
+                item.Nonce is not { Length: 43 }) ||
+            used.Select(item => item.Nonce).Distinct(StringComparer.Ordinal).Count() != used.Count ||
+            !used.Any(item => item.Nonce == challenge.Nonce &&
+                item.ConfirmedUtc == observation.ObservedUtc)) return false;
+        return SharedWorldSeparateRoute.VerifyConfirmation(observation.Confirmation,
+            branch, observation.ObservedUtc);
     }
 
     private static Guid SeparateLocalProfileId(string branchHash)
@@ -207,7 +240,7 @@ public sealed partial class HostManager
     }
 
     public async Task<SeparateCopyHostStatus> SeparateCopyHostStatusAsync(Guid sourceProfileId,
-        string branchHash)
+        string branchHash, bool hostLossCurrent = false)
     {
         await gate.WaitAsync();
         try
@@ -229,11 +262,18 @@ public sealed partial class HostManager
                     profile.SeparateCopyBranchHash != branchHash);
             var running = runs.Any(item => item.ProfileId == localId &&
                 Identity(item) == "Matched");
-            return new(true, profile is not null, state?.Ready == true && !review && !running,
+            var issue = !review && !running && state is { Ready: true } && profile is not null ?
+                SeparateCopyStartIssue(localId, profile, branchHash) : null;
+            var ready = state?.Ready == true && !review && !running &&
+                issue is null && hostLossCurrent;
+            return new(true, profile is not null, ready,
                 review, review ?
                     "The old Host returned or signed authority changed. Keep both histories, gracefully stop any running separate server, and ask the group to review." :
                     running ? "This warned separate copy is running. Another server may also be running; keep both histories for group review." :
-                    state?.Ready == true ? "Manual separate-copy Start is available while the old Host remains unreachable. This is not the group's authoritative world." :
+                    issue is not null ? "Separate-copy checks need attention: " + issue :
+                    state?.Ready == true && !hostLossCurrent ?
+                        "Local checks passed earlier. Confirm two minutes without reaching the old Host before another manual Start." :
+                    ready ? "Manual separate-copy Start is available while the old Host remains unreachable. This is not the group's authoritative world." :
                     profile is not null ? "The separate world is restored. Finish the second-PC route and local setup checks." :
                     "The signed separate copy is recorded. Restore it into a fresh local managed world.",
                 localId, branchHash,
@@ -299,7 +339,8 @@ public sealed partial class HostManager
                 return new(false, "SeparatePortsInvalid", "Choose this PC's current control port and a valid game port.");
             var local = SharedWorldReadiness.Check(vault, worldRoot, setup,
                 new TakeoverAuthority(true, true, true, true, true, true),
-                branch.Offer.Roster.OwnerPublicKey, version.GroupId, freeBytes);
+                branch.Offer.Roster.OwnerPublicKey, version.GroupId, freeBytes,
+                ownedControlListener: OwnsSeparateControlListener(branch));
             if (local.Reasons.Count > 0)
                 return new(false, "LocalSetupIncomplete", "Complete local game, add-on, password, port, and space checks.",
                     PendingChecks: local.Reasons);
@@ -432,15 +473,19 @@ public sealed partial class HostManager
             state.WorldDirectory != SeparateWorldRoot(data, version, localId) ||
             CurrentSeparateBranch(state.SourceProfileId, branch.BranchHash) is null)
             return "The old Host returned or signed authority changed. Keep both histories for review.";
-        using (var certificate = new HostIdentity(data).Ensure(settings.CompanionEndpoint))
-            if (HostIdentity.Fingerprint(certificate) != branch.Offer.CandidateTlsFingerprint)
+        using (var certificate = new HostIdentity(data).Load())
+            if (certificate is null || !certificate.HasPrivateKey ||
+                HostIdentity.Fingerprint(certificate) != branch.Offer.CandidateTlsFingerprint)
                 return "This PC's pinned HTTPS certificate changed.";
+        if (!OwnsSeparateControlListener(branch))
+            return "This app's pinned HTTPS control listener is not running on the reviewed port.";
         if (!RecentSeparateRoute(branch))
             return "A recent signed control-route check from a different approved Friend PC is required.";
         var vault = VerifySeparateVault(branch);
         var readiness = SharedWorldReadiness.Check(vault, state.WorldDirectory, setup,
             new TakeoverAuthority(true, true, true, true, true, true),
-            branch.Offer.Roster.OwnerPublicKey, version.GroupId);
+            branch.Offer.Roster.OwnerPublicKey, version.GroupId,
+            ownedControlListener: OwnsSeparateControlListener(branch));
         if (readiness.Reasons.Count > 0)
             return readiness.Reasons[0];
         var installed = ServerAddOns.List(data, profile);

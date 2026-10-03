@@ -69,8 +69,10 @@ internal sealed partial class FriendLink
                 if (new WorldAuthorityStore(data).Read(profileId).Any(record =>
                     record.Proposal.Epoch >= branch.Offer.Proposal.Epoch))
                     return Fail("HistoryReviewRequired", "Signed authority changed during the route check.");
+                var confirmation = SharedWorldSeparateRoute.SignConfirmation(branch,
+                    challenge, proof!, key);
                 using var confirmed = await client.PostAsJsonAsync(route + "/confirm",
-                    new SeparateCopyRouteConfirmation(challenge, proof!), Json, cancellationToken);
+                    confirmation, Json, cancellationToken);
                 return confirmed.IsSuccessStatusCode
                     ? new(true, "SeparateRouteObserved",
                         "This Friend PC reached the separate-copy Host over pinned HTTPS. The game route still needs a real join after Start.",

@@ -44,3 +44,26 @@ it('shares a signed fork and sends an exact proof only after local review', asyn
   expect(await screen.findByText(/second approved PC reached/)).toBeInTheDocument()
   vi.unstubAllGlobals()
 })
+
+it('removes manual Start when a refreshed route check has expired', async () => {
+  let expired = false
+  vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+    url.includes('/hosting/') ? reply({ recorded: true, restored: true,
+      readyForManualStart: !expired, reviewRequired: false, running: false,
+      message: expired ? 'A recent signed control-route check is required.' :
+        'Manual separate-copy Start is available.', localProfileId: profile,
+      branchHash: proof.branchHash, preparedServerRoot: null, requiredAddOns: [] }) :
+      reply([proof])))
+  render(<SharedWorldSeparateRoutePanel profileId={profile} separateCopies={1} />)
+  fireEvent.click(screen.getByText('Separate-copy route check'))
+  fireEvent.click(screen.getByRole('button', { name: 'Show this PC’s signed separate-copy proofs' }))
+  fireEvent.click(await screen.findByRole('button', {
+    name: 'Review separate copy and show proof code' }))
+  expect(await screen.findByRole('button', { name: 'Start warned separate copy' })).toBeInTheDocument()
+  expired = true
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh separate-copy status' }))
+  await waitFor(() => expect(screen.queryByRole('button', {
+    name: 'Start warned separate copy' })).not.toBeInTheDocument())
+  expect(screen.getByText('A recent signed control-route check is required.')).toBeInTheDocument()
+  vi.unstubAllGlobals()
+})

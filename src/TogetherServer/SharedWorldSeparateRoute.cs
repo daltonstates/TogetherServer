@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace TogetherServer;
 
@@ -9,17 +10,26 @@ public sealed record SeparateCopyRouteChallenge(int Schema, Guid ProfileId,
 public sealed record SeparateCopyRouteProof(int Schema, Guid ProfileId,
     string BranchHash, string Nonce, string Endpoint, string TlsFingerprint,
     string Signature);
+public sealed record SeparateCopyRouteReceipt(int Schema, Guid GroupId,
+    Guid ProfileId, string BranchHash, string Endpoint, string TlsFingerprint,
+    string ChallengeHash, string ProofHash, Guid ObserverDeviceId,
+    string ObserverPublicKey, string Signature);
 public sealed record SeparateCopyRouteConfirmation(SeparateCopyRouteChallenge Challenge,
-    SeparateCopyRouteProof Proof);
+    SeparateCopyRouteProof Proof, SeparateCopyRouteReceipt Receipt);
 public sealed record SeparateCopyRouteRequest(WorldSeparateCopyBranch Branch);
 
+internal sealed record SeparateCopyRouteNonce(string Nonce, DateTimeOffset ConfirmedUtc);
 internal sealed record SeparateCopyRouteObservation(int Schema, string BranchHash,
-    SeparateCopyRouteChallenge Challenge, string TlsFingerprint, DateTimeOffset ObservedUtc);
+    SeparateCopyRouteConfirmation Confirmation, string TlsFingerprint,
+    DateTimeOffset ObservedUtc,
+    IReadOnlyList<SeparateCopyRouteNonce> UsedNonces);
 
 // These proofs attest only that a second approved PC reached the candidate's
 // pinned direct-IP listener. They never create a majority or authority record.
 internal static class SharedWorldSeparateRoute
 {
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
     internal static byte[] ChallengeBasis(SeparateCopyRouteChallenge item) => Encoding.UTF8.GetBytes(
         $"TogetherServer separate-copy route observer v1\n{item.ProfileId:N}\n" +
         $"{item.BranchHash}\n{item.Nonce}\n{item.IssuedUtc:O}\n{item.ObserverDeviceId:N}\n" +
@@ -87,6 +97,59 @@ internal static class SharedWorldSeparateRoute
             proof.TlsFingerprint == branch.Offer.CandidateTlsFingerprint &&
             SharedWorldRouteTrust.DirectIpAddress(proof.Endpoint) &&
             Signature(branch.CandidatePublicKey, ProofBasis(proof), proof.Signature);
+    }
+
+    internal static string ChallengeHash(SeparateCopyRouteChallenge challenge) =>
+        Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(challenge, Json)));
+
+    internal static string ProofHash(SeparateCopyRouteProof proof) =>
+        Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(proof, Json)));
+
+    internal static byte[] ReceiptBasis(SeparateCopyRouteReceipt receipt) => Encoding.UTF8.GetBytes(
+        $"TogetherServer separate-copy observed route v1\n{receipt.GroupId:N}\n" +
+        $"{receipt.ProfileId:N}\n{receipt.BranchHash}\n{receipt.Endpoint}\n" +
+        $"{receipt.TlsFingerprint}\n{receipt.ChallengeHash}\n{receipt.ProofHash}\n" +
+        $"{receipt.ObserverDeviceId:N}\n{receipt.ObserverPublicKey}");
+
+    // The observer signs only after its pinned HTTPS request has returned and
+    // the candidate's exact proof has verified. The candidate cannot mint it.
+    internal static SeparateCopyRouteConfirmation SignConfirmation(
+        WorldSeparateCopyBranch branch, SeparateCopyRouteChallenge challenge,
+        SeparateCopyRouteProof proof, ECDsa observerKey)
+    {
+        if (!VerifyChallenge(challenge, branch, DateTimeOffset.UtcNow) ||
+            !VerifyProof(proof, challenge, branch) ||
+            Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()) !=
+                challenge.ObserverPublicKey)
+            throw new InvalidDataException("A different approved Friend PC must verify the pinned route.");
+        var draft = new SeparateCopyRouteReceipt(1, branch.Offer.Proposal.GroupId,
+            branch.Offer.Proposal.ProfileId, branch.BranchHash,
+            branch.Offer.Proposal.CandidateAddress, branch.Offer.CandidateTlsFingerprint,
+            ChallengeHash(challenge), ProofHash(proof), challenge.ObserverDeviceId,
+            challenge.ObserverPublicKey, "");
+        var signed = draft with { Signature = Convert.ToBase64String(observerKey.SignData(
+            ReceiptBasis(draft), HashAlgorithmName.SHA256)) };
+        return new(challenge, proof, signed);
+    }
+
+    internal static bool VerifyConfirmation(SeparateCopyRouteConfirmation? confirmation,
+        WorldSeparateCopyBranch branch, DateTimeOffset now)
+    {
+        if (confirmation?.Challenge is not { } challenge ||
+            confirmation.Proof is not { } proof || confirmation.Receipt is not { } receipt ||
+            !VerifyChallenge(challenge, branch, now) ||
+            !VerifyProof(proof, challenge, branch) || receipt.Schema != 1 ||
+            receipt.GroupId != branch.Offer.Proposal.GroupId ||
+            receipt.ProfileId != branch.Offer.Proposal.ProfileId ||
+            receipt.BranchHash != branch.BranchHash ||
+            receipt.Endpoint != branch.Offer.Proposal.CandidateAddress ||
+            receipt.TlsFingerprint != branch.Offer.CandidateTlsFingerprint ||
+            receipt.ChallengeHash != ChallengeHash(challenge) ||
+            receipt.ProofHash != ProofHash(proof) ||
+            receipt.ObserverDeviceId != challenge.ObserverDeviceId ||
+            receipt.ObserverPublicKey != challenge.ObserverPublicKey)
+            return false;
+        return Signature(challenge.ObserverPublicKey, ReceiptBasis(receipt), receipt.Signature);
     }
 
     private static bool Signature(string publicKey, byte[] basis, string signature)

@@ -4294,15 +4294,35 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 keys[0].ExportPkcs8PrivateKey());
             new SharedWorldVoteInbox(separatePc).Arm(separateOffer, separateVault);
             var separateSettings = separatePc.LoadSettings();
+            separateSettings.CompanionBindAddress = "127.0.0.1";
             separateSettings.CompanionEndpoint = separateAddress;
             separateSettings.CompanionPort = separatePort;
             separateSettings.CompanionListeningEnabled = true;
             separatePc.SaveSettings(separateSettings);
-            var separateManager = Manager(separatePc);
+            var separateClock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+            var separateManager = new HostManager(separatePc, Games(separatePc), separateClock);
+            using var separateModeGate = new SemaphoreSlim(1, 1);
+            var separateListener = new CompanionServer(separatePc, separateManager,
+                new PairingService(separatePc), Games(separatePc),
+                new ServerLogService(separatePc, separateManager), separateModeGate,
+                separatePort + 2);
+            separateManager.CompanionListenerOwnershipProbe = separateListener.OwnsListener;
+            try
+            {
+            await separateListener.SyncAsync();
+            Require(separateListener.ListenerState == CompanionListenerStates.Listening &&
+                separateListener.OwnsListener(separateAddress, separatePort, separatePin,
+                    "127.0.0.1"),
+                "the disposable candidate app did not own its pinned HTTPS listener");
             var separateSetup = new TakeoverLocalSetup(fixture,
                 version.PortableSetup.GameVersion, [], true, separatePort, FreePort());
             var separateRequest = new SeparateCopyHostRestoreRequest(separateFork.BranchHash,
                 separateSetup, "Warned fixture", "Warned fixture");
+            Require((await Manager(separatePc).RestoreSeparateCopyAsync(profile.Id,
+                    separateRequest)).Code == "LocalSetupIncomplete" &&
+                !separateListener.OwnsListener(separateAddress, separatePort,
+                    new string('A', 64), "127.0.0.1"),
+                "an unowned or wrongly pinned control listener bypassed the port check");
             var separateFile = SharedWorldService.SafeChild(Path.Combine(separateVault,
                 version.VersionHash, SharedWorldService.PayloadDirectory), version.Files[0].Path);
             var preservedBytes = File.ReadAllBytes(separateFile);
@@ -4329,25 +4349,102 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 new SeparateCopyHostFinishRequest(separateFork.BranchHash,
                     separateSetup))).Code == "SeparateChecksPending",
                 "warned copy finished without a second-PC route round trip");
+            pcs[1].SaveProtected($"shared-world-pc-signing-{ids[1]:N}.protected",
+                keys[1].ExportPkcs8PrivateKey());
+            using var observerKey = ECDsa.Create();
+            observerKey.ImportPkcs8PrivateKey(pcs[1].LoadProtected(
+                $"shared-world-pc-signing-{ids[1]:N}.protected")!, out _);
             var separateChallenge = SharedWorldSeparateRoute.SignChallenge(separateFork,
-                ids[1], keys[1]);
-            var separateProof = await separateManager.SignSeparateRouteProofAsync(profile.Id,
-                separateFork.BranchHash, separateChallenge, separatePin);
+                ids[1], observerKey);
+            using var separateHandler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
+                    certificate is not null && HostIdentity.Fingerprint(certificate) == separatePin
+            };
+            using var separateClient = new HttpClient(separateHandler)
+            { BaseAddress = new Uri($"https://127.0.0.1:{separatePort}/") };
+            var separateRoute = $"api/companion/servers/{profile.Id}/shared-world/" +
+                $"separate-route/{separateFork.BranchHash}";
+            using var proofRequest = new HttpRequestMessage(HttpMethod.Post,
+                separateRoute + "/proof") { Content = JsonContent.Create(separateChallenge) };
+            proofRequest.Headers.Host = new Uri(separateAddress).Authority;
+            using var proofResponse = await separateClient.SendAsync(proofRequest);
+            var separateProof = proofResponse.IsSuccessStatusCode ?
+                await proofResponse.Content.ReadFromJsonAsync<SeparateCopyRouteProof>() : null;
             Require(SharedWorldSeparateRoute.VerifyProof(separateProof,
                 separateChallenge, separateFork) &&
                 (await separateManager.FinishSeparateCopyAsync(profile.Id,
                     new SeparateCopyHostFinishRequest(separateFork.BranchHash,
-                        separateSetup))).Code == "SeparateChecksPending" &&
-                await separateManager.ConfirmSeparateRouteAsync(profile.Id,
-                    separateFork.BranchHash,
-                    new SeparateCopyRouteConfirmation(separateChallenge, separateProof!),
-                    separatePin),
-                "warned copy accepted a self-route or omitted the second-PC return confirmation");
+                        separateSetup))).Code == "SeparateChecksPending",
+                "the observer PC did not receive a valid pinned HTTPS route proof");
+            RequireThrows<InvalidDataException>(() =>
+                SharedWorldSeparateRoute.SignConfirmation(separateFork,
+                    separateChallenge, separateProof!, keys[0]),
+                "the candidate signed its own observer confirmation");
+            var receiptDraft = new SeparateCopyRouteReceipt(1,
+                separateFork.Offer.Proposal.GroupId, profile.Id, separateFork.BranchHash,
+                separateAddress, separatePin,
+                SharedWorldSeparateRoute.ChallengeHash(separateChallenge),
+                SharedWorldSeparateRoute.ProofHash(separateProof!), ids[1],
+                Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()), "");
+            var candidateOnly = new SeparateCopyRouteConfirmation(separateChallenge,
+                separateProof!, receiptDraft with { Signature = Convert.ToBase64String(
+                    keys[0].SignData(SharedWorldSeparateRoute.ReceiptBasis(receiptDraft),
+                        HashAlgorithmName.SHA256)) });
+            Require(!await separateManager.ConfirmSeparateRouteAsync(profile.Id,
+                    separateFork.BranchHash, candidateOnly, separatePin),
+                "candidate self-confirmed without the second PC's private key");
+            var observerConfirmation = SharedWorldSeparateRoute.SignConfirmation(
+                separateFork, separateChallenge, separateProof!, observerKey);
+            var wrongObserverDraft = observerConfirmation.Receipt with
+            {
+                ObserverDeviceId = ids[2],
+                ObserverPublicKey = Convert.ToBase64String(keys[2].ExportSubjectPublicKeyInfo()),
+                Signature = ""
+            };
+            var wrongObserver = observerConfirmation with { Receipt = wrongObserverDraft with
+            { Signature = Convert.ToBase64String(keys[2].SignData(
+                SharedWorldSeparateRoute.ReceiptBasis(wrongObserverDraft),
+                HashAlgorithmName.SHA256)) } };
+            Require(!SharedWorldSeparateRoute.VerifyConfirmation(wrongObserver,
+                    separateFork, DateTimeOffset.UtcNow) &&
+                !SharedWorldSeparateRoute.VerifyConfirmation(observerConfirmation with
+                { Receipt = observerConfirmation.Receipt with { GroupId = Guid.NewGuid() } },
+                    separateFork, DateTimeOffset.UtcNow) &&
+                !SharedWorldSeparateRoute.VerifyConfirmation(observerConfirmation with
+                { Receipt = observerConfirmation.Receipt with { ProofHash = new string('A', 64) } },
+                    separateFork, DateTimeOffset.UtcNow) &&
+                !SharedWorldSeparateRoute.VerifyConfirmation(observerConfirmation,
+                    separateFork, DateTimeOffset.UtcNow.AddHours(1)),
+                "a wrong observer, group, proof, or expired route confirmation was accepted");
+            using var confirmRequest = new HttpRequestMessage(HttpMethod.Post,
+                separateRoute + "/confirm") { Content = JsonContent.Create(observerConfirmation) };
+            confirmRequest.Headers.Host = new Uri(separateAddress).Authority;
+            using var confirmResponse = await separateClient.SendAsync(confirmRequest);
+            Require(confirmResponse.IsSuccessStatusCode &&
+                !await separateManager.ConfirmSeparateRouteAsync(profile.Id,
+                    separateFork.BranchHash, observerConfirmation, separatePin),
+                "the second PC's signed HTTPS confirmation was rejected or replayable");
             var separateFinished = await separateManager.FinishSeparateCopyAsync(profile.Id,
                 new SeparateCopyHostFinishRequest(separateFork.BranchHash, separateSetup));
             Require(separateFinished.Code == "SeparateReadyForManualStart" &&
                 new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0,
                 $"warned copy became authoritative or could not finish: {separateFinished.Code} {separateFinished.Message}");
+            var restartedSeparateManager = new HostManager(separatePc,
+                Games(separatePc), separateClock)
+            { CompanionListenerOwnershipProbe = separateListener.OwnsListener };
+            Require(!(await restartedSeparateManager.SeparateCopyHostStatusAsync(profile.Id,
+                    separateFork.BranchHash)).ReadyForManualStart &&
+                (await restartedSeparateManager.SeparateCopyHostStatusAsync(profile.Id,
+                    separateFork.BranchHash, hostLossCurrent: true)).ReadyForManualStart,
+                "separate-copy readiness after restart omitted current Host-loss evidence");
+            separateClock.Advance(TimeSpan.FromHours(1) + TimeSpan.FromMinutes(1));
+            Require(!(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                    separateFork.BranchHash, hostLossCurrent: true)).ReadyForManualStart &&
+                !(await separateManager.StartSeparateCopyAsync(restoredId,
+                    separateFork.BranchHash)).Ok,
+                "an expired second-PC route proof still enabled manual Start");
+            separateClock.Advance(-TimeSpan.FromHours(1) - TimeSpan.FromMinutes(1));
             var separateStarted = await separateManager.StartSeparateCopyAsync(restoredId,
                 separateFork.BranchHash);
             Require(separateStarted.Ok, $"manual warned Start failed: {separateStarted.Code} {separateStarted.Message}");
@@ -4368,6 +4465,8 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 new SharedWorldSeparateCopyStore(separatePc).Read(profile.Id).Count == 2 &&
                 new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0,
                 "returning Host did not fence the warned branch or preserve both signed forks");
+            }
+            finally { await separateListener.StopAsync(); }
         }
         var branchName = $"shared-world-separate-{profile.Id:N}.protected";
         var branchBytes = pcs[0].LoadProtected(branchName)!;
