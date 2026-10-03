@@ -2948,6 +2948,9 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(completed.Ok && completed.Code == "OldHostFenced" &&
         WorldAuthorityTrust.Verify(completed.Authority) &&
         completed.Authority!.SuccessorReceipt == receipt &&
+        (await manager.ReadPlannedHandoffOfferAsync(profile.Id, successorId))?.RecordHash ==
+            completed.Authority.RecordHash &&
+        await manager.ReadPlannedHandoffOfferAsync(profile.Id, Guid.NewGuid()) is null &&
         (await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
         "signed handoff was reported before a durable fence");
     var restarted = new HostManager(data, registry);

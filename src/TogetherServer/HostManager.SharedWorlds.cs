@@ -94,6 +94,20 @@ public sealed partial class HostManager
         }
         finally { gate.Release(); }
     }
+
+    internal async Task<WorldAuthorityRecord?> ReadPlannedHandoffOfferAsync(Guid profileId,
+        Guid successorDeviceId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var records = authority.Read(profileId);
+            return records.LastOrDefault(record => record.Proposal.Kind == "Planned" &&
+                record.SuccessorReceipt?.DeviceId == successorDeviceId &&
+                WorldAuthorityTrust.Verify(record));
+        }
+        finally { gate.Release(); }
+    }
     private bool SharedAuthorityBlocked(Guid profileId, out string reason)
     {
         reason = "";
