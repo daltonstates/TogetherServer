@@ -23,6 +23,7 @@ public sealed record WorldAuthorityRecord(int Schema, WorldAuthorityProposal Pro
 
 internal static class WorldAuthorityTrust
 {
+    internal const int PageSize = 4;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     internal static string RosterHash(SharedWorldRoster roster) => Hash(JsonSerializer.SerializeToUtf8Bytes(roster, Json));
@@ -503,7 +504,6 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             if (floor is null || floor.Schema != 1 || floor.Count < 0)
                 throw new InvalidDataException("Authority floor is invalid.");
             var bytes = File.Exists(path) ? File.ReadAllBytes(path) : [];
-            if (bytes.Length > 4 * 1024 * 1024) throw new InvalidDataException("Authority log is oversized.");
             var lines = Encoding.UTF8.GetString(bytes).Split('\n', StringSplitOptions.RemoveEmptyEntries);
             if (lines.Length != floor.Count || floor.LogHash != Digest(bytes))
                 throw new InvalidDataException("Authority log changed or was rolled back.");
@@ -590,9 +590,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 existing.Count + 1, Digest(next), line);
             var journalPath = PendingPath(record.Proposal.ProfileId);
             var journalBytes = JsonSerializer.SerializeToUtf8Bytes(pending, Json);
-            if (journalBytes.Length > 512 * 1024 || line.Length > 400_000 ||
-                next.Length > 4 * 1024 * 1024)
-                throw new InvalidDataException("Authority proof exceeds the bounded log.");
+            if (journalBytes.Length > 512 * 1024 || line.Length > 400_000)
+                throw new InvalidDataException("Authority record or append journal is oversized.");
             using (var journal = new FileStream(journalPath, FileMode.CreateNew,
                 FileAccess.Write, FileShare.None))
             {

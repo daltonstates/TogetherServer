@@ -156,18 +156,29 @@ internal sealed partial class FriendLink
         var roster = JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json);
         if (!SharedWorldRosterTrust.Verify(roster) || roster!.ProfileId != profileId)
             return SharedFailure("RosterRejected", "The owner-signed roster failed verification.");
-        using var authorityResponse = await client.GetAsync(
-            $"api/companion/servers/{profileId}/shared-world/authority",
-            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        var authorityBytes = await ReadBoundedSharedAsync(authorityResponse.Content,
-            4 * 1024 * 1024, cancellationToken);
-        if (!authorityResponse.IsSuccessStatusCode || authorityBytes is null)
-            return SharedFailure("AuthorityUnavailable", "The signed authority history is unavailable.");
-        IReadOnlyList<WorldAuthorityRecord>? authorityRecords;
-        try { authorityRecords = JsonSerializer.Deserialize<List<WorldAuthorityRecord>>(authorityBytes, Json); }
-        catch (JsonException) { return SharedFailure("AuthorityRejected", "The authority history is invalid."); }
-        if (authorityRecords is null || authorityRecords.Count > 64)
-            return SharedFailure("AuthorityRejected", "The authority history is invalid.");
+        var authorityRecords = new List<WorldAuthorityRecord>();
+        var seenAuthorityHashes = new HashSet<string>(StringComparer.Ordinal);
+        while (true)
+        {
+            using var authorityResponse = await client.GetAsync(
+                $"api/companion/servers/{profileId}/shared-world/authority?offset={authorityRecords.Count}",
+                HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var authorityBytes = await ReadBoundedSharedAsync(authorityResponse.Content,
+                4 * 1024 * 1024, cancellationToken);
+            if (!authorityResponse.IsSuccessStatusCode || authorityBytes is null)
+                return SharedFailure("AuthorityUnavailable", "The signed authority history is unavailable.");
+            List<WorldAuthorityRecord>? page;
+            try { page = JsonSerializer.Deserialize<List<WorldAuthorityRecord>>(authorityBytes, Json); }
+            catch (JsonException) { return SharedFailure("AuthorityRejected", "The authority history is invalid."); }
+            if (page is null || page.Count > WorldAuthorityTrust.PageSize ||
+                page.Any(record => record is null) ||
+                authorityRecords.Count > int.MaxValue - page.Count)
+                return SharedFailure("AuthorityRejected", "The authority history is invalid.");
+            if (page.Any(record => !seenAuthorityHashes.Add(record.RecordHash)))
+                return SharedFailure("AuthorityRejected", "The authority history repeated a record.");
+            authorityRecords.AddRange(page);
+            if (page.Count < WorldAuthorityTrust.PageSize) break;
+        }
         HashSet<string> knownAuthorityHashes;
         try { knownAuthorityHashes = new WorldAuthorityStore(data).Read(profileId)
             .Select(record => record.RecordHash).ToHashSet(StringComparer.Ordinal); }
