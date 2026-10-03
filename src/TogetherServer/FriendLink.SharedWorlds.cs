@@ -130,18 +130,18 @@ internal sealed partial class FriendLink
         CancellationToken cancellationToken)
     {
         if (budget < 0) throw new ArgumentOutOfRangeException(nameof(budget));
-        var first = WorldAuthorityStore.FirstProofNumber(record, parent);
+        var (first, prior, digest) = store.ReadStagedProofCursor(record, parent);
+        if (prior?.Number == record.Version.Number) return (true, 0);
         var used = 0;
-        SharedWorldVersion? prior = parent?.Version;
         var expectedSigner = parent?.Proposal.CandidatePublicKey ?? record.Roster.OwnerPublicKey;
         for (var number = first; ; number++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (used == budget) return (false, used);
             var piece = store.ReadStagedProofVersion(record, number);
             var fetched = piece is null;
             if (fetched)
             {
-                if (used == budget) return (false, used);
                 piece = number == record.Version.Number ? record.Version :
                     await fetch(number, cancellationToken);
             }
@@ -150,12 +150,63 @@ internal sealed partial class FriendLink
                 number == record.Version.Number && piece.VersionHash != record.Version.VersionHash)
                 throw new InvalidDataException("A signed authority proof piece is missing or changed.");
             if (fetched)
-            {
                 store.StageReceivedProofVersion(record, piece, cancellationToken);
-                used++;
-            }
+            used++;
+            digest = WorldAuthorityTrust.AdvanceLineage(digest, piece);
             prior = piece;
-            if (number == record.Version.Number) return (true, used);
+            if (number == record.Version.Number || used == budget)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                store.SaveStagedProofCursor(record, parent, prior, digest);
+                if (number == record.Version.Number &&
+                    Convert.ToHexString(digest) != record.VersionLineageDigest)
+                    throw new InvalidDataException("Authority proof digest does not match the signed record.");
+                return (number == record.Version.Number, used);
+            }
+        }
+    }
+
+    internal static WorldAuthorityRecord[] NewAuthorityPage(
+        IReadOnlyList<WorldAuthorityRecord> accepted, IReadOnlyList<WorldAuthorityRecord> page)
+    {
+        if (page.Count > WorldAuthorityTrust.PageSize || page.Any(record => record is null) ||
+            page.Select(record => record.RecordHash).Distinct(StringComparer.Ordinal).Count() != page.Count ||
+            accepted.Count > 0 &&
+                (page.Count == 0 || page[0].RecordHash != accepted[^1].RecordHash))
+            throw new InvalidDataException("The authority page changed or omitted a verified decision.");
+        return accepted.Count > 0 ? page.Skip(1).ToArray() : page.ToArray();
+    }
+
+    internal static (bool Complete, int Used) VerifyStagedAuthorityProofBatch(
+        WorldAuthorityStore store, WorldAuthorityRecord record, WorldAuthorityRecord? parent,
+        int budget, CancellationToken cancellationToken)
+    {
+        if (budget < 0) throw new ArgumentOutOfRangeException(nameof(budget));
+        var (first, prior, digest) = store.ReadStagedProofSeal(record, parent);
+        if (prior?.Number == record.Version.Number) return (true, 0);
+        var expectedSigner = parent?.Proposal.CandidatePublicKey ?? record.Roster.OwnerPublicKey;
+        var used = 0;
+        for (var number = first; ; number++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (used == budget) return (false, used);
+            var piece = store.ReadStagedProofVersion(record, number) ??
+                throw new InvalidDataException("A staged authority proof boundary is missing.");
+            if (piece.ParentHash != prior?.VersionHash || piece.SigningPublicKey != expectedSigner ||
+                number == record.Version.Number && piece.VersionHash != record.Version.VersionHash)
+                throw new InvalidDataException("A staged authority proof boundary changed.");
+            digest = WorldAuthorityTrust.AdvanceLineage(digest, piece);
+            prior = piece;
+            used++;
+            if (number == record.Version.Number || used == budget)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                store.SaveStagedProofSeal(record, parent, prior, digest);
+                if (number == record.Version.Number &&
+                    Convert.ToHexString(digest) != record.VersionLineageDigest)
+                    throw new InvalidDataException("The staged authority proof digest changed.");
+                return (number == record.Version.Number, used);
+            }
         }
     }
 
@@ -191,41 +242,33 @@ internal sealed partial class FriendLink
         var roster = JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json);
         if (!SharedWorldRosterTrust.Verify(roster) || roster!.ProfileId != profileId)
             return SharedFailure("RosterRejected", "The owner-signed roster failed verification.");
-        var authorityRecords = new List<WorldAuthorityRecord>();
-        var seenAuthorityHashes = new HashSet<string>(StringComparer.Ordinal);
-        while (true)
-        {
-            using var authorityResponse = await client.GetAsync(
-                $"api/companion/servers/{profileId}/shared-world/authority?offset={authorityRecords.Count}",
-                HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            var authorityBytes = await ReadBoundedSharedAsync(authorityResponse.Content,
-                4 * 1024 * 1024, cancellationToken);
-            if (!authorityResponse.IsSuccessStatusCode || authorityBytes is null)
-                return SharedFailure("AuthorityUnavailable", "The signed authority history is unavailable.");
-            List<WorldAuthorityRecord>? page;
-            try { page = JsonSerializer.Deserialize<List<WorldAuthorityRecord>>(authorityBytes, Json); }
-            catch (JsonException) { return SharedFailure("AuthorityRejected", "The authority history is invalid."); }
-            if (page is null || page.Count > WorldAuthorityTrust.PageSize ||
-                page.Any(record => record is null) ||
-                authorityRecords.Count > WorldAuthorityTrust.MaximumAuthorityRecords - page.Count)
-                return SharedFailure("AuthorityRejected", "The authority history is invalid.");
-            if (page.Any(record => !seenAuthorityHashes.Add(record.RecordHash)))
-                return SharedFailure("AuthorityRejected", "The authority history repeated a record.");
-            authorityRecords.AddRange(page);
-            if (page.Count < WorldAuthorityTrust.PageSize) break;
-        }
-        HashSet<string> knownAuthorityHashes;
-        try { knownAuthorityHashes = new WorldAuthorityStore(data).Read(profileId)
-            .Select(record => record.RecordHash).ToHashSet(StringComparer.Ordinal); }
+        var authorityStoreForStage = new WorldAuthorityStore(data);
+        IReadOnlyList<WorldAuthorityRecord> acceptedBeforePage;
+        try { acceptedBeforePage = authorityStoreForStage.Read(profileId); }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
         { return SharedFailure("AuthorityRejected", "The saved authority history failed verification."); }
-        var authorityStoreForStage = new WorldAuthorityStore(data);
-        var authorityProofs = new Dictionary<string, IEnumerable<SharedWorldVersion>>();
+        var offset = Math.Max(0, acceptedBeforePage.Count - 1);
+        using var authorityResponse = await client.GetAsync(
+            $"api/companion/servers/{profileId}/shared-world/authority?offset={offset}",
+            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var authorityBytes = await ReadBoundedSharedAsync(authorityResponse.Content,
+            4 * 1024 * 1024, cancellationToken);
+        if (!authorityResponse.IsSuccessStatusCode || authorityBytes is null)
+            return SharedFailure("AuthorityUnavailable", "The signed authority history is unavailable.");
+        List<WorldAuthorityRecord>? page;
+        try { page = JsonSerializer.Deserialize<List<WorldAuthorityRecord>>(authorityBytes, Json); }
+        catch (JsonException) { return SharedFailure("AuthorityRejected", "The authority history is invalid."); }
+        if (page is null)
+            return SharedFailure("AuthorityRejected", "The authority history changed or omitted a verified decision.");
+        WorldAuthorityRecord[] authorityRecords;
+        try { authorityRecords = NewAuthorityPage(acceptedBeforePage, page); }
+        catch (InvalidDataException)
+        { return SharedFailure("AuthorityRejected", "The authority history changed or omitted a verified decision."); }
+        var stagedAuthorityProofs = new HashSet<string>(StringComparer.Ordinal);
         var remainingProofWork = WorldAuthorityTrust.ProofVersionsPerCheck;
-        foreach (var record in authorityRecords.Where(item =>
-            item.VersionLineageDigest is not null && !knownAuthorityHashes.Contains(item.RecordHash)))
+        foreach (var record in authorityRecords.Where(item => item.VersionLineageDigest is not null))
         {
-            var parent = authorityRecords.SingleOrDefault(item =>
+            var parent = authorityRecords.Concat(acceptedBeforePage).SingleOrDefault(item =>
                 item.RecordHash == record.Proposal.ParentAuthorityHash);
             (bool Complete, int Used) staged;
             try
@@ -249,8 +292,16 @@ internal sealed partial class FriendLink
             if (!staged.Complete)
                 return SharedFailure("AuthorityCatchUpPending",
                     "The signed save history is still being checked. Check again to continue.");
-            authorityProofs.Add(record.RecordHash,
-                authorityStoreForStage.ReadStagedProof(record, parent));
+            (bool Complete, int Used) sealedProof;
+            try { sealedProof = VerifyStagedAuthorityProofBatch(authorityStoreForStage,
+                record, parent, remainingProofWork, cancellationToken); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+            { return SharedFailure("AuthorityRejected", "A staged authority proof boundary is missing or invalid."); }
+            remainingProofWork -= sealedProof.Used;
+            if (!sealedProof.Complete)
+                return SharedFailure("AuthorityCatchUpPending",
+                    "The signed save history is still being checked. Check again to continue.");
+            stagedAuthorityProofs.Add(record.RecordHash);
         }
         await gate.WaitAsync(cancellationToken);
         try
@@ -283,28 +334,34 @@ internal sealed partial class FriendLink
         try
         {
             var authorityStore = new WorldAuthorityStore(data);
-            if (authorityRecords.Count == 0 && authorityStore.HasState(profileId))
+            if (page.Count == 0 && authorityStore.HasState(profileId))
                 return SharedFailure("AuthorityRejected", "The Host omitted previously verified authority.");
             foreach (var record in authorityRecords)
             {
                 var acceptedBefore = authorityStore.Read(profileId);
                 if (acceptedBefore.Any(item => item.RecordHash == record.RecordHash)) continue;
-                authorityProofs.TryGetValue(record.RecordHash, out var lineagePieces);
-                authorityStore.AppendReceived(record, profileId, roster.GroupId,
-                    pinned ?? roster.OwnerPublicKey, lineagePieces);
-                if (lineagePieces is not null)
+                if (stagedAuthorityProofs.Contains(record.RecordHash))
                 {
                     var parent = acceptedBefore.SingleOrDefault(item =>
                         item.RecordHash == record.Proposal.ParentAuthorityHash);
+                    authorityStore.AppendReceivedStaged(record, parent, profileId,
+                        roster.GroupId, pinned ?? roster.OwnerPublicKey);
                     try { authorityStore.ClearStagedProof(record, parent); }
                     catch (IOException) { /* Verified authority is already durable. */ }
                 }
+                else
+                    authorityStore.AppendReceived(record, profileId, roster.GroupId,
+                        pinned ?? roster.OwnerPublicKey);
             }
             var accepted = authorityStore.Read(profileId);
+            if (page.Count == WorldAuthorityTrust.PageSize)
+                return SharedFailure("AuthorityCatchUpPending",
+                    "The signed authority history is still being checked. Check again to continue.");
             if (accepted.Count > 0)
             {
-                var heads = accepted.Where(record => !accepted.Any(child =>
-                    child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+                var parentHashes = accepted.Select(record => record.Proposal.ParentAuthorityHash)
+                    .Where(hash => hash is not null).ToHashSet(StringComparer.Ordinal);
+                var heads = accepted.Where(record => !parentHashes.Contains(record.RecordHash)).ToArray();
                 if (heads.Length != 1 || heads[0].Roster.Signature != roster.Signature ||
                     heads[0].Proposal.Schema != 2)
                     return SharedFailure("AuthorityRejected", "The roster and successor authority differ.");
@@ -476,6 +533,9 @@ internal sealed partial class FriendLink
             if (config.LastSharedHostGroups.GetValueOrDefault(profileId) == version.GroupId &&
                 config.LastSharedHostVersions?.GetValueOrDefault(profileId) > version.Number)
                 return SharedFailure("VersionRollback", "The Host returned an older save version for this group.");
+            if (chain.Pending)
+                return SharedFailure("VersionCatchUpPending",
+                    "The signed save history is still being checked. Check again to continue.");
             if (!chain.Valid)
             {
                 if (!chain.Conflict && !IsObservedHeadFork(config, profileId, version) &&
@@ -627,8 +687,9 @@ internal sealed partial class FriendLink
     {
         if (pinnedOwner is null || !SharedWorldService.VerifySignature(version)) return false;
         if (records.Count == 0) return version.SigningPublicKey == pinnedOwner;
-        var heads = records.Where(record => !records.Any(child =>
-            child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
+        var parentHashes = records.Select(record => record.Proposal.ParentAuthorityHash)
+            .Where(hash => hash is not null).ToHashSet(StringComparer.Ordinal);
+        var heads = records.Where(record => !parentHashes.Contains(record.RecordHash)).ToArray();
         if (heads.Length != 1 || heads[0].Proposal.Schema != 2 ||
             heads[0].Roster.OwnerPublicKey != pinnedOwner ||
             heads[0].Proposal.GroupId != version.GroupId) return false;
@@ -751,6 +812,9 @@ internal sealed partial class FriendLink
             if (config.LastSharedHostGroups.GetValueOrDefault(profileId) == version.GroupId &&
                 config.LastSharedHostVersions?.GetValueOrDefault(profileId) > version.Number)
                 return SharedFailure("VersionRollback", "The Host returned an older save version for this group.");
+            if (chain.Pending)
+                return SharedFailure("VersionCatchUpPending",
+                    "The signed save history is still being checked. Try again to continue.");
             if (!chain.Valid)
             {
                 if (!chain.Conflict && !IsObservedHeadFork(config, profileId, version) &&
@@ -951,7 +1015,11 @@ internal sealed partial class FriendLink
         }
     }
 
-    private sealed record SharedChainCheck(bool Valid, bool Conflict);
+    internal sealed record SharedChainCheck(bool Valid, bool Conflict, bool Pending = false);
+    private sealed record SharedChainProgress(int Schema, Guid GroupId, string AnchorHash,
+        string? AuthorityHeadHash, SharedWorldVersion Last);
+    private static string ChainProgressName(Guid deviceId, Guid profileId) =>
+        $"shared-chain-{deviceId:N}-{profileId:N}.protected";
 
     private async Task<SharedChainCheck> VerifySharedChainAsync(Guid profileId, SharedWorldVersion? anchor,
         SharedWorldVersion latest, HttpClient transferClient, CancellationToken cancellationToken)
@@ -960,29 +1028,57 @@ internal sealed partial class FriendLink
         anchor ??= records.OrderBy(record => record.Proposal.Epoch).FirstOrDefault()?.Version;
         if (anchor is null) return new(records.Count == 0 &&
             latest.SigningPublicKey == config?.SharedWorldSigningKeys?.GetValueOrDefault(profileId), false);
+        return await VerifySharedChainBatchAsync(data, config?.DeviceId ?? Guid.Empty, profileId,
+            anchor, latest, records, async (number, token) =>
+            {
+                if (withdrawnSharedConsent.ContainsKey(profileId)) return null;
+                using var response = await transferClient.GetAsync(
+                    $"api/companion/servers/{profileId}/shared-world/versions/{number}",
+                    HttpCompletionOption.ResponseHeadersRead, token);
+                var bytes = await ReadBoundedSharedAsync(response.Content,
+                    SharedWorldService.MaximumManifestBytes, token);
+                return !response.IsSuccessStatusCode || bytes is null ? null :
+                    JsonSerializer.Deserialize<SharedWorldVersion>(bytes, Json);
+            }, cancellationToken);
+    }
+
+    internal static async Task<SharedChainCheck> VerifySharedChainBatchAsync(LocalData data,
+        Guid deviceId, Guid profileId, SharedWorldVersion anchor, SharedWorldVersion latest,
+        IReadOnlyList<WorldAuthorityRecord> records,
+        Func<long, CancellationToken, Task<SharedWorldVersion?>> fetch,
+        CancellationToken cancellationToken)
+    {
         if (latest.Number < anchor.Number) return new(false, true);
         if (!SharedWorldService.VerifySignature(anchor) ||
             records.Any(record => !WorldAuthorityTrust.Verify(record) ||
                 record.Proposal.GroupId != anchor.GroupId || record.Version.ProfileId != anchor.ProfileId ||
                 record.Version.Game != anchor.Game || record.Version.WorldId != anchor.WorldId) ||
             !ValidAtAuthorityBoundary(anchor, records)) return new(false, false);
-        var prior = anchor;
-        while (prior.Number < latest.Number)
+        var progressName = ChainProgressName(deviceId, profileId);
+        var authorityHeadHash = records.LastOrDefault()?.RecordHash;
+        var savedBytes = data.LoadProtected(progressName);
+        SharedChainProgress? saved = null;
+        if (savedBytes is not null)
         {
-            if (withdrawnSharedConsent.ContainsKey(profileId)) return new(false, false);
+            try { saved = JsonSerializer.Deserialize<SharedChainProgress>(savedBytes, Json); }
+            catch (JsonException) { /* An unusable cursor only requires rechecking from the anchor. */ }
+        }
+        var prior = anchor;
+        if (saved is { Schema: 1 } && saved.GroupId == anchor.GroupId &&
+            saved.AnchorHash == anchor.VersionHash && saved.AuthorityHeadHash == authorityHeadHash &&
+            saved.Last.Number >= anchor.Number &&
+            saved.Last.GroupId == anchor.GroupId && saved.Last.ProfileId == anchor.ProfileId &&
+            saved.Last.Game == anchor.Game && saved.Last.WorldId == anchor.WorldId &&
+            SharedWorldService.VerifySignature(saved.Last) &&
+            ValidAtAuthorityBoundary(saved.Last, records))
+            prior = saved.Last;
+        if (prior.Number > latest.Number) return new(false, true);
+        var used = 0;
+        while (prior.Number < latest.Number && used < WorldAuthorityTrust.ChainVersionsPerCheck)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             var number = checked(prior.Number + 1);
-            SharedWorldVersion? item;
-            if (number == latest.Number) item = latest;
-            else
-            {
-                using var response = await transferClient.GetAsync(
-                    $"api/companion/servers/{profileId}/shared-world/versions/{number}",
-                    HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                var bytes = await ReadBoundedSharedAsync(response.Content,
-                    SharedWorldService.MaximumManifestBytes, cancellationToken);
-                if (!response.IsSuccessStatusCode || bytes is null) return new(false, false);
-                item = JsonSerializer.Deserialize<SharedWorldVersion>(bytes, Json);
-            }
+            var item = number == latest.Number ? latest : await fetch(number, cancellationToken);
             if (item is null || !SharedWorldService.VerifySignature(item) || item.Number != number ||
                 item.GroupId != anchor.GroupId || item.ProfileId != anchor.ProfileId ||
                 item.Game != anchor.Game || item.WorldId != anchor.WorldId)
@@ -991,7 +1087,13 @@ internal sealed partial class FriendLink
                 !ValidTransition(prior, item, records) || !ValidAtAuthorityBoundary(item, records))
                 return new(false, true);
             prior = item;
+            used++;
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (used > 0)
+            data.SaveProtected(progressName, JsonSerializer.SerializeToUtf8Bytes(
+                new SharedChainProgress(1, anchor.GroupId, anchor.VersionHash, authorityHeadHash, prior), Json));
+        if (prior.Number < latest.Number) return new(false, false, true);
         return new(prior.VersionHash == latest.VersionHash,
             prior.VersionHash != latest.VersionHash);
     }

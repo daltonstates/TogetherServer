@@ -168,14 +168,15 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    internal async Task<IReadOnlyList<WorldAuthorityRecord>?> SharedWorldAuthorityAsync(Guid profileId)
+    internal async Task<IReadOnlyList<WorldAuthorityRecord>?> SharedWorldAuthorityAsync(
+        Guid profileId, int offset = 0)
     {
         await gate.WaitAsync();
         try
         {
             if (settings.Profiles.All(item => item.Id != profileId) ||
                 SharedAuthorityBlocked(profileId, out _)) return null;
-            return authority.Read(profileId);
+            return authority.ReadPage(profileId, offset);
         }
         finally { gate.Release(); }
     }
