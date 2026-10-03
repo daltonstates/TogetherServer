@@ -1003,7 +1003,7 @@ internal sealed partial class FriendLink
             if (old?.VersionHash == version.VersionHash)
             {
                 await SendSharedReceiptAsync(profileId, old, deviceId, transferClient, transferToken);
-                return new(true, "AlreadyReceived", "This PC already has the latest verified save.",
+                return new(true, "AlreadyReceived", "This PC already has the latest hash-verified post-Stop file copy. Game load has not been checked.",
                     LocalSharedWorldStatus(profileId));
             }
             var stage = Path.Combine(root, ".partial-" + version.VersionHash);

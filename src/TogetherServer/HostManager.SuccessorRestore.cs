@@ -84,7 +84,7 @@ public sealed partial class HostManager
                 data.HasProtected(SuccessorRestoreName(profileId));
             return new(true, restored, record.RecordHash,
                 restored ? "The verified copy is in local managed storage. Hosting checks are pending." :
-                    "The signed final save is staged. Review the local setup before restoring it.",
+                    "The signed, hash-verified post-Stop file copy is staged. Game load has not been checked. Review local setup before restoring it.",
                 ["Test the direct-IP Friend control route from another PC.",
                  "Run a disposable managed game rehearsal and test a real Friend join.",
                  "Confirm a recognizable change survives a graceful restart."],
@@ -141,7 +141,7 @@ public sealed partial class HostManager
             if (latest?.VersionHash != record.Version.VersionHash ||
                 latest.GroupId != record.Proposal.GroupId ||
                 latest.SigningPublicKey != record.Roster.OwnerPublicKey)
-                return new(false, "FinalCopyMissing", "Receive and verify the exact final save on this PC.");
+                return new(false, "FinalCopyMissing", "Receive and hash-check the exact post-Stop file copy on this PC.");
             var setup = request.Setup;
             var worldRoot = SuccessorWorldRoot(data, record.Version);
             SharedWorldService.EnsureUnlinkedRoot(data.RootPath, worldRoot);
@@ -264,7 +264,7 @@ public sealed partial class HostManager
             // This is a draft Host profile. No ordinary Start is possible until
             // an independently verified route and game rehearsal completes.
             return new(true, "RestoredPendingChecks",
-                "The final save is in fresh managed storage. Check the installed server setup and test both direct routes with a Friend before hosting.",
+                "The post-Stop file copy is in fresh managed storage. Game load has not been checked. Check server setup and both direct routes with a Friend before hosting.",
                 profileId, record.Version.VersionHash,
                 ["Check the direct-IP Friend control route from another PC.",
                  "Load this copy in a disposable managed game rehearsal and test a real Friend join.",

@@ -27,7 +27,7 @@ internal static class PlannedHandoffReceiver
         var received = FriendLink.ReadReceivedLatest(vaultRoot);
         if (received is null || received.VersionHash != record.Version.VersionHash ||
             received.GroupId != groupId || received.SigningPublicKey != pinnedOwnerKey)
-            return new(false, "FinalCopyMissing", "Receive and verify the exact final save before staging takeover.");
+            return new(false, "FinalCopyMissing", "Receive and hash-check the exact post-Stop file copy before staging takeover.");
         var bytes = SharedWorldService.BoundedTotalBytes(received.Files);
         var root = Path.Combine(data.RootPath, "shared-world-staged", profileId.ToString("N"));
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);

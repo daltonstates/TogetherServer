@@ -96,7 +96,7 @@ async Task RepairDirtyRostersAsync()
     }
 }
 object SuccessorRosterReadOnly() => new { ok = false, code = "SuccessorRosterReadOnly",
-    message = "Sharing permissions stay with the original owner. This successor PC can host and share verified saves, but cannot change the signed member list." };
+    message = "Sharing permissions stay with the original owner. This successor PC can host and share hash-verified post-Stop file copies, but cannot change the signed member list. Game load has not been checked." };
 try { if (!friendMode) await RepairDirtyRostersAsync(); }
 catch (Exception ex) when (ex is IOException or InvalidDataException or System.Security.Cryptography.CryptographicException)
 { data.TryAudit($"shared-roster-repair-pending {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }

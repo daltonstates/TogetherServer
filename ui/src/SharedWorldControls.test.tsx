@@ -23,7 +23,7 @@ describe('Shared saves controls', () => {
       if (url.endsWith('/governance')) return reply({ revision: calls.length, ownerOverride: true })
       if (url.endsWith('/shared-world') && !init?.method)
         return reply({ enabled: calls.some(call => call.startsWith('PUT')), latest: null, error: null,
-          liveSave: { available: false, message: 'Live save sharing is unavailable for this game. Use its verified post-Stop copy.' } })
+          liveSave: { available: false, message: 'Live save sharing is unavailable for this game. Use its hash-verified post-Stop file copy. Game load has not been checked.' } })
       return reply({ ok: true, code: 'Saved', message: 'Saved' })
     }))
     render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled
@@ -41,8 +41,8 @@ describe('Shared saves controls', () => {
     expect(screen.getByLabelText('Eligible host for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Recovery voter for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Manage sharing for Friend PC')).not.toBeChecked()
-    expect(screen.getByText(/Live save capture and automatic takeover are not available yet/)).toBeInTheDocument()
-    expect(screen.getByText(/Use its verified post-Stop copy/)).toBeInTheDocument()
+    expect(screen.getByText(/Live save capture and automatic takeover are unavailable/)).toBeInTheDocument()
+    expect(screen.getByText(/Use its hash-verified post-Stop file copy/)).toBeInTheDocument()
   })
 
   it('keeps receiver consent off until this PC opts in and shows version lag', async () => {
@@ -68,7 +68,7 @@ describe('Shared saves controls', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
     expect(await screen.findByText(/1 version\(s\) behind/)).toBeInTheDocument()
-    expect(screen.getByText(/automatic takeover are not available yet/)).toBeInTheDocument()
+    expect(screen.getByText(/automatic takeover are unavailable/)).toBeInTheDocument()
   })
 
   it('rejects malformed status responses', () => {
@@ -99,7 +99,8 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/Copied to 2 PCs/)).toBeInTheDocument()
+    expect(await screen.findByText(/Copied to 2 PCs.*latest post-Stop file copy 4/)).toBeInTheDocument()
+    expect(screen.getByText(/Game load and playability have not been checked/)).toBeInTheDocument()
     expect(screen.getByText(/app cannot prove its current availability/)).toBeInTheDocument()
     expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
       error: null, confirmedCopies: -1 })).toThrow()
@@ -202,7 +203,7 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[successor]} rollingBackupEnabled onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
     await screen.findByText('Move hosting to another PC')
-    const prepare = screen.getByRole('button', { name: 'Stop and prepare final save' })
+    const prepare = screen.getByRole('button', { name: 'Stop and prepare file copy' })
     expect(prepare).toBeDisabled()
     fireEvent.change(screen.getByLabelText('Next host PC'), { target: { value: device.id } })
     fireEvent.click(screen.getAllByText('Technical details')[0])

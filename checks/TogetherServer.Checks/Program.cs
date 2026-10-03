@@ -2164,6 +2164,21 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     var status = await manager.SharedWorldStatusAsync(profile.Id);
     Require(status.Enabled && status.Latest is { Number: 1, Schema: 4 } &&
         SharedWorldService.VerifySignature(status.Latest), "signed version was not published after Stop");
+    var firstHash = status.Latest!.VersionHash;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "synthetic world two");
+    Require((await manager.StartAsync(profile.Id)).Ok, "second fixture Start failed");
+    driver.StopBehavior = FixtureStopBehavior.Failed;
+    Require(!(await manager.StopAsync(profile.Id)).Ok &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest?.VersionHash == firstHash,
+        "failed later Stop advanced the previously shared copy");
+    driver.StopBehavior = FixtureStopBehavior.Unconfirmed;
+    Require(!(await manager.StopAsync(profile.Id)).Ok &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest?.VersionHash == firstHash,
+        "unconfirmed later Stop advanced the previously shared copy");
+    driver.StopBehavior = FixtureStopBehavior.Normal;
+    Require((await manager.StopAsync(profile.Id)).Ok &&
+        (await manager.SharedWorldStatusAsync(profile.Id)).Latest is { Number: 2 },
+        "confirmed later Stop did not advance the shared copy");
     Require(!SharedWorldService.VerifySignature(status.Latest! with
     { PortableSetup = status.Latest.PortableSetup with { GameVersion = "9.9.9" } }),
         "changed portable game requirements passed signature verification");

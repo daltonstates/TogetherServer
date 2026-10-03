@@ -47,7 +47,7 @@ public sealed partial class HostManager
                     !authority.HasState(profileId) && !runs.Any(run => run.ProfileId == profileId);
                 if (!exact)
                     return new(true, "HandoffReviewRequired",
-                        "The final save, signed membership, or managed process needs review. Keep this world offline.",
+                        "The post-Stop file copy, signed membership, or managed process needs review. Keep this world offline.",
                         pending.SuccessorDeviceId);
                 var receipt = sharedWorlds.VerifiedReceipt(profile!, version!,
                     pending.SuccessorDeviceId, roster!);
@@ -55,7 +55,7 @@ public sealed partial class HostManager
                     pending.SuccessorDeviceId, roster!, () => { });
                 return new(true, receipt is null ? "WaitingForSuccessorCopy" :
                     currentAccess ? "ReadyToComplete" : "SuccessorAccessChanged",
-                    receipt is null ? "The successor has not confirmed the exact final save yet." :
+                    receipt is null ? "The successor has not confirmed the exact post-Stop file copy yet." :
                     currentAccess ? "The exact copy is confirmed. The owner can complete the signed handoff." :
                     "The successor's current access changed. Cancel and review permissions.",
                     pending.SuccessorDeviceId, version!.Number, version.VersionHash,
@@ -101,13 +101,13 @@ public sealed partial class HostManager
             var after = sharedWorlds.Status(profile).Latest;
             if (after is null || after.VersionHash == before || after.GroupId != roster.GroupId ||
                 after.SigningPublicKey != roster.OwnerPublicKey)
-                return new(false, "FinalSaveUnconfirmed", "The game stopped, but its final verified save was not published. Keep this PC offline and review the backup.");
+                return new(false, "FinalSaveUnconfirmed", "The game stopped, but its hash-verified post-Stop file copy was not published. Keep this PC offline and review the backup.");
             var pending = new PendingPlannedHandoff(1, profileId, roster.GroupId,
                 after.VersionHash, WorldAuthorityTrust.RosterHash(roster), successorDeviceId,
                 successorAddress);
             data.SaveProtected(PlannedHandoffName(profileId), JsonSerializer.SerializeToUtf8Bytes(pending));
             return new(true, "WaitingForSuccessorCopy",
-                "The final save is ready. Wait until the successor confirms this exact copy, then complete the handoff.", after);
+                "The hash-verified post-Stop file copy is available. Game load has not been checked. Wait for the successor's exact-copy confirmation before completing the handoff.", after);
         }
         finally { gate.Release(); }
     }
@@ -134,10 +134,10 @@ public sealed partial class HostManager
             if (roster is null || version is null || roster.GroupId != pending.GroupId ||
                 version.GroupId != pending.GroupId || version.VersionHash != pending.VersionHash ||
                 WorldAuthorityTrust.RosterHash(roster) != pending.RosterHash)
-                return new(false, "HandoffChanged", "The final save or signed permissions changed. Review before continuing.");
+                return new(false, "HandoffChanged", "The post-Stop file copy or signed permissions changed. Review before continuing.");
             var receipt = sharedWorlds.VerifiedReceipt(profile, version, pending.SuccessorDeviceId, roster);
             if (receipt is null)
-                return new(false, "WaitingForSuccessorCopy", "The successor has not confirmed this exact verified save yet.", version);
+                return new(false, "WaitingForSuccessorCopy", "The successor has not confirmed this exact hash-verified file copy yet.", version);
             WorldAuthorityRecord? record = null;
             if (!pairing.TryCommitPlannedHandoff(profileId, pending.SuccessorDeviceId,
                 roster, () =>
@@ -151,7 +151,7 @@ public sealed partial class HostManager
                     "The successor's access or signed membership changed. Cancel this unsigned handoff and review permissions.");
             data.DeleteProtected(name);
             Activity("Backup", "PlannedHandoffFenced",
-                "The final save and successor receipt were verified. This PC is fenced from starting or sharing this world.",
+                "The post-Stop file copy and successor receipt were verified. Game load has not been checked. This PC is fenced from starting or sharing this world.",
                 ActivitySeverity.Important, profileId);
             return new(true, "OldHostFenced",
                 "This PC is fenced. The successor must review local setup and verify its direct routes before starting.",
@@ -179,7 +179,7 @@ public sealed partial class HostManager
             if (roster is null || version is null || roster.GroupId != pending.GroupId ||
                 version.GroupId != pending.GroupId || version.VersionHash != pending.VersionHash ||
                 WorldAuthorityTrust.RosterHash(roster) != pending.RosterHash)
-                return new(false, "HandoffReviewRequired", "The final save or signed permissions changed. Keep this world offline until reviewed.");
+                return new(false, "HandoffReviewRequired", "The post-Stop file copy or signed permissions changed. Keep this world offline until reviewed.");
             data.DeleteProtected(name);
             Activity("Backup", "PlannedHandoffCanceled",
                 "The owner canceled the unsigned handoff. Copies already received remain with their PCs.",
