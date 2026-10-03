@@ -926,6 +926,128 @@ await Check("owner edit preserves a delegated revoke across repair and restart",
         "the owner could not intentionally regrant A");
 });
 
+await Check("takeover votes use the current delegated roster and fence forked governance", () =>
+{
+    using var data = Data("delegated-authority-voters");
+    var profile = Profile("delegated-voters", "delegated-voters-world", FreePort());
+    profile.SharedSavesEnabled = true;
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    data.SaveSettings(Settings(profile));
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "delegated voter fixture");
+    using var managerKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var candidateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var hostingKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var newVoterKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var expiredKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var managerId = Guid.NewGuid();
+    var candidateId = Guid.NewGuid();
+    var newVoterId = Guid.NewGuid();
+    var expiredId = Guid.NewGuid();
+    string Public(ECDsa key) => Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    var members = new SharedWorldRosterMember[]
+    {
+        new(managerId, Public(managerKey), new(RecoveryVoter: true, ManageSharing: true), false,
+            DateTimeOffset.UtcNow.AddMinutes(5)),
+        new(candidateId, Public(candidateKey), new(EligibleHost: true), false),
+        new(newVoterId, Public(newVoterKey), new(), false),
+        new(expiredId, Public(expiredKey), new(RecoveryVoter: true), false,
+            DateTimeOffset.UtcNow.AddMinutes(-1))
+    };
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var shares = new SharedWorldService(data, backups);
+    var root = shares.PublishRoster(profile, members);
+    var backup = backups.Create(profile, BackupKinds.Rolling);
+    Require(backup.Ok && backup.Backup is not null, "delegated voter backup failed");
+    var version = shares.PublishAfterStop(profile, backup.Backup!.Id).Version!;
+    var chain = new SharedWorldRosterChainStore(data);
+    chain.Append(root, root.OwnerPublicKey);
+    SharedWorldRoster Sign(SharedWorldRoster draft, ECDsa key) => draft with
+    { Signature = Convert.ToBase64String(key.SignData(
+        SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    var delegated = Sign(root with { Schema = 3, Epoch = 2, Revision = 2,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(root),
+        SignerDeviceId = managerId, SignerPublicKey = Public(managerKey),
+        Members = members.Select(item => item.DeviceId == newVoterId
+            ? item with { Grants = item.Grants with { RecoveryVoter = true } } : item).ToArray(),
+        Signature = "" }, managerKey);
+    chain.Append(delegated, root.OwnerPublicKey);
+    Require(shares.ReadRoster(profile)?.Signature == delegated.Signature,
+        "Host did not use current delegated voter grants");
+    WorldAuthorityProposal Propose(SharedWorldRoster roster)
+    {
+        var binding = new WorldSuccessorBinding(candidateId, Public(candidateKey),
+            Public(hostingKey), "");
+        var draft = new WorldAuthorityProposal(2, roster.GroupId, profile.Id, 1, null,
+            WorldAuthorityTrust.RosterHash(roster), version.VersionHash,
+            Public(hostingKey), "https://127.0.0.1:5132", "Quorum",
+            candidateId, Public(candidateKey), "", binding);
+        binding = binding with { Signature = Convert.ToBase64String(candidateKey.SignData(
+            WorldAuthorityTrust.BindingBasis(draft, binding), HashAlgorithmName.SHA256)) };
+        draft = draft with { SuccessorBinding = binding };
+        return draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
+            WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+    }
+    var store = new WorldAuthorityStore(data);
+    var proposal = Propose(delegated);
+    RequireThrows<InvalidDataException>(() => store.SignLocalVote(profile.Id,
+        Propose(root), root, managerId, managerKey),
+        "a stale owner roster was used for a new vote");
+    RequireThrows<InvalidDataException>(() => store.SignLocalVote(profile.Id,
+        proposal, delegated, expiredId, expiredKey),
+        "an expired recovery voter signed a takeover");
+    var voteManager = store.SignLocalVote(profile.Id, proposal, delegated, managerId, managerKey);
+    var voteNew = store.SignLocalVote(profile.Id, proposal, delegated, newVoterId, newVoterKey);
+    var draftRecord = new WorldAuthorityRecord(1, proposal, delegated, version,
+        [voteManager, voteNew], null, "");
+    var record = draftRecord with { RecordHash = WorldAuthorityTrust.Hash(
+        WorldAuthorityTrust.RecordBasis(draftRecord)) };
+    Require(!WorldAuthorityTrust.Verify(record) && WorldAuthorityTrust.Verify(record, true),
+        "delegated record bypassed chain validation or failed its signatures");
+    store.Append(record);
+    Require(new WorldAuthorityStore(data).Read(profile.Id).Single().RecordHash == record.RecordHash,
+        "delegated quorum did not survive authority restart");
+    var afterDelegateExpiry = new WorldAuthorityStore(data,
+        new ManualTimeProvider(DateTimeOffset.UtcNow.AddMinutes(6)));
+    RequireThrows<InvalidDataException>(() => afterDelegateExpiry.SignLocalVote(profile.Id,
+        proposal, delegated, managerId, managerKey),
+        "an expired delegate retained a recovery vote");
+    using (var receiver = Data("delegated-authority-friend"))
+    {
+        var receivedChain = new SharedWorldRosterChainStore(receiver);
+        receivedChain.Append(root, root.OwnerPublicKey);
+        receivedChain.Append(delegated, root.OwnerPublicKey);
+        var receivedAuthority = new WorldAuthorityStore(receiver);
+        receivedAuthority.AppendReceived(record, profile.Id, root.GroupId, root.OwnerPublicKey);
+        Require(new WorldAuthorityStore(receiver).Read(profile.Id).Single().RecordHash ==
+            record.RecordHash, "Friend did not accept owner-rooted delegated quorum history");
+        var revisionPath = Path.Combine(receiver.RootPath, "shared-worlds",
+            profile.Id.ToString("N"), "roster-chain",
+            SharedWorldRosterTrust.Hash(delegated) + ".json");
+        File.AppendAllText(revisionPath, "tampered");
+        RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(receiver).Read(profile.Id),
+            "Friend authority ignored a tampered delegated roster floor");
+    }
+    using var ownerKey = ECDsa.Create();
+    ownerKey.ImportPkcs8PrivateKey(data.LoadProtected("shared-world-signing-key.protected")!, out _);
+    var revoked = Sign(delegated with { Epoch = 3, Revision = 3,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(delegated),
+        SignerDeviceId = Guid.Empty, SignerPublicKey = root.OwnerPublicKey,
+        Members = delegated.Members.Select(item => item.DeviceId == managerId
+            ? item with { Revoked = true } : item).ToArray(), Signature = "" }, ownerKey);
+    chain.Append(revoked, root.OwnerPublicKey);
+    RequireThrows<InvalidDataException>(() => store.SignLocalVote(profile.Id,
+        Propose(revoked), revoked, managerId, managerKey),
+        "a revoked delegate retained a recovery vote");
+    var sibling = Sign(revoked with { OwnerOverride = false, Signature = "" }, ownerKey);
+    chain.Append(sibling, root.OwnerPublicKey);
+    RequireThrows<InvalidDataException>(() => store.SignLocalVote(profile.Id,
+        Propose(revoked), revoked, newVoterId, newVoterKey),
+        "a roster fork allowed another vote");
+    RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(data).Read(profile.Id),
+        "forked governance left prior authority apparently safe to use");
+    return Task.CompletedTask;
+});
+
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
 {
     using var data = Data("shared-roster-missing-before-save");

@@ -151,8 +151,7 @@ internal sealed partial class SharedWorldService
                 var heads = chain.Heads(profile.Id);
                 if (heads.Count != 1 || binding is null || !BindingMatches(binding, profile) ||
                     heads[0].GroupId != binding.GroupId || heads[0].ProfileId != profile.Id ||
-                    heads[0].OwnerPublicKey != LocalAuthorityPublicKey() ||
-                    Authority.HasState(profile.Id))
+                    heads[0].OwnerPublicKey != LocalAuthorityPublicKey())
                     throw new InvalidDataException("Shared roster revisions need owner review.");
                 return heads[0];
             }

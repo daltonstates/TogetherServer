@@ -299,7 +299,8 @@ internal sealed partial class FriendLink
             {
                 var heads = accepted.Where(record => !accepted.Any(child =>
                     child.Proposal.ParentAuthorityHash == record.RecordHash)).ToArray();
-                if (heads.Length != 1 || heads[0].Roster.Signature != roster.Signature ||
+                if (heads.Length != 1 ||
+                    SharedWorldRosterTrust.Hash(heads[0].Roster) != SharedWorldRosterTrust.Hash(roster) ||
                     heads[0].Proposal.Schema != 2)
                     return SharedFailure("AuthorityRejected", "The roster and successor authority differ.");
             }

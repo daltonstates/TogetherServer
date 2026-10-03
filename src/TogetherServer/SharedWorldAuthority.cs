@@ -116,7 +116,7 @@ internal static class WorldAuthorityTrust
             member.PublicKey == vote.VoterPublicKey &&
             Signature(vote.VoterPublicKey, VoteBasis(vote), vote.Signature);
     }
-    internal static bool Verify(WorldAuthorityRecord? record)
+    internal static bool Verify(WorldAuthorityRecord? record, bool rosterChainVerified = false)
     {
         try
         {
@@ -126,7 +126,9 @@ internal static class WorldAuthorityTrust
                 record.VersionLineage is { Count: > 64 } ||
                 record.VersionLineage is not null && record.VersionLineage.Any(version =>
                     !SharedWorldService.VerifySignature(version)) ||
-                !SharedWorldRosterTrust.Verify(record.Roster) ||
+                !(rosterChainVerified && record.Roster.Schema == 3
+                    ? SharedWorldRosterTrust.VerifySignature(record.Roster)
+                    : SharedWorldRosterTrust.Verify(record.Roster)) ||
                 !SharedWorldService.VerifySignature(record.Version) ||
                 record.Proposal.GroupId != record.Roster.GroupId ||
                 record.Proposal.GroupId != record.Version.GroupId ||
@@ -231,6 +233,21 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         File.Exists(LogPath(profileId)) || File.Exists(PendingPath(profileId));
     internal bool GovernanceUnresolved(Guid profileId) => File.Exists(Path.Combine(
         data.RootPath, "shared-worlds", profileId.ToString("N"), "roster-dirty"));
+    private bool TrustedRoster(SharedWorldRoster roster, bool requireCurrent)
+    {
+        var chain = new SharedWorldRosterChainStore(data, clock);
+        if (!chain.HasState(roster.ProfileId))
+            return SharedWorldRosterTrust.Verify(roster);
+        var history = chain.Read(roster.ProfileId);
+        var heads = chain.Heads(roster.ProfileId);
+        if (heads.Count != 1 || history.Count == 0 ||
+            history[0].OwnerPublicKey != roster.OwnerPublicKey ||
+            history[0].GroupId != roster.GroupId ||
+            history.All(item => SharedWorldRosterTrust.Hash(item) != SharedWorldRosterTrust.Hash(roster)))
+            return false;
+        return !requireCurrent ||
+            SharedWorldRosterTrust.Hash(heads[0]) == SharedWorldRosterTrust.Hash(roster);
+    }
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     private void RecoverPending(Guid profileId)
     {
@@ -248,7 +265,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             !pending.Line.EndsWith('\n'))
             throw new InvalidDataException("Authority append journal failed verification.");
         var record = JsonSerializer.Deserialize<WorldAuthorityRecord>(pending.Line, Json);
-        if (!WorldAuthorityTrust.Verify(record) || record!.Proposal.ProfileId != profileId)
+        if (record is null || !TrustedRoster(record.Roster, false) ||
+            !WorldAuthorityTrust.Verify(record, true) || record.Proposal.ProfileId != profileId)
             throw new InvalidDataException("Authority append journal has an invalid record.");
         var log = LogPath(profileId);
         if (File.Exists(log) && (File.GetAttributes(log) & FileAttributes.ReparsePoint) != 0)
@@ -415,7 +433,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             foreach (var line in lines)
             {
                 var record = JsonSerializer.Deserialize<WorldAuthorityRecord>(line, Json);
-                if (!WorldAuthorityTrust.Verify(record) || record!.Proposal.ProfileId != profileId)
+                if (record is null || !TrustedRoster(record.Roster, false) ||
+                    !WorldAuthorityTrust.Verify(record, true) || record.Proposal.ProfileId != profileId)
                     throw new InvalidDataException("Authority record failed verification.");
                 var parent = records.SingleOrDefault(item =>
                     item.RecordHash == record.Proposal.ParentAuthorityHash);
@@ -434,7 +453,9 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         {
             if (enforceCurrentGrants && GovernanceUnresolved(record.Proposal.ProfileId))
                 throw new InvalidDataException("Signed membership is unresolved; local takeover authority is blocked.");
-            if (!WorldAuthorityTrust.Verify(record)) throw new InvalidDataException("Authority proof is invalid.");
+            if (!TrustedRoster(record.Roster, enforceCurrentGrants) ||
+                !WorldAuthorityTrust.Verify(record, true))
+                throw new InvalidDataException("Authority proof or current roster is invalid.");
             var existing = Read(record.Proposal.ProfileId);
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
             if (enforceCurrentGrants && !EligibleAtAcceptance(record))
@@ -493,7 +514,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         {
             if (GovernanceUnresolved(profileId))
                 throw new InvalidDataException("Signed membership is unresolved; this PC cannot vote on a takeover.");
-            if (!SharedWorldRosterTrust.Verify(roster) || !WorldAuthorityTrust.VerifyProposal(proposal, roster) ||
+            if (!TrustedRoster(roster, true) || !WorldAuthorityTrust.VerifyProposal(proposal, roster) ||
                 proposal.Kind != "Quorum" || proposal.ProfileId != profileId)
                 throw new InvalidDataException("Vote roster or group is invalid.");
             var key = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());

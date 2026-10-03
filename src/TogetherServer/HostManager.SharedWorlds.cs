@@ -134,11 +134,9 @@ public sealed partial class HostManager
             if (profile is null)
                 throw new InvalidDataException("This PC does not have that world.");
             var roster = sharedWorlds.ReadRoster(profile);
-            if (roster is null || !SharedWorldRosterTrust.Verify(record.Roster) ||
-                record.Roster.GroupId != roster.GroupId ||
-                record.Roster.OwnerPublicKey != roster.OwnerPublicKey ||
-                record.Roster.Epoch < roster.Epoch || record.Roster.Revision < roster.Revision)
-                throw new InvalidDataException("Authority roster is older or belongs to another group.");
+            if (roster is null ||
+                SharedWorldRosterTrust.Hash(record.Roster) != SharedWorldRosterTrust.Hash(roster))
+                throw new InvalidDataException("Authority must use this PC's exact verified current roster.");
             authority.Append(record, enforceCurrentGrants: false);
             var active = runs.SingleOrDefault(run => run.ProfileId == profile.Id);
             Activity("Backup", "SharedWorldAuthorityApplied",
