@@ -28,3 +28,37 @@ it('rejects malformed readiness data', () => {
   expect(() => parseTakeoverReadiness({ ready: true, reasons: [], version: 1,
     versionHash: 'A'.repeat(64), rehearsalPassed: 'yes' })).toThrow()
 })
+
+it('finishes a verified majority with signed add-ons before showing manual Start', async () => {
+  const hash = 'A'.repeat(64)
+  const fingerprint = 'B'.repeat(64)
+  const addOn = { name: 'Reviewed mod', version: '1.0', requiredGameVersion: '2.0',
+    type: 'Factorio mod', id: null }
+  let ready = false
+  let finishBody: Record<string, unknown> | null = null
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/handoff/finish')) {
+      finishBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      ready = true
+      return new Response(JSON.stringify({ ok: true, code: 'ReadyForManualStart',
+        message: 'Pre-Start checks passed.', pendingChecks: null }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ staged: true, restored: true,
+      recordHash: hash, message: 'Verified copy restored.', pendingChecks: [],
+      preparedServerRoot: null, readyForManualStart: ready, requiredAddOns: [addOn],
+      controlRouteFingerprint: fingerprint }),
+    { status: 200 })
+  }))
+  render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111" />)
+  fireEvent.click(screen.getByText('Check this PC for future hosting'))
+  expect(await screen.findByRole('button', { name: 'Finish setup and checks' })).toBeInTheDocument()
+  fireEvent.click(screen.getByText('Required add-ons'))
+  expect(screen.getByText(/Reviewed mod 1.0/)).toBeInTheDocument()
+  expect(screen.getByText(fingerprint)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Finish setup and checks' }))
+  await waitFor(() => expect(finishBody).not.toBeNull())
+  const sent = finishBody as Record<string, unknown> | null
+  expect(sent && sent.recordHash).toBe(hash)
+  expect((sent?.setup as { enabledAddOns: unknown[] }).enabledAddOns).toEqual([addOn])
+  expect(await screen.findByText(/Ready for manual Start/)).toBeInTheDocument()
+})

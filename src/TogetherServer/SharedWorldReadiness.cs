@@ -23,7 +23,7 @@ internal static class SharedWorldReadiness
 
     internal static TakeoverReadiness Check(string vaultRoot, string rehearsalRoot,
         TakeoverLocalSetup setup, TakeoverAuthority authority, string? pinnedKey, Guid? approvedGroup,
-        Func<string, long>? freeBytes = null)
+        Func<string, long>? freeBytes = null, bool ownedControlListener = false)
     {
         var reasons = new List<string>();
         SharedWorldVersion? version = null;
@@ -94,7 +94,8 @@ internal static class SharedWorldReadiness
             {
                 try
                 {
-                    if (PortInUse(setup.ControlPort) || PortInUse(setup.GamePort))
+                    if (!ownedControlListener && PortInUse(setup.ControlPort) ||
+                        PortInUse(setup.GamePort))
                         reasons.Add("A selected port is already in use on this PC.");
                 }
                 catch (NetworkInformationException)
