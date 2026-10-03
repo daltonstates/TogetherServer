@@ -1445,6 +1445,11 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world", (HttpContext context, Gui
 app.MapPost("/api/local/friend/{id:guid}/shared-world/readiness", (Guid id, TakeoverLocalSetup setup) =>
     friendMode ? Results.Json(friend.CheckTakeoverReadiness(id, setup, false)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/route-check",
+    async (HttpContext context, Guid id, SharedWorldRouteRequest request) =>
+    friendMode ? Results.Json(await friend.ProbeSuccessorRouteAsync(id,
+        request.RecordHash, request.TlsFingerprint, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/rehearse", (Guid id, TakeoverLocalSetup setup) =>
     friendMode ? Results.Json(friend.CheckTakeoverReadiness(id, setup, true)) :
     Results.Conflict(new { code = "HostMode" }));

@@ -2273,10 +2273,16 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
         _ => 1024).Reasons.Any(reason => reason.Contains("disk space")), "low space passed");
     var rehearsal = SharedWorldReadiness.Rehearse(data.RootPath, vault, setup, authority, version.SigningPublicKey, version.GroupId,
         _ => 2L * 1024 * 1024 * 1024);
-    Require(rehearsal.RehearsalPassed &&
+    Require(rehearsal.RehearsalPassed && rehearsal.ManagedProcessRehearsalPassed && !rehearsal.Ready &&
         !Directory.EnumerateFileSystemEntries(rehearsalRoot).Any() &&
         File.ReadAllText(Path.Combine(profile.WorldDirectory, "world.dat")) == "rehearsal marker" &&
         rehearsal.Reasons.Any(reason => reason.Contains("real game load")), "rehearsal was not isolated or honest");
+    var badFixture = SharedWorldReadiness.Rehearse(data.RootPath, vault,
+        setup with { ServerFile = Path.Combine(data.RootPath, "missing-fixture.exe") },
+        authority, version.SigningPublicKey, version.GroupId, _ => 2L * 1024 * 1024 * 1024);
+    Require(!badFixture.ManagedProcessRehearsalPassed && !badFixture.RehearsalPassed &&
+        !Directory.EnumerateFileSystemEntries(rehearsalRoot).Any(),
+        "missing managed fixture passed or left a disposable copy");
     var linkedDevice = Path.Combine(data.RootPath, "received-shared-worlds", "linked-device");
     CreateJunction(linkedDevice, Path.GetDirectoryName(vault)!);
     var linkedVault = Path.Combine(linkedDevice, profile.Id.ToString("N"));
@@ -3080,7 +3086,9 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var driver = new ObservationFixtureDriver();
     var registry = new GameServerRegistry([driver], PortProbeMode.LoopbackOnly);
     using var successor = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var routeObserver = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var successorId = Guid.NewGuid();
+    var routeObserverId = Guid.NewGuid();
     var successorKey = Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo());
     data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
     {
@@ -3090,6 +3098,14 @@ await Check("planned handoff requires exact final save receipt before durable ol
         SharedWorldPublicKey = successorKey,
         SharedWorldGrants = new Dictionary<Guid, SharedWorldGrants>
         { [profile.Id] = new(Receive: true, EligibleHost: true) }
+    }, new PairedDevice
+    {
+        Id = routeObserverId, ProfileId = Guid.Empty, AssignedProfileIds = [profile.Id],
+        CredentialHash = new string('B', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10),
+        SharedWorldPublicKey = Convert.ToBase64String(routeObserver.ExportSubjectPublicKeyInfo()),
+        SharedWorldGrants = new Dictionary<Guid, SharedWorldGrants>
+        { [profile.Id] = new(Receive: true) }
     }] });
     var pairing = new PairingService(data);
     var manager = new HostManager(data, registry, TimeProvider.System,
@@ -3168,7 +3184,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "cancelled handoff did not release Start after permissions were reviewed");
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "third final marker");
     prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://127.0.0.1:5132");
+        "https://192.0.2.1:5132");
     Require(prepared.Ok && prepared.Version is { Number: 3 },
         "reviewed retry did not publish another final save");
     version = prepared.Version!;
@@ -3187,6 +3203,24 @@ await Check("planned handoff requires exact final save receipt before durable ol
         await manager.ReadPlannedHandoffOfferAsync(profile.Id, Guid.NewGuid()) is null &&
         (await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
         "signed handoff was reported before a durable fence");
+    var routeNonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    var routeChallenge = SharedWorldRouteTrust.SignChallenge(completed.Authority!,
+        routeNonce, routeObserverId, routeObserver);
+    var routeProof = SharedWorldRouteTrust.Sign(profile.Id, completed.Authority!.RecordHash,
+        routeNonce, completed.Authority.Proposal.CandidateAddress, new string('A', 64), successor);
+    Require(SharedWorldRouteTrust.DirectIpAddress(completed.Authority.Proposal.CandidateAddress) &&
+        !SharedWorldRouteTrust.DirectIpAddress("https://127.0.0.1:5132") &&
+        !SharedWorldRouteTrust.DirectIpAddress("https://example.test:5132") &&
+        SharedWorldRouteTrust.VerifyChallenge(routeChallenge, completed.Authority,
+            DateTimeOffset.UtcNow) &&
+        !SharedWorldRouteTrust.VerifyChallenge(routeChallenge with { ObserverDeviceId = successorId },
+            completed.Authority, DateTimeOffset.UtcNow) &&
+        SharedWorldRouteTrust.Verify(routeProof, completed.Authority, routeNonce, new string('A', 64)) &&
+        !SharedWorldRouteTrust.Verify(routeProof with { Endpoint = "https://192.0.2.2:5132" },
+            completed.Authority, routeNonce, new string('A', 64)) &&
+        !SharedWorldRouteTrust.Verify(routeProof, completed.Authority, routeNonce, new string('B', 64)),
+        "signed direct-IP proof accepted loopback, DNS, tampering, or a changed certificate pin");
     var restarted = new HostManager(data, registry);
     Require((await restarted.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked" &&
         (await restarted.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
@@ -3276,6 +3310,23 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(resumedStatus.Staged && resumedStatus.Restored &&
         resumedStatus.RecordHash == completed.Authority.RecordHash,
         "restored successor status did not survive app restart");
+    Require(await receiver.SignSuccessorRouteProofAsync(profile.Id,
+        completed.Authority.RecordHash, routeChallenge, new string('A', 64)) is null,
+        "successor gave a route proof while its companion listener was disabled");
+    var routeSettings = receivingData.LoadSettings();
+    routeSettings.CompanionListeningEnabled = true;
+    routeSettings.CompanionEndpoint = completed.Authority.Proposal.CandidateAddress;
+    receivingData.SaveSettings(routeSettings);
+    var routeManager = new HostManager(receivingData,
+        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+    var observedProof = await routeManager.SignSuccessorRouteProofAsync(profile.Id,
+        completed.Authority.RecordHash, routeChallenge, new string('A', 64));
+    Require(SharedWorldRouteTrust.Verify(observedProof, completed.Authority,
+        routeNonce, new string('A', 64)) &&
+        await routeManager.SignSuccessorRouteProofAsync(profile.Id,
+            completed.Authority.RecordHash, routeChallenge with { Signature = "bad" },
+            new string('A', 64)) is null,
+        "successor route signer accepted a forged observer or failed a valid signed challenge");
     receivingData.SaveSettings(new HostSettings { CompanionPort = receiverControlPort });
     var interrupted = new HostManager(receivingData,
         new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));

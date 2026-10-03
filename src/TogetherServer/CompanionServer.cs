@@ -310,6 +310,17 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         }
 
         var companion = app.MapGroup("/api/companion");
+        companion.MapPost("/servers/{profileId:guid}/shared-world/route-proof/{recordHash}",
+            async (Guid profileId, string recordHash, SharedWorldRouteChallenge challenge) =>
+        {
+            if (certificate is null || recordHash.Length != 64 ||
+                !recordHash.All(Uri.IsHexDigit) || challenge is null ||
+                challenge.RecordHash != recordHash || challenge.ProfileId != profileId)
+                return Results.NotFound();
+            var proof = await manager.SignSuccessorRouteProofAsync(profileId, recordHash,
+                challenge, HostIdentity.Fingerprint(certificate));
+            return proof is null ? Results.NotFound() : Results.Json(proof);
+        }).RequireRateLimiting("pairing");
         async Task<bool> CandidateOfferMatchesListener(Guid profileId, string proposalHash)
         {
             try

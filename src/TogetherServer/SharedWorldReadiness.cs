@@ -8,7 +8,8 @@ public sealed record TakeoverLocalSetup(string? ServerFile, string? GameVersion,
     IReadOnlyList<SharedWorldPortableAddOn>? EnabledAddOns, bool NewPasswordConfigured,
     int ControlPort, int GamePort);
 public sealed record TakeoverReadiness(bool Ready, IReadOnlyList<string> Reasons,
-    long? Version, string? VersionHash, bool RehearsalPassed = false);
+    long? Version, string? VersionHash, bool RehearsalPassed = false,
+    bool ManagedProcessRehearsalPassed = false);
 
 // Eligibility and externally observed routes are deliberately separate from local file checks.
 // A later signed takeover decision may supply these inputs; the current caller supplies false.
@@ -146,6 +147,7 @@ internal static class SharedWorldReadiness
         if (Directory.Exists(destination) || File.Exists(destination))
             return checkedState with { Reasons = [.. checkedState.Reasons, "A fresh rehearsal folder could not be created."] };
         Directory.CreateDirectory(destination);
+        var safeToClean = true;
         try
         {
             SharedWorldService.EnsureUnlinkedRoot(dataRoot, destination);
@@ -161,18 +163,30 @@ internal static class SharedWorldReadiness
                     from.CopyTo(to);
                 SharedWorldService.VerifyFile(target, item);
             }
+            var processPassed = false;
+            if (version.Game == GameKinds.Fixture)
+            {
+                var process = FixtureTakeoverRehearsal.Run(destination, setup.ServerFile);
+                safeToClean = process.SafeToClean;
+                processPassed = process.Passed;
+                if (!processPassed)
+                    return checkedState with { Reasons = [.. checkedState.Reasons, process.Message] };
+            }
             return checkedState with
             {
                 RehearsalPassed = true,
+                ManagedProcessRehearsalPassed = processPassed,
                 Reasons = [.. checkedState.Reasons,
-                    "Disposable file copy passed hash checks. A real game load, join, and save still need testing."]
+                    processPassed
+                        ? "A disposable managed fixture process started and stopped cleanly. A real game load, join, and save still need testing."
+                        : "Disposable file copy passed hash checks. A real game load, join, and save still need testing."]
             };
         }
         finally
         {
             // This fresh GUID directory was created by this call only. Refuse cleanup
             // if any link appeared; never recurse through an arbitrary destination.
-            if (Path.GetDirectoryName(destination) != root || !SafeRehearsalTree(destination))
+            if (!safeToClean || Path.GetDirectoryName(destination) != root || !SafeRehearsalTree(destination))
                 throw new InvalidDataException("The rehearsal folder could not be removed safely.");
             Directory.Delete(destination, true);
         }
