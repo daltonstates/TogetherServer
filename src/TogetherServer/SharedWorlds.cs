@@ -149,9 +149,13 @@ internal sealed partial class SharedWorldService
             if (chain.HasState(profile.Id))
             {
                 var heads = chain.Heads(profile.Id);
+                var chainSuccessor = Authority.LocalAuthorizedHead(profile.Id);
+                var chainOwner = chainSuccessor?.Roster.OwnerPublicKey ?? LocalAuthorityPublicKey();
                 if (heads.Count != 1 || binding is null || !BindingMatches(binding, profile) ||
                     heads[0].GroupId != binding.GroupId || heads[0].ProfileId != profile.Id ||
-                    heads[0].OwnerPublicKey != LocalAuthorityPublicKey())
+                    heads[0].OwnerPublicKey != chainOwner ||
+                    chainSuccessor is not null &&
+                    SharedWorldRosterTrust.Hash(heads[0]) != SharedWorldRosterTrust.Hash(chainSuccessor.Roster))
                     throw new InvalidDataException("Shared roster revisions need owner review.");
                 return heads[0];
             }
@@ -203,6 +207,7 @@ internal sealed partial class SharedWorldService
                 var baseline = parent.OwnerLocalBaselineMembers ?? history[0].Members;
                 var mergedMembers = MergeOwnerChanges(parent.Members, baseline, orderedMembers, ownerEdit);
                 if (parent.Members.SequenceEqual(mergedMembers) &&
+                    baseline.SequenceEqual(orderedMembers) &&
                     parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride)) return parent;
                 using var ownerKey = LoadSigningKey();
                 var draftRevision = parent with { Schema = 3, Epoch = checked(parent.Epoch + 1),
@@ -714,7 +719,8 @@ internal sealed partial class SharedWorldService
                     (File.GetAttributes(rosterPath) & FileAttributes.ReparsePoint) != 0)
                     throw new InvalidDataException("The local roster is oversized or linked.");
                 var saved = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(rosterPath), Json);
-                if (saved != record.Roster && (saved?.Signature != record.Roster.Signature))
+                if (saved is null || SharedWorldRosterTrust.Hash(saved) !=
+                    SharedWorldRosterTrust.Hash(record.Roster))
                     throw new InvalidDataException("The local roster differs from authority.");
             }
             else

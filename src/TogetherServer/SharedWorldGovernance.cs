@@ -165,6 +165,7 @@ internal static class SharedWorldRosterTrust
                 member.PublicKey != old.PublicKey ||
                 member.AccessExpiresUtc != old.AccessExpiresUtc ||
                 member.Grants.ManageSharing != old.Grants.ManageSharing ||
+                old.Grants.ManageSharing && member.Revoked != old.Revoked ||
                 member.DeviceId == signer.DeviceId && member != old)
                 return false;
         }

@@ -38,6 +38,20 @@ internal static class SharedWorldSharingProjection
     }
 }
 
+internal static class SharedWorldSharingFloor
+{
+    internal static bool Allows(IReadOnlyList<SharedWorldRoster> revisions, SharedRosterFloor? floor)
+    {
+        if (revisions.Count == 0) return false;
+        if (floor is null) return true;
+        var head = revisions[^1];
+        return head.GroupId == floor.GroupId && head.Epoch >= floor.Epoch &&
+            head.Revision >= floor.Revision && revisions.Any(item =>
+                item.GroupId == floor.GroupId && item.Epoch == floor.Epoch &&
+                item.Revision == floor.Revision && item.Signature == floor.Signature);
+    }
+}
+
 internal sealed partial class FriendLink
 {
     internal TakeoverReadiness CheckTakeoverReadiness(Guid profileId, TakeoverLocalSetup setup)
@@ -158,6 +172,10 @@ internal sealed partial class FriendLink
         if (pinned is not null && revisions[0].OwnerPublicKey != pinned)
             return (null, SharingFailure(selfId, "SigningIdentityChanged",
                 "The Host's world identity changed. Ask the owner to review it."));
+        var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
+        if (!SharedWorldSharingFloor.Allows(revisions, floor))
+            return (null, SharingFailure(selfId, "RosterRollback",
+                "The Host's sharing list is older or changed unexpectedly."));
         var chain = new SharedWorldRosterChainStore(data);
         if (chain.HasState(profileId) && chain.Read(profileId).Count > revisions.Count)
             return (null, SharingFailure(selfId, "RosterRollback", "The Host sent an older sharing list."));

@@ -519,9 +519,12 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             if (existing.Any(item => item.RecordHash == record.RecordHash)) return;
             if (enforceCurrentGrants && !EligibleAtAcceptance(record))
                 throw new InvalidDataException("A successor, proposer, or voter grant has expired.");
-            if (!enforceCurrentGrants && record.HostAcceptanceSignature is null &&
-                !EligibleAtAcceptance(record))
-                throw new InvalidDataException("A delayed authority decision needs signed acceptance before grant expiry.");
+            // Candidate-signed time cannot prove to an offline PC that the
+            // candidate did not backdate after a participant's grant expired.
+            // First receipt must therefore see live grants. An existing
+            // protected record remains readable after later expiry.
+            if (!enforceCurrentGrants && !EligibleAtAcceptance(record))
+                throw new InvalidDataException("A delayed first authority receipt needs active participant grants.");
             var parentRecord = existing.SingleOrDefault(item =>
                 item.RecordHash == record.Proposal.ParentAuthorityHash);
             if (!WorldAuthorityTrust.VerifyLineage(record, parentRecord))
