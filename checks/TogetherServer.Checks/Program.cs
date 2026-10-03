@@ -2941,6 +2941,14 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(prepared.Ok && prepared.Version is { Number: 1 } &&
         pendingStart.Code == "PlannedHandoffPending",
         $"final Stop did not publish and hold the old Host offline: {prepared.Code}, version={prepared.Version?.Number}, start={pendingStart.Code}, {prepared.Message}");
+    var restartedPending = new HostManager(data, registry);
+    var pendingStatus = await restartedPending.PlannedHandoffStatusAsync(profile.Id);
+    Require(pendingStatus is { Pending: true, Code: "WaitingForSuccessorCopy",
+            CanComplete: false, CanCancel: true, ReceiptConfirmed: false } &&
+        pendingStatus.SuccessorDeviceId == successorId &&
+        pendingStatus.FinalVersion == 1 &&
+        pendingStatus.FinalVersionHash == prepared.Version!.VersionHash,
+        "restart did not recover typed pending handoff status");
     Require((await manager.CompletePlannedHandoffAsync(profile.Id)).Code ==
         "WaitingForSuccessorCopy", "handoff succeeded before receipt");
     Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled" &&
@@ -2963,6 +2971,9 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "wrong version receipt was accepted");
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
         "exact successor receipt was rejected");
+    Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
+        { Code: "ReadyToComplete", ReceiptConfirmed: true, CanComplete: true, CanCancel: true },
+        "owner status did not expose exact signed receipt readiness");
     Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
         new SharedWorldGrants(Receive: false, EligibleHost: false)).Ok,
         "successor grant withdrawal failed");
@@ -2970,8 +2981,15 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "SuccessorAccessChanged" && !new WorldAuthorityStore(data).HasState(profile.Id) &&
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
         "a stale signed roster and receipt handed authority to a revoked successor");
+    Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
+        { Code: "SuccessorAccessChanged", ReceiptConfirmed: true,
+            CanComplete: false, CanCancel: true },
+        "owner status offered completion after successor revocation");
     Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled",
         "dirty roster prevented safe owner cancellation");
+    Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
+        { Pending: false, Code: "NoPendingHandoff" },
+        "cancelled handoff remained pending in owner status");
     Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
         new SharedWorldGrants(Receive: true, EligibleHost: true)).Ok,
         "successor grants could not be restored for retry");

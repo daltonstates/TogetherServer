@@ -4,6 +4,10 @@ namespace TogetherServer;
 
 public sealed record PlannedHandoffResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null, WorldAuthorityRecord? Authority = null);
+public sealed record PlannedHandoffStatus(bool Pending, string Code, string Message,
+    Guid? SuccessorDeviceId = null, long? FinalVersion = null,
+    string? FinalVersionHash = null, bool ReceiptConfirmed = false,
+    bool CanComplete = false, bool CanCancel = false);
 public sealed record PreparePlannedHandoffRequest(Guid SuccessorDeviceId, string SuccessorAddress);
 
 internal sealed record PendingPlannedHandoff(int Schema, Guid ProfileId, Guid GroupId,
@@ -13,6 +17,59 @@ public sealed partial class HostManager
 {
     private static string PlannedHandoffName(Guid profileId) =>
         $"planned-handoff-{profileId:N}.protected";
+
+    public async Task<PlannedHandoffStatus> PlannedHandoffStatusAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var name = PlannedHandoffName(profileId);
+            if (!data.HasProtected(name))
+                return new(false, "NoPendingHandoff", "There is no planned handoff waiting for this world.");
+            try
+            {
+                var bytes = data.LoadProtected(name);
+                var pending = bytes is null ? null : JsonSerializer.Deserialize<PendingPlannedHandoff>(bytes);
+                if (pending is not { Schema: 1 } || pending.ProfileId != profileId ||
+                    pending.GroupId == Guid.Empty || pending.SuccessorDeviceId == Guid.Empty ||
+                    pending.VersionHash is not { Length: 64 } ||
+                    !pending.VersionHash.All(Uri.IsHexDigit) ||
+                    pending.RosterHash is not { Length: 64 })
+                    return new(true, "HandoffReviewRequired",
+                        "The pending handoff could not be verified. Keep this world offline.");
+                var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+                var roster = profile is null ? null : sharedWorlds.ReadRoster(profile);
+                var version = profile is null ? null : sharedWorlds.Status(profile).Latest;
+                var exact = profile?.SharedSavesEnabled == true && roster is not null &&
+                    version is not null && roster.GroupId == pending.GroupId &&
+                    version.GroupId == pending.GroupId && version.VersionHash == pending.VersionHash &&
+                    WorldAuthorityTrust.RosterHash(roster) == pending.RosterHash &&
+                    !authority.HasState(profileId) && !runs.Any(run => run.ProfileId == profileId);
+                if (!exact)
+                    return new(true, "HandoffReviewRequired",
+                        "The final save, signed membership, or managed process needs review. Keep this world offline.",
+                        pending.SuccessorDeviceId);
+                var receipt = sharedWorlds.VerifiedReceipt(profile!, version!,
+                    pending.SuccessorDeviceId, roster!);
+                var currentAccess = pairing.TryCommitPlannedHandoff(profileId,
+                    pending.SuccessorDeviceId, roster!, () => { });
+                return new(true, receipt is null ? "WaitingForSuccessorCopy" :
+                    currentAccess ? "ReadyToComplete" : "SuccessorAccessChanged",
+                    receipt is null ? "The successor has not confirmed the exact final save yet." :
+                    currentAccess ? "The exact copy is confirmed. The owner can complete the signed handoff." :
+                    "The successor's current access changed. Cancel and review permissions.",
+                    pending.SuccessorDeviceId, version!.Number, version.VersionHash,
+                    receipt is not null, receipt is not null && currentAccess, true);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or
+                UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or JsonException)
+            {
+                return new(true, "HandoffReviewRequired",
+                    "The pending handoff could not be verified. Keep this world offline.");
+            }
+        }
+        finally { gate.Release(); }
+    }
 
     public async Task<PlannedHandoffResult> PreparePlannedHandoffAsync(Guid profileId,
         Guid successorDeviceId, string successorAddress)
