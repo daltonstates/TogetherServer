@@ -38,7 +38,7 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
         {
             if (branch is null || branch.Schema != 1 || branch.BranchId == Guid.Empty ||
                 !branch.WarningAccepted || !SharedWorldElection.VerifyOffer(branch.Offer) ||
-                branch.CandidatePublicKey != branch.Offer.Proposal.CandidatePublicKey ||
+                branch.CandidatePublicKey != WorldAuthorityTrust.CandidateDevicePublicKey(branch.Offer.Proposal) ||
                 branch.BranchHash != Hash(branch)) return false;
             using var key = ECDsa.Create();
             key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(branch.CandidatePublicKey), out _);
@@ -58,7 +58,7 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
             if (!acceptSplitWarning || !loss.MayPropose || !SharedWorldElection.VerifyOffer(offer) ||
                 FriendLink.ReadReceivedLatest(receivedRoot)?.VersionHash != offer.Version.VersionHash ||
                 Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo()) !=
-                    offer.Proposal.CandidatePublicKey)
+                    WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal))
                 throw new InvalidDataException("The separate copy warning or verified save is missing.");
             var authority = new WorldAuthorityStore(data).Read(offer.Proposal.ProfileId);
             if (authority.Any(record => record.Proposal.Epoch >= offer.Proposal.Epoch))
@@ -70,7 +70,7 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
             if (prior is not null) return prior;
             if (branches.Count >= 20) throw new InvalidDataException("Too many separate histories need review.");
             var draft = new WorldSeparateCopyBranch(1, Guid.NewGuid(), offer, true,
-                offer.Proposal.CandidatePublicKey, "", "");
+                WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal), "", "");
             var signed = draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
                 Basis(draft), HashAlgorithmName.SHA256)) };
             var branch = signed with { BranchHash = Hash(signed) };

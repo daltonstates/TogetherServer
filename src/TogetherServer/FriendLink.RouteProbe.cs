@@ -33,7 +33,7 @@ internal sealed partial class FriendLink
                         config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId))
                     return Fail("HandoffProofInvalid", "This PC has not verified the signed takeover history.");
                 var candidate = record.Roster.Members.SingleOrDefault(item =>
-                    item.PublicKey == record.Proposal.CandidatePublicKey);
+                    item.PublicKey == WorldAuthorityTrust.CandidateDevicePublicKey(record.Proposal));
                 if (candidate is not { Revoked: false, Grants.EligibleHost: true } ||
                     record.Proposal.Kind == "Planned" && !candidate.Grants.Receive ||
                     candidate.AccessExpiresUtc is { } candidateExpiry && candidateExpiry <= DateTimeOffset.UtcNow)
@@ -66,7 +66,8 @@ internal sealed partial class FriendLink
                 if (current?.RecordHash != recordHash)
                     return Fail("HandoffProofInvalid", "The signed handoff was superseded or its history needs review.");
                 if (!SharedWorldRouteTrust.VerifyChallenge(challenge, current, DateTimeOffset.UtcNow) ||
-                    current.Roster.Members.Single(item => item.PublicKey == current.Proposal.CandidatePublicKey)
+                    current.Roster.Members.Single(item => item.PublicKey ==
+                        WorldAuthorityTrust.CandidateDevicePublicKey(current.Proposal))
                         .AccessExpiresUtc is { } currentExpiry && currentExpiry <= DateTimeOffset.UtcNow)
                     return Fail("HandoffProofInvalid", "Current signed membership or permission changed.");
                 return SharedWorldRouteTrust.Verify(proof, current, nonce, tlsFingerprint)

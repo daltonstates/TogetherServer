@@ -42,7 +42,7 @@ internal static class SharedWorldRouteTrust
             observer.PublicKey != challenge.ObserverPublicKey ||
             !(observer.Grants.Receive || observer.Grants.RecoveryVoter) ||
             observer.AccessExpiresUtc is { } end && end <= now ||
-            observer.PublicKey == record.Proposal.CandidatePublicKey) return false;
+            observer.PublicKey == WorldAuthorityTrust.CandidateDevicePublicKey(record.Proposal)) return false;
         try
         {
             using var key = ECDsa.Create();

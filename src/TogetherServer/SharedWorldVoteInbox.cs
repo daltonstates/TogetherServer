@@ -40,7 +40,7 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
                 throw new InvalidDataException("The candidate offer or local verified copy is invalid.");
             var candidate = offer.Roster.Members.SingleOrDefault(item =>
                 item.DeviceId == offer.CandidateReceipt.DeviceId);
-            if (candidate?.PublicKey != offer.Proposal.CandidatePublicKey ||
+            if (candidate?.PublicKey != WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal) ||
                 !SharedWorldRosterTrust.HasRole(offer.Roster, candidate.DeviceId,
                     candidate.PublicKey, grants => grants.EligibleHost && grants.Receive))
                 throw new InvalidDataException("This PC is not an eligible successor.");

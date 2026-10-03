@@ -43,10 +43,16 @@ internal static class SharedWorldElection
         var parent = heads.SingleOrDefault();
         if (parent is not null && parent.Version.VersionHash != version.VersionHash)
             throw new InvalidDataException("The existing authority and this PC have different save heads.");
-        var draft = new WorldAuthorityProposal(1, roster.GroupId, roster.ProfileId,
+        var hostingPublicKey = authority.PrepareLocalHostingKey(roster.ProfileId);
+        var draft = new WorldAuthorityProposal(2, roster.GroupId, roster.ProfileId,
             parent?.Proposal.Epoch + 1 ?? 1, parent?.RecordHash,
             WorldAuthorityTrust.RosterHash(roster), version.VersionHash,
-            candidatePublicKey, candidateAddress, "Quorum", candidateId, candidatePublicKey, "");
+            hostingPublicKey, candidateAddress, "Quorum", candidateId, candidatePublicKey, "");
+        var unsignedBinding = new WorldSuccessorBinding(candidateId, candidatePublicKey,
+            hostingPublicKey, "");
+        var binding = unsignedBinding with { Signature = Convert.ToBase64String(candidateKey.SignData(
+            WorldAuthorityTrust.BindingBasis(draft, unsignedBinding), HashAlgorithmName.SHA256)) };
+        draft = draft with { SuccessorBinding = binding };
         var proposal = draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
             WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
         var receiptDraft = new SharedWorldReceipt(1, roster.GroupId, roster.ProfileId,
@@ -119,16 +125,18 @@ internal static class SharedWorldElection
             offer.CandidateReceipt is null || offer.Ancestors is null ||
             !WorldAuthorityTrust.VerifyProposal(offer.Proposal, offer.Roster) ||
             offer.Proposal.Kind != "Quorum" || offer.Proposal.VersionHash != offer.Version.VersionHash ||
-            offer.Proposal.CandidatePublicKey != offer.CandidateReceipt.DeviceIdKey(offer.Roster) ||
+            WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal) !=
+                offer.CandidateReceipt.DeviceIdKey(offer.Roster) ||
             !SharedWorldRosterTrust.HasRole(offer.Roster, offer.CandidateReceipt.DeviceId,
-                offer.Proposal.CandidatePublicKey, grants => grants.EligibleHost && grants.Receive) ||
+                WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal),
+                grants => grants.EligibleHost && grants.Receive) ||
             offer.CandidateReceipt.GroupId != offer.Roster.GroupId ||
             offer.CandidateReceipt.ProfileId != offer.Roster.ProfileId ||
             offer.CandidateReceipt.VersionHash != offer.Version.VersionHash ||
             offer.CandidateReceipt.RosterEpoch != offer.Roster.Epoch ||
             offer.CandidateReceipt.RosterRevision != offer.Roster.Revision ||
             !SharedWorldReceiptTrust.Verify(offer.CandidateReceipt,
-                offer.Proposal.CandidatePublicKey) ||
+                WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal)) ||
             !VerifyTransportPin(offer) ||
             !HostIdentity.TryEndpoint(offer.Proposal.CandidateAddress, out _) ||
             offer.Ancestors.Count > 64 || !SharedWorldService.VerifySignature(offer.Version))
@@ -150,7 +158,7 @@ internal static class SharedWorldElection
             if (!ValidFingerprint(offer.CandidateTlsFingerprint)) return false;
             using var key = ECDsa.Create();
             key.ImportSubjectPublicKeyInfo(
-                Convert.FromBase64String(offer.Proposal.CandidatePublicKey), out _);
+                Convert.FromBase64String(WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal)), out _);
             return key.VerifyData(TransportBasis(offer.Proposal, offer.CandidateTlsFingerprint),
                 Convert.FromBase64String(offer.CandidateTlsProof), HashAlgorithmName.SHA256);
         }

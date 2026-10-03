@@ -65,6 +65,7 @@ internal sealed partial class SharedWorldService
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly LocalData data;
     private readonly ISharedWorldCaptureAdapter capture;
+    private WorldAuthorityStore Authority => new(data);
     private readonly object sync = new();
     private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
 
@@ -185,11 +186,13 @@ internal sealed partial class SharedWorldService
                 (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("Shared roster is oversized or linked.");
             var roster = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(path), Json);
-            using var key = LoadSigningKey();
+            var successor = Authority.LocalAuthorizedHead(profile.Id);
+            var expectedOwner = successor?.Roster.OwnerPublicKey ?? LocalAuthorityPublicKey();
             if (!SharedWorldRosterTrust.Verify(roster) || binding is null ||
                 !BindingMatches(binding, profile) || roster!.GroupId != binding.GroupId ||
                 roster.ProfileId != profile.Id ||
-                roster.OwnerPublicKey != Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()))
+                roster.OwnerPublicKey != expectedOwner ||
+                successor is not null && roster.Signature != successor.Roster.Signature)
                 throw new InvalidDataException("Shared roster failed verification.");
             return roster;
         }
@@ -296,7 +299,7 @@ internal sealed partial class SharedWorldService
                     version.ProfileId != profile.Id || version.Game != profile.Kind ||
                     version.WorldId != profile.WorldId || !VerifySignature(version))
                     throw new InvalidDataException("Shared save metadata failed verification.");
-                using var currentKey = LoadSigningKey();
+                using var currentKey = LoadPublishingKey(profile.Id);
                 if (Convert.ToBase64String(currentKey.ExportSubjectPublicKeyInfo()) != version.SigningPublicKey)
                     throw new InvalidDataException("The world signing identity changed.");
                 return new(profile.SharedSavesEnabled, version, error, CountReceipts(profile, version), live);
@@ -315,6 +318,11 @@ internal sealed partial class SharedWorldService
             string? stage = null;
             try
             {
+                var successor = Authority.LocalAuthorizedHead(profile.Id);
+                if (Authority.HasState(profile.Id) && successor is null)
+                    throw new InvalidDataException("This PC has no valid successor authority binding.");
+                if (successor is not null && !AuthorizedPublishedLineage(profile))
+                    throw new InvalidDataException("Published history does not continue the authority head.");
                 var oldBinding = ReadBinding(profile.Id);
                 // Enabling sharing and a graceful Stop can race. Publication must
                 // wait for the signed roster to establish the group; a save must
@@ -327,7 +335,10 @@ internal sealed partial class SharedWorldService
                     !VerifiedPreviousGroupPointer(profile, oldBinding!))
                     throw new InvalidDataException("The existing shared save pointer failed verification.");
                 var binding = BindSource(profile);
-                var previous = ReconcilePublishedVersion(profile, priorStatus.Latest);
+                var previous = ReconcilePublishedVersion(profile, priorStatus.Latest ?? successor?.Version);
+                if (successor is not null && (previous!.GroupId != successor.Version.GroupId ||
+                    previous.Number < successor.Version.Number))
+                    throw new InvalidDataException("Published history does not continue the authority head.");
                 if (previous?.BackupId == backupId)
                     return new(true, "SharedSavePublished", "The completed post-Stop backup is ready for approved PCs.", previous);
                 var source = capture.ReadVerified(profile, backupId);
@@ -347,7 +358,7 @@ internal sealed partial class SharedWorldService
                 if (source.Setup is null)
                     throw new InvalidDataException("The backup lacks a complete reviewed setup checkpoint.");
                 var portableSetup = SharedWorldPortableSetupReader.Capture(source.Setup);
-                using var key = LoadSigningKey();
+                using var key = LoadPublishingKey(profile.Id);
                 var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
                 var basis = VersionBasis(group, number, previous?.VersionHash, profile.Id,
                     profile.Kind, profile.WorldId, source.CapturedUtc, source.Kind,
@@ -456,6 +467,13 @@ internal sealed partial class SharedWorldService
         {
             if (!VerifySignature(latest) || number < 1 || number >= latest.Number)
                 throw new InvalidDataException("Shared version number is invalid.");
+            var proven = Authority.FindProvenVersion(latest.ProfileId, number);
+            var head = Authority.LocalAuthorizedHead(latest.ProfileId);
+            if (proven is not null && head is not null &&
+                proven.GroupId == latest.GroupId && proven.ProfileId == latest.ProfileId &&
+                proven.Game == latest.Game && proven.WorldId == latest.WorldId &&
+                AuthorizedPublishedLineageForLatest(latest, head))
+                return proven;
             var versionRoot = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
                 number.ToString(System.Globalization.CultureInfo.InvariantCulture));
             var path = SafeChild(versionRoot, "version.json");
@@ -465,11 +483,20 @@ internal sealed partial class SharedWorldService
             var prior = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
             if (prior is null || !VerifySignature(prior) || prior.Number != number ||
                 prior.GroupId != latest.GroupId || prior.ProfileId != latest.ProfileId ||
-                prior.Game != latest.Game || prior.WorldId != latest.WorldId ||
-                prior.SigningPublicKey != latest.SigningPublicKey)
+                prior.Game != latest.Game || prior.WorldId != latest.WorldId)
                 throw new InvalidDataException("Earlier shared version is invalid.");
             return prior;
         }
+    }
+
+    private bool AuthorizedPublishedLineageForLatest(SharedWorldVersion latest,
+        WorldAuthorityRecord head)
+    {
+        var path = LatestPath(latest.ProfileId);
+        if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes) return false;
+        var local = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        return local?.VersionHash == latest.VersionHash &&
+            local.GroupId == head.Proposal.GroupId;
     }
 
     internal static bool VerifySignature(SharedWorldVersion value)
@@ -535,6 +562,104 @@ internal sealed partial class SharedWorldService
         var key = ECDsa.Create();
         key.ImportPkcs8PrivateKey(bytes, out _);
         return key;
+    }
+
+    private ECDsa LoadPublishingKey(Guid profileId)
+    {
+        if (!Authority.HasState(profileId)) return LoadSigningKey();
+        var head = Authority.LocalAuthorizedHead(profileId) ??
+            throw new InvalidDataException("Successor authority or local key binding is invalid.");
+        var bytes = data.LoadProtected(head.Proposal.Schema == 1 &&
+            head.Proposal.Kind == "Planned" && head.SuccessorReceipt is { } receipt
+                ? $"shared-world-pc-signing-{receipt.DeviceId:N}.protected"
+                : WorldAuthorityStore.HostingKeyName(profileId)) ??
+            throw new InvalidDataException("Successor hosting key is missing.");
+        var key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(bytes, out _);
+        if (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) !=
+            head.Proposal.CandidatePublicKey)
+        {
+            key.Dispose();
+            throw new InvalidDataException("Successor hosting key changed.");
+        }
+        return key;
+    }
+
+    internal bool AuthorizedPublishedLineage(ServerProfile profile)
+    {
+        var head = Authority.LocalAuthorizedHead(profile.Id);
+        if (head is null) return !Authority.HasState(profile.Id);
+        var path = LatestPath(profile.Id);
+        if (!File.Exists(path)) return true;
+        if (new FileInfo(path).Length > MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return false;
+        var current = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        if (current is null || !VerifySignature(current) ||
+            current.GroupId != head.Version.GroupId || current.ProfileId != profile.Id ||
+            current.Game != head.Version.Game || current.WorldId != head.Version.WorldId ||
+            current.Number <= head.Version.Number) return false;
+        while (current.Number > head.Version.Number)
+        {
+            if (current.SigningPublicKey != head.Proposal.CandidatePublicKey) return false;
+            var predecessor = current.Number == head.Version.Number + 1 ? head.Version :
+                ReadPublishedAncestor(current, current.Number - 1);
+            if (predecessor is null || current.ParentHash != predecessor.VersionHash ||
+                current.Number != predecessor.Number + 1) return false;
+            current = predecessor;
+        }
+        return current.VersionHash == head.Version.VersionHash;
+    }
+
+    private SharedWorldVersion? ReadPublishedAncestor(SharedWorldVersion latest, long number)
+    {
+        var path = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
+            number.ToString(System.Globalization.CultureInfo.InvariantCulture), "version.json");
+        if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return null;
+        var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        return version is not null && VerifySignature(version) &&
+            version.GroupId == latest.GroupId && version.ProfileId == latest.ProfileId &&
+            version.Game == latest.Game && version.WorldId == latest.WorldId &&
+            version.Number == number ? version : null;
+    }
+
+    internal void AdoptSuccessor(ServerProfile profile, WorldAuthorityRecord record)
+    {
+        lock (sync)
+        {
+            if (Authority.LocalAuthorizedHead(profile.Id)?.RecordHash != record.RecordHash ||
+                record.Version.Game != profile.Kind || record.Version.WorldId != profile.WorldId)
+                throw new InvalidDataException("Successor authority does not match this world.");
+            var existing = ReadBinding(profile.Id);
+            if (existing is not null && (existing.GroupId != record.Proposal.GroupId ||
+                !BindingMatches(existing, profile)))
+                throw new InvalidDataException("This PC has another shared world source.");
+            var rosterPath = GroupRosterPath(profile.Id, record.Proposal.GroupId);
+            Directory.CreateDirectory(Root(profile.Id));
+            if (File.Exists(rosterPath))
+            {
+                if (new FileInfo(rosterPath).Length > MaximumManifestBytes ||
+                    (File.GetAttributes(rosterPath) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("The local roster is oversized or linked.");
+                var saved = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(rosterPath), Json);
+                if (saved != record.Roster && (saved?.Signature != record.Roster.Signature))
+                    throw new InvalidDataException("The local roster differs from authority.");
+            }
+            else
+            {
+                var stage = rosterPath + ".new";
+                File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(record.Roster, Json));
+                File.Move(stage, rosterPath, false);
+            }
+            if (existing is null)
+            {
+                var stage = BindingPath(profile.Id) + ".new";
+                File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(
+                    new SourceBinding(SourceDirectory(profile), profile.Kind, profile.WorldId,
+                        record.Proposal.GroupId), Json));
+                File.Move(stage, BindingPath(profile.Id), false);
+            }
+        }
     }
 
     private static string VersionBasis(Guid group, long number, string? parent, Guid profile,
@@ -723,7 +848,7 @@ internal sealed partial class SharedWorldService
         if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length > MaximumManifestBytes)
             throw new InvalidDataException("Unpublished shared version is incomplete.");
         var candidate = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(manifestPath), Json);
-        using var key = LoadSigningKey();
+        using var key = LoadPublishingKey(profile.Id);
         if (candidate is null || !VerifySignature(candidate) || candidate.ProfileId != profile.Id ||
             candidate.Game != profile.Kind || candidate.WorldId != profile.WorldId ||
             candidate.Number != (previous?.Number ?? 0) + 1 ||
