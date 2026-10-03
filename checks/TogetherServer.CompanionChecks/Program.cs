@@ -20,6 +20,11 @@ if (args.Skip(1).Contains("--core-remote-journey", StringComparer.OrdinalIgnoreC
     await CoreRemoteJourney.RunAsync(appPath, valheimFixturePath);
     return 0;
 }
+if (args.Skip(1).Contains("--shared-world-journey", StringComparer.OrdinalIgnoreCase))
+{
+    await SharedWorldJourney.RunAsync(appPath, valheimFixturePath);
+    return 0;
+}
 var root = Path.GetFullPath("local-data/companion-checks/" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var hostData = Path.Combine(root, "host");
