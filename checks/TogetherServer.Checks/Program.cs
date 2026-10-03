@@ -2181,6 +2181,8 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "rehearsal marker");
     var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
+    new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System))
+        .PublishRoster(profile, []);
     Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
         "fixture Stop did not publish");
     var version = (await manager.SharedWorldStatusAsync(profile.Id)).Latest!;
@@ -2898,6 +2900,62 @@ await Check("shared save proxy bounds declared and streamed bytes before receipt
         "exact bounded chunk was rejected");
 });
 
+await Check("planned handoff requires exact final save receipt before durable old Host fence", async () =>
+{
+    using var data = Data("planned-handoff");
+    var profile = Profile("planned-handoff-game", "planned-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "handoff marker");
+    var driver = new ObservationFixtureDriver();
+    var registry = new GameServerRegistry([driver], PortProbeMode.LoopbackOnly);
+    var manager = new HostManager(data, registry);
+    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "handoff fixture settings failed");
+    using var successor = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var successorId = Guid.NewGuid();
+    var shares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
+    var roster = shares.PublishRoster(profile,
+        [new SharedWorldRosterMember(successorId,
+            Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo()),
+            new SharedWorldGrants(Receive: true, EligibleHost: true), false)]);
+    Require((await manager.StartAsync(profile.Id)).Ok, "handoff fixture Start failed");
+    driver.StopBehavior = FixtureStopBehavior.Failed;
+    Require((await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
+        "https://127.0.0.1:5132")).Code == "FinalSaveUnconfirmed" &&
+        !data.HasProtected($"planned-handoff-{profile.Id:N}.protected"),
+        "failed Stop left a prepared handoff");
+    driver.StopBehavior = FixtureStopBehavior.Normal;
+    var prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
+        "https://127.0.0.1:5132");
+    var pendingStart = await manager.StartAsync(profile.Id);
+    Require(prepared.Ok && prepared.Version is { Number: 1 } &&
+        pendingStart.Code == "PlannedHandoffPending",
+        $"final Stop did not publish and hold the old Host offline: {prepared.Code}, version={prepared.Version?.Number}, start={pendingStart.Code}, {prepared.Message}");
+    Require((await manager.CompletePlannedHandoffAsync(profile.Id)).Code ==
+        "WaitingForSuccessorCopy", "handoff succeeded before receipt");
+    var version = prepared.Version!;
+    var receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
+        version.VersionHash, successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+    var receipt = receiptDraft with { Signature = Convert.ToBase64String(successor.SignData(
+        SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+    Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId,
+        receipt with { VersionHash = new string('B', 64) })).Code == "StaleOrWrongVersion",
+        "wrong version receipt was accepted");
+    Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
+        "exact successor receipt was rejected");
+    var completed = await manager.CompletePlannedHandoffAsync(profile.Id);
+    Require(completed.Ok && completed.Code == "OldHostFenced" &&
+        WorldAuthorityTrust.Verify(completed.Authority) &&
+        completed.Authority!.SuccessorReceipt == receipt &&
+        (await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
+        "signed handoff was reported before a durable fence");
+    var restarted = new HostManager(data, registry);
+    Require((await restarted.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked" &&
+        (await restarted.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
+        "old Host resumed Start or sharing after restart");
+});
+
 await Check("shared world authority requires signed majority, fences old Host, and survives restart", async () =>
 {
     using var data = Data("authority-fence");
@@ -2932,9 +2990,11 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
         }
         WorldAuthorityRecord Record(WorldAuthorityProposal proposal,
-            IReadOnlyList<WorldAuthorityVote> votes, string? ownerApproval = null)
+            IReadOnlyList<WorldAuthorityVote> votes, string? ownerApproval = null,
+            SharedWorldReceipt? successorReceipt = null)
         {
-            var draft = new WorldAuthorityRecord(1, proposal, roster, version, votes, ownerApproval, "");
+            var draft = new WorldAuthorityRecord(1, proposal, roster, version, votes,
+                ownerApproval, "", successorReceipt);
             return draft with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(draft)) };
         }
         var store = new WorldAuthorityStore(data);
@@ -2969,9 +3029,19 @@ await Check("shared world authority requires signed majority, fences old Host, a
         };
         var plannedProposal = plannedDraft with { Signature = Convert.ToBase64String(ownerKey.SignData(
             WorldAuthorityTrust.ProposalBasis(plannedDraft), HashAlgorithmName.SHA256)) };
-        Require(WorldAuthorityTrust.Verify(Record(plannedProposal, [],
-            Convert.ToBase64String(ownerKey.SignData(WorldAuthorityTrust.OwnerBasis(plannedProposal),
-                HashAlgorithmName.SHA256)))), "owner-signed planned handoff was rejected");
+        var plannedApproval = Convert.ToBase64String(ownerKey.SignData(
+            WorldAuthorityTrust.OwnerBasis(plannedProposal), HashAlgorithmName.SHA256));
+        var receiptDraft = new SharedWorldReceipt(1, version.GroupId, profile.Id,
+            version.VersionHash, voters[0].Id, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+        var successorReceipt = receiptDraft with { Signature = Convert.ToBase64String(
+            voters[0].Key.SignData(SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        Require(WorldAuthorityTrust.Verify(Record(plannedProposal, [], plannedApproval, successorReceipt)),
+            "owner-signed planned handoff with exact successor receipt was rejected");
+        Require(!WorldAuthorityTrust.Verify(Record(plannedProposal, [], plannedApproval)),
+            "planned handoff without a successor copy receipt was accepted");
+        Require(!WorldAuthorityTrust.Verify(Record(plannedProposal, [], plannedApproval,
+            successorReceipt with { VersionHash = new string('A', 64) })),
+            "planned handoff accepted a receipt for another save");
         Require(!WorldAuthorityTrust.Verify(Record(plannedProposal, [])),
             "planned handoff without owner approval was accepted");
         var noOverrideRoster = shares.PublishRoster(profile, roster.Members, ownerOverride: false);
@@ -3069,15 +3139,15 @@ await Check("signed copy receipts count only the exact latest verified version",
     File.WriteAllText(worldFile, "first save");
     var backups = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backups);
-    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
-    Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
-    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version!;
     var device = Guid.NewGuid();
     using var pc = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     using var fake = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var key = Convert.ToBase64String(pc.ExportSubjectPublicKeyInfo());
     var roster = shares.PublishRoster(profile, [new SharedWorldRosterMember(device, key,
         new SharedWorldGrants(Receive: true), false)]);
+    var firstBackup = backups.Create(profile, BackupKinds.Rolling);
+    Require(firstBackup.Ok && firstBackup.Backup is not null, "first backup failed");
+    var first = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version!;
     SharedWorldReceipt Sign(SharedWorldVersion version, ECDsa signer, Guid deviceId,
         long epoch, long revision) {
         var draft = new SharedWorldReceipt(1, version.GroupId, profile.Id, version.VersionHash,

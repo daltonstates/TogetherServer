@@ -73,6 +73,41 @@ internal sealed partial class SharedWorldService
         return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
     }
 
+    internal WorldAuthorityRecord SignPlannedHandoff(SharedWorldRoster roster,
+        SharedWorldVersion version, SharedWorldReceipt receipt, Guid successorId,
+        string successorAddress, long epoch, string? parentHash)
+    {
+        lock (sync)
+        {
+            using var key = LoadSigningKey();
+            var localKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            var member = roster.Members.SingleOrDefault(item => item.DeviceId == successorId);
+            if (!SharedWorldRosterTrust.Verify(roster) || !VerifySignature(version) ||
+                roster.OwnerPublicKey != localKey || version.SigningPublicKey != localKey ||
+                roster.GroupId != version.GroupId || roster.ProfileId != version.ProfileId ||
+                member is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
+                receipt.DeviceId != successorId || receipt.VersionHash != version.VersionHash ||
+                receipt.GroupId != version.GroupId || receipt.ProfileId != version.ProfileId ||
+                receipt.RosterEpoch != roster.Epoch || receipt.RosterRevision != roster.Revision ||
+                !SharedWorldReceiptTrust.Verify(receipt, member.PublicKey))
+                throw new InvalidDataException("The successor has not confirmed the exact verified save under the current roster.");
+            var draft = new WorldAuthorityProposal(1, roster.GroupId, version.ProfileId,
+                epoch, parentHash, WorldAuthorityTrust.RosterHash(roster), version.VersionHash,
+                member.PublicKey, successorAddress, "Planned", Guid.Empty, localKey, "");
+            var proposal = draft with { Signature = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+            var approval = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.OwnerBasis(proposal), HashAlgorithmName.SHA256));
+            var unsignedRecord = new WorldAuthorityRecord(1, proposal, roster, version, [],
+                approval, "", receipt);
+            var record = unsignedRecord with { RecordHash = WorldAuthorityTrust.Hash(
+                WorldAuthorityTrust.RecordBasis(unsignedRecord)) };
+            if (!WorldAuthorityTrust.Verify(record))
+                throw new InvalidDataException("The planned handoff proof failed verification.");
+            return record;
+        }
+    }
+
     public SharedWorldService(LocalData data, WorldBackupService backups)
     {
         this.data = data;

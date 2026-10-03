@@ -1041,6 +1041,9 @@ public sealed partial class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (data.HasProtected(PlannedHandoffName(profileId)))
+            return Result(false, "PlannedHandoffPending",
+                "A planned handoff is waiting for the successor's verified copy. Complete or review it before starting this world.");
         if (SharedAuthorityBlocked(profileId, out var authorityReason))
             return Result(false, "SharedWorldAuthorityBlocked", authorityReason +
                 (runs.SingleOrDefault(run => run.ProfileId == profileId) is { } existingRun &&

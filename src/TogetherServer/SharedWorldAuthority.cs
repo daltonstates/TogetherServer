@@ -14,7 +14,8 @@ public sealed record WorldAuthorityVote(int Schema, string ProposalHash, Guid Vo
     string VoterPublicKey, string Signature);
 public sealed record WorldAuthorityRecord(int Schema, WorldAuthorityProposal Proposal,
     SharedWorldRoster Roster, SharedWorldVersion Version,
-    IReadOnlyList<WorldAuthorityVote> Votes, string? OwnerSignature, string RecordHash);
+    IReadOnlyList<WorldAuthorityVote> Votes, string? OwnerSignature, string RecordHash,
+    SharedWorldReceipt? SuccessorReceipt = null);
 
 internal static class WorldAuthorityTrust
 {
@@ -39,7 +40,8 @@ internal static class WorldAuthorityTrust
     internal static byte[] RecordBasis(WorldAuthorityRecord record) => JsonSerializer.SerializeToUtf8Bytes(new
     {
         domain = "TogetherServer authority record v1", record.Schema, record.Proposal,
-        record.Roster, record.Version, record.Votes, record.OwnerSignature
+        record.Roster, record.Version, record.Votes, record.OwnerSignature,
+        record.SuccessorReceipt
     }, Json);
     private static bool Signature(string key, byte[] basis, string signature)
     {
@@ -103,8 +105,19 @@ internal static class WorldAuthorityTrust
             var ownerApproved = record.OwnerSignature is not null &&
                 Signature(record.Roster.OwnerPublicKey, OwnerBasis(record.Proposal), record.OwnerSignature);
             if (record.Proposal.Kind == "Planned")
+            {
+                var receipt = record.SuccessorReceipt;
                 return ownerApproved && record.Votes.Count == 0 &&
-                    record.Proposal.ProposerPublicKey == record.Roster.OwnerPublicKey;
+                    record.Proposal.ProposerPublicKey == record.Roster.OwnerPublicKey &&
+                    receipt is not null && receipt.GroupId == record.Proposal.GroupId &&
+                    receipt.ProfileId == record.Proposal.ProfileId &&
+                    receipt.VersionHash == record.Version.VersionHash &&
+                    receipt.DeviceId == candidate.DeviceId &&
+                    receipt.RosterEpoch == record.Roster.Epoch &&
+                    receipt.RosterRevision == record.Roster.Revision &&
+                    candidate.Grants.Receive && SharedWorldReceiptTrust.Verify(receipt, candidate.PublicKey);
+            }
+            if (record.SuccessorReceipt is not null) return false;
             if (record.Proposal.Kind is not ("Quorum" or "OwnerOverride")) return false;
             if (record.Proposal.Kind == "OwnerOverride")
                 return record.Roster.OwnerOverride && ownerApproved && record.Votes.Count == 0;

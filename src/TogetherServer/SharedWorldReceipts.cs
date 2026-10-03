@@ -141,4 +141,23 @@ internal sealed partial class SharedWorldService
             return new(true, "CopyConfirmed");
         }
     }
+
+    internal SharedWorldReceipt? VerifiedReceipt(ServerProfile profile, SharedWorldVersion version,
+        Guid deviceId, SharedWorldRoster roster)
+    {
+        lock (sync)
+        {
+            var set = ReadReceipts(profile.Id);
+            if (set?.GroupId != version.GroupId || set.VersionHash != version.VersionHash ||
+                roster.GroupId != version.GroupId || roster.ProfileId != profile.Id) return null;
+            var member = roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
+            var receipt = set.Receipts.SingleOrDefault(item => item.DeviceId == deviceId);
+            return member is { Revoked: false, Grants: { Receive: true, EligibleHost: true } } &&
+                   (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow) &&
+                   receipt is not null && receipt.GroupId == version.GroupId &&
+                   receipt.ProfileId == profile.Id && receipt.VersionHash == version.VersionHash &&
+                   receipt.RosterEpoch == roster.Epoch && receipt.RosterRevision == roster.Revision &&
+                   SharedWorldReceiptTrust.Verify(receipt, member.PublicKey) ? receipt : null;
+        }
+    }
 }

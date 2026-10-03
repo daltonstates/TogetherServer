@@ -682,6 +682,11 @@ app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedW
         await PublishRosterAndConfirmAsync(id);
     return Results.Json(result);
 });
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/prepare",
+    (Guid id, PreparePlannedHandoffRequest request) => HostOnly(() =>
+        manager.PreparePlannedHandoffAsync(id, request.SuccessorDeviceId, request.SuccessorAddress)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/complete",
+    (Guid id) => HostOnly(() => manager.CompletePlannedHandoffAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>

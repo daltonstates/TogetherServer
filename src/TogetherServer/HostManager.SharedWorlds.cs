@@ -1,7 +1,99 @@
+using System.Text.Json;
+
 namespace TogetherServer;
+
+public sealed record PlannedHandoffResult(bool Ok, string Code, string Message,
+    SharedWorldVersion? Version = null, WorldAuthorityRecord? Authority = null);
+public sealed record PreparePlannedHandoffRequest(Guid SuccessorDeviceId, string SuccessorAddress);
+
+internal sealed record PendingPlannedHandoff(int Schema, Guid ProfileId, Guid GroupId,
+    string VersionHash, string RosterHash, Guid SuccessorDeviceId, string SuccessorAddress);
 
 public sealed partial class HostManager
 {
+    private static string PlannedHandoffName(Guid profileId) =>
+        $"planned-handoff-{profileId:N}.protected";
+
+    public async Task<PlannedHandoffResult> PreparePlannedHandoffAsync(Guid profileId,
+        Guid successorDeviceId, string successorAddress)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null || !profile.SharedSavesEnabled)
+                return new(false, "SharingOff", "Enable shared saves for this world first.");
+            if (data.HasProtected(PlannedHandoffName(profileId)) || authority.HasState(profileId) ||
+                SharedAuthorityBlocked(profileId, out _))
+                return new(false, "HandoffAlreadyPending", "Review the current handoff or authority history first.");
+            if (!Uri.TryCreate(successorAddress, UriKind.Absolute, out var address) ||
+                address.Scheme != Uri.UriSchemeHttps || address.UserInfo.Length != 0 ||
+                successorAddress.Length is < 3 or > 255 ||
+                !System.Net.IPAddress.TryParse(address.Host, out _))
+                return new(false, "InvalidSuccessorAddress", "Enter the successor's direct HTTPS IP address and port.");
+            var roster = sharedWorlds.ReadRoster(profile);
+            var member = roster?.Members.SingleOrDefault(item => item.DeviceId == successorDeviceId);
+            if (roster is null || member is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
+                member.AccessExpiresUtc is { } expiry && expiry <= clock.GetUtcNow())
+                return new(false, "SuccessorNotEligible", "Choose an approved PC allowed to receive and host this world.");
+            var before = sharedWorlds.Status(profile).Latest?.VersionHash;
+            var stopped = await StopUnderGateAsync(profileId, null);
+            if (!stopped.Ok || stopped.Code == "StoppedBackupFailed")
+                return new(false, "FinalSaveUnconfirmed", "The exact game process or its final backup was not confirmed. " + stopped.Message);
+            var after = sharedWorlds.Status(profile).Latest;
+            if (after is null || after.VersionHash == before || after.GroupId != roster.GroupId ||
+                after.SigningPublicKey != roster.OwnerPublicKey)
+                return new(false, "FinalSaveUnconfirmed", "The game stopped, but its final verified save was not published. Keep this PC offline and review the backup.");
+            var pending = new PendingPlannedHandoff(1, profileId, roster.GroupId,
+                after.VersionHash, WorldAuthorityTrust.RosterHash(roster), successorDeviceId,
+                successorAddress);
+            data.SaveProtected(PlannedHandoffName(profileId), JsonSerializer.SerializeToUtf8Bytes(pending));
+            return new(true, "WaitingForSuccessorCopy",
+                "The final save is ready. Wait until the successor confirms this exact copy, then complete the handoff.", after);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<PlannedHandoffResult> CompletePlannedHandoffAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var name = PlannedHandoffName(profileId);
+            if (!data.HasProtected(name))
+                return new(false, "NoPendingHandoff", "Prepare a planned handoff first.");
+            var bytes = data.LoadProtected(name);
+            var pending = bytes is null ? null : JsonSerializer.Deserialize<PendingPlannedHandoff>(bytes);
+            if (pending is not { Schema: 1 } || pending.ProfileId != profileId)
+                return new(false, "HandoffStateInvalid", "The pending handoff could not be verified. Keep this world offline.");
+            if (runs.Any(run => run.ProfileId == profileId))
+                return new(false, "GameStillManaged", "The managed game process must be fully stopped before handoff.");
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null || !profile.SharedSavesEnabled || authority.HasState(profileId))
+                return new(false, "HandoffChanged", "The shared world or authority changed. Review its history.");
+            var roster = sharedWorlds.ReadRoster(profile);
+            var version = sharedWorlds.Status(profile).Latest;
+            if (roster is null || version is null || roster.GroupId != pending.GroupId ||
+                version.GroupId != pending.GroupId || version.VersionHash != pending.VersionHash ||
+                WorldAuthorityTrust.RosterHash(roster) != pending.RosterHash)
+                return new(false, "HandoffChanged", "The final save or signed permissions changed. Review before continuing.");
+            var receipt = sharedWorlds.VerifiedReceipt(profile, version, pending.SuccessorDeviceId, roster);
+            if (receipt is null)
+                return new(false, "WaitingForSuccessorCopy", "The successor has not confirmed this exact verified save yet.", version);
+            var record = sharedWorlds.SignPlannedHandoff(roster, version, receipt,
+                pending.SuccessorDeviceId, pending.SuccessorAddress, 1, null);
+            // The durable authority floor is the fence. Never report completion first.
+            authority.Append(record);
+            data.DeleteProtected(name);
+            Activity("Backup", "PlannedHandoffFenced",
+                "The final save and successor receipt were verified. This PC is fenced from starting or sharing this world.",
+                ActivitySeverity.Important, profileId);
+            return new(true, "OldHostFenced",
+                "This PC is fenced. The successor must review local setup and verify its direct routes before starting.",
+                version, record);
+        }
+        finally { gate.Release(); }
+    }
     private bool SharedAuthorityBlocked(Guid profileId, out string reason)
     {
         reason = "";
@@ -25,6 +117,8 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            if (data.HasProtected(PlannedHandoffName(profileId)))
+                return new(false, "PlannedHandoffPending", "Complete or review the pending handoff first.");
             if (enabled && SharedAuthorityBlocked(profileId, out var reason))
                 return new(false, "SharedWorldAuthorityBlocked", reason);
             if (profile.Kind == GameKinds.Custom || !games.TryGet(profile.Kind, out var driver) ||
@@ -152,6 +246,8 @@ public sealed partial class HostManager
                 throw new InvalidDataException("Server not found.");
             if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
                 throw new InvalidDataException("Shared saves are not enabled for this server.");
+            if (data.HasProtected(PlannedHandoffName(profileId)))
+                throw new InvalidDataException("A planned handoff is pending; keep this signed roster unchanged.");
             if (SharedAuthorityBlocked(profileId, out _))
                 throw new InvalidDataException("Shared world authority blocks roster publication from this PC.");
             return sharedWorlds.PublishRoster(profile, members, ownerOverride, reviewSourceChange);
