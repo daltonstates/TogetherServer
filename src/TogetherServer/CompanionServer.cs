@@ -355,6 +355,30 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var recheck = await AuthorizeShared(auth.Current!, profileId);
             return recheck.Decision.Ok ? Results.Json(roster) : Results.Json(recheck.Decision, statusCode: 403);
         });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/receipts",
+            async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol))
+                return Results.BadRequest(new { code = "InvalidSharedWorldRequest" });
+            var body = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                context.Request.ContentLength, context.RequestAborted);
+            if (body is null) return Results.BadRequest(new { code = "InvalidSharedWorldRequest" });
+            var receipt = SharedWorldReceiptTrust.Parse(body);
+            if (receipt is null) return Results.BadRequest(new { code = "InvalidSharedWorldRequest" });
+            var auth = await AuthorizeShared(device!, profileId);
+            if (!auth.Decision.Ok || auth.Current is null)
+                return Results.Json(auth.Decision, statusCode: 403);
+            SharedWorldReceiptResult result;
+            try { result = await manager.ConfirmSharedWorldReceiptAsync(profileId, device!.Id, receipt); }
+            catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
+            { return Results.Conflict(new { code = "ReceiptUnavailable" }); }
+            var recheck = await AuthorizeShared(auth.Current, profileId);
+            if (!recheck.Decision.Ok) return Results.Json(recheck.Decision, statusCode: 403);
+            return Results.Json(result, statusCode: result.Ok ? 200 : 409);
+        });
         companion.MapGet("/servers/{profileId:guid}/shared-world", async (HttpContext context, Guid profileId) =>
         {
             if (!Authenticate(context, out var device, out var decision))

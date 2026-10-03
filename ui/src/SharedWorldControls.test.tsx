@@ -89,6 +89,19 @@ describe('Shared saves controls', () => {
     expect(await screen.findByText('Up to date when last checked')).toBeInTheDocument()
   })
 
+  it('shows only the confirmed copy count returned for the latest version', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ enabled: true, error: null,
+      confirmedCopies: 2, latest: { number: 4, versionHash: 'A'.repeat(64),
+        createdUtc: '2026-10-03T12:00:00Z' } })))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(await screen.findByText(/Copied to 2 PCs/)).toBeInTheDocument()
+    expect(screen.getByText(/app cannot prove its current availability/)).toBeInTheDocument()
+    expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
+      error: null, confirmedCopies: -1 })).toThrow()
+  })
+
   it('sends owner override changes through the signed governance route', async () => {
     const bodies: unknown[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {

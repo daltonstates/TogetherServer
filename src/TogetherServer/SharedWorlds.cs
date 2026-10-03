@@ -44,7 +44,7 @@ public sealed record SharedWorldVersion(int Schema, Guid GroupId, long Number, s
     SharedWorldPortableSetup PortableSetup, IReadOnlyList<SharedWorldFile> Files,
     string SigningPublicKey, string VersionHash, string Signature);
 public sealed record SharedWorldStatus(bool Enabled, SharedWorldVersion? Latest,
-    string? Error = null);
+    string? Error = null, int ConfirmedCopies = 0);
 public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);
@@ -52,7 +52,7 @@ public sealed record SharedWorldGrantRequest(bool Enabled);
 
 // These versions contain only completed post-Stop backup files. Version 4
 // signs Java server JAR identity alongside reviewed setup. Earlier signatures stay readable.
-internal sealed class SharedWorldService
+internal sealed partial class SharedWorldService
 {
     internal const int ChunkBytes = 256 * 1024;
     internal const string PayloadDirectory = "payload";
@@ -252,7 +252,7 @@ internal sealed class SharedWorldService
                 using var currentKey = LoadSigningKey();
                 if (Convert.ToBase64String(currentKey.ExportSubjectPublicKeyInfo()) != version.SigningPublicKey)
                     throw new InvalidDataException("The world signing identity changed.");
-                return new(profile.SharedSavesEnabled, version, error);
+                return new(profile.SharedSavesEnabled, version, error, CountReceipts(profile, version));
             }
             catch (Exception ex) when (ex is IOException or JsonException or CryptographicException or InvalidDataException)
             { return new(profile.SharedSavesEnabled, null, "The published save could not be verified."); }
