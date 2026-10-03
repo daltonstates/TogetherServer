@@ -413,8 +413,8 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
             migrated.ServerInvites[0].Generation == generation && migrated.CredentialRenewals.Count == 1,
             "v1 pairing devices, assignment, permissions, invite lineage, or renewal receipt were lost");
         using var marker = JsonDocument.Parse(File.ReadAllText(Path.Combine(migrationRoot, "storage-schema.json")));
-        Require(marker.RootElement.GetProperty("version").GetInt32() == 3,
-            "the directory schema marker did not advance to v3");
+        Require(marker.RootElement.GetProperty("version").GetInt32() == 4,
+            "the directory schema marker did not advance to v4");
         var migratedBytes = migratedData.LoadProtected("pairing-state.protected")!;
         var migratedSnapshot = JsonSerializer.Deserialize<PairingPersistentState>(migratedBytes, json);
         Require(migratedSnapshot?.SchemaVersion == 3,
@@ -438,6 +438,10 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
     {
         using var _ = new LocalData(migrationRoot, 5131, supportedStorageSchemaVersion: 2);
     }, "a simulated v2 binary opened v3 sharing authorization state");
+    RequireThrows<InvalidDataException>(() =>
+    {
+        using var _ = new LocalData(migrationRoot, 5131, supportedStorageSchemaVersion: 3);
+    }, "a simulated v3 binary opened v4 authority fencing state");
 
     var interruptedRoot = Path.Combine(root, "storage-v3-interrupted-pairing-v1");
     Directory.CreateDirectory(interruptedRoot);
@@ -453,12 +457,12 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
 
     var newerRoot = Path.Combine(root, "storage-newer-schema");
     Directory.CreateDirectory(newerRoot);
-    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":4}");
+    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":5}");
     RequireThrows<InvalidDataException>(() =>
     {
         using var _ = new LocalData(newerRoot);
     }, "the current binary opened an unknown newer storage schema");
-    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("4", StringComparison.Ordinal),
+    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("5", StringComparison.Ordinal),
         "newer-schema rejection rewrote the unsupported marker");
     return Task.CompletedTask;
 });
@@ -2070,7 +2074,7 @@ await Check("shared Stop before first signed roster leaves setup recoverable", a
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first stop");
-    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()]));
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok &&
         (await manager.StartAsync(profile.Id)).Ok &&
         (await manager.StopAsync(profile.Id)).Ok, "the first graceful Stop failed");
@@ -2175,7 +2179,7 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "rehearsal marker");
-    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()]));
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
     Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
         "fixture Stop did not publish");
@@ -2892,6 +2896,166 @@ await Check("shared save proxy bounds declared and streamed bytes before receipt
     Require((await FriendLink.ReadBoundedSharedAsync(exact,
         SharedWorldService.ChunkBytes, CancellationToken.None))?.Length == SharedWorldService.ChunkBytes,
         "exact bounded chunk was rejected");
+});
+
+await Check("shared world authority requires signed majority, fences old Host, and survives restart", async () =>
+{
+    using var data = Data("authority-fence");
+    var profile = Profile("authority", "authority-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
+    profile.SharedSavesEnabled = true;
+    data.SaveSettings(Settings(profile));
+    File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "authority fixture");
+    var backups = new WorldBackupService(data, TimeProvider.System);
+    var shares = new SharedWorldService(data, backups);
+    var voters = Enumerable.Range(0, 3).Select(_ => (Id: Guid.NewGuid(), Key:
+        ECDsa.Create(ECCurve.NamedCurves.nistP256))).ToArray();
+    try
+    {
+        var roster = shares.PublishRoster(profile, voters.Select(voter =>
+            new SharedWorldRosterMember(voter.Id,
+                Convert.ToBase64String(voter.Key.ExportSubjectPublicKeyInfo()),
+                new SharedWorldGrants(Receive: true, EligibleHost: true, RecoveryVoter: true), false)).ToArray());
+        var backup = backups.Create(profile, BackupKinds.Rolling);
+        Require(backup.Ok && backup.Backup is not null, "authority fixture backup failed");
+        var version = shares.PublishAfterStop(profile, backup.Backup!.Id).Version
+            ?? throw new Exception("authority fixture version missing");
+        var candidateKey = Convert.ToBase64String(voters[0].Key.ExportSubjectPublicKeyInfo());
+        WorldAuthorityProposal Propose(ECDsa signer, string kind, string address)
+        {
+            var draft = new WorldAuthorityProposal(1, roster.GroupId, profile.Id, 1, null,
+                WorldAuthorityTrust.RosterHash(roster), version.VersionHash, candidateKey,
+                address, kind, voters[0].Id,
+                Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo()), "");
+            return draft with { Signature = Convert.ToBase64String(signer.SignData(
+                WorldAuthorityTrust.ProposalBasis(draft), HashAlgorithmName.SHA256)) };
+        }
+        WorldAuthorityRecord Record(WorldAuthorityProposal proposal,
+            IReadOnlyList<WorldAuthorityVote> votes, string? ownerApproval = null)
+        {
+            var draft = new WorldAuthorityRecord(1, proposal, roster, version, votes, ownerApproval, "");
+            return draft with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(draft)) };
+        }
+        var store = new WorldAuthorityStore(data);
+        var proposal = Propose(voters[0].Key, "Quorum", "https://127.0.0.1:5132");
+        var vote0 = store.SignLocalVote(profile.Id, proposal, roster, voters[0].Id, voters[0].Key);
+        Require(store.SignLocalVote(profile.Id, proposal, roster, voters[0].Id, voters[0].Key) == vote0,
+            "same proposal vote retry changed the durable vote");
+        Require(new WorldAuthorityStore(data).SignLocalVote(profile.Id, proposal, roster,
+            voters[0].Id, voters[0].Key) == vote0, "restart forgot the durable local vote");
+        var competing = Propose(voters[0].Key, "Quorum", "https://127.0.0.1:5133");
+        RequireThrows<InvalidDataException>(() => store.SignLocalVote(profile.Id, competing,
+            roster, voters[0].Id, voters[0].Key), "double vote was allowed");
+        var vote1 = store.SignLocalVote(profile.Id, proposal, roster, voters[1].Id, voters[1].Key);
+        var vote2 = store.SignLocalVote(profile.Id, proposal, roster, voters[2].Id, voters[2].Key);
+        Require(!WorldAuthorityTrust.Verify(Record(proposal, [vote0])), "minority made quorum");
+        Require(!WorldAuthorityTrust.Verify(Record(proposal, [vote0, vote0])), "duplicate vote made quorum");
+        Require(!WorldAuthorityTrust.Verify(Record(proposal, [vote0, vote1 with { Signature = vote2.Signature }])),
+            "forged vote made quorum");
+        using var ownerKey = ECDsa.Create();
+        ownerKey.ImportPkcs8PrivateKey(data.LoadProtected("shared-world-signing-key.protected")!, out _);
+        var overrideDraft = proposal with { Kind = "OwnerOverride", Signature = "" };
+        var overrideProposal = overrideDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(overrideDraft), HashAlgorithmName.SHA256)) };
+        var ownerApproval = Convert.ToBase64String(ownerKey.SignData(
+            WorldAuthorityTrust.OwnerBasis(overrideProposal), HashAlgorithmName.SHA256));
+        Require(WorldAuthorityTrust.Verify(Record(overrideProposal, [], ownerApproval)),
+            "enabled owner override was rejected");
+        var plannedDraft = overrideProposal with
+        {
+            Kind = "Planned", ProposerDeviceId = Guid.Empty,
+            ProposerPublicKey = roster.OwnerPublicKey, Signature = ""
+        };
+        var plannedProposal = plannedDraft with { Signature = Convert.ToBase64String(ownerKey.SignData(
+            WorldAuthorityTrust.ProposalBasis(plannedDraft), HashAlgorithmName.SHA256)) };
+        Require(WorldAuthorityTrust.Verify(Record(plannedProposal, [],
+            Convert.ToBase64String(ownerKey.SignData(WorldAuthorityTrust.OwnerBasis(plannedProposal),
+                HashAlgorithmName.SHA256)))), "owner-signed planned handoff was rejected");
+        Require(!WorldAuthorityTrust.Verify(Record(plannedProposal, [])),
+            "planned handoff without owner approval was accepted");
+        var noOverrideRoster = shares.PublishRoster(profile, roster.Members, ownerOverride: false);
+        var disabledDraft = overrideProposal with
+        { RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster), Signature = "" };
+        var disabledProposal = disabledDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.ProposalBasis(disabledDraft), HashAlgorithmName.SHA256)) };
+        var disabledRecord = new WorldAuthorityRecord(1, disabledProposal, noOverrideRoster, version, [],
+            Convert.ToBase64String(ownerKey.SignData(WorldAuthorityTrust.OwnerBasis(disabledProposal),
+                HashAlgorithmName.SHA256)), "");
+        disabledRecord = disabledRecord with { RecordHash = WorldAuthorityTrust.Hash(
+            WorldAuthorityTrust.RecordBasis(disabledRecord)) };
+        Require(!WorldAuthorityTrust.Verify(disabledRecord), "disabled owner override was accepted");
+        var accepted = Record(proposal, [vote0, vote1]);
+        Require(WorldAuthorityTrust.Verify(accepted), "valid majority was rejected");
+        store.Append(accepted);
+        Require(store.Fenced(profile.Id, shares.LocalAuthorityPublicKey(), out _),
+            "old Host was not fenced");
+        {
+            var manager = new HostManager(data, Games(data));
+            var newerDraft = proposal with
+            { RosterHash = WorldAuthorityTrust.RosterHash(noOverrideRoster), Signature = "" };
+            var newerProposal = newerDraft with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
+                WorldAuthorityTrust.ProposalBasis(newerDraft), HashAlgorithmName.SHA256)) };
+            WorldAuthorityVote NewVote(int index)
+            {
+                var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(newerProposal),
+                    voters[index].Id, Convert.ToBase64String(voters[index].Key.ExportSubjectPublicKeyInfo()), "");
+                return draft with { Signature = Convert.ToBase64String(voters[index].Key.SignData(
+                    WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            }
+            var newer = new WorldAuthorityRecord(1, newerProposal, noOverrideRoster, version,
+                [NewVote(0), NewVote(1)], null, "");
+            newer = newer with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(newer)) };
+            await manager.ApplySharedWorldAuthorityAsync(newer);
+            Require(store.Read(profile.Id).Count == 2, "newer signed roster authority was not applied");
+            Require((await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
+                "local or remote Start path bypassed authority");
+            Require((await manager.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
+                "old Host still served the shared head");
+            Require(await manager.SharedWorldRosterAsync(profile.Id) is null,
+                "old Host still served the signed roster");
+            Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, voters[0].Id,
+                new SharedWorldReceipt(1, version.GroupId, profile.Id, version.VersionHash,
+                    voters[0].Id, roster.Epoch, roster.Revision, Guid.NewGuid(), ""))).Code ==
+                "SharedWorldAuthorityBlocked", "old Host accepted a copy receipt");
+            Require((await manager.SetSharedSavesAsync(profile.Id, true)).Code ==
+                "SharedWorldAuthorityBlocked", "old Host re-enabled sharing");
+            RequireThrows<InvalidDataException>(() => manager.ReadSharedChunk(version, 0, 0),
+                "old Host served a save chunk");
+            RequireThrows<InvalidDataException>(() => manager.ReadEarlierSharedVersion(version, 0),
+                "old Host served an earlier version");
+        }
+        profile.SharedSavesEnabled = false;
+        data.SaveSettings(Settings(profile));
+        {
+            var restarted = new HostManager(data, Games(data));
+            Require((await restarted.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
+                "restart or sharing toggle bypassed authority");
+        }
+        var conflictVotes = new[] {
+            new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(competing), voters[0].Id,
+                candidateKey, "")
+        };
+        // A competing authority is retained as a separate history when it has
+        // its own valid signatures; local double-vote prevention is independent.
+        var competingVote1 = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(competing),
+            voters[1].Id, Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()), "");
+        var signedCompeting = conflictVotes[0] with { Signature = Convert.ToBase64String(voters[0].Key.SignData(
+            WorldAuthorityTrust.VoteBasis(conflictVotes[0]), HashAlgorithmName.SHA256)) };
+        competingVote1 = competingVote1 with { Signature = Convert.ToBase64String(voters[1].Key.SignData(
+            WorldAuthorityTrust.VoteBasis(competingVote1), HashAlgorithmName.SHA256)) };
+        store.Append(Record(competing, [signedCompeting, competingVote1]));
+        Require(store.Read(profile.Id).Count == 3 && store.Fenced(profile.Id, candidateKey, out _),
+            "same-epoch competing histories were silently selected");
+        var log = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "authority", "records.jsonl");
+        var intactLog = File.ReadAllBytes(log);
+        File.AppendAllText(log, "tampered\n");
+        Require(store.Fenced(profile.Id, candidateKey, out _), "tampered log opened authority");
+        File.WriteAllBytes(log, intactLog[..(Array.IndexOf(intactLog, (byte)'\n') + 1)]);
+        Require(store.Fenced(profile.Id, candidateKey, out _), "rolled-back log opened authority");
+    }
+    finally { foreach (var voter in voters) voter.Key.Dispose(); }
 });
 
 await Check("signed copy receipts count only the exact latest verified version", () =>

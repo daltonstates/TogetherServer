@@ -67,6 +67,12 @@ internal sealed partial class SharedWorldService
     private readonly object sync = new();
     private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
 
+    internal string LocalAuthorityPublicKey()
+    {
+        using var key = LoadSigningKey();
+        return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    }
+
     public SharedWorldService(LocalData data, WorldBackupService backups)
     {
         this.data = data;

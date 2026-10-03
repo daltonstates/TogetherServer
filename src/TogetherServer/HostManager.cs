@@ -72,6 +72,7 @@ public sealed partial class HostManager
     private readonly List<CrashRecoveryState> crashRecovery;
     private readonly WorldBackupService backups;
     private readonly SharedWorldService sharedWorlds;
+    private readonly WorldAuthorityStore authority;
     private readonly StorageHealthService storageHealth;
     private readonly StartupRecoveryService? startupRecovery;
 
@@ -101,6 +102,7 @@ public sealed partial class HostManager
         if (recoveryNormalized) data.SaveCrashRecoveryStates(crashRecovery);
         backups = new WorldBackupService(data, this.clock, games: games);
         sharedWorlds = new SharedWorldService(data, backups);
+        authority = new WorldAuthorityStore(data);
         storageHealth = new StorageHealthService(data, this.clock);
         hostingPowerView = ReconcileHostingPower();
         lastOwnerSnapshot = Snapshot();
@@ -1039,6 +1041,12 @@ public sealed partial class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (SharedAuthorityBlocked(profileId, out var authorityReason))
+            return Result(false, "SharedWorldAuthorityBlocked", authorityReason +
+                (runs.SingleOrDefault(run => run.ProfileId == profileId) is { } existingRun &&
+                 Identity(existingRun) == "Matched"
+                    ? " The exact managed game process is still running; gracefully stop it."
+                    : ""));
         if (WorldCopyBlock(profile, "starting a server") is { } copyBlock) return copyBlock;
         if (data.HasProtected(SetupRestorePendingName(profileId)))
             return Result(false, "SetupRestoreRecoveryRequired",
@@ -1877,7 +1885,10 @@ public sealed partial class HostManager
                     : ServerSessionBackupResult.Failed;
                 if (backup.Ok && backup.Backup is not null && profile!.SharedSavesEnabled)
                 {
-                    var published = sharedWorlds.PublishAfterStop(profile, backup.Backup.Id);
+                    var published = authority.Fenced(profile.Id, sharedWorlds.LocalAuthorityPublicKey(), out _)
+                        ? new SharedWorldResult(false, "SharedWorldAuthorityBlocked",
+                            "This PC must not publish saves after a verified takeover.")
+                        : sharedWorlds.PublishAfterStop(profile, backup.Backup.Id);
                     Activity("Backup", published.Ok ? "SharedSavePublished" : "SharedSavePublishFailed",
                         published.Ok ? "A completed post-Stop backup was published for approved PCs." :
                             "The completed backup remains local; shared save publication failed.",
