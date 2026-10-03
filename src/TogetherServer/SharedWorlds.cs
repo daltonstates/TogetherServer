@@ -66,6 +66,8 @@ internal sealed partial class SharedWorldService
     private readonly ISharedWorldCaptureAdapter capture;
     private WorldAuthorityStore Authority => new(data);
     private readonly object sync = new();
+    // Invoked only by deterministic core checks while the publication gates are held.
+    internal Action? AfterGovernanceCheckForChecks { get; set; }
     private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
 
     internal string LocalAuthorityPublicKey()
@@ -279,14 +281,16 @@ internal sealed partial class SharedWorldService
     {
         if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
             return new(false, "SharingOff", "Shared saves are off for this server.");
+        lock (SharedWorldMutationGate.For(data.RootPath))
         lock (sync)
         {
             string? stage = null;
             try
             {
                 var successor = Authority.LocalAuthorizedHead(profile.Id);
-                if (Authority.HasState(profile.Id) && Authority.GovernanceUnresolved(profile.Id))
+                if (Authority.GovernanceUnresolved(profile.Id))
                     throw new InvalidDataException("Signed membership is unresolved; this PC cannot publish another shared save.");
+                AfterGovernanceCheckForChecks?.Invoke();
                 if (Authority.HasState(profile.Id) && successor is null)
                     throw new InvalidDataException("This PC has no valid successor authority binding.");
                 if (successor is not null && !AuthorizedPublishedLineage(profile))

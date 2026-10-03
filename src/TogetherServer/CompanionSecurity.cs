@@ -447,11 +447,9 @@ public sealed class PairingService
 
     private DateTimeOffset UtcNow => clock.GetUtcNow();
     private bool HasSuccessorSharedProfile() => data.LoadSettings().Profiles.Any(profile =>
-        profile.SharedSavesEnabled && new WorldAuthorityStore(data).HasState(profile.Id));
-    private IEnumerable<Guid> SharedProfileIds() => data.LoadSettings().Profiles
-        .Where(profile => profile.SharedSavesEnabled).Select(profile => profile.Id);
+        new WorldAuthorityStore(data).HasState(profile.Id));
     private bool CanChangeSharedRoster(IEnumerable<Guid> affected) =>
-        !data.LoadSettings().Profiles.Any(profile => profile.SharedSavesEnabled &&
+        !data.LoadSettings().Profiles.Any(profile =>
             affected.Contains(profile.Id) && new WorldAuthorityStore(data).HasState(profile.Id));
     private static IEnumerable<Guid> AffectedProfiles(PairedDevice device) =>
         (device.AssignedProfileIds ?? []).Concat(device.SharedWorldGrants?.Keys.AsEnumerable() ??
@@ -478,7 +476,8 @@ public sealed class PairingService
     private void MarkSharedRostersDirty(IEnumerable<Guid>? affected = null)
     {
         var selected = affected?.ToHashSet();
-        foreach (var profile in data.LoadSettings().Profiles.Where(item => item.SharedSavesEnabled &&
+        foreach (var profile in data.LoadSettings().Profiles.Where(item =>
+            (item.SharedSavesEnabled || new WorldAuthorityStore(data).HasState(item.Id)) &&
             (selected is null || selected.Contains(item.Id))))
         {
             var path = RosterDirtyPath(profile.Id);
@@ -767,7 +766,11 @@ public sealed class PairingService
         // code no longer uses either value and remains available until replacement.
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
-            if (refresh && !CanChangeSharedRoster(SharedProfileIds()))
+            var affected = new HashSet<Guid> { profileId };
+            if (refresh)
+                affected.UnionWith(devices.Where(device => device.ProfileId == profileId && !device.Revoked)
+                    .SelectMany(AffectedProfiles));
+            if (refresh && !CanChangeSharedRoster(affected))
                 throw new InvalidOperationException("This successor PC cannot replace a shared world server code.");
             var state = serverInvites.SingleOrDefault(invite => invite.ProfileId == profileId);
             var now = UtcNow;
@@ -827,7 +830,7 @@ public sealed class PairingService
             serverInvites.Add(next);
             // Generation is the authorization gate. Persist it before updating device views,
             // so even an interrupted rotation cannot leave an old credential usable.
-            if (refresh) MarkSharedRostersDirty();
+            if (refresh) MarkSharedRostersDirty(affected);
             SaveState();
             if (refresh)
             {
@@ -881,9 +884,11 @@ public sealed class PairingService
             state.ActivatedDevices = 0;
             state.Rotated = true;
             var revoked = 0;
+            var affected = new HashSet<Guid> { profileId };
             foreach (var device in devices.Where(device => device.ProfileId == profileId &&
                 device.InviteGeneration == previousGeneration && !device.Revoked))
             {
+                affected.UnionWith(AffectedProfiles(device));
                 device.Revoked = true;
                 device.InviteHash = null;
                 device.InviteExpiresUtc = null;
@@ -893,7 +898,7 @@ public sealed class PairingService
                 heartbeats.TryRemove(device.Id, out _);
                 revoked++;
             }
-            MarkSharedRostersDirty();
+            MarkSharedRostersDirty(affected);
             SaveState();
             data.TryAudit($"pairing-emergency-revoke {profileId} devices={revoked} {UtcNow:O}");
             Activity("Connections", "CodeAccessRemoved",

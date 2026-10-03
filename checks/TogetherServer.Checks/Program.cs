@@ -3195,12 +3195,65 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     var ownerBackup = ownerBackups.Create(owner, BackupKinds.Rolling);
     Require(ownerBackup.Ok && ownerBackup.Backup is not null, "owner backup failed");
     var origin = ownerShares.PublishAfterStop(owner, ownerBackup.Backup!.Id).Version!;
+    ownerData.SaveSettings(Settings(owner));
+    ownerData.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
+        {
+            Id = voterId, ProfileId = owner.Id, AssignedProfileIds = [owner.Id],
+            ServerPermissionOverrides = [], SaveReceiveProfileIds = [],
+            SharedWorldPublicKey = voterKey,
+            SharedWorldGrants = new() { [owner.Id] = new SharedWorldGrants(RecoveryVoter: true) }
+        }]
+    });
+    var ownerPairing = new PairingService(ownerData);
+    File.WriteAllText(Path.Combine(owner.WorldDirectory, "world.dat"), "owner next");
+    var ownerNextBackup = ownerBackups.Create(owner, BackupKinds.Rolling);
+    Require(ownerNextBackup.Ok && ownerNextBackup.Backup is not null,
+        "owner backup for publication race failed");
+    using var publishEntered = new ManualResetEventSlim();
+    using var allowPublication = new ManualResetEventSlim();
+    ownerShares.AfterGovernanceCheckForChecks = () =>
+    {
+        publishEntered.Set();
+        if (!allowPublication.Wait(TimeSpan.FromSeconds(10)))
+            throw new TimeoutException("shared publication check did not resume");
+    };
+    var publicationTask = Task.Run(() => ownerShares.PublishAfterStop(owner, ownerNextBackup.Backup!.Id));
+    Require(publishEntered.Wait(TimeSpan.FromSeconds(10)),
+        "publication did not reach the governance check boundary");
+    using var revokeEntered = new ManualResetEventSlim();
+    var ownerRevokeTask = Task.Run(() =>
+    {
+        revokeEntered.Set();
+        return ownerPairing.Revoke(voterId);
+    });
+    try
+    {
+        Require(revokeEntered.Wait(TimeSpan.FromSeconds(10)), "revoke did not start");
+        await Task.Delay(100);
+        Require(!ownerRevokeTask.IsCompleted,
+            "revoke completed while publication could still return SharedSavePublished");
+    }
+    finally { allowPublication.Set(); }
+    var publishedOwnerVersion = await publicationTask.WaitAsync(TimeSpan.FromSeconds(20));
+    Require(publishedOwnerVersion.Code == "SharedSavePublished" && publishedOwnerVersion.Version is not null,
+        "authorized publication did not finish before revocation");
+    origin = publishedOwnerVersion.Version!;
+    Require((await ownerRevokeTask.WaitAsync(TimeSpan.FromSeconds(20))).Ok &&
+        ownerPairing.SharedRosterDirty(owner.Id) &&
+        !ownerShares.PublishAfterStop(owner, ownerNextBackup.Backup!.Id).Ok,
+        "publication succeeded after completed revocation");
+    ownerShares.AfterGovernanceCheckForChecks = null;
     var successor = Profile("lineage-successor-world", owner.WorldId, FreePort());
     successor.Id = owner.Id;
     successor.Kind = owner.Kind;
     successor.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     successor.SharedSavesEnabled = true;
-    successorData.SaveSettings(Settings(successor));
+    var independent = Profile("lineage-independent-world", "independent-world", FreePort());
+    independent.Kind = "Fixture";
+    independent.SharedSavesEnabled = true;
+    successorData.SaveSettings(Settings(successor, independent));
     File.WriteAllText(Path.Combine(successor.WorldDirectory, "world.dat"), "successor first");
     var successorStore = new WorldAuthorityStore(successorData);
     var hostKey = successorStore.PrepareLocalHostingKey(successor.Id);
@@ -3233,6 +3286,38 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     var record = recordDraft with { RecordHash = WorldAuthorityTrust.Hash(
         WorldAuthorityTrust.RecordBasis(recordDraft)) };
     Require(WorldAuthorityTrust.Verify(record), "signed device to hosting key proof failed");
+    using (var scopedData = Data("lineage-scoped-revoke"))
+    {
+        scopedData.SaveSettings(Settings(successor, independent));
+        new WorldAuthorityStore(scopedData).AppendReceived(record, owner.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        var codeGeneration = Guid.NewGuid();
+        scopedData.SavePairingState(new PairingPersistentState
+        {
+            Devices = [new PairedDevice
+            {
+                Id = Guid.NewGuid(), ProfileId = independent.Id,
+                InviteGeneration = codeGeneration, AssignedProfileIds = [owner.Id, independent.Id],
+                ServerPermissionOverrides = [], SaveReceiveProfileIds = [owner.Id],
+                SharedWorldGrants = new() { [owner.Id] = new SharedWorldGrants(Receive: true) }
+            }],
+            ServerInvites = [new ServerInviteState
+            {
+                ProfileId = independent.Id, Generation = codeGeneration,
+                Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                Endpoint = "https://127.0.0.1:5132", Fingerprint = new string('A', 64)
+            }]
+        });
+        var scopedPairing = new PairingService(scopedData);
+        RequireThrows<InvalidOperationException>(() => scopedPairing.IssueServer(independent.Id,
+            false, false, "https://127.0.0.1:5132", new string('A', 64), refresh: true),
+            "B code refresh could revoke a device granted to successor world A");
+        Require(!scopedPairing.SharedRosterDirty(owner.Id) &&
+            scopedPairing.EmergencyRevoke(independent.Id).Ok &&
+            scopedPairing.SharedRosterDirty(owner.Id) &&
+            scopedPairing.SharedRosterDirty(independent.Id),
+            "emergency revoke missed a revoked B device's grant to A");
+    }
     Require(!WorldAuthorityTrust.Verify(record with { Proposal = proposal with
         { SuccessorBinding = binding with { HostingPublicKey = voterKey } } }),
         "tampered hosting binding passed verification");
@@ -3291,6 +3376,14 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     Require(!successorPairing.SharedRosterDirty(owner.Id) &&
         JsonSerializer.Serialize(successorData.LoadPairingState()) == pairingBefore,
         "rejected successor pairing action wrote state or stalled transfers");
+    Require(successorPairing.IssueServer(independent.Id, false, false,
+        "https://127.0.0.1:5132", new string('A', 64), refresh: true).DeviceId == independent.Id &&
+        !successorPairing.SharedRosterDirty(owner.Id),
+        "an unrelated successor world blocked server-code replacement");
+    Require(successorPairing.EmergencyRevoke(independent.Id).Ok &&
+        !successorPairing.SharedRosterDirty(owner.Id) &&
+        successorPairing.SharedRosterDirty(independent.Id),
+        "an unrelated emergency revoke paused the successor world");
     Require(successorStore.Fenced(owner.Id, ownerShares.LocalAuthorityPublicKey(), out _),
         "successor started before local binding");
     RequireThrows<InvalidDataException>(() => successorStore.BindLocalSuccessor(owner.Id,
@@ -3369,10 +3462,51 @@ await Check("successor hosting key continues exact save lineage and stays bound 
         File.WriteAllBytes(latestPath, JsonSerializer.SerializeToUtf8Bytes(second,
             new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     }
-    Require(successorPairing.Revoke(voterId).Ok &&
-        successorPairing.SharedRosterDirty(owner.Id) &&
+    Require(new SharedWorldService(successorData, successorBackups).AuthorizedPublishedLineage(successor),
+        "successor lineage became invalid before the Start race");
+    var startManager = new HostManager(successorData, Games(successorData));
+    Require((await startManager.SetSharedSavesAsync(owner.Id, false)).Ok,
+        "successor could not turn sharing off before local revocation");
+    Require(!new WorldAuthorityStore(successorData).Fenced(owner.Id,
+        string.Empty, out var beforeStartReason),
+        "successor was fenced before sharing-off Start: " + beforeStartReason);
+    using var startEntered = new ManualResetEventSlim();
+    using var allowLaunch = new ManualResetEventSlim();
+    startManager.BeforeManagedLaunchForChecks = () =>
+    {
+        startEntered.Set();
+        if (!allowLaunch.Wait(TimeSpan.FromSeconds(10)))
+            throw new TimeoutException("managed launch check did not resume");
+    };
+    var startTask = Task.Run(() => startManager.StartAsync(owner.Id));
+    Require(startEntered.Wait(TimeSpan.FromSeconds(10)),
+        "shared Start did not reach the managed launch boundary: " +
+        (startTask.IsCompleted ? (await startTask).Code + " " + (await startTask).Message : "still waiting"));
+    using var startRevokeEntered = new ManualResetEventSlim();
+    var revokeTask = Task.Run(() =>
+    {
+        startRevokeEntered.Set();
+        return successorPairing.Revoke(voterId);
+    });
+    try
+    {
+        Require(startRevokeEntered.Wait(TimeSpan.FromSeconds(10)), "start-race revoke did not begin");
+        await Task.Delay(100);
+        Require(!revokeTask.IsCompleted, "revoke completed before the managed launch boundary released");
+    }
+    finally { allowLaunch.Set(); }
+    Require((await startTask.WaitAsync(TimeSpan.FromSeconds(20))).Ok,
+        "authorized Start did not launch before revoke returned");
+    Require((await revokeTask.WaitAsync(TimeSpan.FromSeconds(20))).Ok,
+        "revoke did not complete after managed launch");
+    startManager.BeforeManagedLaunchForChecks = null;
+    Require((await startManager.StopAsync(owner.Id)).Ok,
+        "fixture run did not stop after revoked membership");
+    Require((await startManager.StartAsync(owner.Id)).Code == "SharedWorldAuthorityBlocked",
+        "a later Start launched after completed revoke");
+    Require(successorPairing.SharedRosterDirty(owner.Id) &&
         successorPairing.AuthorizeReceiveSaves(candidatePairing, owner.Id, out _).Ok,
-        "revocation did not mark successor group authority unresolved");
+        "sharing-off revocation did not mark successor group authority unresolved");
     RequireThrows<InvalidDataException>(() => successorStore.SignLocalVote(owner.Id,
         proposal, roster, deviceId, device),
         "successor counted a stale signed roster after local revocation");

@@ -73,6 +73,8 @@ public sealed partial class HostManager
     private readonly WorldBackupService backups;
     private readonly SharedWorldService sharedWorlds;
     private readonly WorldAuthorityStore authority;
+    // Invoked only by deterministic core checks while the shared mutation gate is held.
+    internal Action? BeforeManagedLaunchForChecks { get; set; }
     private readonly StorageHealthService storageHealth;
     private readonly StartupRecoveryService? startupRecovery;
 
@@ -1034,6 +1036,15 @@ public sealed partial class HostManager
 
     private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt)
     {
+        // Pairing revocation does not take the lifecycle semaphore. Hold its
+        // shared gate through the managed launch so a completed revoke cannot
+        // be followed by a Start authorized with an older roster.
+        lock (SharedWorldMutationGate.For(data.RootPath))
+            return StartWithMembershipGate(profileId, crashRecoveryAttempt);
+    }
+
+    private ActionResult StartWithMembershipGate(Guid profileId, bool crashRecoveryAttempt)
+    {
         if (data.Recovery.LifecycleBlocked)
             return Result(false, "DataRecoveryRequired",
                 "Review and acknowledge the recovered local data before starting a server.");
@@ -1110,6 +1121,7 @@ public sealed partial class HostManager
         SaveRunsState(); // An interrupted launch stays Unknown, blocking a second writer.
         try
         {
+            BeforeManagedLaunchForChecks?.Invoke();
             var launch = driver.Start(profile, run);
             run.ProcessId = launch.ProcessId;
             using (var started = Process.GetProcessById(run.ProcessId.Value))
@@ -1885,7 +1897,7 @@ public sealed partial class HostManager
                     : ServerSessionBackupResult.Failed;
                 if (backup.Ok && backup.Backup is not null && profile!.SharedSavesEnabled)
                 {
-                    var published = authority.Fenced(profile.Id, sharedWorlds.LocalAuthorityPublicKey(), out _)
+                    var published = authority.Fenced(profile.Id, LocalAuthorityComparisonKey(profile.Id), out _)
                         ? new SharedWorldResult(false, "SharedWorldAuthorityBlocked",
                             "This PC must not publish saves after a verified takeover.")
                         : sharedWorlds.PublishAfterStop(profile, backup.Backup.Id);

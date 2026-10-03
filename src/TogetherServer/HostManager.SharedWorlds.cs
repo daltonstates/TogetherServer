@@ -2,6 +2,11 @@ namespace TogetherServer;
 
 public sealed partial class HostManager
 {
+    private string LocalAuthorityComparisonKey(Guid profileId) =>
+        authority.LocalAuthorizedHead(profileId) is null
+            ? sharedWorlds.LocalAuthorityPublicKey()
+            : string.Empty; // Schema-2 successor proof uses its enrolled hosting key.
+
     private bool SharedAuthorityBlocked(Guid profileId, out string reason)
     {
         reason = "";
@@ -13,7 +18,7 @@ public sealed partial class HostManager
                 reason = "Signed sharing membership is unresolved after a local access change. Keep this world offline and review group authority before sharing or voting.";
                 return true;
             }
-            if (authority.Fenced(profileId, sharedWorlds.LocalAuthorityPublicKey(), out reason))
+            if (authority.Fenced(profileId, LocalAuthorityComparisonKey(profileId), out reason))
                 return true;
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null || !sharedWorlds.AuthorizedPublishedLineage(profile))
