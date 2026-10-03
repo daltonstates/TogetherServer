@@ -362,8 +362,8 @@ internal static class CoreRemoteJourney
                 { ExclusiveAddressUse = true };
                 using var query = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
                 { ExclusiveAddressUse = true };
-                game.Bind(new IPEndPoint(IPAddress.Any, port));
-                query.Bind(new IPEndPoint(IPAddress.Any, port + 1));
+                game.Bind(new IPEndPoint(IPAddress.Loopback, port));
+                query.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
                 return port;
             }
             catch (SocketException) { }

@@ -27,8 +27,8 @@ if (!Inside(saveDir) || !Inside(log) || Value("-password") != "fixture-pass-123"
 
 using var gameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
 { ExclusiveAddressUse = true };
-gameSocket.Bind(new IPEndPoint(IPAddress.Any, gamePort));
-using var querySocket = new UdpClient(new IPEndPoint(IPAddress.Any, gamePort + 1));
+gameSocket.Bind(new IPEndPoint(IPAddress.Loopback, gamePort));
+using var querySocket = new UdpClient(new IPEndPoint(IPAddress.Loopback, gamePort + 1));
 using var queryDone = new CancellationTokenSource();
 var queryTask = File.Exists(Path.Combine(saveDir!, "synthetic-query-silent"))
     ? HoldQueryOpen(queryDone.Token)

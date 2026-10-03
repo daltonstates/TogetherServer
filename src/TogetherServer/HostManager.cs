@@ -1077,7 +1077,7 @@ public sealed partial class HostManager
         // so the person who initiated Start gets the actionable reason.
         if (runs.Count >= settings.MaxConcurrentServers)
             return Result(false, "MaxConcurrent", "The managed server limit has been reached.");
-        if (!GameServerRegistry.PortsAvailable(declaredPorts))
+        if (!games.PortsAvailableForStart(declaredPorts))
             return Result(false, "PortInUse", "One or more configured game ports are already in use by another program.");
 
         var run = new ManagedRun

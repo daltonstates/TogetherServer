@@ -46,7 +46,7 @@ if (rejection.Count > 0)
 
 using var gameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
 { ExclusiveAddressUse = true };
-gameSocket.Bind(new IPEndPoint(IPAddress.Any, gamePort));
+gameSocket.Bind(new IPEndPoint(IPAddress.Loopback, gamePort));
 var listener = new TcpListener(IPAddress.Loopback, rconPort);
 listener.Start();
 using var lifetime = new CancellationTokenSource();

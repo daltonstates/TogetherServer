@@ -26,8 +26,8 @@ function Get-FreeUdpPair {
         try {
             $one.ExclusiveAddressUse = $true
             $two.ExclusiveAddressUse = $true
-            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate))
-            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, $candidate + 1))
+            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate))
+            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate + 1))
             return $candidate
         }
         catch [Net.Sockets.SocketException] { }
@@ -421,7 +421,7 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     Write-Host 'PASS published GUI snapshot exposes server count and supports an exact Host countdown extension'
     $ports = Invoke-RestMethod -Uri "$baseUrl/api/local/network/ports"
     $gameCheck = @($ports.games) | Where-Object profileId -EQ $valheimId
-    if ($gameCheck.state -ne 'Open on PC' -or @($gameCheck.ports).Count -ne 2 -or $ports.control.state -ne 'Off' -or $ports.control.remoteState -ne 'Not verified') {
+    if ($gameCheck.state -ne 'Loopback only' -or @($gameCheck.ports).Count -ne 2 -or $ports.control.state -ne 'Off' -or $ports.control.remoteState -ne 'Not verified') {
         throw 'Local game or Friend control port diagnostics overstated or missed their evidence.'
     }
     Write-Host 'PASS local UDP game-port check and honest unverified Friend route'

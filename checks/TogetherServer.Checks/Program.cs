@@ -49,8 +49,8 @@ int FreePort()
         {
             using var one = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
             using var two = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            one.Bind(new IPEndPoint(IPAddress.Any, port));
-            two.Bind(new IPEndPoint(IPAddress.Any, port + 1));
+            one.Bind(new IPEndPoint(IPAddress.Loopback, port));
+            two.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
             return port;
         }
         catch (SocketException) { }
@@ -74,7 +74,7 @@ void CreateJunction(string link, string target)
         throw new Exception("junction creation failed: " + process.StandardError.ReadToEnd());
 }
 LocalData Data(string name) => new(Path.Combine(root, name));
-GameServerRegistry Games(LocalData data) => new(data, includeFixture: true);
+GameServerRegistry Games(LocalData data) => new(data, true, PortProbeMode.LoopbackOnly);
 HostManager Manager(LocalData data) => new(data, Games(data));
 
 await Check("shared Host snapshot fixture matches the backend contract", async () =>
@@ -781,7 +781,7 @@ await Check("status stays responsive and expires trusted counts while lifecycle 
             OnlinePlayers: 0, PlayerCountTrusted: true)
     };
     using var power = new BlockingPowerGuard();
-    var manager = new HostManager(data, new GameServerRegistry([driver]), clock, power);
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock, power);
     Require((await manager.UpdateSettingsAsync(settings)).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
     try
@@ -900,7 +900,7 @@ await Check("occupied local UDP port", async () =>
     var profile = Profile("bound-port", "bound-port", port);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    socket.Bind(new IPEndPoint(IPAddress.Any, port));
+    socket.Bind(new IPEndPoint(IPAddress.Loopback, port));
     Require((await manager.StartAsync(profile.Id)).Code == "PortInUse", "occupied port was allowed");
 });
 
@@ -961,7 +961,7 @@ await Check("identity mismatch blocks start and never stops an unrelated process
 await Check("game drivers are explicit and unknown games fail closed", async () =>
 {
     using var data = Data("drivers");
-    var productionRegistry = new GameServerRegistry(data);
+    var productionRegistry = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly);
     Require(!productionRegistry.TryGet(GameKinds.Fixture, out _),
         "the synthetic fixture driver was enabled without an explicit test opt-in");
     var registry = Games(data);
@@ -974,6 +974,21 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
     var manager = new HostManager(data, registry);
     var result = await manager.UpdateSettingsAsync(Settings(profile));
     Require(!result.Ok && result.Code == "InvalidSettings", "an unregistered game profile was accepted");
+});
+
+await Check("test port probes stay on loopback while app probes cover all interfaces", async () =>
+{
+    Require(GameServerRegistry.ProbeAddress("IPv4", PortProbeMode.LoopbackOnly).Equals(IPAddress.Loopback) &&
+        GameServerRegistry.ProbeAddress("IPv6", PortProbeMode.LoopbackOnly).Equals(IPAddress.IPv6Loopback) &&
+        GameServerRegistry.ProbeAddress("IPv4", PortProbeMode.AllInterfaces).Equals(IPAddress.Any) &&
+        GameServerRegistry.ProbeAddress("IPv6", PortProbeMode.AllInterfaces).Equals(IPAddress.IPv6Any),
+        "port probe mode selected the wrong bind address");
+    using var occupied = new TcpListener(IPAddress.Loopback, 0);
+    occupied.Start();
+    var port = ((IPEndPoint)occupied.LocalEndpoint).Port;
+    Require(!GameServerRegistry.PortsAvailable([new("TCP", port, "occupied fixture")],
+        PortProbeMode.LoopbackOnly), "loopback probe missed an occupied test port");
+    await Task.CompletedTask;
 });
 
 await Check("Valheim startup connection sequences survive the ready boundary", () =>
@@ -1174,8 +1189,8 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     var gamePort = FreePort();
     using var game = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
     using var query = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    game.Bind(new IPEndPoint(IPAddress.Any, gamePort));
-    query.Bind(new IPEndPoint(IPAddress.Any, gamePort + 1));
+    game.Bind(new IPEndPoint(IPAddress.Loopback, gamePort));
+    query.Bind(new IPEndPoint(IPAddress.Loopback, gamePort + 1));
     using var control = new TcpListener(IPAddress.Loopback, 0);
     control.Start();
     var controlPort = ((IPEndPoint)control.LocalEndpoint).Port;
@@ -1200,9 +1215,9 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     var device = new DeviceView(Guid.NewGuid(), profile.Id, [profile.Id], "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow);
     var diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
-    Require(diagnostics.Games.Single().State == "Open on PC" &&
+    Require(diagnostics.Games.Single().State == "Loopback only" &&
         diagnostics.Games.Single().RouteKind == "Direct" && diagnostics.Games.Single().Kind == GameKinds.Valheim,
-        "open Valheim Steam UDP ports or their direct route were not reported");
+        "loopback-only fixture ports or their direct route were not reported");
     Require(diagnostics.Control.State == "Open on PC" && diagnostics.Control.BindScope == "Loopback only" &&
         diagnostics.Control.EndpointState == "Address hint" && diagnostics.Control.RemoteState == "Friend connected" &&
         diagnostics.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
@@ -1529,7 +1544,7 @@ await Check("exact-run session evidence accumulates trusted player observations 
         HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
             OnlinePlayers: 2, MaxPlayers: 10, PlayerCountTrusted: true)
     };
-    var manager = new HostManager(data, new GameServerRegistry([driver]), clock);
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
     await manager.RefreshObservationsAsync();
@@ -1545,7 +1560,7 @@ await Check("exact-run session evidence accumulates trusted player observations 
     Require(recorded.LastTrustedOnlinePlayers == 2 && recorded.MaximumTrustedOnlinePlayers == 2,
         "an Unknown or untrusted observation overwrote trusted evidence with zero");
 
-    var restarted = new HostManager(data, new GameServerRegistry([driver]), clock);
+    var restarted = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock);
     driver.HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
         OnlinePlayers: 5, MaxPlayers: 10, PlayerCountTrusted: true);
     await restarted.RefreshObservationsAsync();
@@ -1579,7 +1594,7 @@ await Check("failed and unconfirmed Stop never archive a successful session", as
     using var data = Data("session-stop-failure");
     var profile = Profile("session-stop-failure", "session-stop-failure", FreePort());
     var driver = new ObservationFixtureDriver();
-    var manager = new HostManager(data, new GameServerRegistry([driver]));
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
 
@@ -1603,7 +1618,7 @@ await Check("failed and unconfirmed Stop never archive a successful session", as
     interrupted.StopRequestedUtc = DateTimeOffset.UtcNow;
     data.SaveRuns([interrupted]);
     await KillFixture(interrupted);
-    var restarted = new HostManager(data, new GameServerRegistry([driver]));
+    var restarted = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
     await restarted.RefreshObservationsAsync();
     var interruptedSummary = data.LoadRunArchive().Single(item => item.OperationId == interrupted.OperationId);
     Require(interruptedSummary.EndReason == ServerSessionEndReason.ProcessExited &&
@@ -1807,7 +1822,7 @@ await Check("hosting power request and resume revalidation stay scoped and fail 
             OnlinePlayers: 0, MaxPlayers: 10, PlayerCountTrusted: true)
     };
     using var power = new RecordingPowerGuard();
-    var manager = new HostManager(data, new GameServerRegistry([driver]), clock, power);
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock, power);
     Require((await manager.UpdateSettingsAsync(settings)).Ok && !power.IsActive,
         "the scoped power request activated while no managed server was running");
     Require((await manager.StartAsync(profile.Id)).Ok && power.IsActive,
@@ -2083,7 +2098,7 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "synthetic world one");
     var driver = new ObservationFixtureDriver();
-    var manager = new HostManager(data, new GameServerRegistry([driver]));
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture settings were rejected");
     new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System))
         .PublishRoster(profile, []);
@@ -2455,9 +2470,14 @@ await Check("shared save grant is separate and revoked at access deadline or una
 {
     using var data = Data("shared-world-access");
     var profileId = Guid.NewGuid();
-    var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,
-        AssignedProfileIds = [profileId], CredentialHash = new string('A', 64),
-        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10) };
+    var device = new PairedDevice
+    {
+        Id = Guid.NewGuid(),
+        ProfileId = Guid.Empty,
+        AssignedProfileIds = [profileId],
+        CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10)
+    };
     data.SavePairingState(new PairingPersistentState { Devices = [device] });
     var pairing = new PairingService(data);
     Require(!pairing.AuthorizeReceiveSaves(device, profileId, out _).Ok,
@@ -2494,8 +2514,12 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
     using var data = Data("shared-world-receipt");
     var profile = Profile("shared-receipt", "received-world", FreePort());
     profile.Kind = "Fixture";
-    profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0,
-        RetentionCount = 5 };
+    profile.Backups = new BackupOptions
+    {
+        Enabled = true,
+        MinimumFreeSpaceMb = 0,
+        RetentionCount = 5
+    };
     profile.SharedSavesEnabled = true;
     var backupService = new WorldBackupService(data, TimeProvider.System);
     var shares = new SharedWorldService(data, backupService);
@@ -2514,7 +2538,7 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
         Require(published.Ok && published.Version is not null &&
             published.Version.Number == number, "signed version chain failed");
         Require(!SharedWorldService.VerifySignature(published.Version! with
-            { CreatedUtc = published.Version.CreatedUtc.AddSeconds(1) }),
+        { CreatedUtc = published.Version.CreatedUtc.AddSeconds(1) }),
             "displayed save completion time was not signed");
         if (number == 2)
         {
@@ -2813,9 +2837,14 @@ await Check("shared save authorization is rechecked after asynchronous read", as
     shares.PublishRoster(profile, []);
     var published = shares.PublishAfterStop(profile, backup.Backup!.Id);
     Require(published.Ok && published.Version is not null, "fixture publication failed");
-    var device = new PairedDevice { Id = Guid.NewGuid(), ProfileId = Guid.Empty,
-        AssignedProfileIds = [profile.Id], CredentialHash = new string('A', 64),
-        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10) };
+    var device = new PairedDevice
+    {
+        Id = Guid.NewGuid(),
+        ProfileId = Guid.Empty,
+        AssignedProfileIds = [profile.Id],
+        CredentialHash = new string('A', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10)
+    };
     data.SavePairingState(new PairingPersistentState { Devices = [device] });
     var pairing = new PairingService(data);
     Require(pairing.SetReceiveSaves(device.Id, profile.Id, true).Ok,
@@ -3331,7 +3360,7 @@ await Check("guided server changes pause Friend controls before a zero-player St
         HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
             OnlinePlayers: 2, MaxPlayers: 10, PlayerCountTrusted: true)
     };
-    var manager = new HostManager(data, new GameServerRegistry([driver]));
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "guided-change profile failed to save");
     Require((await manager.StartAsync(profile.Id)).Ok, "guided-change fixture failed to start");
     Require((await manager.PrepareServerChangeAsync(profile.Id)).Code == "PlayersOnlineOrUnknown" &&
