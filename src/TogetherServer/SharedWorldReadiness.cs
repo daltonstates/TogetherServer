@@ -8,7 +8,8 @@ public sealed record TakeoverLocalSetup(string? ServerFile, string? GameVersion,
     IReadOnlyList<SharedWorldPortableAddOn>? EnabledAddOns, bool NewPasswordConfigured,
     int ControlPort, int GamePort);
 public sealed record TakeoverReadiness(bool Ready, IReadOnlyList<string> Reasons,
-    long? Version, string? VersionHash, bool RehearsalPassed = false);
+    long? Version, string? VersionHash, bool RehearsalPassed = false,
+    bool ManagedProcessRehearsalPassed = false);
 
 // Eligibility and externally observed routes are deliberately separate from local file checks.
 // A later signed takeover decision may supply these inputs; the current caller supplies false.
@@ -164,8 +165,11 @@ internal static class SharedWorldReadiness
             return checkedState with
             {
                 RehearsalPassed = true,
+                ManagedProcessRehearsalPassed = false,
                 Reasons = [.. checkedState.Reasons,
-                    "Disposable file copy passed hash checks. A real game load, join, and save still need testing."]
+                    version.Game == GameKinds.Fixture
+                        ? "Disposable file copy passed hash checks. Fixture process rehearsal is unavailable because this app cannot verify the selected executable's provenance. A real game load, join, and save still need testing."
+                        : "Disposable file copy passed hash checks. A real game load, join, and save still need testing."]
             };
         }
         finally

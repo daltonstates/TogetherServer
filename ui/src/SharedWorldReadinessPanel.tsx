@@ -3,7 +3,8 @@ import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 
 type Readiness = { ready: boolean; reasons: string[]; version: number | null;
-  versionHash: string | null; rehearsalPassed: boolean }
+  versionHash: string | null; rehearsalPassed: boolean; managedProcessRehearsalPassed?: boolean }
+type RouteCheck = { controlRouteObserved: boolean; code: string; message: string }
 type RestoreStatus = { staged: boolean; restored: boolean; recordHash: string | null;
   message: string; pendingChecks: string[]; preparedServerRoot: string | null }
 type RestoreResult = { ok: boolean; code: string; message: string;
@@ -47,9 +48,18 @@ export function parseTakeoverReadiness(value: unknown): Readiness {
     item.reasons.some(reason => typeof reason !== 'string' || reason.length > 300) ||
     (item.version !== null && (typeof item.version !== 'number' || !Number.isSafeInteger(item.version))) ||
     (item.versionHash !== null && (typeof item.versionHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.versionHash))) ||
-    typeof item.rehearsalPassed !== 'boolean')
+    typeof item.rehearsalPassed !== 'boolean' ||
+    (item.managedProcessRehearsalPassed !== undefined && typeof item.managedProcessRehearsalPassed !== 'boolean'))
     throw new Error('Readiness is invalid.')
   return item as Readiness
+}
+
+function parseRouteCheck(value: unknown): RouteCheck {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Route check is invalid.')
+  const item = value as Record<string, unknown>
+  if (typeof item.controlRouteObserved !== 'boolean' || typeof item.code !== 'string' ||
+    typeof item.message !== 'string' || item.message.length > 500) throw new Error('Route check is invalid.')
+  return item as RouteCheck
 }
 
 export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) {
@@ -66,6 +76,9 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
   const [handoff, setHandoff] = useState<RestoreStatus | null>(null)
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
   const [result, setResult] = useState<Readiness | null>(null)
+  const [routeRecordHash, setRouteRecordHash] = useState('')
+  const [routeFingerprint, setRouteFingerprint] = useState('')
+  const [routeResult, setRouteResult] = useState<RouteCheck | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
@@ -113,6 +126,15 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
+  const probeRoute = async () => {
+    setBusy(true); setError(''); setRouteResult(null)
+    try {
+      setRouteResult(await changeJson(`/api/local/friend/${profileId}/shared-world/route-check`,
+        'POST', parseRouteCheck, { recordHash: routeRecordHash.trim(),
+          tlsFingerprint: routeFingerprint.trim() }))
+    } catch (cause) { setError(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
   return <details><summary>Check this PC for future hosting</summary>
     <p>Check local files and make a disposable copy. A signed planned handoff can be restored into fresh managed storage; hosting still needs a real Friend route and game test.</p>
     <label>Installed game server file<Input value={serverFile} onChange={event => setServerFile(event.target.value)}
@@ -127,7 +149,18 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
     <p className="helper-text">Matching add-ons, a fresh managed location, real game load, and direct-IP routes still need confirmation before hosting.</p>
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
       Check this PC</Button><Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
-      Make disposable test copy</Button></div>
+      Rehearse disposable copy</Button></div>
+    <details><summary>Test successor's control route from another Friend PC</summary>
+      <p>Use the signed handoff hash and the successor's certificate fingerprint. This checks pinned HTTPS from this PC. A real game join is a separate check.</p>
+      <label>Signed handoff hash<Input value={routeRecordHash}
+        onChange={event => setRouteRecordHash(event.target.value)} /></label>
+      <label>Successor certificate fingerprint<Input value={routeFingerprint}
+        onChange={event => setRouteFingerprint(event.target.value)} /></label>
+      <Button className="secondary" disabled={busy || !/^[0-9A-Fa-f]{64}$/.test(routeRecordHash.trim()) ||
+        !/^[0-9A-Fa-f]{64}$/.test(routeFingerprint.trim())} onClick={() => void probeRoute()}>
+        Check direct-IP control route</Button>
+      {routeResult && <p role="status">{routeResult.message}</p>}
+    </details>
     {handoff?.staged && <div><p role="status">{handoff.message}</p>
       {!handoff.restored && <><label>New server name<Input value={serverName}
         onChange={event => setServerName(event.target.value)} /></label>
@@ -148,7 +181,8 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
       {restoreResult.pendingChecks && <ul>{restoreResult.pendingChecks.map(check =>
         <li key={check}>{check}</li>)}</ul>}</div>}
     {error && <p role="alert">{error}</p>}
-    {result && <div role="status"><p>{result.rehearsalPassed ? 'Disposable copy checked and removed.' :
+    {result && <div role="status"><p>{result.managedProcessRehearsalPassed ?
+      'Disposable fixture process checked and removed.' : result.rehearsalPassed ? 'Disposable copy checked and removed.' :
       result.ready ? 'Local checks passed.' : 'Hosting still needs setup.'}</p>
       {result.reasons.length > 0 && <ul>{result.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
       {result.rehearsalPassed && <details><summary>Technical details</summary>

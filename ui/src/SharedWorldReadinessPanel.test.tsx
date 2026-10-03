@@ -8,17 +8,20 @@ it('shows rehearsal limits and keeps takeover unavailable', async () => {
     calls.push(url)
     return new Response(JSON.stringify({ ready: false,
       reasons: ['The owner has not granted this PC takeover permission.',
-        'Disposable file copy passed hash checks. A real game load, join, and save still need testing.'],
-      version: 2, versionHash: 'A'.repeat(64), rehearsalPassed: true }),
+        'Disposable file copy passed hash checks. Fixture process rehearsal is unavailable because this app cannot verify the selected executable\'s provenance. A real game load, join, and save still need testing.'],
+      version: 2, versionHash: 'A'.repeat(64), rehearsalPassed: true,
+      managedProcessRehearsalPassed: false }),
     { status: 200, headers: { 'Content-Type': 'application/json' } })
   }))
   render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111" />)
   fireEvent.click(screen.getByText('Check this PC for future hosting'))
-  fireEvent.click(screen.getByRole('button', { name: 'Make disposable test copy' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Rehearse disposable copy' }))
   await waitFor(() => expect(calls.some(url => url.endsWith('/rehearse'))).toBe(true))
   expect(await screen.findByText('Disposable copy checked and removed.')).toBeInTheDocument()
   expect(screen.getByText(/real game load, join, and save still need testing/)).toBeInTheDocument()
+  expect(screen.getByText(/Fixture process rehearsal is unavailable/)).toBeInTheDocument()
   expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Check direct-IP control route' })).toBeDisabled()
 })
 
 it('rejects malformed readiness data', () => {

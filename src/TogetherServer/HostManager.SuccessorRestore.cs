@@ -22,6 +22,49 @@ public sealed partial class HostManager
     private static string SuccessorRestoreName(Guid profileId) =>
         $"successor-restore-{profileId:N}.protected";
 
+    internal async Task<SharedWorldRouteProof?> SignSuccessorRouteProofAsync(Guid profileId,
+        string recordHash, SharedWorldRouteChallenge challenge, string tlsFingerprint)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (challenge is null || profileId == Guid.Empty || recordHash.Length != 64 ||
+                !recordHash.All(Uri.IsHexDigit) || !SharedWorldRouteTrust.DirectIpAddress(
+                    settings.CompanionEndpoint) || !settings.CompanionListeningEnabled)
+                return null;
+            var restoredBytes = data.LoadProtected(SuccessorRestoreName(profileId));
+            var restored = restoredBytes is null ? null :
+                JsonSerializer.Deserialize<SuccessorRestoreState>(restoredBytes);
+            var record = authority.ReadUniqueHead(profileId);
+            if (restored is not { Schema: 1 } || record is null ||
+                record.RecordHash != recordHash ||
+                !WorldAuthorityTrust.Verify(record) || restored.GroupId != record.Proposal.GroupId ||
+                restored.RecordHash != recordHash ||
+                restored.VersionHash != record.Version.VersionHash ||
+                record.Proposal.CandidateAddress != settings.CompanionEndpoint ||
+                settings.Profiles.SingleOrDefault(item => item.Id == profileId) is not { } profile ||
+                profile.WorldDirectory != restored.WorldDirectory ||
+                !SharedWorldRouteTrust.VerifyChallenge(challenge, record, clock.GetUtcNow()))
+                return null;
+            var member = record.Roster.Members.SingleOrDefault(item =>
+                item.PublicKey == record.Proposal.CandidatePublicKey);
+            if (member is not { Revoked: false, Grants.EligibleHost: true } ||
+                member.AccessExpiresUtc is { } expiry && expiry <= clock.GetUtcNow()) return null;
+            var bytes = data.LoadProtected($"shared-world-pc-signing-{member.DeviceId:N}.protected");
+            if (bytes is null) return null;
+            using var key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(bytes, out _);
+            if (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) !=
+                record.Proposal.CandidatePublicKey) return null;
+            return SharedWorldRouteTrust.Sign(profileId, recordHash, challenge.Nonce,
+                settings.CompanionEndpoint, tlsFingerprint, key);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+            CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return null; }
+        finally { gate.Release(); }
+    }
+
     public async Task<SuccessorRestoreStatus> SuccessorRestoreStatusAsync(Guid profileId)
     {
         await gate.WaitAsync();
