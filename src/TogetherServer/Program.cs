@@ -1538,6 +1538,11 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/route-check",
     friendMode ? Results.Json(await friend.ProbeSuccessorRouteAsync(id,
         request.RecordHash, request.TlsFingerprint, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/successor-enrollment",
+    async (HttpContext context, Guid id, SharedWorldRouteRequest request) =>
+    friendMode ? Results.Json(await friend.EnrollWithSuccessorAsync(id,
+        request.RecordHash, request.TlsFingerprint, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/route-check",
     async (HttpContext context, Guid id) =>
 {

@@ -26,6 +26,8 @@ public sealed class PairedDevice
     public List<Guid> SaveReceiveProfileIds { get; set; } = [];
     public Dictionary<Guid, SharedWorldGrants> SharedWorldGrants { get; set; } = [];
     public string? SharedWorldPublicKey { get; set; }
+    // This credential follows one signed takeover, not a server-code generation.
+    public string? SuccessorAuthorityHash { get; set; }
     // Global permissions remain the default. Entries are stored only when an
     // assigned server differs from that default, so the owner can see and edit
     // explicit per-server exceptions without duplicating the access list.
@@ -746,10 +748,20 @@ public sealed class PairingService
         return changed;
     }
 
-    private bool IsRevoked(PairedDevice device) => device.Revoked ||
-        (device.ProfileId == Guid.Empty
+    private bool IsRevoked(PairedDevice device)
+    {
+        if (device.Revoked) return true;
+        if (device.SuccessorAuthorityHash is { } authorityHash)
+        {
+            try { return new WorldAuthorityStore(data).LocalAuthorizedHead(device.ProfileId)?.RecordHash != authorityHash; }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException or UnauthorizedAccessException)
+            { return true; }
+        }
+        return device.ProfileId == Guid.Empty
             ? serverInvites.Any(invite => invite.Rotated)
-            : serverInvites.SingleOrDefault(invite => invite.ProfileId == device.ProfileId)?.Generation != device.InviteGeneration);
+            : serverInvites.SingleOrDefault(invite => invite.ProfileId == device.ProfileId)?.Generation != device.InviteGeneration;
+    }
 
     private static bool IsAccessExpired(PairedDevice device, DateTimeOffset now) =>
         device.AccessExpiresUtc is { } accessExpiresUtc && accessExpiresUtc <= now;
@@ -1139,6 +1151,61 @@ public sealed class PairingService
 
     public PairingDecision Authenticate(Guid id, string? bearer, out PairedDevice? device)
         => Authenticate(id, bearer, out device, out _);
+
+    // A successor inherits signed membership, but never the old Host's bearer
+    // secrets. This issues a successor-local credential for the exact roster
+    // identity without changing or re-signing that roster. A fresh signed
+    // challenge can recover a lost response or follow a later authority head.
+    internal PairingCredential? EnrollSuccessor(WorldAuthorityRecord record,
+        SharedWorldRoster roster, SuccessorEnrollmentRequest request, string fingerprint)
+    {
+        var profileId = record.Proposal.ProfileId;
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
+        {
+            if (SharedRosterDirty(profileId) ||
+                new WorldAuthorityStore(data).LocalAuthorizedHead(profileId)?.RecordHash != record.RecordHash ||
+                roster.ProfileId != profileId || roster.GroupId != record.Proposal.GroupId ||
+                roster.OwnerPublicKey != record.Roster.OwnerPublicKey ||
+                !SharedWorldRosterTrust.Verify(roster) ||
+                new SharedWorldRosterChainStore(data) is { } chain && chain.HasState(profileId) &&
+                    (chain.Heads(profileId).Count != 1 ||
+                     SharedWorldRosterTrust.Hash(chain.Heads(profileId)[0]) !=
+                        SharedWorldRosterTrust.Hash(roster)) ||
+                !SharedWorldSuccessorEnrollment.Verify(request, record, fingerprint) ||
+                roster.Members.SingleOrDefault(item => item.DeviceId == request.DeviceId) is not
+                { Revoked: false, Grants.Receive: true } member ||
+                member.PublicKey != request.DevicePublicKey ||
+                member.AccessExpiresUtc is { } expires && expires <= UtcNow) return null;
+            var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var expiry = UtcNow.AddDays(90);
+            var existing = devices.SingleOrDefault(item => item.Id == request.DeviceId);
+            if (existing is not null && (existing.Revoked ||
+                existing.SuccessorAuthorityHash is null ||
+                existing.ProfileId != profileId ||
+                existing.SharedWorldPublicKey != member.PublicKey)) return null;
+            var enrolled = existing ?? new PairedDevice
+            {
+                Id = request.DeviceId,
+                ProfileId = profileId,
+                SuccessorAuthorityHash = record.RecordHash,
+                AssignedProfileIds = [profileId],
+                Name = "Shared world member",
+                SharedWorldPublicKey = member.PublicKey,
+            };
+            enrolled.CredentialHash = Hash(token);
+            enrolled.CredentialExpiresUtc = expiry;
+            enrolled.SuccessorAuthorityHash = record.RecordHash;
+            enrolled.PreviousCredentialHash = null;
+            enrolled.PreviousCredentialExpiresUtc = null;
+            enrolled.SharedWorldGrants = new() { [profileId] = member.Grants };
+            enrolled.SaveReceiveProfileIds = [profileId];
+            enrolled.AccessExpiresUtc = member.AccessExpiresUtc;
+            if (existing is null) devices.Add(enrolled);
+            SaveState();
+            data.TryAudit($"successor-enroll {request.DeviceId} {profileId} {UtcNow:O}");
+            return new PairingCredential(request.DeviceId, token, expiry);
+        }
+    }
 
     public PairingDecision Authenticate(Guid id, string? bearer, out PairedDevice? device,
         out bool usedPreviousCredential)

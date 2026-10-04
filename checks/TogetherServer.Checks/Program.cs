@@ -4231,6 +4231,13 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require((await routeManager.StopAsync(profile.Id)).Ok,
         "planned successor fixture could not stop gracefully");
     var plannedLatest = (await routeManager.SharedWorldReadAsync(profile.Id)).Status.Latest;
+    Require(plannedLatest is not null &&
+        FriendLink.AuthorizedVersionSignerForRecords(completed.Authority.Roster.OwnerPublicKey,
+            plannedLatest, new WorldAuthorityStore(receivingData).Read(profile.Id)) &&
+        FriendLink.ResolvedAuthorityAnchorForRecords(completed.Authority.Roster.OwnerPublicKey,
+            plannedLatest, new WorldAuthorityStore(receivingData).Read(profile.Id))?.VersionHash ==
+            completed.Authority.Version.VersionHash,
+        "an approved Friend could not follow the planned successor's signed save");
     var plannedRestart = await routeManager.StartAsync(profile.Id);
     Require(plannedLatest is { Number: 4 } && plannedRestart.Ok,
         $"successor Stop did not continue the signed save sequence or allow a later manual Start: version={plannedLatest?.Number}, {plannedRestart.Code} {plannedRestart.Message}");
@@ -6500,8 +6507,17 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         foreach (var key in keys) key.Dispose();
     }
 });
-await Check("quorum successor restores a fresh managed copy and rechecks Start", async () =>
+await Check("quorum successor restores and approved PC pulls its next save", async () =>
 {
+    var nonceClock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var nonces = new SharedWorldEnrollmentNonces(nonceClock);
+    var expiryDevice = Guid.NewGuid();
+    var expiryProfile = Guid.NewGuid();
+    var expiredNonce = nonces.Issue(expiryDevice, expiryProfile);
+    nonceClock.Advance(TimeSpan.FromMinutes(6));
+    Require(!nonces.Consume(expiryDevice, expiryProfile, expiredNonce) &&
+        !nonces.Consume(expiryDevice, expiryProfile, expiredNonce),
+        "expired or replayed successor challenge was accepted");
     using var host = Data("quorum-restore-host");
     var profile = Profile("quorum-restore", "quorum-restore-world", FreePort());
     profile.Kind = "Fixture";
@@ -6512,13 +6528,18 @@ await Check("quorum successor restores a fresh managed copy and rechecks Start",
     var shares = new SharedWorldService(host, backup);
     var keys = Enumerable.Range(0, 3).Select(_ => ECDsa.Create(ECCurve.NamedCurves.nistP256)).ToArray();
     var ids = Enumerable.Range(0, 3).Select(_ => Guid.NewGuid()).ToArray();
+    var revokedId = Guid.NewGuid();
+    using var revokedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var pcs = new List<LocalData>();
     try
     {
         var roster = shares.PublishRoster(profile, ids.Select((id, index) =>
             new SharedWorldRosterMember(id,
                 Convert.ToBase64String(keys[index].ExportSubjectPublicKeyInfo()),
-                new SharedWorldGrants(true, true, true), false)).ToArray());
+                new SharedWorldGrants(true, true, true), false)).Append(
+            new SharedWorldRosterMember(revokedId,
+                Convert.ToBase64String(revokedKey.ExportSubjectPublicKeyInfo()),
+                new SharedWorldGrants(Receive: true), true)).ToArray());
         var checkpoint = backup.Create(profile, BackupKinds.Rolling);
         Require(checkpoint.Ok && checkpoint.Backup is not null, "quorum restore backup failed");
         var version = shares.PublishAfterStop(profile, checkpoint.Backup!.Id).Version
@@ -6665,6 +6686,170 @@ await Check("quorum successor restores a fresh managed copy and rechecks Start",
             $"majority successor failed signed save continuity or later Start: version={majorityLatest?.Number}, {majorityRestart.Code} {majorityRestart.Message}");
         Require((await successorManager.StopAsync(profile.Id)).Ok,
             "majority successor could not stop its later manual fixture run");
+        new WorldAuthorityStore(pcs[1]).AppendReceived(directDecision, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        pcs[1].SaveProtected($"shared-world-pc-signing-{ids[1]:N}.protected",
+            keys[1].ExportPkcs8PrivateKey());
+        var sourceConfig = new FriendConfiguration
+        {
+            DeviceId = ids[1],
+            HostId = Guid.NewGuid(),
+            Endpoint = $"https://127.0.0.1:{FreePort()}",
+            Fingerprint = new string('A', 64),
+            Credential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30),
+            ConsentedSharedWorldProfiles = [profile.Id],
+            SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+            ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId },
+            SharedRosterFloors = new() { [profile.Id] = floor }
+        };
+        pcs[1].SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(sourceConfig));
+        HttpClient RedirectedSuccessorClient(string endpoint, IEnumerable<string> fingerprints)
+        {
+            var pins = fingerprints.ToHashSet(StringComparer.Ordinal);
+            var handler = new SocketsHttpHandler
+            {
+                UseProxy = false,
+                ConnectCallback = async (_, token) =>
+                {
+                    var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                    try
+                    {
+                        await socket.ConnectAsync(IPAddress.Loopback, candidatePort, token);
+                        return new NetworkStream(socket, ownsSocket: true);
+                    }
+                    catch { socket.Dispose(); throw; }
+                }
+            };
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, seen, _, _) =>
+                seen is not null && pins.Contains(Convert.ToHexString(SHA256.HashData(seen.GetRawCertData())));
+            return new HttpClient(handler)
+            {
+                BaseAddress = new Uri(endpoint + "/"),
+                Timeout = TimeSpan.FromSeconds(10)
+            };
+        }
+        using var successorModeGate = new SemaphoreSlim(1, 1);
+        var successorPairing = new PairingService(pcs[0]);
+        var successorListener = new CompanionServer(pcs[0], successorManager, successorPairing,
+            Games(pcs[0]), new ServerLogService(pcs[0], successorManager),
+            successorModeGate, candidatePort + 2);
+        try
+        {
+            await successorListener.SyncAsync();
+            Require(successorListener.Active, "the restored successor listener was not available");
+            using var rawClient = RedirectedSuccessorClient(directAddress, [directPin]);
+            var path = $"api/companion/servers/{profile.Id}/shared-world/successor-enrollment";
+            using var revokedChallenge = await rawClient.GetAsync(
+                $"{path}/{directDecision.RecordHash}/{revokedId}");
+            Require(revokedChallenge.StatusCode == HttpStatusCode.NotFound,
+                "revoked signed member received a successor enrollment challenge");
+            using var challengeResponse = await rawClient.GetAsync(
+                $"{path}/{directDecision.RecordHash}/{ids[1]}");
+            var challenge = await challengeResponse.Content.ReadFromJsonAsync<SuccessorEnrollmentChallenge>()
+                ?? throw new Exception("approved receiver did not receive a successor challenge");
+            var goodDraft = new SuccessorEnrollmentRequest(ids[1], challenge.Nonce,
+                directDecision.RecordHash, roster.GroupId, roster.OwnerPublicKey,
+                directAddress, directPin,
+                Convert.ToBase64String(keys[1].ExportSubjectPublicKeyInfo()), "");
+            var wrong = goodDraft with
+            {
+                Signature = Convert.ToBase64String(revokedKey.SignData(
+                SharedWorldSuccessorEnrollment.Basis(goodDraft), HashAlgorithmName.SHA256))
+            };
+            using var wrongResponse = await rawClient.PostAsJsonAsync(path, wrong);
+            using var replayAfterWrong = await rawClient.PostAsJsonAsync(path,
+                goodDraft with
+                {
+                    Signature = Convert.ToBase64String(keys[1].SignData(
+                    SharedWorldSuccessorEnrollment.Basis(goodDraft), HashAlgorithmName.SHA256))
+                });
+            Require(wrongResponse.StatusCode == HttpStatusCode.Forbidden &&
+                replayAfterWrong.StatusCode == HttpStatusCode.Forbidden &&
+                successorPairing.Views().All(item => item.Id != ids[1]),
+                "wrong identity or consumed challenge created a successor bearer");
+            using var friend = new FriendService(pcs[1], RedirectedSuccessorClient);
+            var wrongPin = await friend.EnrollWithSuccessorAsync(profile.Id,
+                directDecision.RecordHash, new string('F', 64), CancellationToken.None);
+            Require(!wrongPin.Ok && successorPairing.Views().All(item => item.Id != ids[1]) &&
+                friend.View().Connections?.Count == 1,
+                "an unpinned successor created Friend access");
+            var joined = await friend.EnrollWithSuccessorAsync(profile.Id,
+                directDecision.RecordHash, directPin, CancellationToken.None);
+            var successorConnection = friend.View();
+            var nextConfig = pcs[1].LoadProtectedJson<FriendConfiguration>(
+                $"friend-{successorConnection.ConnectionId:N}.protected");
+            Require(joined.Ok && nextConfig is not null && nextConfig.DeviceId == ids[1] &&
+                nextConfig.Endpoint == directAddress && nextConfig.Credential != sourceConfig.Credential &&
+                nextConfig.SharedWorldSigningKeys.GetValueOrDefault(profile.Id) == roster.OwnerPublicKey &&
+                pcs[1].HasProtected("friend.protected") && successorConnection.Connections?.Count == 2,
+                $"approved receiver could not join successor: {joined.Code} {joined.Message}");
+            var verifiedConfig = nextConfig ?? throw new Exception("Successor connection was not saved.");
+            var authenticated = successorPairing.Authenticate(ids[1], verifiedConfig.Credential,
+                out var enrolledDevice);
+            Require(authenticated.Ok && enrolledDevice?.AssignedProfileIds?.Contains(profile.Id) == true,
+                $"successor bearer did not retain the original roster assignment: {authenticated.Code}");
+            Require(new PairingService(pcs[0]).Authenticate(ids[1], verifiedConfig.Credential,
+                out _).Ok, "successor bearer was not durable across pairing restart");
+            Require(successorConnection.Profiles.Any(item => item.Id == profile.Id),
+                $"successor heartbeat did not expose the inherited world: {successorConnection.ConnectionCode} {successorConnection.Detail}");
+            Require((await successorManager.SharedWorldRosterAsync(profile.Id))?.Signature == roster.Signature &&
+                !successorPairing.SharedRosterDirty(profile.Id),
+                "successor enrollment changed signed membership");
+            var receiverRecords = new WorldAuthorityStore(pcs[1]).Read(profile.Id);
+            var receiverHeads = WorldAuthorityTrust.EffectiveHeads(receiverRecords);
+            var successorLatest = (await successorManager.SharedWorldReadAsync(profile.Id)).Status.Latest!;
+            Require(FriendLink.AuthorizedVersionSignerForRecords(roster.OwnerPublicKey,
+                successorLatest, receiverRecords),
+                $"successor version signer was not authorized: heads={receiverHeads.Length}, " +
+                $"headSchema={receiverHeads.FirstOrDefault()?.Proposal.Schema}, latest={successorLatest.Number}, " +
+                $"headVersion={receiverHeads.FirstOrDefault()?.Version.Number}, " +
+                $"signer={successorLatest.SigningPublicKey == receiverHeads.FirstOrDefault()?.Proposal.CandidatePublicKey}");
+            var pulled = await friend.PullSharedWorldAsync(profile.Id);
+            var afterPullConfig = JsonSerializer.Deserialize<FriendConfiguration>(
+                pcs[1].LoadProtected($"friend-{successorConnection.ConnectionId:N}.protected")!)!;
+            var afterPullRecords = new WorldAuthorityStore(pcs[1]).Read(profile.Id);
+            Require(pulled.Ok && FriendLink.ReadReceivedLatest(vaults[1]) is { Number: > 1 } received &&
+                File.ReadAllText(SharedWorldService.SafeChild(Path.Combine(vaults[1],
+                    received.VersionHash, SharedWorldService.PayloadDirectory),
+                    received.Files[0].Path)) == "majority saved change",
+                $"approved receiver did not pull the successor's signed save: {pulled.Code} {pulled.Message}; " +
+                $"pinned={afterPullConfig.SharedWorldSigningKeys.GetValueOrDefault(profile.Id)?.Substring(0, 12)}, " +
+                $"owner={roster.OwnerPublicKey.Substring(0, 12)}, " +
+                $"records={afterPullRecords.Count}, heads={WorldAuthorityTrust.EffectiveHeads(afterPullRecords).Length}");
+            using var replay = await rawClient.PostAsJsonAsync(path, goodDraft with
+            {
+                Signature = Convert.ToBase64String(keys[1].SignData(
+                SharedWorldSuccessorEnrollment.Basis(goodDraft), HashAlgorithmName.SHA256))
+            });
+            Require(replay.StatusCode == HttpStatusCode.Forbidden,
+                "consumed enrollment challenge issued a second bearer");
+            using var restartedFriend = new FriendService(pcs[1], RedirectedSuccessorClient);
+            Require(restartedFriend.View().ConnectionId == successorConnection.ConnectionId &&
+                restartedFriend.View().Connections?.Count == 2,
+                "a Friend restart lost the successor or original Host connection");
+            // A lost enrollment response can be retried with a fresh, one-use
+            // challenge. The old successor bearer is rotated, never duplicated.
+            using var retryChallengeResponse = await rawClient.GetAsync(
+                $"{path}/{directDecision.RecordHash}/{ids[1]}");
+            var retryChallenge = await retryChallengeResponse.Content
+                .ReadFromJsonAsync<SuccessorEnrollmentChallenge>()
+                ?? throw new Exception("successor retry challenge was missing");
+            var retryDraft = goodDraft with { Nonce = retryChallenge.Nonce, Signature = "" };
+            using var retryResponse = await rawClient.PostAsJsonAsync(path, retryDraft with
+            {
+                Signature = Convert.ToBase64String(keys[1].SignData(
+                SharedWorldSuccessorEnrollment.Basis(retryDraft), HashAlgorithmName.SHA256))
+            });
+            var retryCredential = await retryResponse.Content.ReadFromJsonAsync<PairingCredential>();
+            Require(retryResponse.IsSuccessStatusCode && retryCredential is not null &&
+                retryCredential.Credential != verifiedConfig.Credential &&
+                !successorPairing.Authenticate(ids[1], verifiedConfig.Credential, out _).Ok &&
+                successorPairing.Authenticate(ids[1], retryCredential.Credential, out _).Ok &&
+                (await successorManager.SharedWorldRosterAsync(profile.Id))?.Signature == roster.Signature,
+                "fresh signed retry did not rotate only the successor bearer");
+        }
+        finally { await successorListener.StopAsync(); }
         host.SaveSettings(Settings(profile));
         new WorldAuthorityStore(host).AppendReceived(accepted, profile.Id,
             roster.GroupId, roster.OwnerPublicKey);
@@ -6672,8 +6857,6 @@ await Check("quorum successor restores a fresh managed copy and rechecks Start",
             roster.GroupId, roster.OwnerPublicKey);
         Require((await Manager(host).StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
             "old Host return escaped the signed authority fence");
-        new WorldAuthorityStore(pcs[1]).AppendReceived(directDecision, profile.Id,
-            roster.GroupId, roster.OwnerPublicKey);
         var newerOffer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster,
             floor, ids[0], keys[0], directAddress, directPin,
             new WorldAuthorityStore(pcs[0]));
@@ -6682,9 +6865,13 @@ await Check("quorum successor restores a fresh managed copy and rechecks Start",
         var newerVote0 = SharedWorldElection.Vote(losses[0], vaults[0], floor,
             roster.OwnerPublicKey, newerOffer, ids[0], keys[0],
             new WorldAuthorityStore(pcs[0]));
-        var newerVote1 = SharedWorldElection.Vote(losses[1], vaults[1], floor,
-            roster.OwnerPublicKey, newerOffer, ids[1], keys[1],
-            new WorldAuthorityStore(pcs[1]));
+        new WorldAuthorityStore(pcs[2]).AppendReceived(accepted, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        new WorldAuthorityStore(pcs[2]).AppendReceived(directDecision, profile.Id,
+            roster.GroupId, roster.OwnerPublicKey);
+        var newerVote1 = SharedWorldElection.Vote(losses[2], vaults[2], floor,
+            roster.OwnerPublicKey, newerOffer, ids[2], keys[2],
+            new WorldAuthorityStore(pcs[2]));
         directInbox.AcceptVote(profile.Id, newerHash, newerVote0);
         Require(directInbox.AcceptVote(profile.Id, newerHash, newerVote1).Code ==
             "MajorityRecorded" &&

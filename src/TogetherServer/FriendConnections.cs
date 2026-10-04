@@ -10,22 +10,27 @@ public sealed class FriendService : IDisposable
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object sync = new();
     private readonly LocalData data;
+    private readonly Func<string, IEnumerable<string>, HttpClient>? clientFactory;
     private readonly List<(Guid Id, FriendLink Link)> links = [];
     private Guid selectedId;
     private bool disposed;
     private int retainedOperations;
     private sealed record SavedConnections(List<Guid> Ids, Guid SelectedId);
 
-    public FriendService(LocalData data)
+    public FriendService(LocalData data) : this(data, null) { }
+
+    internal FriendService(LocalData data,
+        Func<string, IEnumerable<string>, HttpClient>? clientFactory)
     {
         this.data = data;
+        this.clientFactory = clientFactory;
         var state = LoadIndex(data);
         var ids = state.Ids;
         foreach (var id in ids.Distinct())
         {
             var file = FileName(id);
             if (!data.HasProtected(file)) continue;
-            var link = new FriendLink(data, file);
+            var link = new FriendLink(data, file, clientFactory);
             if (link.Configured) links.Add((id, link));
             else link.Dispose();
         }
@@ -53,7 +58,7 @@ public sealed class FriendService : IDisposable
         try
         {
             var id = Guid.NewGuid();
-            var link = new FriendLink(data, FileName(id));
+            var link = new FriendLink(data, FileName(id), clientFactory);
             var result = await link.PairAsync(invitation, hostAddress);
             if (!result.Ok)
             {
@@ -218,6 +223,44 @@ public sealed class FriendService : IDisposable
             ? Task.FromResult(new SharedWorldRouteCheck(false, "NotPaired",
                 "Choose a saved Host connection first.", DateTimeOffset.UtcNow, recordHash))
             : link.ProbeSuccessorRouteAsync(profileId, recordHash, tlsFingerprint, cancellationToken);
+    }
+
+    public async Task<FriendActionResult> EnrollWithSuccessorAsync(Guid profileId,
+        string recordHash, string tlsFingerprint, CancellationToken cancellationToken)
+    {
+        FriendLink? source;
+        Guid sourceId;
+        lock (sync)
+        {
+            if (disposed) return ClosedAction();
+            sourceId = selectedId;
+            source = links.FirstOrDefault(item => item.Id == sourceId).Link;
+        }
+        if (source is null)
+            return new(false, "NotPaired", "Choose the original saved Host connection first.", null);
+        var (result, nextConfig) = await source.EnrollWithSuccessorAsync(profileId,
+            recordHash, tlsFingerprint, cancellationToken);
+        if (!result.Ok || nextConfig is null) return result;
+        var id = Guid.NewGuid();
+        var file = FileName(id);
+        FriendLink next;
+        lock (sync)
+        {
+            if (disposed || !links.Any(item => item.Id == sourceId && ReferenceEquals(item.Link, source)))
+                return new(false, "ConnectionChanged", "The original Host connection changed.", null);
+            data.SaveProtected(file, JsonSerializer.SerializeToUtf8Bytes(nextConfig, Json));
+            next = new FriendLink(data, file, clientFactory);
+            if (!next.Configured)
+            {
+                next.Dispose();
+                return new(false, "ConnectionUnavailable", "The successor access could not be saved.", null);
+            }
+            links.Add((id, next));
+            selectedId = id;
+            SaveIndex();
+        }
+        await next.PollAsync();
+        return result;
     }
 
     public Task<SharedWorldRouteCheck> ProbeSeparateCopyRouteAsync(Guid profileId,

@@ -256,20 +256,21 @@ internal static class SharedWorldRosterTrust
         member.AccessExpiresUtc is not { } expires || expires > (clock ?? TimeProvider.System).GetUtcNow();
 }
 
-internal sealed class SharedWorldEnrollmentNonces
+internal sealed class SharedWorldEnrollmentNonces(TimeProvider? clock = null)
 {
     private readonly ConcurrentDictionary<(Guid Device, Guid Profile), (string Nonce, DateTimeOffset Expires)> pending = new();
+    private DateTimeOffset UtcNow => (clock ?? TimeProvider.System).GetUtcNow();
 
     internal string Issue(Guid deviceId, Guid profileId)
     {
         var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        pending[(deviceId, profileId)] = (nonce, DateTimeOffset.UtcNow.AddMinutes(5));
+        pending[(deviceId, profileId)] = (nonce, UtcNow.AddMinutes(5));
         return nonce;
     }
 
     internal bool Consume(Guid deviceId, Guid profileId, string nonce) =>
         pending.TryRemove((deviceId, profileId), out var challenge) &&
-        challenge.Expires >= DateTimeOffset.UtcNow &&
+        challenge.Expires >= UtcNow &&
         CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(challenge.Nonce),
             Encoding.UTF8.GetBytes(nonce));
 }

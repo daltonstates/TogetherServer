@@ -32,6 +32,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     private readonly RemoteOperationCoordinator operations = new(data);
     private readonly AuthenticatedDeviceRateLimiter deviceRateLimiter = new(180, TimeSpan.FromMinutes(1));
     private readonly SharedWorldEnrollmentNonces sharedEnrollment = new();
+    private readonly SharedWorldEnrollmentNonces successorEnrollment = new();
     private readonly SharedWorldVoteInbox recoveryVotes = new(data);
     private const int MaximumAuthorityRecordBytes = 2 * 1024 * 1024;
 
@@ -328,6 +329,56 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         }
 
         var companion = app.MapGroup("/api/companion");
+        async Task<(WorldAuthorityRecord? Head, SharedWorldRoster? Roster)> SuccessorEnrollmentState(
+            Guid profileId, string recordHash)
+        {
+            if (certificate is null || recordHash.Length != 64 ||
+                !recordHash.All(Uri.IsHexDigit) || pairing.SharedRosterDirty(profileId))
+                return (null, null);
+            var head = new WorldAuthorityStore(data).LocalAuthorizedHead(profileId);
+            var roster = head?.RecordHash == recordHash &&
+                head.Proposal.CandidateAddress == (await manager.SnapshotAsync()).Settings.CompanionEndpoint
+                ? await manager.SharedWorldRosterAsync(profileId) : null;
+            return roster is not null && roster.GroupId == head?.Proposal.GroupId &&
+                roster.OwnerPublicKey == head.Roster.OwnerPublicKey &&
+                SharedWorldRosterTrust.Verify(roster) ? (head, roster) : (null, null);
+        }
+        companion.MapGet("/servers/{profileId:guid}/shared-world/successor-enrollment/{recordHash}/{deviceId:guid}",
+            async (Guid profileId, string recordHash, Guid deviceId) =>
+        {
+            try
+            {
+                var (head, roster) = await SuccessorEnrollmentState(profileId, recordHash);
+                var member = roster?.Members.SingleOrDefault(item => item.DeviceId == deviceId);
+                if (head is null || member is not { Revoked: false, Grants.Receive: true } ||
+                    member.AccessExpiresUtc is { } end && end <= DateTimeOffset.UtcNow)
+                    return Results.NotFound();
+                return Results.Json(new SuccessorEnrollmentChallenge(
+                    successorEnrollment.Issue(deviceId, profileId), head.RecordHash,
+                    roster!.GroupId, roster.OwnerPublicKey, head.Proposal.CandidateAddress,
+                    HostIdentity.Fingerprint(certificate!)));
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException or UnauthorizedAccessException)
+            { return Results.NotFound(); }
+        }).RequireRateLimiting("pairing");
+        companion.MapPost("/servers/{profileId:guid}/shared-world/successor-enrollment",
+            async (Guid profileId, SuccessorEnrollmentRequest request) =>
+        {
+            try
+            {
+                if (request is null || !successorEnrollment.Consume(request.DeviceId, profileId,
+                    request.Nonce)) return Results.StatusCode(403);
+                var (head, roster) = await SuccessorEnrollmentState(profileId, request.RecordHash);
+                if (head is null || roster is null || certificate is null) return Results.StatusCode(403);
+                var credential = pairing.EnrollSuccessor(head, roster, request,
+                    HostIdentity.Fingerprint(certificate));
+                return credential is null ? Results.StatusCode(403) : Results.Json(credential);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException or UnauthorizedAccessException)
+            { return Results.StatusCode(403); }
+        }).RequireRateLimiting("pairing");
         companion.MapPost("/servers/{profileId:guid}/shared-world/route-proof/{recordHash}",
             async (Guid profileId, string recordHash, SharedWorldRouteChallenge challenge) =>
         {
@@ -600,14 +651,23 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!pairing.CanAccess(device!, profileId) ||
                 !sharedEnrollment.Consume(device!.Id, profileId, request.Nonce))
                 return Results.StatusCode(403);
+            if (!await manager.SharedRosterManagementAvailableAsync(profileId))
+            {
+                var inherited = await manager.SharedWorldRosterAsync(profileId);
+                var current = pairing.AuthorizeReceiveSaves(device, profileId, out var enrolled);
+                return current.Ok && !pairing.SharedRosterDirty(profileId) &&
+                    SharedWorldRosterTrust.VerifyEnrollment(device.Id, request) &&
+                    enrolled?.SharedWorldPublicKey == request.PublicKey &&
+                    inherited?.Members.SingleOrDefault(item => item.DeviceId == device.Id) is
+                    { Revoked: false, Grants.Receive: true } member &&
+                    member.PublicKey == request.PublicKey &&
+                    (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow)
+                    ? Results.Json(new PairingDecision(true, "IdentityAlreadyEnrolled",
+                        "This PC's inherited signing identity is active."))
+                    : Results.StatusCode(403);
+            }
             // Enrollment changes the signed membership. A successor can host
             // under the inherited roster but cannot re-sign it as the owner.
-            if (!await manager.SharedRosterManagementAvailableAsync(profileId))
-                return Results.Conflict(new
-                {
-                    code = "SuccessorRosterReadOnly",
-                    message = "This successor PC cannot change signed sharing membership."
-                });
             decision = pairing.BindSharedWorldKey(device.Id, request);
             if (!decision.Ok) return Results.Json(decision, statusCode: 403);
             try
