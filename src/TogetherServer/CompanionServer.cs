@@ -255,13 +255,15 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (pairing.SharedRosterDirty(profileId))
                 return (new(false, "RosterUnavailable", "The signed roster needs owner repair."), null);
-            var decision = pairing.AuthorizeReceiveSaves(loaded, profileId, out var current);
-            if (!decision.Ok || current is null) return (decision, null);
+            var decision = pairing.AuthorizeActiveDevice(loaded.Id, out var current);
+            if (!decision.Ok || current is null || !pairing.CanAccess(current, profileId))
+                return (new(false, "PermissionDenied", "This PC cannot access this shared world."), null);
             try
             {
                 var roster = await manager.SharedWorldRosterAsync(profileId);
-                decision = pairing.AuthorizeReceiveSaves(current, profileId, out var refreshed);
+                decision = pairing.AuthorizeActiveDevice(current.Id, out var refreshed);
                 if (decision.Ok && refreshed?.SharedWorldPublicKey is not null && roster is not null &&
+                    pairing.CanAccess(refreshed, profileId) &&
                     roster.Members.SingleOrDefault(item => item.DeviceId == refreshed.Id) is
                     { Revoked: false, Grants: { Receive: true } } member &&
                     member.PublicKey == refreshed.SharedWorldPublicKey &&
@@ -631,6 +633,66 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var roster = await manager.SharedWorldRosterAsync(profileId);
             var recheck = await AuthorizeShared(auth.Current!, profileId);
             return recheck.Decision.Ok ? Results.Json(roster) : Results.Json(recheck.Decision, statusCode: 403);
+        });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/roster/revisions", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(device!, profileId) || device!.SharedWorldPublicKey is null)
+                return Results.StatusCode(403);
+            try
+            {
+                var revisions = await manager.SharedWorldRosterHistoryAsync(profileId);
+                if (!Reauthorize(device, out var current, out decision) ||
+                    !pairing.CanAccess(current!, profileId))
+                    return Results.StatusCode(403);
+                return revisions is null ? Results.NotFound() : Results.Json(revisions);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
+            { return Results.Conflict(new { code = "RosterUnavailable" }); }
+        });
+        companion.MapPost("/servers/{profileId:guid}/shared-world/roster/revisions", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol) || !pairing.CanAccess(device!, profileId) ||
+                device!.SharedWorldPublicKey is null || context.Request.ContentLength is > 262144)
+                return Results.StatusCode(403);
+            byte[] body;
+            using (var buffer = new MemoryStream())
+            {
+                var part = new byte[8192];
+                int read;
+                while ((read = await context.Request.Body.ReadAsync(part, context.RequestAborted)) > 0)
+                {
+                    if (buffer.Length + read > 262144)
+                        return Results.BadRequest(new { code = "InvalidRosterRevision" });
+                    buffer.Write(part, 0, read);
+                }
+                if (buffer.Length == 0) return Results.BadRequest(new { code = "InvalidRosterRevision" });
+                body = buffer.ToArray();
+            }
+            SharedWorldRoster? revision;
+            try { revision = JsonSerializer.Deserialize<SharedWorldRoster>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+            catch (JsonException) { return Results.BadRequest(new { code = "InvalidRosterRevision" }); }
+            if (revision is null || revision.ProfileId != profileId)
+                return Results.BadRequest(new { code = "InvalidRosterRevision" });
+            try
+            {
+                if (!Reauthorize(device, out var current, out decision) ||
+                    !pairing.CanAccess(current!, profileId) || current!.SharedWorldPublicKey is null)
+                    return Results.StatusCode(403);
+                var published = await manager.PublishDelegatedRosterAsync(profileId,
+                    current.Id, current.SharedWorldPublicKey, revision,
+                    () => !pairing.SharedRosterDirty(profileId) &&
+                        pairing.AuthorizeActiveDevice(current.Id, out var latest).Ok &&
+                        latest?.SharedWorldPublicKey == current.SharedWorldPublicKey &&
+                        pairing.CanAccess(latest, profileId));
+                return Results.Json(published);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
+            { return Results.Conflict(new { code = "RosterRevisionRejected" }); }
         });
         companion.MapGet("/servers/{profileId:guid}/shared-world/authority", async (HttpContext context, Guid profileId) =>
         {
