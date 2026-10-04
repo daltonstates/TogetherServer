@@ -33,8 +33,10 @@ internal static class SharedWorldLiveCaptureChecks
             Directory.CreateDirectory(profile.WorldDirectory);
             var world = Path.Combine(profile.WorldDirectory, "world.dat");
             File.WriteAllText(world, "post-stop baseline");
+            profile.SharedSavesEnabled = false;
             Require(shared.ReviewLiveOrphan(profile) is { Code: "None", VersionHash: null },
-                "a new server showed an interrupted live copy before sharing existed");
+                "sharing off without storage showed an interrupted live copy");
+            profile.SharedSavesEnabled = true;
             using var receiverKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var receiverId = Guid.NewGuid();
             shared.PublishRoster(profile, [new SharedWorldRosterMember(receiverId,
@@ -475,6 +477,7 @@ internal static class SharedWorldLiveCaptureChecks
             }, signer);
             Require(SharedWorldService.VerifySignature(legacy),
                 "legacy post-Stop signature was rejected");
+            CheckSuccessorHeadWithoutPointer(root, json);
             Console.WriteLine("PASS Shared Worlds live core: real-game staging denied, exact-run/tamper/approval denial, signed fixture publication, verified bounded orphan quarantine after restart, post-Stop continuity, chunk/receipt/retention and legacy format");
         }
         finally
@@ -485,6 +488,127 @@ internal static class SharedWorldLiveCaptureChecks
                 throw new InvalidDataException("Synthetic live check root escaped its workspace.");
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static void CheckSuccessorHeadWithoutPointer(string root, JsonSerializerOptions json)
+    {
+        using var ownerData = new LocalData(Path.Combine(root, "successor-owner"));
+        var ownerGames = new GameServerRegistry(ownerData, includeFixture: true);
+        var ownerBackups = new WorldBackupService(ownerData, TimeProvider.System, games: ownerGames);
+        var ownerShared = new SharedWorldService(ownerData, ownerBackups);
+        var ownerProfile = new ServerProfile
+        {
+            Kind = GameKinds.Fixture, WorldId = "successor-anchor-world", WorldSource = "New",
+            SharedSavesEnabled = true, GamePort = 34568,
+            Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 }
+        };
+        ownerProfile.WorldDirectory = ownerData.NewWorldDirectory(ownerProfile.Id);
+        Directory.CreateDirectory(ownerProfile.WorldDirectory);
+        File.WriteAllText(Path.Combine(ownerProfile.WorldDirectory, "world.dat"), "signed head");
+        using var deviceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var deviceId = Guid.NewGuid();
+        var devicePublicKey = Convert.ToBase64String(deviceKey.ExportSubjectPublicKeyInfo());
+        var roster = ownerShared.PublishRoster(ownerProfile,
+            [new SharedWorldRosterMember(deviceId, devicePublicKey,
+                new SharedWorldGrants(Receive: true, EligibleHost: true), false)]);
+        var backup = ownerBackups.Create(ownerProfile, BackupKinds.Rolling);
+        Require(backup is { Ok: true, Backup: not null }, "successor head backup failed");
+        var published = ownerShared.PublishAfterStop(ownerProfile, backup.Backup!.Id);
+        Require(published is { Ok: true, Version: not null }, "successor head publication failed");
+        var head = published.Version!;
+        var receiptDraft = new SharedWorldReceipt(1, head.GroupId, ownerProfile.Id,
+            head.VersionHash, deviceId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+        var receipt = receiptDraft with { Signature = Convert.ToBase64String(
+            deviceKey.SignData(SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        var record = ownerShared.SignPlannedHandoff(roster, head, receipt, deviceId,
+            "https://127.0.0.1:5132", 1, null);
+
+        using var successorData = new LocalData(Path.Combine(root, "successor-pc"));
+        var successorProfile = new ServerProfile
+        {
+            Id = ownerProfile.Id, Kind = ownerProfile.Kind, WorldId = ownerProfile.WorldId,
+            WorldSource = "New", SharedSavesEnabled = true, GamePort = ownerProfile.GamePort,
+            Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 }
+        };
+        successorProfile.WorldDirectory = successorData.NewWorldDirectory(successorProfile.Id);
+        Directory.CreateDirectory(successorProfile.WorldDirectory);
+        successorData.SaveProtected($"shared-world-pc-signing-{deviceId:N}.protected",
+            deviceKey.ExportPkcs8PrivateKey());
+        var authority = new WorldAuthorityStore(successorData);
+        authority.AppendReceived(record, successorProfile.Id, head.GroupId, roster.OwnerPublicKey);
+        authority.BindLocalSuccessor(successorProfile.Id, record.RecordHash, deviceId);
+        var successorGames = new GameServerRegistry(successorData, includeFixture: true);
+        var successorBackups = new WorldBackupService(successorData, TimeProvider.System,
+            games: successorGames);
+        var successorShared = new SharedWorldService(successorData, successorBackups);
+        successorShared.AdoptSuccessor(successorProfile, record);
+        var sharedRoot = Path.Combine(successorData.RootPath, "shared-worlds",
+            successorProfile.Id.ToString("N"));
+        var latestPath = Path.Combine(sharedRoot, "latest.json");
+        var predecessorRoot = Path.Combine(sharedRoot, head.GroupId.ToString("N"), "1");
+        Require(!File.Exists(latestPath) && !Directory.Exists(predecessorRoot) &&
+            authority.LocalAuthorizedHead(successorProfile.Id)?.RecordHash == record.RecordHash,
+            "successor fixture unexpectedly had a local pointer or lacked signed authority");
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes("unpublished successor file copy");
+        using var successorKey = ECDsa.Create();
+        successorKey.ImportPkcs8PrivateKey(deviceKey.ExportPkcs8PrivateKey(), out _);
+        var candidate = SharedWorldService.SignVersion(head with
+        {
+            Schema = 5, Number = head.Number + 1, ParentHash = head.VersionHash,
+            CreatedUtc = head.CreatedUtc.AddSeconds(1),
+            CaptureKind = SharedWorldCaptureKinds.LiveSave, BackupId = Guid.NewGuid(),
+            Files = [new SharedWorldFile("world.dat", bytes.Length,
+                Convert.ToHexString(SHA256.HashData(bytes)))],
+            SigningPublicKey = "", VersionHash = "", Signature = ""
+        }, successorKey);
+        var orphanRoot = Path.Combine(sharedRoot, head.GroupId.ToString("N"), "2");
+        var payloadPath = Path.Combine(orphanRoot, "payload", "world.dat");
+        var manifestPath = Path.Combine(orphanRoot, "version.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        File.WriteAllBytes(payloadPath, bytes);
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(candidate, json);
+        File.WriteAllBytes(manifestPath, manifestBytes);
+        Require(successorShared.ReviewLiveOrphan(successorProfile) is
+                { Code: "Verified", VersionHash: var hash } && hash == candidate.VersionHash,
+            "signed successor head without latest.json did not anchor the next live copy");
+        var wrongParent = SharedWorldService.SignVersion(candidate with
+        { ParentHash = new string('A', 64) }, successorKey);
+        File.WriteAllBytes(manifestPath, JsonSerializer.SerializeToUtf8Bytes(wrongParent, json));
+        Require(successorShared.ReviewLiveOrphan(successorProfile) is
+                { Code: "ReviewRequired", VersionHash: null },
+            "successor review offered a copy with the wrong signed parent");
+        var wrongNumber = SharedWorldService.SignVersion(candidate with { Number = 3 },
+            successorKey);
+        File.WriteAllBytes(manifestPath, JsonSerializer.SerializeToUtf8Bytes(wrongNumber, json));
+        Require(successorShared.ReviewLiveOrphan(successorProfile) is
+                { Code: "ReviewRequired", VersionHash: null },
+            "successor review offered a copy with the wrong signed number");
+        using var wrongKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var wrongSigner = SharedWorldService.SignVersion(candidate, wrongKey);
+        File.WriteAllBytes(manifestPath, JsonSerializer.SerializeToUtf8Bytes(wrongSigner, json));
+        Require(successorShared.ReviewLiveOrphan(successorProfile) is
+                { Code: "ReviewRequired", VersionHash: null },
+            "successor review offered a copy signed by another key");
+        File.WriteAllBytes(manifestPath, manifestBytes);
+        File.WriteAllText(payloadPath, "changed payload");
+        Require(successorShared.ReviewLiveOrphan(successorProfile) is
+                { Code: "ReviewRequired", VersionHash: null },
+            "successor review offered a copy with changed payload bytes");
+        File.WriteAllBytes(payloadPath, bytes);
+        Require(!successorShared.QuarantineVerifiedLiveOrphan(successorProfile,
+                new string('0', 64)).Ok && Directory.Exists(orphanRoot),
+            "successor recovery accepted the wrong exact hash");
+        Require(successorShared.QuarantineVerifiedLiveOrphan(successorProfile,
+                candidate.VersionHash).Ok && !Directory.Exists(orphanRoot) &&
+            !File.Exists(latestPath) &&
+            File.ReadAllBytes(Path.Combine(sharedRoot, ".quarantined-live",
+                $"{head.GroupId:N}-2-{candidate.VersionHash}", "version.json"))
+                .AsSpan().SequenceEqual(manifestBytes) &&
+            File.ReadAllBytes(Path.Combine(sharedRoot, ".quarantined-live",
+                $"{head.GroupId:N}-2-{candidate.VersionHash}", "payload", "world.dat"))
+                .AsSpan().SequenceEqual(bytes),
+            "successor recovery lost the signed copy or created a latest pointer");
     }
 
     private static void Require(bool condition, string message)

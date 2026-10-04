@@ -512,12 +512,12 @@ internal sealed partial class SharedWorldService
     private (SharedWorldVersion Version, string OrphanRoot, string QuarantineRoot)?
         ReadVerifiedLiveOrphan(ServerProfile profile)
     {
-        if (profile.Kind == GameKinds.Custom || profile.SeparateCopySourceProfileId is not null)
-            throw new InvalidDataException("This profile cannot review a live publication.");
         var profileRoot = Root(profile.Id);
         if (File.Exists(profileRoot))
             throw new InvalidDataException("Shared save storage needs review.");
         if (!Directory.Exists(profileRoot) && !Authority.HasState(profile.Id)) return null;
+        if (profile.Kind == GameKinds.Custom || profile.SeparateCopySourceProfileId is not null)
+            throw new InvalidDataException("This profile cannot review a live publication.");
         var successor = Authority.LocalAuthorizedHead(profile.Id);
         if (Authority.GovernanceUnresolved(profile.Id) ||
             Authority.HasState(profile.Id) && successor is null ||
@@ -528,9 +528,26 @@ internal sealed partial class SharedWorldService
             throw new InvalidDataException("The signed shared source is missing or changed.");
         var latestPath = LatestPath(profile.Id);
         var status = Status(profile);
-        if (File.Exists(latestPath) && status.Latest is null)
+        var hasLatestPointer = File.Exists(latestPath);
+        if (!hasLatestPointer && Directory.Exists(profileRoot) &&
+            Directory.EnumerateFileSystemEntries(profileRoot, "latest.json").Any())
+            throw new InvalidDataException("The existing shared save pointer is not a file.");
+        if (hasLatestPointer && status.Latest is null)
             throw new InvalidDataException("The existing shared save pointer failed verification.");
-        var previous = status.Latest;
+        if (successor is not null &&
+            (!WorldAuthorityTrust.Verify(successor, true) ||
+             !VerifySignature(successor.Version) ||
+             successor.Proposal.GroupId != binding.GroupId ||
+             successor.Proposal.ProfileId != profile.Id ||
+             successor.Version.GroupId != binding.GroupId ||
+             successor.Version.ProfileId != profile.Id ||
+             successor.Version.Game != profile.Kind ||
+             successor.Version.WorldId != profile.WorldId ||
+             successor.Version.VersionHash != successor.Proposal.VersionHash))
+            throw new InvalidDataException("The signed hosting head does not match this world.");
+        // A successor's signed authority head can be the predecessor even when
+        // this PC has no latest.json or local copy of that predecessor.
+        var previous = status.Latest ?? (!hasLatestPointer ? successor?.Version : null);
         if (successor is not null && (previous is null ||
             previous.GroupId != successor.Version.GroupId ||
             previous.Number < successor.Version.Number))
@@ -545,7 +562,7 @@ internal sealed partial class SharedWorldService
                 throw new InvalidDataException("The unpublished version is not a directory.");
             return null;
         }
-        if (previous is not null)
+        if (hasLatestPointer && previous is not null)
         {
             var previousRoot = VersionRoot(previous);
             EnsureUnlinkedRoot(data.RootPath, previousRoot);

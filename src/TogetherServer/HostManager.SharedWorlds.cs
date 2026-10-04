@@ -307,18 +307,38 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    private ServerProfile? ExactLiveOrphanProfile(Guid profileId)
+    {
+        var profiles = settings.Profiles;
+        if (profiles is null || profiles.Any(item => item is null)) return null;
+        var matches = profiles.Where(item => item.Id == profileId).Take(2).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
+    private static bool LiveOrphanReviewFailure(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or JsonException or
+            System.Security.Cryptography.CryptographicException or InvalidOperationException or
+            ArgumentException or FormatException or OverflowException or NotSupportedException or
+            System.Security.SecurityException;
+
     public async Task<SharedWorldLiveOrphanReview> SharedLiveOrphanReviewAsync(Guid profileId)
     {
         await gate.WaitAsync();
         try
         {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return new("ReviewRequired", null, "Choose a saved server.");
+            var profile = ExactLiveOrphanProfile(profileId);
+            if (profile is null) return new("ReviewRequired", null,
+                "The saved server could not be identified safely. No review action is available.");
             if (profile.SeparateCopySourceProfileId is not null ||
                 SharedAuthorityBlocked(profileId, out _))
                 return new("ReviewRequired", null,
                     "This PC cannot verify the current hosting decision. Keep the saved copies for owner review.");
             return sharedWorlds.ReviewLiveOrphan(profile);
+        }
+        catch (Exception ex) when (LiveOrphanReviewFailure(ex))
+        {
+            return new("ReviewRequired", null,
+                "The interrupted file copy could not be verified. No review action is available.");
         }
         finally { gate.Release(); }
     }
@@ -329,13 +349,19 @@ public sealed partial class HostManager
         await gate.WaitAsync();
         try
         {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            var profile = ExactLiveOrphanProfile(profileId);
+            if (profile is null) return new(false, "InvalidProfile",
+                "The saved server could not be identified safely. No file copy was moved.");
             if (profile.SeparateCopySourceProfileId is not null ||
                 SharedAuthorityBlocked(profileId, out _))
                 return new(false, "SharedWorldAuthorityBlocked",
                     "This PC cannot verify the current hosting decision. No file copy was moved.");
             return sharedWorlds.QuarantineVerifiedLiveOrphan(profile, expectedVersionHash);
+        }
+        catch (Exception ex) when (LiveOrphanReviewFailure(ex))
+        {
+            return new(false, "LiveSaveOrphanQuarantineDenied",
+                "The interrupted file copy could not be verified safely. No new copy was published.");
         }
         finally { gate.Release(); }
     }
