@@ -7020,22 +7020,35 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 new ServerLogService(separatePc, separateManager), separateModeGate,
                 separatePort + 2, inMemoryTransport: builder => builder.UseTestServer());
             separateManager.CompanionListenerOwnershipProbe = separateListener.OwnsListener;
+            var separateSetup = new TakeoverLocalSetup(fixture,
+                version.PortableSetup.GameVersion, [], true, separatePort, FreePort());
+            var separateRequest = new SeparateCopyHostRestoreRequest(separateFork.BranchHash,
+                separateSetup, "Warned fixture", "Warned fixture");
             try
             {
+                var noListenerRestore = await separateManager.RestoreSeparateCopyAsync(
+                    profile.Id, separateRequest);
+                Require(noListenerRestore.Code == "LocalSetupIncomplete" &&
+                    noListenerRestore.PendingChecks?.Any(check => check.Contains("pinned HTTPS control listener")) == true,
+                    $"restore passed without this app's listener: {noListenerRestore.Code}; " +
+                    $"pending: {string.Join(", ", noListenerRestore.PendingChecks ?? [])}");
                 await separateListener.SyncAsync();
                 Require(separateListener.ListenerState == CompanionListenerStates.Listening &&
                     separateListener.OwnsListener(separateAddress, separatePort, separatePin,
                         "127.0.0.1"),
                     "the disposable candidate app did not own its pinned HTTPS listener");
-                var separateSetup = new TakeoverLocalSetup(fixture,
-                    version.PortableSetup.GameVersion, [], true, separatePort, FreePort());
-                var separateRequest = new SeparateCopyHostRestoreRequest(separateFork.BranchHash,
-                    separateSetup, "Warned fixture", "Warned fixture");
-                Require((await Manager(separatePc).RestoreSeparateCopyAsync(profile.Id,
-                        separateRequest)).Code == "LocalSetupIncomplete" &&
-                    !separateListener.OwnsListener(separateAddress, separatePort,
+                var wrongPinManager = Manager(separatePc);
+                wrongPinManager.CompanionListenerOwnershipProbe = (endpoint, port, _, bind) =>
+                    separateListener.OwnsListener(endpoint, port, new string('A', 64), bind);
+                var wrongPinRestore = await wrongPinManager.RestoreSeparateCopyAsync(
+                    profile.Id, separateRequest);
+                Require(wrongPinRestore.Code == "LocalSetupIncomplete" &&
+                    wrongPinRestore.PendingChecks?.Any(check => check.Contains("pinned HTTPS control listener")) == true,
+                    $"restore passed with a wrong listener pin: {wrongPinRestore.Code}; " +
+                    $"pending: {string.Join(", ", wrongPinRestore.PendingChecks ?? [])}");
+                Require(!separateListener.OwnsListener(separateAddress, separatePort,
                         new string('A', 64), "127.0.0.1"),
-                    "an unowned or wrongly pinned control listener bypassed the port check");
+                    "a wrongly pinned control listener was treated as owned");
                 var separateFile = SharedWorldService.SafeChild(Path.Combine(separateVault,
                     version.VersionHash, SharedWorldService.PayloadDirectory), version.Files[0].Path);
                 var preservedBytes = File.ReadAllBytes(separateFile);

@@ -349,6 +349,10 @@ public sealed partial class HostManager
                 setup.GamePort is < 1024 or > 65535 ||
                 version.Game == GameKinds.Valheim && setup.GamePort == 65535)
                 return new(false, "SeparatePortsInvalid", "Choose this PC's current control port and a valid game port.");
+            if (!OwnsSeparateControlListener(branch))
+                return new(false, "LocalSetupIncomplete",
+                    "This app's pinned HTTPS control listener is not running on the reviewed port.",
+                    PendingChecks: ["Start this app's pinned HTTPS control listener on the reviewed port."]);
             var local = SharedWorldReadiness.Check(vault, worldRoot, setup,
                 new TakeoverAuthority(true, true, true, true, true, true),
                 branch.Offer.Roster.OwnerPublicKey, version.GroupId, freeBytes,
