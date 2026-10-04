@@ -28,6 +28,11 @@ if (args is ["--replay-chain", var replayRoot, var replayDevice, var replayProfi
     Require(replayed.Valid, "the completed temporary manifest did not replay through catch-up");
     return;
 }
+if (args is ["--host-index-scale"])
+{
+    CheckHostIndexScale();
+    return;
+}
 
 var parent = Path.Combine(Path.GetTempPath(), "TogetherServer-shared-history-checks");
 var root = Path.Combine(parent, Guid.NewGuid().ToString("N"));
@@ -375,6 +380,81 @@ finally
 static void Require(bool value, string message)
 {
     if (!value) throw new Exception(message);
+}
+
+static void CheckHostIndexScale()
+{
+    var parent = Path.Combine(Path.GetTempPath(), "TogetherServer-shared-history-checks");
+    var root = Path.Combine(parent, Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        using var data = new LocalData(root);
+        using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var profile = Guid.NewGuid();
+        var group = Guid.NewGuid();
+        var file = new SharedWorldFile("world.dat", 1,
+            Convert.ToHexString(SHA256.HashData([1])));
+        var draft = new SharedWorldVersion(4, group, 1, null, profile,
+            GameKinds.Valheim, "fixture-world", DateTimeOffset.UtcNow,
+            SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(),
+            new SharedWorldPortableSetup(2456, false, "fixture", [], []),
+            [file], "", "", "");
+        const int count = 100_005;
+        var versions = new SharedWorldVersion[count];
+        versions[0] = SharedWorldService.SignVersion(draft, signer);
+        for (var i = 1; i < count; i++)
+            versions[i] = SharedWorldService.SignVersion(versions[i - 1] with
+            {
+                Number = i + 1,
+                ParentHash = versions[i - 1].VersionHash,
+                BackupId = Guid.NewGuid()
+            }, signer);
+        var service = new SharedWorldService(data,
+            new WorldBackupService(data, TimeProvider.System))
+        {
+            HistoricalVersionForChecks = number => versions[checked((int)number - 1)]
+        };
+        var head = versions[^1];
+        Require(service.ReadEarlierVersion(head, 1).VersionHash == versions[0].VersionHash &&
+            service.CachedHistoricalHashCount(profile) <= 4096,
+            "a signed history longer than 100,000 versions could not reach genesis with bounded memory");
+        var steps = service.HistoricalVersionStepCount;
+        Require(service.ReadEarlierVersion(head, 2).VersionHash == versions[1].VersionHash &&
+            service.HistoricalVersionStepCount == steps + 1,
+            "the requested historical page was needlessly rebuilt");
+        var original = versions[0];
+        versions[0] = SharedWorldService.SignVersion(original with
+        { BackupId = Guid.NewGuid() }, signer);
+        RequireThrows<InvalidDataException>(() => service.ReadEarlierVersion(head, 1),
+            "a signed replacement of a cached ancestor was accepted");
+        versions[0] = original;
+        Require(service.ReadEarlierVersion(head, 4098).VersionHash == versions[4097].VersionHash &&
+            service.CachedHistoricalHashCount(profile) <= 4096,
+            "an uncached page could not be rebuilt from the signed head");
+
+        foreach (var version in new[] { versions[0], versions[1] })
+        {
+            var payload = Path.Combine(root, "shared-worlds", profile.ToString("N"),
+                group.ToString("N"), version.Number.ToString(), "payload");
+            Directory.CreateDirectory(payload);
+            File.WriteAllBytes(Path.Combine(payload, "world.dat"), [1]);
+            Require(service.ReadChunk(version, 0, 0).SequenceEqual(new byte[] { 1 }),
+                "the disposable chunk did not verify");
+        }
+        Require(service.CachedChunkFileCount == 2, "the old and new chunk hashes were not cached");
+        service.EvictOldChunkHashes(profile, versions[1].VersionHash);
+        Require(service.CachedChunkFileCount == 1,
+            "a superseded version's chunk hashes survived publication cache eviction");
+        Console.WriteLine("PASS >100,000 signed host versions, bounded history page, signed-fork rejection, old chunk-cache eviction");
+    }
+    finally
+    {
+        if (!Path.GetFullPath(root).StartsWith(Path.GetFullPath(parent) + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Fixture root escaped its temporary parent.");
+        Directory.Delete(root, true);
+    }
 }
 
 static void RequireThrows<T>(Action action, string message) where T : Exception
