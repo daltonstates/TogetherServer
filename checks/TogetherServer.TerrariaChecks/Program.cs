@@ -1,6 +1,5 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
+using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using TogetherServer;
 
@@ -34,11 +33,16 @@ async Task Check(string name, Func<Task> test)
 
 int FreePort()
 {
-    var listener = new TcpListener(IPAddress.Loopback, 0);
-    listener.Start();
-    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-    listener.Stop();
-    return port;
+    // Check runners never bind a socket. The packaged fixture owns its own
+    // listener when this separate interactive journey is explicitly run.
+    var occupied = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners()
+        .Select(endpoint => endpoint.Port).ToHashSet();
+    for (var attempt = 0; attempt < 128; attempt++)
+    {
+        var candidate = RandomNumberGenerator.GetInt32(49152, 65536);
+        if (!occupied.Contains(candidate)) return candidate;
+    }
+    throw new InvalidOperationException("No candidate Terraria fixture port was available.");
 }
 
 await Check("Terraria candidate dispatches literal save to its exact running fixture only", async () =>
