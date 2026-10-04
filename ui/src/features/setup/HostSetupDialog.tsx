@@ -4,6 +4,7 @@ import type { CustomScriptBundle, Discovery, HostSnapshot, Settings } from '../.
 import type { CustomPort, Profile } from '../../GameProfile'
 import { profileGameLabel } from '../../GameProfile'
 import { Icon } from '../../Icon'
+import { HostStartConnectionNotice } from '../../StartConnectionNotice'
 import {
   MinecraftServerSetup,
   MinecraftWorldSetup,
@@ -314,6 +315,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
       </div>}
       {setupStep === 'review' && <div className="setup-stage review-stage"><h3>Review and start</h3><div className="review-summary"><div><span>Game</span><strong>{profileGameLabel(profile)}</strong></div><div><span>Server</span><strong>{profile.name || profile.serverName || 'Needs a name'}</strong></div><div><span>World / save key</span><strong>{profile.worldId || 'Not selected'}</strong></div><div><span>Server control</span><strong>{profile.kind === 'Custom' ? (customScriptsSaved[profile.id] || customScriptsChanged ? 'Scripts ready' : 'Scripts needed') : profile.executablePath ? 'Selected' : 'Not selected'}</strong></div></div>
       <ConfiguredPortWarning profile={profile} profiles={draft.profiles} />
+      <HostStartConnectionNotice profile={profile} ports={null} routeCheck={null} />
       <details className="advanced-block"><summary>Advanced server settings</summary>
         <div className="settings-grid">{profile.kind === 'Valheim' && <><label>Game UDP start port<Input type="number" value={profile.gamePort} onChange={event => onUpdateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>Server listing name<Input value={profile.serverName} onChange={event => onUpdateProfile(profile.id, { serverName: event.target.value, name: event.target.value })} /></label><label className="wide">Installed server path<Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Save directory<Input value={profile.worldDirectory} onChange={event => onUpdateProfile(profile.id, { worldDirectory: event.target.value })} /></label></>}</div>
         {profile.kind === 'Factorio' && <div className="settings-grid"><label>Game UDP port<Input type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => onUpdateProfile(profile.id, { gamePort: Number(event.target.value) })} /></label><label>RCON TCP port<Input type="number" min="1024" max="65535" value={profile.factorio?.rconPort ?? 27015} onChange={event => onUpdateProfile(profile.id, { factorio: { rconPort: Number(event.target.value) } })} /></label><label className="wide">Installed factorio.exe<Input value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} /></label><label className="wide">Managed save copy<Input value={profile.worldDirectory} readOnly /></label><small className="wide">TogetherServer connects to RCON only through loopback and never gives it to Friends. Do not forward this port; Factorio may listen on network interfaces.</small></div>}

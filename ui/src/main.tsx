@@ -33,6 +33,7 @@ import {
 } from './contracts'
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
+import { FriendStartConnectionNotice, HostStartConnectionNotice } from './StartConnectionNotice'
 import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
 import { ServerChat } from './ServerChat'
 import { ServerFilesPanel } from './ServerFilesPanel'
@@ -1439,6 +1440,8 @@ function App() {
                    : profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                  />}
               {['Ready', 'Listening'].includes(profile.state) && profile.joinAddress && <JoinGuide kind={profile.kind} />}
+              {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart &&
+                <FriendStartConnectionNotice />}
               <div className="actions server-actions">
                 {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart && <Button disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'start')}>{pending === `friend-start-${profile.id}` ? <><Icon name="loader" />Starting…</> : <><Icon name="play" />Start server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
@@ -1543,6 +1546,10 @@ function App() {
                 refreshing={pending === `players-${profile.id}`} refreshDisabled={!!pending || dirty}
                 onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></div>
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
+                {status?.state === 'Offline' && (hostServerTab === 'overview' || hostServerTab === 'files') &&
+                  <HostStartConnectionNotice profile={profile} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                    onOpenConnection={() => openHostSettings('network')}
+                    onTestControl={() => void checkInternetRoute()} testingControl={checkingInternetRoute} />}
                 {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   visible={workspacePage === 'host' && hostServerTab === 'logs'} /></PaneErrorBoundary>}
                 {hostServerTab === 'chat' && <PaneErrorBoundary title="Server chat" resetKey={profile.id}>

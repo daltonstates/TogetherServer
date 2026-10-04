@@ -192,7 +192,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
           <Button className="secondary" disabled={busy} onClick={() => void hostChange(
             hosting.restored ? 'finish' : 'restore')}>
             {hosting.restored ? 'Finish local and route checks' : 'Restore into a fresh managed world'}</Button></>}
-        {hosting.readyForManualStart && <><label><Input type="checkbox" checked={splitAccepted}
+        {hosting.readyForManualStart && <><div className="start-connection-notice" role="note"><strong>Before starting this separate copy</strong><p>Local game ports passed the setup check. Incoming game traffic and a real join are still unverified; test both after Start. This separate copy is not the authoritative world.</p></div><label><Input type="checkbox" checked={splitAccepted}
           onChange={event => setSplitAccepted(event.target.checked)} /> I understand another server may still be running</label>
           <Button disabled={busy || !splitAccepted} onClick={() => void hostChange('start')}>
             Start warned separate copy</Button></>}

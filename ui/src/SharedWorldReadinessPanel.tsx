@@ -188,7 +188,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange }:
         {addOn.name} {addOn.version} ({addOn.type})</li>)}</ul>
       <p className="helper-text">Install these reviewed packages in this managed server folder before restoring. The app checks the installed set.</p>
     </details> : null}
-    <p className="helper-text">Matching add-ons, a fresh managed location, real game load, and direct-IP routes still need confirmation before hosting.</p>
+    <p className="helper-text">Check matching add-ons, a fresh managed location, and the direct-IP Friend control route before hosting. Test the real game load and join after Start.</p>
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
       Check this PC</Button><Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
       Rehearse file restore</Button></div>
@@ -224,7 +224,10 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange }:
         <Button disabled={busy} onClick={() => void restore()}>Restore verified copy</Button></>}
       {handoff.restored && !handoff.readyForManualStart && <Button disabled={busy}
         onClick={() => void finish()}>Finish setup and checks</Button>}
-      {handoff.readyForManualStart && <p role="status">Ready for manual Start. Switch to Host, start this server, then test a real game join and saved Stop.</p>}
+      {handoff.readyForManualStart && <div className="start-connection-notice" role="note">
+        <strong>Before the first Start on this PC</strong>
+        <p>The signed Friend control route was checked from another PC and the local game ports were available. Incoming game traffic is still unverified while the server is stopped. Switch to Host and start, then test the game connection and a real join from another network before relying on this Host.</p>
+      </div>}
       <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul></div>}
     {!handoff?.staged && <Button className="secondary" disabled={busy} onClick={() => void stage()}>
       Check planned handoff</Button>}

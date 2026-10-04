@@ -62,7 +62,7 @@ it('finishes a verified majority with signed add-ons before showing manual Start
   const sent = finishBody as Record<string, unknown> | null
   expect(sent && sent.recordHash).toBe(hash)
   expect((sent?.setup as { enabledAddOns: unknown[] }).enabledAddOns).toEqual([addOn])
-  expect(await screen.findByText(/Ready for manual Start/)).toBeInTheDocument()
+  expect(await screen.findByText(/Before the first Start on this PC/)).toBeInTheDocument()
   await waitFor(() => expect(hostingSetupChange).toHaveBeenLastCalledWith(true))
-  expect(screen.getByText(/test a real game join and saved Stop/)).toBeInTheDocument()
+  expect(screen.getByText(/Incoming game traffic is still unverified/)).toBeInTheDocument()
 })
