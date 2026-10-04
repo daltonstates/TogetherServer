@@ -118,6 +118,52 @@ await Check("Factorio preview validates only an owner-installed executable, exis
     return Task.CompletedTask;
 });
 
+await Check("Factorio closed-archive inspector bounds paths and requires a complete readable ZIP", () =>
+{
+    var directory = Path.Combine(root, "archive-inspector");
+    Directory.CreateDirectory(directory);
+    var valid = Path.Combine(directory, "valid.zip");
+    WriteSyntheticSave(valid, "bounded synthetic contents");
+    using (var stream = new FileStream(valid, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var inspected = FactorioClosedArchiveCandidate.InspectArchiveContents(stream);
+        Require(inspected.EntryCount == 1 && inspected.ArchiveLength == stream.Length,
+            "a closed synthetic ZIP was not inspected");
+    }
+
+    void MustReject(string path, string reason)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            _ = FactorioClosedArchiveCandidate.InspectArchiveContents(stream);
+            throw new Exception(reason + " was accepted");
+        }
+        catch (InvalidDataException) { }
+    }
+
+    var unfinished = Path.Combine(directory, "unfinished.zip");
+    File.Copy(valid, unfinished);
+    using (var append = new FileStream(unfinished, FileMode.Append, FileAccess.Write, FileShare.None))
+        append.WriteByte(0x5A);
+    MustReject(unfinished, "ZIP with bytes after its central-directory end");
+
+    var unsafePath = Path.Combine(directory, "unsafe-path.zip");
+    using (var archive = ZipFile.Open(unsafePath, ZipArchiveMode.Create))
+    using (var writer = new StreamWriter(archive.CreateEntry("../outside/level.dat").Open()))
+        writer.Write("synthetic");
+    MustReject(unsafePath, "traversal entry");
+
+    var duplicate = Path.Combine(directory, "duplicate.zip");
+    using (var archive = ZipFile.Open(duplicate, ZipArchiveMode.Create))
+    {
+        using (var writer = new StreamWriter(archive.CreateEntry("world/level.dat").Open())) writer.Write("first");
+        using (var writer = new StreamWriter(archive.CreateEntry("WORLD/LEVEL.DAT").Open())) writer.Write("second");
+    }
+    MustReject(duplicate, "case-colliding entries");
+    return Task.CompletedTask;
+});
+
 await Check("Factorio live-save candidate rejects stale runs and dispatches only the fixed RCON command", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "live-save-candidate-data"));
@@ -194,6 +240,23 @@ await Check("Factorio live-save candidate rejects stale runs and dispatches only
             using var reader = new StreamReader(entry.Open());
             Require(reader.ReadToEnd() == "synthetic live save", "the synthetic ZIP entry was unreadable");
         }
+        var snapshot = new FactorioClosedArchiveCandidate(data).Stage(run);
+        var reviewedSave = Path.Combine(profile.WorldDirectory, profile.WorldId + ".zip");
+        var reviewedHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(reviewedSave)));
+        Require(snapshot.ProfileId == profile.Id && snapshot.OperationId == run.OperationId &&
+            snapshot.ArchivePath == Path.Combine(data.RootPath, "factorio-archive-candidates",
+                profile.Id.ToString("N"), run.OperationId.ToString("N"), "archive.zip") &&
+            snapshot.SourceBeforeSha256 == reviewedHash && snapshot.SourceAfterSha256 == reviewedHash &&
+            snapshot.StagedSha256 == reviewedHash && snapshot.EntryCount == 1 &&
+            (File.GetAttributes(snapshot.ArchivePath) & FileAttributes.ReadOnly) != 0 &&
+            !snapshot.CompletionConfirmed && !snapshot.LiveCaptureAccepted,
+            "the closed-archive candidate was not immutable and tied to the reviewed exact-run ZIP");
+        try
+        {
+            _ = new FactorioClosedArchiveCandidate(data).Stage(run);
+            throw new Exception("a second archive replaced the first candidate");
+        }
+        catch (InvalidOperationException) { }
         Require(!SharedWorldLiveSaveAdapters.ForGame(GameKinds.Factorio)!.LiveCaptureAccepted &&
             !SharedWorldLiveSaveAdapters.Status(GameKinds.Factorio).Available,
             "fixture dispatch enabled live capture or sharing");
