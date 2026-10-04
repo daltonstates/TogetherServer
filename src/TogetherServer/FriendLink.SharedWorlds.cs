@@ -1800,8 +1800,7 @@ internal sealed partial class FriendLink
                 "Receiving", null, receivedBytes, totalBytes,
                 config.SharedRosterFloors[profileId].Revision,
                 "Owner signature and this PC's Receive grant verified when last checked");
-            var driveRoot = Path.GetPathRoot(root)!;
-            if (!HasReceiverReserve(new DriveInfo(driveRoot).AvailableFreeSpace, remaining))
+            if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), remaining))
                 return SharedFailure("InsufficientSpace", "Keep at least 1 GiB free after receiving this save. Existing verified copies were kept.");
             for (var index = 0; index < version.Files.Count; index++)
             {
@@ -2345,8 +2344,7 @@ internal sealed partial class FriendLink
             usage.Bytes + bytes.Length > MaximumSignedHistoryBytes)
             throw new SignedHistoryCapacityException(
                 "This PC's signed save history is full. New saves are paused; older verified copies were kept. Choose another receiving PC.");
-        if (!HasReceiverReserve(new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!)
-                .AvailableFreeSpace, bytes.Length))
+        if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), bytes.Length))
             throw new SignedHistorySpaceException(
                 "Keep at least 1 GiB free before receiving another signed save. Verified copies were kept.");
         var temporary = SharedWorldService.SafeChild(history,
