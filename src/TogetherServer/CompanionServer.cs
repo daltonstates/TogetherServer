@@ -740,13 +740,36 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             if (!pairing.CanAccess(device!, profileId) || device!.SharedWorldPublicKey is null)
                 return Results.StatusCode(403);
+            var rawOffset = context.Request.Query["offset"];
+            long offset = 0;
+            if (context.Request.Query.Count != (rawOffset.Count == 0 ? 0 : 1) ||
+                rawOffset.Count > 1 || rawOffset.Count == 1 &&
+                !long.TryParse(rawOffset[0], System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out offset))
+                return Results.BadRequest(new { code = "InvalidRosterOffset" });
             try
             {
-                var revisions = await manager.SharedWorldRosterHistoryAsync(profileId);
+                var revisions = await manager.SharedWorldRosterHistoryAsync(profileId, offset);
                 if (!Reauthorize(device, out var current, out decision) ||
                     !pairing.CanAccess(current!, profileId))
                     return Results.StatusCode(403);
                 return revisions is null ? Results.NotFound() : Results.Json(revisions);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
+            { return Results.Conflict(new { code = "RosterUnavailable" }); }
+        });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/roster/revisions/current", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!pairing.CanAccess(device!, profileId) || device!.SharedWorldPublicKey is null)
+                return Results.StatusCode(403);
+            try
+            {
+                var roster = await manager.SharedWorldRosterAsync(profileId);
+                if (!Reauthorize(device, out var current, out decision) ||
+                    !pairing.CanAccess(current!, profileId)) return Results.StatusCode(403);
+                return roster is null ? Results.NotFound() : Results.Json(roster);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
             { return Results.Conflict(new { code = "RosterUnavailable" }); }

@@ -275,11 +275,9 @@ internal sealed partial class SharedWorldService
                         members.Select(item => item.PublicKey).Distinct(StringComparer.Ordinal).Count() != members.Count)
                         throw new InvalidDataException("Review this world's source and membership before publishing.");
                     var orderedMembers = members.OrderBy(item => item.DeviceId).ToArray();
-                    var history = chain.Read(profile.Id);
-                    if (history.Skip(1).Any(item => item.Schema == 3 &&
-                        item.SignerDeviceId == Guid.Empty && item.OwnerLocalBaselineMembers is null))
+                    if (chain.HasUnreviewedOwnerEdit(profile.Id))
                         throw new InvalidDataException("Earlier owner edits need sharing review before another change.");
-                    var baseline = parent.OwnerLocalBaselineMembers ?? history[0].Members;
+                    var baseline = parent.OwnerLocalBaselineMembers ?? chain.First(profile.Id)!.Members;
                     var mergedMembers = MergeOwnerChanges(parent.Members, baseline, orderedMembers, ownerEdit);
                     if (parent.Members.SequenceEqual(mergedMembers) &&
                         baseline.SequenceEqual(orderedMembers) &&

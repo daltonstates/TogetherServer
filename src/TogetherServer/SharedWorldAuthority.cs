@@ -871,12 +871,12 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         var chain = new SharedWorldRosterChainStore(data, clock);
         if (!chain.HasState(roster.ProfileId))
             return SharedWorldRosterTrust.Verify(roster);
-        var history = chain.Read(roster.ProfileId);
         var heads = chain.Heads(roster.ProfileId);
-        if (heads.Count != 1 || history.Count == 0 ||
-            history[0].OwnerPublicKey != roster.OwnerPublicKey ||
-            history[0].GroupId != roster.GroupId ||
-            history.All(item => SharedWorldRosterTrust.Hash(item) != SharedWorldRosterTrust.Hash(roster)))
+        var first = chain.First(roster.ProfileId);
+        if (heads.Count != 1 || first is null ||
+            first.OwnerPublicKey != roster.OwnerPublicKey ||
+            first.GroupId != roster.GroupId ||
+            !chain.Contains(roster.ProfileId, roster))
             return false;
         return !requireCurrent ||
             SharedWorldRosterTrust.Hash(heads[0]) == SharedWorldRosterTrust.Hash(roster);

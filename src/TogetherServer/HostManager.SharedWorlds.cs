@@ -495,7 +495,8 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    internal async Task<IReadOnlyList<SharedWorldRoster>?> SharedWorldRosterHistoryAsync(Guid profileId)
+    internal async Task<IReadOnlyList<SharedWorldRoster>?> SharedWorldRosterHistoryAsync(
+        Guid profileId, long offset = 0)
     {
         await gate.WaitAsync();
         try
@@ -505,7 +506,8 @@ public sealed partial class HostManager
             var current = sharedWorlds.ReadRoster(profile);
             if (current is null) return null;
             var chain = new SharedWorldRosterChainStore(data);
-            return chain.HasState(profileId) ? chain.Read(profileId) : [current];
+            return chain.HasState(profileId) ? chain.ReadPage(profileId, offset) :
+                offset == 0 ? [current] : [];
         }
         finally { gate.Release(); }
     }
