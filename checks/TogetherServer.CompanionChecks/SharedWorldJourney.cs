@@ -109,6 +109,10 @@ internal static class SharedWorldJourney
             Require(!(await PostAsync<object, ReceivedSharedWorldResult>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/pull", new { })).Ok,
                 "a save was received before a confirmed graceful Stop");
+            var beforeSave = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(beforeSave.State == "Transfer unavailable" && beforeSave.Error is not null,
+                "a missing Host save was misreported as a stalled transfer");
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "first verified fixture change");
             await StartAndStopAsync(owner, profile.Id);
@@ -121,6 +125,11 @@ internal static class SharedWorldJourney
             await WaitVersionAsync(aLocal, profile.Id, 1);
             await WaitVersionAsync(bLocal, profile.Id, 1);
             await WaitCopiesAsync(owner, profile.Id, 2);
+            var verifiedStatus = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(verifiedStatus.ThisPcVersion == 1 && verifiedStatus.Error is null &&
+                verifiedStatus.State != "Stalled" && verifiedStatus.State != "Low space",
+                "verified catch-up left a stale transfer alert");
             var aRoot = ReceiverRoot(friendAData, deviceA, profile.Id);
             var bRoot = ReceiverRoot(friendBData, deviceB, profile.Id);
             Require(File.ReadAllText(Path.Combine(aRoot, firstVersion.VersionHash,
@@ -173,14 +182,41 @@ internal static class SharedWorldJourney
             Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
                 $"/api/local/devices/{deviceA}/shared-world/{profile.Id}", new(true))).Ok,
                 "owner could not deliberately restore Receive");
-            friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
+            friendA = StartApp(appPath, "--friend", friendAPort, friendAData,
+                beforeChunkDelayMs: 3000);
             await WaitLocalAsync(friendAPort);
             await PollAsync(aLocal);
+            await WaitSharedStateAsync(aLocal, profile.Id, "Receiving",
+                SharedWorldService.ChunkBytes);
+            Require((await PutAsync<HostControlPolicyChange, ActionResult>(owner,
+                "/api/local/settings/control-policy", new(false))).Ok,
+                "disposable Host listener did not close during a partial transfer");
+            await WaitSharedStateAsync(aLocal, profile.Id, "Transfer interrupted");
+            Require((await PutAsync<HostControlPolicyChange, ActionResult>(owner,
+                "/api/local/settings/control-policy", new(true, true))).Ok,
+                "disposable Host listener did not reopen for the retry");
+            var retry = PostAsync<object, ReceivedSharedWorldResult>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+            await WaitSharedStateAsync(aLocal, profile.Id, "Receiving",
+                SharedWorldService.ChunkBytes);
+            Require((await PutAsync<HostControlPolicyChange, ActionResult>(owner,
+                "/api/local/settings/control-policy", new(false))).Ok,
+                "disposable Host listener did not close during the no-progress retry");
+            Require((await retry).Code == "NetworkUnavailable",
+                "a dropped post-payload HTTPS request did not report a retryable network failure");
+            await WaitSharedStateAsync(aLocal, profile.Id, "Stalled");
+            Require((await PutAsync<HostControlPolicyChange, ActionResult>(owner,
+                "/api/local/settings/control-policy", new(true, true))).Ok,
+                "disposable Host listener did not reopen for resumed receipt");
             await WaitVersionAsync(aLocal, profile.Id, 2);
+            var resumed = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(resumed.Error is null && resumed.State != "Stalled",
+                "verified resumed receipt kept a stale transport stall");
             Require(File.Exists(Path.Combine(aRoot, secondVersion.VersionHash,
                         "payload", "world.dat")),
                 "interrupted transfer did not resume into a verified version");
-            Console.WriteLine("PASS interrupted chunks survive PC restart; revocation prevents commit until regrant");
+            Console.WriteLine("PASS interrupted chunks survive restart; real route loss stalls only repeated no-progress retries and clears on receipt");
             passed++;
 
             friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
@@ -534,6 +570,20 @@ internal static class SharedWorldJourney
         throw new Exception($"Friend did not verify version {expected}: {latest?.State} {latest?.Error}");
     }
 
+    private static async Task WaitSharedStateAsync(HttpClient friend, Guid profileId,
+        string expected, long minimumReceivedBytes = 0)
+    {
+        ReceivedSharedWorldStatus? latest = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            latest = await GetAsync<ReceivedSharedWorldStatus>(friend,
+                $"/api/local/friend/{profileId}/shared-world");
+            if (latest.State == expected && latest.ReceivedBytes >= minimumReceivedBytes) return;
+            await Task.Delay(100);
+        }
+        throw new Exception($"Friend transfer did not reach {expected}: {latest?.State} {latest?.Error}");
+    }
+
     private static async Task WaitCopiesAsync(HttpClient owner, Guid profileId, int expected)
     {
         SharedWorldStatus? latest = null;
@@ -559,7 +609,7 @@ internal static class SharedWorldJourney
     }
 
     private static Process StartApp(string path, string mode, int port, string data,
-        int receiveDelayMs = 0)
+        int receiveDelayMs = 0, int beforeChunkDelayMs = 0)
     {
         Directory.CreateDirectory(data);
         var info = new ProcessStartInfo(path)
@@ -578,6 +628,8 @@ internal static class SharedWorldJourney
         info.Environment["Logging__LogLevel__Default"] = "Warning";
         if (receiveDelayMs > 0)
             info.Environment["TOGETHERSERVER_FIXTURE_RECEIVE_DELAY_MS"] = receiveDelayMs.ToString();
+        if (beforeChunkDelayMs > 0)
+            info.Environment["TOGETHERSERVER_FIXTURE_BEFORE_CHUNK_DELAY_MS"] = beforeChunkDelayMs.ToString();
         var process = Process.Start(info) ?? throw new Exception("packaged app did not start");
         process.OutputDataReceived += (_, eventArgs) =>
         {

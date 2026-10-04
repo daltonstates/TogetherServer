@@ -656,13 +656,13 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   const [pendingHistoryGroup, setPendingHistoryGroup] = useState<{ groupId: string; ownerPublicKey: string } | null>(null)
   useEffect(() => { setHistoryMessage(''); setPendingHistoryGroup(null) }, [profileId])
   useEffect(() => {
-    if (!open) return
+    if (!open && (!available || !status?.consented)) return
     const timer = window.setInterval(() => {
       void getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
         .then(setStatus).catch(() => {})
-    }, 2000)
+    }, open ? 2000 : 5000)
     return () => window.clearInterval(timer)
-  }, [open, profileId])
+  }, [available, open, profileId, status?.consented])
   useEffect(() => {
     let active = true
     void getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
@@ -800,7 +800,9 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     status?.state.startsWith('Host save source changed') ? status.state :
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
       `${status.hostVersion - status.thisPcVersion} version(s) behind` : status?.state
-  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds</summary>
+  const transferAlert = status?.state === 'Low space' || status?.state === 'Stalled'
+  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds
+    {transferAlert && <span className="warning-text" role="alert"> · {headline}</span>}</summary>
     <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>Update the Host app before receiving shared saves.</p>}

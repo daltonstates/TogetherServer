@@ -13,6 +13,11 @@ var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
 var valheimFixturePath = Path.GetFullPath("src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe");
+if (args.Skip(1).Contains("--shared-transfer-alerts", StringComparer.OrdinalIgnoreCase))
+{
+    SharedWorldTransferAlertChecks.Run();
+    return 0;
+}
 if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
     throw new Exception("Run scripts/build.ps1 first.");
 if (args.Skip(1).Contains("--core-remote-journey", StringComparer.OrdinalIgnoreCase))
