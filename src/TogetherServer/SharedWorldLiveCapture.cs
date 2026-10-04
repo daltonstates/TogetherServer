@@ -29,6 +29,7 @@ internal sealed partial class SharedWorldService
     internal GameServerRegistry? LiveGameRegistryForChecks { get; set; }
     internal Action? AfterLiveSourceScanForChecks { get; set; }
     internal Func<ManagedRun, bool>? FixtureLiveRunIdentityForChecks { get; set; }
+    internal Func<long>? FixtureLiveAvailableBytesForChecks { get; set; }
 
     private bool LiveCaptureAccepted(string game) =>
         SharedWorldLiveSaveAdapters.ForGame(game)?.LiveCaptureAccepted == true ||
@@ -169,7 +170,7 @@ internal sealed partial class SharedWorldService
                 _ = SharedWorldPortableSetupReader.Capture(before);
                 var sourceFiles = ScanLiveTree(source);
                 var bytes = BoundedTotalBytes(sourceFiles);
-                RequireLiveSpace(bytes);
+                RequireLiveSpace(bytes, profile.Kind);
                 AfterLiveSourceScanForChecks?.Invoke();
                 var captureId = Guid.NewGuid();
                 var profileRoot = LiveCaptureProfileRoot(profile.Id);
@@ -271,11 +272,14 @@ internal sealed partial class SharedWorldService
             throw new InvalidDataException("The staged live save payload changed.");
     }
 
-    private void RequireLiveSpace(long size)
+    private void RequireLiveSpace(long size, string game)
     {
         const long reserve = 1024L * 1024 * 1024;
         var drive = new DriveInfo(Path.GetPathRoot(data.RootPath)!);
-        if (drive.AvailableFreeSpace < reserve || drive.AvailableFreeSpace - reserve < size)
+        var available = drive.AvailableFreeSpace;
+        if (game == GameKinds.Fixture && FixtureLiveAvailableBytesForChecks is not null)
+            available = Math.Min(available, FixtureLiveAvailableBytesForChecks());
+        if (available < reserve || available - reserve < size)
             throw new IOException("Keep 1 GiB free after staging the live save.");
     }
 
@@ -378,7 +382,8 @@ internal sealed partial class SharedWorldService
                         throw new InvalidDataException("The live capture is older than the published save.");
                     var files = capture.Files.ToArray();
                     var size = BoundedTotalBytes(files);
-                    RequireLiveSpace(size);
+                    if (previous is not null) PrunePublishedPayloads(previous);
+                    RequireLiveSpace(size, profile.Kind);
                     var portable = SharedWorldPortableSetupReader.Capture(setup);
                     using var key = LoadPublishingKey(profile.Id);
                     var draft = new SharedWorldVersion(5, binding.GroupId,

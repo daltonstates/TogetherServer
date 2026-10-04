@@ -33,7 +33,11 @@ internal static class SharedWorldLiveCaptureChecks
             Directory.CreateDirectory(profile.WorldDirectory);
             var world = Path.Combine(profile.WorldDirectory, "world.dat");
             File.WriteAllText(world, "post-stop baseline");
-            shared.PublishRoster(profile, []);
+            using var receiverKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var receiverId = Guid.NewGuid();
+            shared.PublishRoster(profile, [new SharedWorldRosterMember(receiverId,
+                Convert.ToBase64String(receiverKey.ExportSubjectPublicKeyInfo()),
+                new SharedWorldGrants(Receive: true), false)]);
             var backup = backups.Create(profile, BackupKinds.Rolling);
             Require(backup.Ok && backup.Backup is not null, "synthetic post-Stop backup failed");
             var first = shared.PublishAfterStop(profile, backup.Backup!.Id);
@@ -205,6 +209,16 @@ internal static class SharedWorldLiveCaptureChecks
                 shared.ReadChunk(live.Version!, 0, SharedWorldService.ChunkBytes).AsSpan().SequenceEqual(
                     bytes.AsSpan(SharedWorldService.ChunkBytes)),
                 "live version did not use bounded resumable chunk reads");
+            var roster = shared.ReadRoster(profile)!;
+            var unsignedReceipt = new SharedWorldReceipt(1, live.Version!.GroupId, profile.Id,
+                live.Version.VersionHash, receiverId, roster.Epoch, roster.Revision,
+                Guid.NewGuid(), "");
+            var receipt = unsignedReceipt with { Signature = Convert.ToBase64String(
+                receiverKey.SignData(SharedWorldReceiptTrust.Basis(unsignedReceipt),
+                    HashAlgorithmName.SHA256)) };
+            Require(shared.ConfirmReceipt(profile, receiverId, receipt).Ok &&
+                shared.Status(profile).ConfirmedCopies == 1,
+                "the exact signed live version receipt was not confirmed");
 
             File.WriteAllText(world, "another post-stop save");
             var secondBackup = backups.Create(profile, BackupKinds.Rolling);
@@ -243,6 +257,86 @@ internal static class SharedWorldLiveCaptureChecks
             Require(shared.ReadChunk(live.Version!, 0, 0).AsSpan().SequenceEqual(
                     bytes.AsSpan(0, SharedWorldService.ChunkBytes)),
                 "post-Stop retention removed an approved live transfer payload");
+            Require(shared.Status(profile).ConfirmedCopies == 0,
+                "a receipt for an older live version was counted for the new head");
+
+            // A separate signed source group has only one verified local copy.
+            // Long-history cleanup must never delete its payload.
+            var soleGroup = Guid.NewGuid();
+            var soleRoot = Path.Combine(root, "shared-worlds", profile.Id.ToString("N"),
+                soleGroup.ToString("N"), "1");
+            var solePayload = Path.Combine(soleRoot, "payload", "world.dat");
+            Directory.CreateDirectory(Path.GetDirectoryName(solePayload)!);
+            var soleBytes = System.Text.Encoding.UTF8.GetBytes("sole verified branch");
+            File.WriteAllBytes(solePayload, soleBytes);
+            using (var publishingKey = ECDsa.Create())
+            {
+                publishingKey.ImportPkcs8PrivateKey(
+                    data.LoadProtected("shared-world-signing-key.protected")!, out _);
+                var soleDraft = postStop.Version! with
+                {
+                    GroupId = soleGroup, Number = 1, ParentHash = null,
+                    BackupId = Guid.NewGuid(),
+                    Files = [new SharedWorldFile("world.dat", soleBytes.Length,
+                        Convert.ToHexString(SHA256.HashData(soleBytes)))],
+                    SigningPublicKey = "", VersionHash = "", Signature = ""
+                };
+                var sole = SharedWorldService.SignVersion(soleDraft, publishingKey);
+                File.WriteAllBytes(Path.Combine(soleRoot, "version.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(sole, json));
+            }
+
+            // These fixture hashes stand in for effective competing authority
+            // heads; production gets them from signed authority history.
+            shared.RetentionProtectedHeadsForChecks = _ =>
+                [live.Version!.VersionHash, postStop.Version!.VersionHash];
+            var longHistory = new List<SharedWorldVersion>();
+            for (var sequence = 4; sequence <= 7; sequence++)
+            {
+                Thread.Sleep(2);
+                File.WriteAllText(world, $"live save {sequence}");
+                var evidence = completion with { CompletedUtc = DateTimeOffset.UtcNow };
+                var capture = shared.StageLiveCapture(profile, run, evidence);
+                var published = shared.PublishLiveCapture(profile, capture,
+                    new(capture, run.OperationId, true));
+                Require(published.Ok && published.Version?.Number == sequence,
+                    $"long-history live version {sequence} failed");
+                longHistory.Add(published.Version!);
+            }
+            var mainPayload = Path.Combine(versionGroupRoot, "1", "payload", "world.dat");
+            var protectedLivePayload = Path.Combine(versionGroupRoot, "2", "payload", "world.dat");
+            var protectedPostStopPayload = Path.Combine(versionGroupRoot, "3", "payload", "world.dat");
+            Require(!File.Exists(mainPayload) && File.Exists(protectedLivePayload) &&
+                File.Exists(protectedPostStopPayload) && File.Exists(solePayload),
+                "retention did not keep protected heads and the only verified group copy");
+            Require(File.Exists(Path.Combine(versionGroupRoot, "1", "version.json")),
+                "retention deleted a signed historical manifest");
+
+            // Simulate low space after staging. A previously pruned, verified
+            // non-head payload is restored as surplus; pre-copy cleanup must
+            // reclaim it before the reserve check, regardless of file time.
+            File.WriteAllText(world, "live save 8");
+            var lastEvidence = completion with { CompletedUtc = DateTimeOffset.UtcNow };
+            var lastCapture = shared.StageLiveCapture(profile, run, lastEvidence);
+            var surplusLivePayload = Path.Combine(versionGroupRoot, "4", "payload", "world.dat");
+            File.WriteAllText(surplusLivePayload, "live save 4");
+            File.SetLastWriteTimeUtc(surplusLivePayload, DateTime.UtcNow.AddYears(1));
+            const long reserveBytes = 1024L * 1024 * 1024;
+            var lastBytes = new FileInfo(world).Length;
+            shared.FixtureLiveAvailableBytesForChecks = () => File.Exists(surplusLivePayload)
+                ? reserveBytes + lastBytes - 1 : long.MaxValue;
+            var last = shared.PublishLiveCapture(profile, lastCapture,
+                new(lastCapture, run.OperationId, true));
+            shared.FixtureLiveAvailableBytesForChecks = null;
+            Require(last.Ok && last.Version?.Number == 8 && !File.Exists(surplusLivePayload) &&
+                File.Exists(protectedLivePayload) && File.Exists(protectedPostStopPayload) &&
+                File.Exists(solePayload) &&
+                longHistory.Skip(2).All(version => File.Exists(Path.Combine(versionGroupRoot,
+                    version.Number.ToString(), "payload", "world.dat"))),
+                "low-space reclamation touched newest copies, protected heads, or the only branch copy");
+            Require(File.Exists(Path.Combine(versionGroupRoot, "4", "version.json")) &&
+                shared.Status(profile).Latest?.VersionHash == last.Version!.VersionHash,
+                "low-space reclamation changed signed history or the current pointer");
 
             using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var legacy = SharedWorldService.SignVersion(postStop.Version! with
@@ -253,7 +347,7 @@ internal static class SharedWorldLiveCaptureChecks
             }, signer);
             Require(SharedWorldService.VerifySignature(legacy),
                 "legacy post-Stop signature was rejected");
-            Console.WriteLine("PASS Shared Worlds live core: exact-run/incomplete/tamper/approval denial, signed synthetic publication, chunk transfer, post-Stop continuity, legacy format");
+            Console.WriteLine("PASS Shared Worlds live core: exact-run/tamper/approval denial, signed fixture publication, chunk and receipt checks, bounded low-space retention, post-Stop continuity, legacy format");
         }
         finally
         {

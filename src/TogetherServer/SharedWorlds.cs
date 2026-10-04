@@ -90,6 +90,9 @@ internal sealed partial class SharedWorldService
     internal long HistoricalProofManifestReadCount => Authority.ReviewProofPieceReadCount;
     // Invoked only by deterministic core checks while the publication gates are held.
     internal Action? AfterGovernanceCheckForChecks { get; set; }
+    // Fixture-only seam for checking the same retention rule with competing
+    // authority heads without manufacturing a real signed recovery election.
+    internal Func<Guid, IReadOnlyCollection<string>>? RetentionProtectedHeadsForChecks { get; set; }
     private readonly Dictionary<(Guid ProfileId, string VersionHash, int FileIndex), string[]> chunkHashes = new();
     internal int CachedChunkFileCount => chunkHashes.Count;
     internal int CachedHistoricalHashCount(Guid profileId) =>
@@ -1165,8 +1168,13 @@ internal sealed partial class SharedWorldService
     {
         foreach (var file in latest.Files)
             VerifyFile(SafeChild(Path.Combine(VersionRoot(latest), PayloadDirectory), file.Path), file);
-        // A resolution records a branch choice without deleting other branches.
-        if (Authority.Read(latest.ProfileId).Any(record => record.Schema == 2)) return;
+        // Preserve every current signed authority head, including competing
+        // heads. Historical manifests remain even when their payload expires.
+        var retained = new HashSet<string>(StringComparer.Ordinal) { latest.VersionHash };
+        foreach (var head in WorldAuthorityTrust.EffectiveHeads(Authority.Read(latest.ProfileId)))
+            retained.Add(head.Version.VersionHash);
+        if (latest.Game == GameKinds.Fixture && RetentionProtectedHeadsForChecks is not null)
+            retained.UnionWith(RetentionProtectedHeadsForChecks(latest.ProfileId));
         var candidates = new List<SharedWorldVersion>();
         foreach (var group in Directory.EnumerateDirectories(Root(latest.ProfileId)))
         {
@@ -1185,7 +1193,7 @@ internal sealed partial class SharedWorldService
                     candidates.Add(version);
             }
         }
-        var retained = new HashSet<string>(StringComparer.Ordinal) { latest.VersionHash };
+        var verified = new List<SharedWorldVersion>();
         foreach (var group in candidates.GroupBy(item => item.GroupId))
         {
             var kept = 0;
@@ -1195,17 +1203,16 @@ internal sealed partial class SharedWorldService
                 {
                     foreach (var file in candidate.Files)
                         VerifyFile(SafeChild(Path.Combine(VersionRoot(candidate), PayloadDirectory), file.Path), file);
+                    verified.Add(candidate);
                     if (kept++ < 3) retained.Add(candidate.VersionHash);
                 }
                 catch (InvalidDataException) { /* Damaged payload cannot count as a verified fallback. */ }
             }
         }
-        // A live capture may be the only distributed verified copy while a
-        // Friend is still transferring it. Keep these payloads until a
-        // separate receipt-aware retention policy can prove safe deletion.
-        foreach (var candidate in candidates.Where(item =>
-                     item.CaptureKind != SharedWorldCaptureKinds.LiveSave &&
-                     !retained.Contains(item.VersionHash)))
+        // ReadChunk and publication share sync, so a payload cannot disappear
+        // during a chunk read. The wire protocol serves only the current head;
+        // a Friend whose head changes must fetch the newer signed version.
+        foreach (var candidate in verified.Where(item => !retained.Contains(item.VersionHash)))
             foreach (var file in candidate.Files)
             {
                 var path = SafeChild(Path.Combine(VersionRoot(candidate), PayloadDirectory), file.Path);
