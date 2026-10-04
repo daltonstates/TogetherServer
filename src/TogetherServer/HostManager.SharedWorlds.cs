@@ -407,16 +407,19 @@ public sealed partial class HostManager
             start < 1 || start > latest.Number - count ||
             SharedAuthorityBlocked(latest.ProfileId, out _))
             throw new InvalidDataException("Shared version range is unavailable.");
-        var versions = new List<SharedWorldVersion>(count);
-        for (var number = start; number < start + count; number++)
+        lock (SharedWorldMutationGate.For(data.RootPath))
         {
-            var version = sharedWorlds.ReadEarlierVersion(latest, number);
-            if (JsonSerializer.SerializeToUtf8Bytes(version, SharedVersionRangeJson).LongLength >
-                SharedWorldService.MaximumManifestBytes)
-                throw new InvalidDataException("A shared version exceeds the transfer limit.");
-            versions.Add(version);
+            var versions = new List<SharedWorldVersion>(count);
+            for (var number = start; number < start + count; number++)
+            {
+                var version = sharedWorlds.ReadEarlierVersion(latest, number);
+                if (JsonSerializer.SerializeToUtf8Bytes(version, SharedVersionRangeJson).LongLength >
+                    SharedWorldService.MaximumManifestBytes)
+                    throw new InvalidDataException("A shared version exceeds the transfer limit.");
+                versions.Add(version);
+            }
+            return versions;
         }
-        return versions;
     }
 
     internal async Task ApplySharedWorldAuthorityAsync(WorldAuthorityRecord record,

@@ -1962,9 +1962,7 @@ internal sealed partial class FriendLink
                     {
                         // An older companion has only the single-version route.
                         // A JSON denial from a current Host must not fall back.
-                        if (response.StatusCode != System.Net.HttpStatusCode.NotFound ||
-                            response.Content.Headers.ContentType?.MediaType?.Contains("json",
-                                StringComparison.OrdinalIgnoreCase) == true)
+                        if (!await IsUnsupportedSharedVersionRangeAsync(response, token))
                             return null;
                         using var older = await transferClient.GetAsync(
                             $"api/companion/servers/{profileId}/shared-world/versions/{number}",
@@ -1987,6 +1985,29 @@ internal sealed partial class FriendLink
                 pending.Remove(number);
                 return item;
             }, cancellationToken);
+    }
+
+    internal static async Task<bool> IsUnsupportedSharedVersionRangeAsync(
+        HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.StatusCode != System.Net.HttpStatusCode.NotFound ||
+            response.Content.Headers.ContentType?.MediaType?.Contains("json",
+                StringComparison.OrdinalIgnoreCase) == true)
+            return false;
+        var body = await ReadBoundedSharedAsync(response.Content, 4096, cancellationToken);
+        if (body is null) return false;
+        var text = System.Text.Encoding.UTF8.GetString(body).Trim();
+        if (text.Length == 0) return true;
+        if (text[0] is '{' or '[' or '"') return false;
+        try
+        {
+            using var _ = JsonDocument.Parse(body);
+            return false;
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
     }
 
     internal static async Task<SharedChainCheck> VerifySharedChainBatchAsync(LocalData data,

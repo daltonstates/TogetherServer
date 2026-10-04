@@ -3842,6 +3842,26 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
     return Task.CompletedTask;
 });
 
+await Check("shared version range fallback requires a non-JSON 404", async () =>
+{
+    using var legacy = new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+    { Content = new StringContent("Not Found") };
+    using var denied = new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+    { Content = new StringContent("Not Found") };
+    using var json = new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+    { Content = new StringContent("{\"code\":\"Denied\"}") };
+    using var disguisedJson = new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+    { Content = new StringContent("{\"code\":\"Denied\"}", System.Text.Encoding.UTF8, "text/plain") };
+    using var malformedJson = new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+    { Content = new StringContent("{broken", System.Text.Encoding.UTF8, "text/plain") };
+    Require(await FriendLink.IsUnsupportedSharedVersionRangeAsync(legacy, CancellationToken.None) &&
+        !await FriendLink.IsUnsupportedSharedVersionRangeAsync(denied, CancellationToken.None) &&
+        !await FriendLink.IsUnsupportedSharedVersionRangeAsync(json, CancellationToken.None) &&
+        !await FriendLink.IsUnsupportedSharedVersionRangeAsync(disguisedJson, CancellationToken.None) &&
+        !await FriendLink.IsUnsupportedSharedVersionRangeAsync(malformedJson, CancellationToken.None),
+        "a denied or malformed range response enabled legacy fallback");
+});
+
 await Check("128 save catch-up reads Host history once and still denies a changed manifest", async () =>
 {
     using var hostData = Data("shared-history-index");
