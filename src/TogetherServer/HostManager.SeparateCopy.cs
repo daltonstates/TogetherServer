@@ -521,8 +521,8 @@ public sealed partial class HostManager
             return "Installed game files or enabled add-ons differ from the signed setup.";
         if (version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock &&
             MinecraftPreparedRoot.Check(data.RootPath, state.WorldDirectory,
-                state.WorldDirectory, version, setup, profile.ExecutablePath) is not null)
-            return "The prepared Minecraft server files changed.";
+                state.WorldDirectory, version, setup, profile.ExecutablePath) is { } minecraftIssue)
+            return minecraftIssue;
         if (version.Game == GameKinds.Valheim &&
             data.LoadValheimPassword(profile.Id) is not { Length: >= 5 and <= 64 })
             return "A new game password is missing.";

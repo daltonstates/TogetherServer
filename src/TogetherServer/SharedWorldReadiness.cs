@@ -47,6 +47,9 @@ internal static class SharedWorldReadiness
                 version.SigningPublicKey != pinnedKey || version.GroupId != approvedGroup)
                 reasons.Add("This save is not from the approved Host signing identity and group.");
             if (version.Schema < 4) reasons.Add("Receive a save with current portable setup details.");
+            if (version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock &&
+                version.PortableSetup.AllowlistEnabled is null)
+                reasons.Add("Receive a Minecraft save with a reviewed player allowlist setting before takeover.");
             try
             {
                 if (string.IsNullOrWhiteSpace(setup.ServerFile) || !Path.IsPathFullyQualified(setup.ServerFile) ||

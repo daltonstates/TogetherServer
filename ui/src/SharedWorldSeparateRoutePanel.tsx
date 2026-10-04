@@ -178,7 +178,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
             onChange={event => setServerName(event.target.value)} /></label>
           <label>Installed game executable, if different<Input value={executable}
             onChange={event => setExecutable(event.target.value)} /></label>
-          {hosting.preparedServerRoot && <p>Prepare the matching Minecraft server and add-ons in this managed folder: {hosting.preparedServerRoot}</p>}
+          {hosting.preparedServerRoot && <p>Prepare the matching Minecraft server and add-ons in this managed folder: {hosting.preparedServerRoot}. Match its server.properties settings and player allowlist to the signed source; a mismatch blocks restore and Start.</p>}
           <label>Factorio local RCON port, if used<Input inputMode="numeric"
             value={factorioRconPort} onChange={event => setFactorioRconPort(event.target.value)} /></label>
           <label>New game password, if used<Input type="password" value={gamePassword}

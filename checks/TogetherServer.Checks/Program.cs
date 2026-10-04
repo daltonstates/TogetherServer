@@ -3047,7 +3047,7 @@ await Check("shared portable setup signs reviewed requirements without machine s
                 "[{\"uuid\":\"11111111-1111-4111-8111-111111111111\",\"name\":\"Alice\",\"secret\":\"do-not-share\"}]");
         if (kind == GameKinds.MinecraftBedrock)
             File.WriteAllText(Path.Combine(profile.WorldDirectory, "allowlist.json"),
-                "[{\"name\":\"Bob\",\"secret\":\"do-not-share\"}]");
+                "[{\"name\":\"Bob\",\"xuid\":\"1234567890123456789\",\"secret\":\"do-not-share\"}]");
         if (kind == GameKinds.Valheim)
             File.WriteAllText(Path.Combine(profile.WorldDirectory, "permittedlist.txt"),
                 "# comment\nSteam_12345\n");
@@ -3057,6 +3057,9 @@ await Check("shared portable setup signs reviewed requirements without machine s
         Require(setup.GameVersion == ServerAddOns.GameVersion(profile), "game version was not captured");
         Require(setup.Allowlist!.Count == (kind is GameKinds.Valheim or GameKinds.MinecraftJava or
             GameKinds.MinecraftBedrock ? 1 : 0), "allowlist capture differs for " + kind);
+        if (kind == GameKinds.MinecraftBedrock)
+            Require(setup.Allowlist[0].Id == "1234567890123456789",
+                "Bedrock XUID was missing from the signed player allowlist");
         var serialized = JsonSerializer.Serialize(setup);
         Require(!serialized.Contains(profile.WorldDirectory, StringComparison.OrdinalIgnoreCase) &&
             !serialized.Contains(profile.ExecutablePath, StringComparison.OrdinalIgnoreCase) &&
@@ -4263,7 +4266,7 @@ await Check("Minecraft successor requires owner-prepared local server roots", ()
     }
     MinecraftSetup.WriteManagedJavaProvenance(javaRoot, "1.20", Convert.ToHexString(SHA1.HashData(File.ReadAllBytes(jar))));
     File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
-        $"level-name={worldId}\nserver-port=25565\n");
+        $"level-name={worldId}\nserver-port=25565\nwhite-list=false\n");
     File.WriteAllText(Path.Combine(javaRoot, "eula.txt"), "eula=false\n");
     var javaExe = Path.Combine(data.RootPath, "java.exe");
     File.WriteAllText(javaExe, "local owner-installed test stand-in");
@@ -4278,17 +4281,62 @@ await Check("Minecraft successor requires owner-prepared local server roots", ()
         "Java prepared root bypassed local owner terms review");
     File.WriteAllText(Path.Combine(javaRoot, "eula.txt"), "eula=true\n");
     Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
-        dummy, javaSetup, javaExe) is null &&
+        dummy, javaSetup, javaExe)?.Contains("no reviewed player allowlist") == true,
+        "Java allowed a signed source with unknown allowlist policy");
+    var reviewed = dummy with { PortableSetup = dummy.PortableSetup with { AllowlistEnabled = false } };
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        reviewed, javaSetup, javaExe) is null &&
         MinecraftPreparedRoot.Check(data.RootPath, javaRoot, data.RootPath,
-            dummy, javaSetup, javaExe) is not null,
+            reviewed, javaSetup, javaExe) is not null,
         "Java accepted a wrong prepared root or rejected separate runtime and reviewed JAR");
+    var javaRestricted = reviewed with
+    {
+        PortableSetup = reviewed.PortableSetup with
+        {
+            MaxPlayers = 8,
+            GameMode = "survival",
+            Difficulty = "normal",
+            AllowlistEnabled = true,
+            Allowlist = [new SharedWorldPortableAllowEntry("Alice", "11111111-1111-4111-8111-111111111111")]
+        }
+    };
+    File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=25565\nmax-players=8\ngamemode=survival\ndifficulty=normal\nwhite-list=false\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        javaRestricted, javaSetup, javaExe)?.Contains("white-list=true") == true,
+        "Java allowed a disabled prepared allowlist against the signed source");
+    File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=25565\nmax-players=8\ngamemode=survival\ndifficulty=normal\nwhite-list=true\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        javaRestricted, javaSetup, javaExe)?.Contains("whitelist.json") == true,
+        "Java allowed missing player entries against the signed source");
+    File.WriteAllText(Path.Combine(javaRoot, "whitelist.json"),
+        "[{\"name\":\"Alice\",\"uuid\":\"11111111-1111-4111-8111-111111111111\"}]");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        javaRestricted, javaSetup, javaExe) is null,
+        "Java refused prepared settings and allowlist matching the signed source");
+    File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=25565\nmax-players=7\ngamemode=creative\ndifficulty=normal\nwhite-list=true\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        javaRestricted, javaSetup, javaExe)?.Contains("max-players=8") == true,
+        "Java allowed a changed player limit after matching the signed source");
+    File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=25565\nmax-players=8\ngamemode=creative\ndifficulty=normal\nwhite-list=true\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        javaRestricted, javaSetup, javaExe)?.Contains("gamemode=survival") == true,
+        "Java allowed a changed game mode after matching the signed source");
+    File.WriteAllText(Path.Combine(javaRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=25565\nmax-players=8\ngamemode=survival\ndifficulty=normal\nwhite-list=true\nwhite-list=false\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, javaRoot, javaRoot,
+        javaRestricted, javaSetup, javaExe) is not null,
+        "Java accepted a duplicate prepared allowlist setting after restore");
     var bedrockRoot = Path.Combine(data.MinecraftInstallRoot, Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(bedrockRoot);
     File.WriteAllText(Path.Combine(bedrockRoot, "server.properties"),
-        $"level-name={worldId}\nserver-port=19132\n");
+        $"level-name={worldId}\nserver-port=19132\nallow-list=false\n");
     var bedrockExe = Path.Combine(bedrockRoot, "bedrock_server.exe");
     File.WriteAllText(bedrockExe, "local owner-installed test stand-in");
-    var bedrock = dummy with { Game = GameKinds.MinecraftBedrock };
+    var bedrock = reviewed with { Game = GameKinds.MinecraftBedrock };
     var bedrockSetup = javaSetup with { ServerFile = bedrockExe, GamePort = 19132 };
     Require(MinecraftPreparedRoot.Check(data.RootPath, bedrockRoot, bedrockRoot,
         bedrock, bedrockSetup, bedrockExe) is null &&
@@ -4296,6 +4344,31 @@ await Check("Minecraft successor requires owner-prepared local server roots", ()
             bedrock, bedrockSetup, javaExe) is not null &&
         !Directory.Exists(Path.Combine(bedrockRoot, "worlds", worldId)),
         "Bedrock accepted an external executable or changed the prepared root before a verified copy");
+    var bedrockRestricted = bedrock with
+    {
+        PortableSetup = bedrock.PortableSetup with
+        {
+            AllowlistEnabled = true,
+            Allowlist = [new SharedWorldPortableAllowEntry("Bob", "1234567890123456789")]
+        }
+    };
+    File.WriteAllText(Path.Combine(bedrockRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=19132\nallow-list=false\n");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, bedrockRoot, bedrockRoot,
+        bedrockRestricted, bedrockSetup, bedrockExe)?.Contains("allow-list=true") == true,
+        "Bedrock allowed a disabled prepared allowlist against the signed source");
+    File.WriteAllText(Path.Combine(bedrockRoot, "server.properties"),
+        $"level-name={worldId}\nserver-port=19132\nallow-list=true\n");
+    File.WriteAllText(Path.Combine(bedrockRoot, "allowlist.json"),
+        "[{\"name\":\"Bob\",\"xuid\":\"9999999999999999999\"}]");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, bedrockRoot, bedrockRoot,
+        bedrockRestricted, bedrockSetup, bedrockExe)?.Contains("allowlist.json") == true,
+        "Bedrock accepted the same player name with a different signed XUID");
+    File.WriteAllText(Path.Combine(bedrockRoot, "allowlist.json"),
+        "[{\"name\":\"Bob\",\"xuid\":\"1234567890123456789\"}]");
+    Require(MinecraftPreparedRoot.Check(data.RootPath, bedrockRoot, bedrockRoot,
+        bedrockRestricted, bedrockSetup, bedrockExe) is null,
+        "Bedrock refused prepared allowlist matching the signed source");
     return Task.CompletedTask;
 });
 

@@ -212,7 +212,7 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
           onChange={event => setExecutable(event.target.value)} /></label>
         <label>Prepared Minecraft server folder, if using Minecraft<Input value={preparedServerRoot}
           onChange={event => setPreparedServerRoot(event.target.value)} /></label>
-        {handoff.preparedServerRoot && <small>Install the matching Minecraft server in this separate folder. Review its terms and configuration yourself. The world folder must be empty.</small>}
+        {handoff.preparedServerRoot && <small>Install the matching Minecraft server in this separate folder. Review its terms, server.properties settings, and player allowlist against the signed source. A mismatch blocks restore and Start. The world folder must be empty.</small>}
         <label>Factorio local RCON port, if using Factorio<Input inputMode="numeric" value={factorioRconPort}
           onChange={event => setFactorioRconPort(event.target.value)} /></label>
         <label>New game password, if this game uses one<Input type="password" value={gamePassword}
