@@ -94,8 +94,11 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
             throw new InvalidDataException("The candidate identity or signed offer is invalid.");
         var draft = new WorldSeparateCopyBranch(1, Guid.NewGuid(), offer, true,
             WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal), "", "");
-        var signed = draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            Basis(draft), HashAlgorithmName.SHA256)) };
+        var signed = draft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            Basis(draft), HashAlgorithmName.SHA256))
+        };
         return signed with { BranchHash = Hash(signed) };
     }
 
@@ -146,31 +149,31 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
 
     private BranchSet? ReadSet(Guid profileId)
     {
-            var bytes = data.LoadProtected(Name(profileId));
-            var floorBytes = data.LoadProtected(FloorName(profileId));
-            if (bytes is null)
-            {
-                if (data.HasProtected(Name(profileId)) || floorBytes is not null ||
-                    data.HasProtected(FloorName(profileId)))
-                    throw new InvalidDataException("Separate history could not be read.");
-                return null;
-            }
-            if (bytes.Length > 2 * 1024 * 1024)
-                throw new InvalidDataException("Separate history is oversized.");
-            var floor = floorBytes is null ? null : JsonSerializer.Deserialize<BranchFloor>(floorBytes, Json);
-            var set = JsonSerializer.Deserialize<BranchSet>(bytes, Json);
-            if (floor is null || floor.Schema != 1 ||
-                floor.Sha256 != Convert.ToHexString(SHA256.HashData(bytes)) ||
-                set is null || floor.Count != set.Branches.Count ||
-                set.Schema != 1 || set.ProfileId != profileId ||
-                set.GroupId == Guid.Empty || set.Branches.Count > 20 ||
-                set.Branches.Select(branch => branch.BranchId).Distinct().Count() != set.Branches.Count ||
-                set.ReturnedBranches is { } returned &&
-                    (returned.Distinct(StringComparer.Ordinal).Count() != returned.Count ||
-                     returned.Any(hash => !set.Branches.Any(branch => branch.BranchHash == hash))) ||
-                set.Branches.Any(branch => branch.Offer.Roster.GroupId != set.GroupId ||
-                    branch.Offer.Roster.ProfileId != profileId || !Verify(branch)))
-                throw new InvalidDataException("Separate history failed verification.");
-            return set;
+        var bytes = data.LoadProtected(Name(profileId));
+        var floorBytes = data.LoadProtected(FloorName(profileId));
+        if (bytes is null)
+        {
+            if (data.HasProtected(Name(profileId)) || floorBytes is not null ||
+                data.HasProtected(FloorName(profileId)))
+                throw new InvalidDataException("Separate history could not be read.");
+            return null;
+        }
+        if (bytes.Length > 2 * 1024 * 1024)
+            throw new InvalidDataException("Separate history is oversized.");
+        var floor = floorBytes is null ? null : JsonSerializer.Deserialize<BranchFloor>(floorBytes, Json);
+        var set = JsonSerializer.Deserialize<BranchSet>(bytes, Json);
+        if (floor is null || floor.Schema != 1 ||
+            floor.Sha256 != Convert.ToHexString(SHA256.HashData(bytes)) ||
+            set is null || floor.Count != set.Branches.Count ||
+            set.Schema != 1 || set.ProfileId != profileId ||
+            set.GroupId == Guid.Empty || set.Branches.Count > 20 ||
+            set.Branches.Select(branch => branch.BranchId).Distinct().Count() != set.Branches.Count ||
+            set.ReturnedBranches is { } returned &&
+                (returned.Distinct(StringComparer.Ordinal).Count() != returned.Count ||
+                 returned.Any(hash => !set.Branches.Any(branch => branch.BranchHash == hash))) ||
+            set.Branches.Any(branch => branch.Offer.Roster.GroupId != set.GroupId ||
+                branch.Offer.Roster.ProfileId != profileId || !Verify(branch)))
+            throw new InvalidDataException("Separate history failed verification.");
+        return set;
     }
 }

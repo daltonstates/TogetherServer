@@ -49,8 +49,11 @@ internal static class SharedWorldSeparateRoute
         var draft = new SeparateCopyRouteChallenge(1, branch.Offer.Proposal.ProfileId,
             branch.BranchHash, nonce, DateTimeOffset.UtcNow, observerId,
             Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()), "");
-        return draft with { Signature = Convert.ToBase64String(observerKey.SignData(
-            ChallengeBasis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(observerKey.SignData(
+            ChallengeBasis(draft), HashAlgorithmName.SHA256))
+        };
     }
 
     internal static bool VerifyChallenge(SeparateCopyRouteChallenge? challenge,
@@ -83,8 +86,11 @@ internal static class SharedWorldSeparateRoute
         var draft = new SeparateCopyRouteProof(1, branch.Offer.Proposal.ProfileId,
             branch.BranchHash, challenge.Nonce, branch.Offer.Proposal.CandidateAddress,
             branch.Offer.CandidateTlsFingerprint, "");
-        return draft with { Signature = Convert.ToBase64String(candidateKey.SignData(
-            ProofBasis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+            ProofBasis(draft), HashAlgorithmName.SHA256))
+        };
     }
 
     internal static bool VerifyProof(SeparateCopyRouteProof? proof,
@@ -127,8 +133,11 @@ internal static class SharedWorldSeparateRoute
             branch.Offer.Proposal.CandidateAddress, branch.Offer.CandidateTlsFingerprint,
             ChallengeHash(challenge), ProofHash(proof), challenge.ObserverDeviceId,
             challenge.ObserverPublicKey, "");
-        var signed = draft with { Signature = Convert.ToBase64String(observerKey.SignData(
-            ReceiptBasis(draft), HashAlgorithmName.SHA256)) };
+        var signed = draft with
+        {
+            Signature = Convert.ToBase64String(observerKey.SignData(
+            ReceiptBasis(draft), HashAlgorithmName.SHA256))
+        };
         return new(challenge, proof, signed);
     }
 

@@ -201,24 +201,34 @@ public sealed partial class HostManager
 
     private static string SeparateWorldRoot(LocalData data, SharedWorldVersion version,
         Guid localProfileId) => version.Game switch
-    {
-        GameKinds.Valheim => Path.Combine(data.WorldImportsRoot, localProfileId.ToString("N")),
-        GameKinds.Factorio => Path.Combine(data.FactorioServersRoot,
-            localProfileId.ToString("N"), version.WorldId),
-        GameKinds.MinecraftJava or GameKinds.MinecraftBedrock =>
-            Path.Combine(data.MinecraftInstallRoot, localProfileId.ToString("N")),
-        _ => data.NewWorldDirectory(localProfileId)
-    };
+        {
+            GameKinds.Valheim => Path.Combine(data.WorldImportsRoot, localProfileId.ToString("N")),
+            GameKinds.Factorio => Path.Combine(data.FactorioServersRoot,
+                localProfileId.ToString("N"), version.WorldId),
+            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock =>
+                Path.Combine(data.MinecraftInstallRoot, localProfileId.ToString("N")),
+            _ => data.NewWorldDirectory(localProfileId)
+        };
 
     private static string SeparateSetupHash(ServerProfile profile, TakeoverLocalSetup setup) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
-            profile.Id, profile.Kind, profile.WorldId, profile.WorldDirectory,
-            ProfileGamePort = profile.GamePort, profile.ExecutablePath, profile.ServerName,
-            profile.SeparateCopySourceProfileId, profile.SeparateCopyBranchHash,
-            profile.Minecraft?.ServerJarPath, profile.Factorio?.RconPort,
-            setup.ServerFile, setup.GameVersion, setup.EnabledAddOns,
-            setup.ControlPort, setup.GamePort
+            profile.Id,
+            profile.Kind,
+            profile.WorldId,
+            profile.WorldDirectory,
+            ProfileGamePort = profile.GamePort,
+            profile.ExecutablePath,
+            profile.ServerName,
+            profile.SeparateCopySourceProfileId,
+            profile.SeparateCopyBranchHash,
+            profile.Minecraft?.ServerJarPath,
+            profile.Factorio?.RconPort,
+            setup.ServerFile,
+            setup.GameVersion,
+            setup.EnabledAddOns,
+            setup.ControlPort,
+            setup.GamePort
         })));
 
     private string VerifySeparateVault(WorldSeparateCopyBranch branch)
@@ -283,8 +293,10 @@ public sealed partial class HostManager
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
             CryptographicException or UnauthorizedAccessException or ArgumentException)
-        { return new(false, false, false, true,
-            "Separate-copy state failed verification. Keep every save and review this PC before hosting."); }
+        {
+            return new(false, false, false, true,
+            "Separate-copy state failed verification. Keep every save and review this PC before hosting.");
+        }
         finally { gate.Release(); }
     }
 
@@ -366,12 +378,19 @@ public sealed partial class HostManager
                 return new(false, "FactorioRconPortInvalid", "Choose a separate local Factorio RCON port.");
             var profile = new ServerProfile
             {
-                Id = localId, Kind = version.Game, WorldId = version.WorldId,
-                Name = request.Name, ServerName = request.ServerName,
-                WorldSource = "Existing", WorldDirectory = worldRoot,
-                GamePort = setup.GamePort, ExecutablePath = executable,
-                Crossplay = version.PortableSetup.Crossplay, PublicListing = false,
-                SharedSavesEnabled = false, SeparateCopySourceProfileId = sourceProfileId,
+                Id = localId,
+                Kind = version.Game,
+                WorldId = version.WorldId,
+                Name = request.Name,
+                ServerName = request.ServerName,
+                WorldSource = "Existing",
+                WorldDirectory = worldRoot,
+                GamePort = setup.GamePort,
+                ExecutablePath = executable,
+                Crossplay = version.PortableSetup.Crossplay,
+                PublicListing = false,
+                SharedSavesEnabled = false,
+                SeparateCopySourceProfileId = sourceProfileId,
                 SeparateCopyBranchHash = branch.BranchHash,
                 Backups = new BackupOptions { Enabled = true, RetentionCount = 50 },
                 CrashRecovery = new CrashRecoveryOptions { Enabled = false },
@@ -552,8 +571,11 @@ public sealed partial class HostManager
                 return new(false, "SetupChanged", "The reviewed local server setup changed.");
             var issue = SeparateCopyPreStartIssue(state, branch, profile, request.Setup);
             if (issue is not null) return new(false, "SeparateChecksPending", issue);
-            SaveSeparateHost(state with { Ready = true,
-                SetupHash = SeparateSetupHash(profile, request.Setup) });
+            SaveSeparateHost(state with
+            {
+                Ready = true,
+                SetupHash = SeparateSetupHash(profile, request.Setup)
+            });
             return new(true, "SeparateReadyForManualStart",
                 "This warned separate copy is ready for an explicit manual Start while the old Host stays unreachable. It is not authoritative. Test a real game join and saved Stop after Start.",
                 localId, branch.Offer.Version.VersionHash);

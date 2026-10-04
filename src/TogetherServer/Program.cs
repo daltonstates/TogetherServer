@@ -1703,14 +1703,26 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/finish",
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/start",
     async (HttpContext context, Guid id, SeparateCopyHostStartRequest request) =>
     !friendMode ? Results.Conflict(new { code = "HostMode" }) :
-    !request.AcceptSplitWarning ? Results.Json(new { ok = false,
-        code = "SplitWarningRequired", message = "Confirm that another game server may still be running and both histories need review." }) :
+    !request.AcceptSplitWarning ? Results.Json(new
+    {
+        ok = false,
+        code = "SplitWarningRequired",
+        message = "Confirm that another game server may still be running and both histories need review."
+    }) :
     !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == request.BranchHash) ?
-        Results.Json(new { ok = false, code = "SeparateProofRejected",
-            message = "Choose this PC's recorded signed separate copy." }) :
+        Results.Json(new
+        {
+            ok = false,
+            code = "SeparateProofRejected",
+            message = "Choose this PC's recorded signed separate copy."
+        }) :
     !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
-        Results.Json(new { ok = false, code = "HostLossNotConfirmed",
-            message = "This PC must still confirm two minutes without reaching the old Host." }) :
+        Results.Json(new
+        {
+            ok = false,
+            code = "HostLossNotConfirmed",
+            message = "This PC must still confirm two minutes without reaching the old Host."
+        }) :
         Results.Json(await manager.StartSeparateCopyAsync(request.LocalProfileId,
             request.BranchHash)));
 app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid id) =>

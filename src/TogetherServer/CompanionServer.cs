@@ -346,8 +346,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 context.Request.ContentLength, 2048, context.RequestAborted);
             if (bytes is null) return Results.NotFound();
             SeparateCopyRouteChallenge? challenge;
-            try { challenge = JsonSerializer.Deserialize<SeparateCopyRouteChallenge>(bytes,
-                new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+            try
+            {
+                challenge = JsonSerializer.Deserialize<SeparateCopyRouteChallenge>(bytes,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            }
             catch (JsonException) { return Results.NotFound(); }
             if (challenge is null) return Results.NotFound();
             var proof = await manager.SignSeparateRouteProofAsync(profileId, branchHash,
@@ -363,8 +366,11 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 context.Request.ContentLength, 4096, context.RequestAborted);
             if (bytes is null) return Results.NotFound();
             SeparateCopyRouteConfirmation? confirmation;
-            try { confirmation = JsonSerializer.Deserialize<SeparateCopyRouteConfirmation>(bytes,
-                new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+            try
+            {
+                confirmation = JsonSerializer.Deserialize<SeparateCopyRouteConfirmation>(bytes,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            }
             catch (JsonException) { return Results.NotFound(); }
             return confirmation is not null && await manager.ConfirmSeparateRouteAsync(profileId,
                 branchHash, confirmation, HostIdentity.Fingerprint(certificate)) ?
