@@ -5424,7 +5424,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         candidateSettings.CompanionBindAddress = "127.0.0.1";
         candidateSettings.CompanionEndpoint = candidateAddress;
         candidateSettings.CompanionPort = candidatePort;
-        candidateSettings.CompanionListeningEnabled = true;
+        candidateSettings.CompanionListeningEnabled = false;
         pcs[0].SaveSettings(candidateSettings);
         using var modeGate = new SemaphoreSlim(1, 1);
         var candidateManager = Manager(pcs[0]);
@@ -5436,8 +5436,22 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         try
         {
             await candidateListener.SyncAsync();
-            Require(candidateListener.ListenerState == CompanionListenerStates.Listening,
-                "owner-enabled candidate HTTPS listener did not open for an armed offer");
+            Require(candidateListener.ListenerState == CompanionListenerStates.Off &&
+                !candidateListener.Active && !candidateManager.CompanionListeningEnabled,
+                "arming an offer opened the candidate listener before the local action enabled it");
+            var rejectedActivation = await SharedWorldCandidateListener.ActivateAsync(
+                new(false, "HostLossNotConfirmed", "The old Host is still reachable."),
+                candidateManager, candidateListener);
+            Require(!rejectedActivation.Ok && !candidateListener.Active &&
+                !candidateManager.CompanionListeningEnabled,
+                "a failed recovery offer enabled an inactive listener");
+            var activated = await SharedWorldCandidateListener.ActivateAsync(
+                new(true, "RecoveryOfferArmed", "A signed offer is ready.", offer),
+                candidateManager, candidateListener);
+            Require(activated.Ok && candidateManager.CompanionListeningEnabled &&
+                candidateListener.ListenerState == CompanionListenerStates.Listening &&
+                candidateListener.Active,
+                "a signed recovery offer did not open its owned candidate HTTPS listener");
             using var handler = new HttpClientHandler
             {
                 ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>

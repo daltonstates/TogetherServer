@@ -1586,8 +1586,17 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext
     friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/offer", async (Guid id) =>
-    friendMode ? Results.Json(await friend.PrepareRecoveryOfferAsync(id)) :
-    Results.Conflict(new { code = "HostMode" }));
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+        var result = await friend.PrepareRecoveryOfferAsync(id);
+        return Results.Json(await SharedWorldCandidateListener.ActivateAsync(result, manager,
+            companionServer));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Json(new SharedWorldVoteInbox(data).Status(id, friend.RecoveryDeviceId(id))) :
