@@ -219,9 +219,12 @@ internal sealed partial class SharedWorldService
                         completion.CompletedUtc, sourceFiles,
                         Convert.ToHexString(SHA256.HashData(beforeSetup)),
                         Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), "");
-                    var signed = unsigned with { Signature = Convert.ToBase64String(
+                    var signed = unsigned with
+                    {
+                        Signature = Convert.ToBase64String(
                         key.SignData(JsonSerializer.SerializeToUtf8Bytes(unsigned, Json),
-                            HashAlgorithmName.SHA256)) };
+                            HashAlgorithmName.SHA256))
+                    };
                     var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(signed, Json);
                     if (manifestBytes.Length > MaximumManifestBytes)
                         throw new InvalidDataException("The live capture manifest is too large.");
@@ -433,7 +436,8 @@ internal sealed partial class SharedWorldService
                     EvictOldChunkHashes(profile.Id, version.VersionHash);
                     try { PrunePublishedPayloads(version); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
-                        InvalidDataException or JsonException) { }
+                        InvalidDataException or JsonException)
+                    { }
                     try { if (File.Exists(ErrorPath(profile.Id))) File.Delete(ErrorPath(profile.Id)); }
                     catch (IOException) { }
                     return new(true, "SharedSavePublished",

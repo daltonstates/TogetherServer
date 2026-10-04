@@ -45,16 +45,22 @@ internal static class SharedWorldLiveCaptureChecks
             var backup = backups.Create(profile, BackupKinds.Rolling);
             Require(backup.Ok && backup.Backup is not null, "synthetic post-Stop backup failed");
             var first = shared.PublishAfterStop(profile, backup.Backup!.Id);
-            Require(first.Ok && first.Version is { Number: 1,
-                CaptureKind: SharedWorldCaptureKinds.PostStopBackup },
+            Require(first.Ok && first.Version is
+            {
+                Number: 1,
+                CaptureKind: SharedWorldCaptureKinds.PostStopBackup
+            },
                 "existing post-Stop publication changed");
             Require(System.Text.Encoding.UTF8.GetString(shared.ReadChunk(first.Version!, 0, 0)) ==
                 "post-stop baseline", "post-Stop chunk changed");
 
             var run = new ManagedRun
             {
-                ProfileId = profile.Id, OperationId = Guid.NewGuid(), Kind = profile.Kind,
-                WorldId = profile.WorldId, WorldDirectory = profile.WorldDirectory,
+                ProfileId = profile.Id,
+                OperationId = Guid.NewGuid(),
+                Kind = profile.Kind,
+                WorldId = profile.WorldId,
+                WorldDirectory = profile.WorldDirectory,
                 ProcessId = 4242,
                 StartTimeUtcTicks = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks,
                 WasReady = true
@@ -163,9 +169,12 @@ internal static class SharedWorldLiveCaptureChecks
             {
                 signerForDuplicate.ImportPkcs8PrivateKey(
                     data.LoadProtected("shared-world-signing-key.protected")!, out _);
-                duplicate = duplicate with { Signature = Convert.ToBase64String(
+                duplicate = duplicate with
+                {
+                    Signature = Convert.ToBase64String(
                     signerForDuplicate.SignData(JsonSerializer.SerializeToUtf8Bytes(duplicate, json),
-                        HashAlgorithmName.SHA256)) };
+                        HashAlgorithmName.SHA256))
+                };
             }
             File.WriteAllBytes(duplicateManifestPath, JsonSerializer.SerializeToUtf8Bytes(duplicate, json));
             Require(!shared.PublishLiveCapture(profile, duplicateId,
@@ -196,8 +205,11 @@ internal static class SharedWorldLiveCaptureChecks
                 "a changed reviewed source published the staged capture");
             profile.WorldDirectory = originalDirectory;
             var live = shared.PublishLiveCapture(profile, acceptedId, approval);
-            Require(live.Ok && live.Version is { Schema: 5, Number: 2,
-                CaptureKind: SharedWorldCaptureKinds.LiveSave } &&
+            Require(live.Ok && live.Version is
+            {
+                Schema: 5, Number: 2,
+                CaptureKind: SharedWorldCaptureKinds.LiveSave
+            } &&
                 SharedWorldService.VerifySignature(live.Version!),
                 "accepted synthetic capture did not publish a signed live version");
             Require(!OldSchemaFourReaderAccepts(live.Version!) &&
@@ -206,7 +218,10 @@ internal static class SharedWorldLiveCaptureChecks
             using (var downgradeSigner = ECDsa.Create(ECCurve.NamedCurves.nistP256))
                 ExpectInvalid(() => SharedWorldService.SignVersion(live.Version! with
                 {
-                    Schema = 4, SigningPublicKey = "", VersionHash = "", Signature = ""
+                    Schema = 4,
+                    SigningPublicKey = "",
+                    VersionHash = "",
+                    Signature = ""
                 }, downgradeSigner), "schema 4 accepted a newly signed live capture");
             Require(!JsonSerializer.Serialize(live.Version).Contains("SourceDirectory",
                 StringComparison.Ordinal) &&
@@ -225,9 +240,12 @@ internal static class SharedWorldLiveCaptureChecks
             var unsignedReceipt = new SharedWorldReceipt(1, live.Version!.GroupId, profile.Id,
                 live.Version.VersionHash, receiverId, roster.Epoch, roster.Revision,
                 Guid.NewGuid(), "");
-            var receipt = unsignedReceipt with { Signature = Convert.ToBase64String(
+            var receipt = unsignedReceipt with
+            {
+                Signature = Convert.ToBase64String(
                 receiverKey.SignData(SharedWorldReceiptTrust.Basis(unsignedReceipt),
-                    HashAlgorithmName.SHA256)) };
+                    HashAlgorithmName.SHA256))
+            };
             Require(shared.ConfirmReceipt(profile, receiverId, receipt).Ok &&
                 shared.Status(profile).ConfirmedCopies == 1,
                 "the exact signed live version receipt was not confirmed");
@@ -246,9 +264,13 @@ internal static class SharedWorldLiveCaptureChecks
                     data.LoadProtected("shared-world-signing-key.protected")!, out _);
                 orphan = SharedWorldService.SignVersion(live.Version with
                 {
-                    Number = 3, ParentHash = live.Version.VersionHash,
-                    BackupId = Guid.NewGuid(), CreatedUtc = DateTimeOffset.UtcNow,
-                    SigningPublicKey = "", VersionHash = "", Signature = ""
+                    Number = 3,
+                    ParentHash = live.Version.VersionHash,
+                    BackupId = Guid.NewGuid(),
+                    CreatedUtc = DateTimeOffset.UtcNow,
+                    SigningPublicKey = "",
+                    VersionHash = "",
+                    Signature = ""
                 }, publishingKey);
                 File.Copy(Path.Combine(versionGroupRoot, "2", "payload", "world.dat"),
                     Path.Combine(orphanRoot, "payload", "world.dat"));
@@ -388,8 +410,11 @@ internal static class SharedWorldLiveCaptureChecks
                 "a disabled world with retained published history and no orphan was flagged");
             profile.SharedSavesEnabled = true;
             var postStop = resumed.PublishAfterStop(profile, secondBackup.Backup!.Id);
-            Require(postStop.Ok && postStop.Version is { Number: 3,
-                CaptureKind: SharedWorldCaptureKinds.PostStopBackup } &&
+            Require(postStop.Ok && postStop.Version is
+            {
+                Number: 3,
+                CaptureKind: SharedWorldCaptureKinds.PostStopBackup
+            } &&
                 postStop.Version!.ParentHash == live.Version!.VersionHash,
                 "post-Stop publishing did not continue after a live version");
             Require(shared.ReadChunk(live.Version!, 0, 0).AsSpan().SequenceEqual(
@@ -413,11 +438,15 @@ internal static class SharedWorldLiveCaptureChecks
                     data.LoadProtected("shared-world-signing-key.protected")!, out _);
                 var soleDraft = postStop.Version! with
                 {
-                    GroupId = soleGroup, Number = 1, ParentHash = null,
+                    GroupId = soleGroup,
+                    Number = 1,
+                    ParentHash = null,
                     BackupId = Guid.NewGuid(),
                     Files = [new SharedWorldFile("world.dat", soleBytes.Length,
                         Convert.ToHexString(SHA256.HashData(soleBytes)))],
-                    SigningPublicKey = "", VersionHash = "", Signature = ""
+                    SigningPublicKey = "",
+                    VersionHash = "",
+                    Signature = ""
                 };
                 var sole = SharedWorldService.SignVersion(soleDraft, publishingKey);
                 File.WriteAllBytes(Path.Combine(soleRoot, "version.json"),
@@ -479,9 +508,13 @@ internal static class SharedWorldLiveCaptureChecks
             using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var legacy = SharedWorldService.SignVersion(postStop.Version! with
             {
-                Schema = 1, Number = 1, ParentHash = null,
+                Schema = 1,
+                Number = 1,
+                ParentHash = null,
                 PortableSetup = new SharedWorldPortableSetup(profile.GamePort, false),
-                SigningPublicKey = "", VersionHash = "", Signature = ""
+                SigningPublicKey = "",
+                VersionHash = "",
+                Signature = ""
             }, signer);
             Require(SharedWorldService.VerifySignature(legacy),
                 "legacy post-Stop signature was rejected");
@@ -506,8 +539,11 @@ internal static class SharedWorldLiveCaptureChecks
         var ownerShared = new SharedWorldService(ownerData, ownerBackups);
         var ownerProfile = new ServerProfile
         {
-            Kind = GameKinds.Fixture, WorldId = "successor-anchor-world", WorldSource = "New",
-            SharedSavesEnabled = true, GamePort = 34568,
+            Kind = GameKinds.Fixture,
+            WorldId = "successor-anchor-world",
+            WorldSource = "New",
+            SharedSavesEnabled = true,
+            GamePort = 34568,
             Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 }
         };
         ownerProfile.WorldDirectory = ownerData.NewWorldDirectory(ownerProfile.Id);
@@ -526,16 +562,23 @@ internal static class SharedWorldLiveCaptureChecks
         var head = published.Version!;
         var receiptDraft = new SharedWorldReceipt(1, head.GroupId, ownerProfile.Id,
             head.VersionHash, deviceId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        var receipt = receiptDraft with { Signature = Convert.ToBase64String(
-            deviceKey.SignData(SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        var receipt = receiptDraft with
+        {
+            Signature = Convert.ToBase64String(
+            deviceKey.SignData(SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+        };
         var record = ownerShared.SignPlannedHandoff(roster, head, receipt, deviceId,
             "https://127.0.0.1:5132", 1, null);
 
         using var successorData = new LocalData(Path.Combine(root, "successor-pc"));
         var successorProfile = new ServerProfile
         {
-            Id = ownerProfile.Id, Kind = ownerProfile.Kind, WorldId = ownerProfile.WorldId,
-            WorldSource = "New", SharedSavesEnabled = true, GamePort = ownerProfile.GamePort,
+            Id = ownerProfile.Id,
+            Kind = ownerProfile.Kind,
+            WorldId = ownerProfile.WorldId,
+            WorldSource = "New",
+            SharedSavesEnabled = true,
+            GamePort = ownerProfile.GamePort,
             Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 }
         };
         successorProfile.WorldDirectory = successorData.NewWorldDirectory(successorProfile.Id);
@@ -563,12 +606,17 @@ internal static class SharedWorldLiveCaptureChecks
         successorKey.ImportPkcs8PrivateKey(deviceKey.ExportPkcs8PrivateKey(), out _);
         var candidate = SharedWorldService.SignVersion(head with
         {
-            Schema = 5, Number = head.Number + 1, ParentHash = head.VersionHash,
+            Schema = 5,
+            Number = head.Number + 1,
+            ParentHash = head.VersionHash,
             CreatedUtc = head.CreatedUtc.AddSeconds(1),
-            CaptureKind = SharedWorldCaptureKinds.LiveSave, BackupId = Guid.NewGuid(),
+            CaptureKind = SharedWorldCaptureKinds.LiveSave,
+            BackupId = Guid.NewGuid(),
             Files = [new SharedWorldFile("world.dat", bytes.Length,
                 Convert.ToHexString(SHA256.HashData(bytes)))],
-            SigningPublicKey = "", VersionHash = "", Signature = ""
+            SigningPublicKey = "",
+            VersionHash = "",
+            Signature = ""
         }, successorKey);
         var orphanRoot = Path.Combine(sharedRoot, head.GroupId.ToString("N"), "2");
         var payloadPath = Path.Combine(orphanRoot, "payload", "world.dat");
@@ -578,30 +626,30 @@ internal static class SharedWorldLiveCaptureChecks
         var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(candidate, json);
         File.WriteAllBytes(manifestPath, manifestBytes);
         Require(successorShared.ReviewLiveOrphan(successorProfile) is
-                { Code: "Verified", VersionHash: var hash } && hash == candidate.VersionHash,
+        { Code: "Verified", VersionHash: var hash } && hash == candidate.VersionHash,
             "signed successor head without latest.json did not anchor the next live copy");
         var wrongParent = SharedWorldService.SignVersion(candidate with
         { ParentHash = new string('A', 64) }, successorKey);
         File.WriteAllBytes(manifestPath, JsonSerializer.SerializeToUtf8Bytes(wrongParent, json));
         Require(successorShared.ReviewLiveOrphan(successorProfile) is
-                { Code: "ReviewRequired", VersionHash: null },
+        { Code: "ReviewRequired", VersionHash: null },
             "successor review offered a copy with the wrong signed parent");
         var wrongNumber = SharedWorldService.SignVersion(candidate with { Number = 3 },
             successorKey);
         File.WriteAllBytes(manifestPath, JsonSerializer.SerializeToUtf8Bytes(wrongNumber, json));
         Require(successorShared.ReviewLiveOrphan(successorProfile) is
-                { Code: "ReviewRequired", VersionHash: null },
+        { Code: "ReviewRequired", VersionHash: null },
             "successor review offered a copy with the wrong signed number");
         using var wrongKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var wrongSigner = SharedWorldService.SignVersion(candidate, wrongKey);
         File.WriteAllBytes(manifestPath, JsonSerializer.SerializeToUtf8Bytes(wrongSigner, json));
         Require(successorShared.ReviewLiveOrphan(successorProfile) is
-                { Code: "ReviewRequired", VersionHash: null },
+        { Code: "ReviewRequired", VersionHash: null },
             "successor review offered a copy signed by another key");
         File.WriteAllBytes(manifestPath, manifestBytes);
         File.WriteAllText(payloadPath, "changed payload");
         Require(successorShared.ReviewLiveOrphan(successorProfile) is
-                { Code: "ReviewRequired", VersionHash: null },
+        { Code: "ReviewRequired", VersionHash: null },
             "successor review offered a copy with changed payload bytes");
         File.WriteAllBytes(payloadPath, bytes);
         Require(!successorShared.QuarantineVerifiedLiveOrphan(successorProfile,

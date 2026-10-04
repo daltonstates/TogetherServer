@@ -299,11 +299,15 @@ try
         {
             var stale = new ManagedRun
             {
-                ProfileId = recorded.ProfileId, OperationId = recorded.OperationId,
-                Kind = recorded.Kind, ProcessId = recorded.ProcessId,
+                ProfileId = recorded.ProfileId,
+                OperationId = recorded.OperationId,
+                Kind = recorded.Kind,
+                ProcessId = recorded.ProcessId,
                 StartTimeUtcTicks = recorded.StartTimeUtcTicks + 1,
-                ExecutablePath = recorded.ExecutablePath, LogPath = recorded.LogPath,
-                WorldId = recorded.WorldId, WorldDirectory = recorded.WorldDirectory,
+                ExecutablePath = recorded.ExecutablePath,
+                LogPath = recorded.LogPath,
+                WorldId = recorded.WorldId,
+                WorldDirectory = recorded.WorldDirectory,
                 GamePort = recorded.GamePort
             };
             Reject(() => observer.Observe(stale, cursor), "stale identity was accepted");

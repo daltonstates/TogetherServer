@@ -48,7 +48,10 @@ while (true)
         var operationId = File.ReadAllText(Path.Combine(root, "synthetic-save-operation-id.txt")).Trim();
         var evidence = System.Text.Json.JsonSerializer.Serialize(new
         {
-            operationId, source = "FixtureSynthetic", fileName, fileSize = new FileInfo(worldFile).Length
+            operationId,
+            source = "FixtureSynthetic",
+            fileName,
+            fileSize = new FileInfo(worldFile).Length
         });
         File.WriteAllText(Path.Combine(root, "synthetic-save-query.json"), evidence);
         Console.WriteLine("[TogetherServer fixture/INFO]: synthetic query evidence emitted");
