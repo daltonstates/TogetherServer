@@ -56,6 +56,18 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     public string? Warning { get; private set; }
     public IReadOnlyList<RemoteOperationView> RecentOperations() => operations.Recent();
 
+    // Lets local takeover checks distinguish this app's HTTPS listener from an
+    // unrelated process occupying the same control port.
+    internal bool OwnsListener(string endpoint, int port, string fingerprint,
+        string bindAddress)
+    {
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)) return false;
+        var key = bindAddress + ":" + port + "|" +
+            uri.GetLeftPart(UriPartial.Authority) + "|" + fingerprint;
+        return Active && ListenerState == CompanionListenerStates.Listening &&
+            Volatile.Read(ref activeAddress) == key;
+    }
+
     public async Task SyncAsync()
     {
         await listenerGate.WaitAsync();
@@ -324,6 +336,39 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var proof = await manager.SignSuccessorRouteProofAsync(profileId, recordHash,
                 challenge, HostIdentity.Fingerprint(certificate));
             return proof is null ? Results.NotFound() : Results.Json(proof);
+        }).RequireRateLimiting("pairing");
+        companion.MapPost("/servers/{profileId:guid}/shared-world/separate-route/{branchHash}/proof",
+            async (HttpContext context, Guid profileId, string branchHash) =>
+        {
+            if (certificate is null || branchHash.Length != 64 ||
+                !branchHash.All(Uri.IsHexDigit)) return Results.NotFound();
+            var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                context.Request.ContentLength, 2048, context.RequestAborted);
+            if (bytes is null) return Results.NotFound();
+            SeparateCopyRouteChallenge? challenge;
+            try { challenge = JsonSerializer.Deserialize<SeparateCopyRouteChallenge>(bytes,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+            catch (JsonException) { return Results.NotFound(); }
+            if (challenge is null) return Results.NotFound();
+            var proof = await manager.SignSeparateRouteProofAsync(profileId, branchHash,
+                challenge, HostIdentity.Fingerprint(certificate));
+            return proof is null ? Results.NotFound() : Results.Json(proof);
+        }).RequireRateLimiting("pairing");
+        companion.MapPost("/servers/{profileId:guid}/shared-world/separate-route/{branchHash}/confirm",
+            async (HttpContext context, Guid profileId, string branchHash) =>
+        {
+            if (certificate is null || branchHash.Length != 64 ||
+                !branchHash.All(Uri.IsHexDigit)) return Results.NotFound();
+            var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                context.Request.ContentLength, 4096, context.RequestAborted);
+            if (bytes is null) return Results.NotFound();
+            SeparateCopyRouteConfirmation? confirmation;
+            try { confirmation = JsonSerializer.Deserialize<SeparateCopyRouteConfirmation>(bytes,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+            catch (JsonException) { return Results.NotFound(); }
+            return confirmation is not null && await manager.ConfirmSeparateRouteAsync(profileId,
+                branchHash, confirmation, HostIdentity.Fingerprint(certificate)) ?
+                Results.Ok(new { code = "SeparateRouteObserved" }) : Results.NotFound();
         }).RequireRateLimiting("pairing");
         companion.MapPost("/servers/{profileId:guid}/shared-world/route-confirm/{recordHash}",
             async (Guid profileId, string recordHash, SharedWorldRouteConfirmation confirmation) =>

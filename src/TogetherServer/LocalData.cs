@@ -53,6 +53,10 @@ public sealed class ServerProfile
     public bool PublicListing { get; set; }
     public string WorldId { get; set; } = "";
     public bool SharedSavesEnabled { get; set; }
+    // A restored warned fork keeps its source and signed branch visible. It
+    // cannot inherit ordinary or remote Start/sharing authority.
+    public Guid? SeparateCopySourceProfileId { get; set; }
+    public string? SeparateCopyBranchHash { get; set; }
     public string WorldSource { get; set; } = "Existing";
     public string WorldDirectory { get; set; } = "";
     public int GamePort { get; set; } = 2456;

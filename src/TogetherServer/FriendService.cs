@@ -126,8 +126,14 @@ internal sealed partial class FriendLink : IDisposable
         if (observation != HostReachabilityObservation.TransportFailure && config is not null)
         {
             var inbox = new SharedWorldVoteInbox(data);
+            var separate = new SharedWorldSeparateCopyStore(data);
             foreach (var profileId in config.ApprovedSharedWorldGroups?.Keys.AsEnumerable() ??
-                     Enumerable.Empty<Guid>()) inbox.Retire(profileId);
+                     Enumerable.Empty<Guid>())
+            {
+                lock (SharedWorldMutationGate.For(data.RootPath))
+                    separate.MarkHostReturned(profileId);
+                inbox.Retire(profileId);
+            }
         }
     }
     private int retainedOperations;

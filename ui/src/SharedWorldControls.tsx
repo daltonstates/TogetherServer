@@ -3,6 +3,7 @@ import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, Select, TextArea } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
+import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number;
   liveSave: { available: boolean; message: string }; canManageSharing: boolean; authority: AuthorityStatus | null }
@@ -768,6 +769,9 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
         <p>Save hash: {recovery.versionHash}</p>
       </details>}
     </details>}
+    {status?.consented && status.thisPcVersion != null &&
+      <SharedWorldSeparateRoutePanel profileId={profileId}
+        separateCopies={recovery?.separateCopies ?? 0} />}
     {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId} />}
     {status?.consented && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
       <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override.</p>
