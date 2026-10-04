@@ -33,6 +33,8 @@ internal static class SharedWorldLiveCaptureChecks
             Directory.CreateDirectory(profile.WorldDirectory);
             var world = Path.Combine(profile.WorldDirectory, "world.dat");
             File.WriteAllText(world, "post-stop baseline");
+            Require(shared.ReviewLiveOrphan(profile) is { Code: "None", VersionHash: null },
+                "a new server showed an interrupted live copy before sharing existed");
             using var receiverKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var receiverId = Guid.NewGuid();
             shared.PublishRoster(profile, [new SharedWorldRosterMember(receiverId,
@@ -264,6 +266,49 @@ internal static class SharedWorldLiveCaptureChecks
                 FixtureLiveRunIdentityForChecks = current => current.ProcessId == 4242,
                 FixtureLiveCaptureAcceptedForChecks = true
             };
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "Verified", VersionHash: var hash } &&
+                hash == orphan.VersionHash,
+                "the owner review did not identify the exact signed next live copy");
+            var originalProfileId = profile.Id;
+            profile.Id = Guid.NewGuid();
+            Require(resumed.ReviewLiveOrphan(profile) is { VersionHash: null } &&
+                !resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok,
+                "another exact profile offered or moved the orphan");
+            profile.Id = originalProfileId;
+            var dirtyRosterPath = Path.Combine(root, "shared-worlds", profile.Id.ToString("N"),
+                "roster-dirty");
+            File.WriteAllText(dirtyRosterPath, "unresolved authority");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
+                !resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok,
+                "unresolved sharing authority offered or moved the orphan");
+            File.Delete(dirtyRosterPath);
+            var sourcePath = Path.Combine(root, "shared-worlds", profile.Id.ToString("N"), "source.json");
+            var sourceBytes = File.ReadAllBytes(sourcePath);
+            File.WriteAllText(sourcePath, "changed authority binding");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
+                !resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok,
+                "changed source binding offered or moved an orphan");
+            File.WriteAllBytes(sourcePath, sourceBytes);
+            var rosterPath = Path.Combine(root, "shared-worlds", profile.Id.ToString("N"),
+                $"{live.Version.GroupId:N}.roster.json");
+            var rosterBytes = File.ReadAllBytes(rosterPath);
+            File.WriteAllText(rosterPath, "changed signed roster");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
+                !resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok,
+                "changed roster offered or moved an orphan");
+            File.WriteAllBytes(rosterPath, rosterBytes);
+            File.WriteAllText(pointerPath, "changed published pointer");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
+                !resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok,
+                "changed published pointer offered or moved an orphan");
+            File.WriteAllBytes(pointerPath, pointerBytes);
+            var ancestorPath = Path.Combine(versionGroupRoot, "1", "version.json");
+            var ancestorBytes = File.ReadAllBytes(ancestorPath);
+            File.WriteAllText(ancestorPath, "changed signed ancestor");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
+                !resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok,
+                "broken signed lineage offered or moved the orphan");
+            File.WriteAllBytes(ancestorPath, ancestorBytes);
             File.WriteAllText(world, "an unrelated later live save");
             var unrelatedCapture = shared.StageLiveCapture(profile, run,
                 completion with { CompletedUtc = DateTimeOffset.UtcNow });
@@ -276,10 +321,14 @@ internal static class SharedWorldLiveCaptureChecks
                 "an unrelated live capture bypassed the crash orphan");
             Require(!resumed.QuarantineVerifiedLiveOrphan(profile, new string('0', 64)).Ok &&
                 Directory.Exists(orphanRoot), "quarantine accepted the wrong orphan identity");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "Verified", VersionHash: var retryHash } &&
+                retryHash == orphan.VersionHash,
+                "a denied wrong-hash request hid the verified copy");
             var orphanPayloadPath = Path.Combine(orphanRoot, "payload", "world.dat");
             File.WriteAllText(orphanPayloadPath, "tampered orphan payload");
             Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
                 !resumed.PublishAfterStop(profile, secondBackup.Backup.Id).Ok &&
+                resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
                 Directory.Exists(orphanRoot),
                 "a tampered live orphan was quarantined or promoted");
             File.WriteAllBytes(orphanPayloadPath, orphanPayloadBytes);
@@ -287,18 +336,21 @@ internal static class SharedWorldLiveCaptureChecks
             File.WriteAllText(orphanManifestPath, "malformed manifest");
             Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
                 !resumed.PublishAfterStop(profile, secondBackup.Backup.Id).Ok &&
+                resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
                 Directory.Exists(orphanRoot),
                 "a malformed live orphan was quarantined or promoted");
             File.WriteAllBytes(orphanManifestPath, orphanManifestBytes);
             var extraOrphanPath = Path.Combine(orphanRoot, "payload", "unsigned.dat");
             File.WriteAllText(extraOrphanPath, "not in the signed file list");
             Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
                 Directory.Exists(orphanRoot),
                 "an orphan with an extra payload file entered quarantine");
             File.Delete(extraOrphanPath);
             var publishedPayloadPath = Path.Combine(versionGroupRoot, "2", "payload", "world.dat");
             File.WriteAllText(publishedPayloadPath, "damaged prior head");
             Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
                 Directory.Exists(orphanRoot),
                 "recovery abandoned an orphan when the published head payload was damaged");
             File.WriteAllBytes(publishedPayloadPath, bytes);
@@ -307,6 +359,7 @@ internal static class SharedWorldLiveCaptureChecks
             for (var index = 0; index < 8; index++)
                 Directory.CreateDirectory(Path.Combine(quarantineBase, $"fixture-{index}"));
             Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                resumed.ReviewLiveOrphan(profile) is { Code: "ReviewRequired", VersionHash: null } &&
                 Directory.Exists(orphanRoot), "quarantine exceeded its eight-version bound");
             for (var index = 0; index < 8; index++)
                 Directory.Delete(Path.Combine(quarantineBase, $"fixture-{index}"));
@@ -322,6 +375,8 @@ internal static class SharedWorldLiveCaptureChecks
                     .SequenceEqual(orphanPayloadBytes) &&
                 File.ReadAllBytes(pointerPath).AsSpan().SequenceEqual(pointerBytes),
                 "verified recovery lost signed evidence, payload bytes, or the latest pointer");
+            Require(resumed.ReviewLiveOrphan(profile) is { Code: "None", VersionHash: null },
+                "the owner review still offered a moved live copy");
             var postStop = resumed.PublishAfterStop(profile, secondBackup.Backup!.Id);
             Require(postStop.Ok && postStop.Version is { Number: 3,
                 CaptureKind: SharedWorldCaptureKinds.PostStopBackup } &&

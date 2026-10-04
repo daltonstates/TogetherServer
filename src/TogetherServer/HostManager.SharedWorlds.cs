@@ -307,6 +307,39 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    public async Task<SharedWorldLiveOrphanReview> SharedLiveOrphanReviewAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new("ReviewRequired", null, "Choose a saved server.");
+            if (profile.SeparateCopySourceProfileId is not null ||
+                SharedAuthorityBlocked(profileId, out _))
+                return new("ReviewRequired", null,
+                    "This PC cannot verify the current hosting decision. Keep the saved copies for owner review.");
+            return sharedWorlds.ReviewLiveOrphan(profile);
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<SharedWorldResult> QuarantineSharedLiveOrphanAsync(Guid profileId,
+        string expectedVersionHash)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            if (profile.SeparateCopySourceProfileId is not null ||
+                SharedAuthorityBlocked(profileId, out _))
+                return new(false, "SharedWorldAuthorityBlocked",
+                    "This PC cannot verify the current hosting decision. No file copy was moved.");
+            return sharedWorlds.QuarantineVerifiedLiveOrphan(profile, expectedVersionHash);
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task<bool> SharedRosterManagementAvailableAsync(Guid profileId)
     {
         await gate.WaitAsync();

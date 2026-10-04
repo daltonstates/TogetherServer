@@ -449,9 +449,34 @@ internal sealed partial class SharedWorldService
             }
     }
 
+    // Read-only owner projection. It deliberately returns no candidate hash when
+    // any authority, pointer, lineage, payload, or quarantine check fails.
+    internal SharedWorldLiveOrphanReview ReviewLiveOrphan(ServerProfile profile)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+            lock (sync)
+            {
+                try
+                {
+                    var verified = ReadVerifiedLiveOrphan(profile);
+                    return verified is null
+                        ? new("None", null, "No interrupted live file copy needs review.")
+                        : new("Verified", verified.Value.Version.VersionHash,
+                            "A signed interrupted live file copy is verified and ready for owner review.");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                    InvalidDataException or CryptographicException or JsonException or OverflowException or
+                    FormatException or ArgumentException or InvalidOperationException or NotSupportedException)
+                {
+                    return new("ReviewRequired", null,
+                        "An interrupted file copy could not be verified. Keep sharing blocked and review the saved copies.");
+                }
+            }
+    }
+
     // An interrupted schema-5 publication is never reconciled into latest.json.
-    // This explicit internal recovery action moves only the next, fully verified
-    // orphan out of the numbered lineage. It does not discard signed evidence.
+    // This remains the only mutation: move the exact verified directory while
+    // leaving its signed files and the previous published pointer untouched.
     internal SharedWorldResult QuarantineVerifiedLiveOrphan(ServerProfile profile,
         string expectedVersionHash)
     {
@@ -463,88 +488,123 @@ internal sealed partial class SharedWorldService
                     if (expectedVersionHash is not { Length: 64 } ||
                         !expectedVersionHash.All(char.IsAsciiHexDigit))
                         throw new InvalidDataException("An exact orphan version hash is required.");
-                    var successor = Authority.LocalAuthorizedHead(profile.Id);
-                    if (Authority.GovernanceUnresolved(profile.Id) ||
-                        Authority.HasState(profile.Id) && successor is null ||
-                        successor is not null && !AuthorizedPublishedLineage(profile))
-                        throw new InvalidDataException("Shared world authority is unresolved.");
-                    var binding = ReadBinding(profile.Id);
-                    if (binding is null || !BindingMatches(binding, profile) || ReadRoster(profile) is null)
-                        throw new InvalidDataException("The signed shared source is missing or changed.");
-                    var latestPath = LatestPath(profile.Id);
-                    var status = Status(profile);
-                    if (File.Exists(latestPath) && status.Latest is null)
-                        throw new InvalidDataException("The existing shared save pointer failed verification.");
-                    var previous = status.Latest ?? successor?.Version;
-                    if (successor is not null && (previous is null ||
-                        previous.GroupId != successor.Version.GroupId ||
-                        previous.Number < successor.Version.Number))
-                        throw new InvalidDataException("Published history does not continue the authority head.");
-                    if (status.Latest is not null)
-                        foreach (var file in status.Latest.Files)
-                            VerifyFile(SafeChild(Path.Combine(VersionRoot(status.Latest), PayloadDirectory),
-                                file.Path), file);
-                    var groupRoot = Path.Combine(Root(profile.Id), binding.GroupId.ToString("N"));
-                    var orphanRoot = Path.Combine(groupRoot,
-                        ((previous?.Number ?? 0) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
-                    EnsureUnlinkedRoot(data.RootPath, orphanRoot);
-                    if (!Directory.Exists(orphanRoot))
+                    var verified = ReadVerifiedLiveOrphan(profile) ??
                         throw new InvalidDataException("The next unpublished live version is missing.");
-                    var manifestPath = SafeChild(orphanRoot, "version.json");
-                    if (!File.Exists(manifestPath) ||
-                        new FileInfo(manifestPath).Length is < 1 or > MaximumManifestBytes)
-                        throw new InvalidDataException("The unpublished live version is incomplete.");
-                    var candidate = JsonSerializer.Deserialize<SharedWorldVersion>(
-                        File.ReadAllBytes(manifestPath), Json);
-                    using var key = LoadPublishingKey(profile.Id);
-                    if (candidate is null || candidate.Schema != 5 ||
-                        candidate.CaptureKind != SharedWorldCaptureKinds.LiveSave ||
-                        !VerifySignature(candidate) ||
-                        !candidate.VersionHash.Equals(expectedVersionHash, StringComparison.Ordinal) ||
-                        candidate.ProfileId != profile.Id || candidate.Game != profile.Kind ||
-                        candidate.WorldId != profile.WorldId || candidate.GroupId != binding.GroupId ||
-                        candidate.Number != (previous?.Number ?? 0) + 1 ||
-                        candidate.ParentHash != previous?.VersionHash ||
-                        candidate.BackupId == Guid.Empty ||
-                        previous is not null && candidate.CreatedUtc <= previous.CreatedUtc ||
-                        candidate.SigningPublicKey != Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) ||
-                        !orphanRoot.Equals(VersionRoot(candidate), StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidDataException("The live orphan does not continue the verified history.");
-                    var entries = Directory.EnumerateFileSystemEntries(orphanRoot).ToArray();
-                    if (entries.Length != 2 || !entries.Contains(manifestPath,
-                            StringComparer.OrdinalIgnoreCase) ||
-                        !entries.Contains(Path.Combine(orphanRoot, PayloadDirectory),
-                            StringComparer.OrdinalIgnoreCase))
-                        throw new InvalidDataException("The live orphan contains unexpected entries.");
-                    BoundedTotalBytes(candidate.Files);
-                    VerifyLiveTree(Path.Combine(orphanRoot, PayloadDirectory), candidate.Files);
-
-                    var quarantineRoot = Path.Combine(Root(profile.Id), QuarantinedLiveDirectory);
-                    EnsureUnlinkedRoot(data.RootPath, quarantineRoot);
-                    if (Directory.Exists(quarantineRoot))
-                    {
-                        var existing = Directory.EnumerateFileSystemEntries(quarantineRoot).ToArray();
-                        if (existing.Length >= MaximumQuarantinedLiveVersions ||
-                            existing.Any(path => !Directory.Exists(path) ||
-                                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0))
-                            throw new InvalidDataException("The bounded live orphan quarantine needs review.");
-                    }
-                    var destination = Path.Combine(quarantineRoot,
-                        $"{candidate.GroupId:N}-{candidate.Number}-{candidate.VersionHash}");
-                    EnsureUnlinkedRoot(data.RootPath, destination);
-                    if (Directory.Exists(destination) || File.Exists(destination))
-                        throw new InvalidDataException("This live orphan is already quarantined.");
-                    Directory.CreateDirectory(quarantineRoot);
-                    Directory.Move(orphanRoot, destination);
+                    if (!verified.Version.VersionHash.Equals(expectedVersionHash, StringComparison.Ordinal))
+                        throw new InvalidDataException("The requested live version changed.");
+                    var destination = Path.Combine(verified.QuarantineRoot,
+                        $"{verified.Version.GroupId:N}-{verified.Version.Number}-{verified.Version.VersionHash}");
+                    Directory.CreateDirectory(verified.QuarantineRoot);
+                    Directory.Move(verified.OrphanRoot, destination);
                     return new(true, "LiveSaveOrphanQuarantined",
-                        "The verified unpublished live version was quarantined for review.");
+                        "The signed unpublished file copy was preserved for review. It was not published. A new post-Stop copy can now be made; game load has not been checked.");
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
                     InvalidDataException or CryptographicException or JsonException or OverflowException or
-                    FormatException or ArgumentException)
+                    FormatException or ArgumentException or InvalidOperationException or NotSupportedException)
                 {
-                    return new(false, "LiveSaveOrphanQuarantineDenied", ex.Message);
+                    return new(false, "LiveSaveOrphanQuarantineDenied",
+                        "The interrupted file copy could not be quarantined safely. No new copy was published.");
                 }
             }
+    }
+
+    private (SharedWorldVersion Version, string OrphanRoot, string QuarantineRoot)?
+        ReadVerifiedLiveOrphan(ServerProfile profile)
+    {
+        if (profile.Kind == GameKinds.Custom || profile.SeparateCopySourceProfileId is not null)
+            throw new InvalidDataException("This profile cannot review a live publication.");
+        var profileRoot = Root(profile.Id);
+        if (File.Exists(profileRoot))
+            throw new InvalidDataException("Shared save storage needs review.");
+        if (!Directory.Exists(profileRoot) && !Authority.HasState(profile.Id)) return null;
+        var successor = Authority.LocalAuthorizedHead(profile.Id);
+        if (Authority.GovernanceUnresolved(profile.Id) ||
+            Authority.HasState(profile.Id) && successor is null ||
+            successor is not null && !AuthorizedPublishedLineage(profile))
+            throw new InvalidDataException("Shared world authority is unresolved.");
+        var binding = ReadBinding(profile.Id);
+        if (binding is null || !BindingMatches(binding, profile) || ReadRoster(profile) is null)
+            throw new InvalidDataException("The signed shared source is missing or changed.");
+        var latestPath = LatestPath(profile.Id);
+        var status = Status(profile);
+        if (File.Exists(latestPath) && status.Latest is null)
+            throw new InvalidDataException("The existing shared save pointer failed verification.");
+        var previous = status.Latest;
+        if (successor is not null && (previous is null ||
+            previous.GroupId != successor.Version.GroupId ||
+            previous.Number < successor.Version.Number))
+            throw new InvalidDataException("Published history does not continue the authority head.");
+        var groupRoot = Path.Combine(Root(profile.Id), binding.GroupId.ToString("N"));
+        var orphanRoot = Path.Combine(groupRoot,
+            ((previous?.Number ?? 0) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        EnsureUnlinkedRoot(data.RootPath, orphanRoot);
+        if (!Directory.Exists(orphanRoot))
+        {
+            if (File.Exists(orphanRoot))
+                throw new InvalidDataException("The unpublished version is not a directory.");
+            return null;
+        }
+        if (previous is not null)
+        {
+            var previousRoot = VersionRoot(previous);
+            EnsureUnlinkedRoot(data.RootPath, previousRoot);
+            var previousPath = SafeChild(previousRoot, "version.json");
+            if (!File.Exists(previousPath) ||
+                new FileInfo(previousPath).Length is < 1 or > MaximumManifestBytes)
+                throw new InvalidDataException("The published save directory is incomplete.");
+            var previousBytes = File.ReadAllBytes(previousPath);
+            var manifest = JsonSerializer.Deserialize<SharedWorldVersion>(previousBytes, Json);
+            if (manifest is null || !VerifySignature(manifest) ||
+                !previousBytes.AsSpan().SequenceEqual(File.ReadAllBytes(latestPath)) ||
+                !JsonSerializer.SerializeToUtf8Bytes(manifest, Json).AsSpan().SequenceEqual(
+                    JsonSerializer.SerializeToUtf8Bytes(previous, Json)))
+                throw new InvalidDataException("The published save pointer differs from its signed directory.");
+            VerifyLiveTree(Path.Combine(previousRoot, PayloadDirectory), previous.Files);
+            if (previous.Number > 1) _ = ReadEarlierVersion(previous, 1);
+        }
+        var manifestPath = SafeChild(orphanRoot, "version.json");
+        if (!File.Exists(manifestPath) ||
+            new FileInfo(manifestPath).Length is < 1 or > MaximumManifestBytes)
+            throw new InvalidDataException("The unpublished live version is incomplete.");
+        var candidate = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(manifestPath), Json);
+        using var key = LoadPublishingKey(profile.Id);
+        if (candidate is null || candidate.Schema != 5 ||
+            candidate.CaptureKind != SharedWorldCaptureKinds.LiveSave ||
+            !VerifySignature(candidate) ||
+            candidate.ProfileId != profile.Id || candidate.Game != profile.Kind ||
+            candidate.WorldId != profile.WorldId || candidate.GroupId != binding.GroupId ||
+            candidate.Number != (previous?.Number ?? 0) + 1 ||
+            candidate.ParentHash != previous?.VersionHash ||
+            candidate.BackupId == Guid.Empty ||
+            previous is not null && candidate.CreatedUtc <= previous.CreatedUtc ||
+            candidate.SigningPublicKey != Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) ||
+            !orphanRoot.Equals(VersionRoot(candidate), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The live orphan does not continue the verified history.");
+        var entries = Directory.EnumerateFileSystemEntries(orphanRoot).ToArray();
+        if (entries.Length != 2 || !entries.Contains(manifestPath,
+                StringComparer.OrdinalIgnoreCase) ||
+            !entries.Contains(Path.Combine(orphanRoot, PayloadDirectory),
+                StringComparer.OrdinalIgnoreCase))
+            throw new InvalidDataException("The live orphan contains unexpected entries.");
+        BoundedTotalBytes(candidate.Files);
+        VerifyLiveTree(Path.Combine(orphanRoot, PayloadDirectory), candidate.Files);
+
+        var quarantineRoot = Path.Combine(Root(profile.Id), QuarantinedLiveDirectory);
+        EnsureUnlinkedRoot(data.RootPath, quarantineRoot);
+        if (Directory.Exists(quarantineRoot))
+        {
+            var existing = Directory.EnumerateFileSystemEntries(quarantineRoot).ToArray();
+            if (existing.Length >= MaximumQuarantinedLiveVersions ||
+                existing.Any(path => !Directory.Exists(path) ||
+                    (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0))
+                throw new InvalidDataException("The bounded live orphan quarantine needs review.");
+        }
+        var destination = Path.Combine(quarantineRoot,
+            $"{candidate.GroupId:N}-{candidate.Number}-{candidate.VersionHash}");
+        EnsureUnlinkedRoot(data.RootPath, destination);
+        if (Directory.Exists(destination) || File.Exists(destination))
+            throw new InvalidDataException("This live orphan is already quarantined.");
+        return (candidate, orphanRoot, quarantineRoot);
     }
 }

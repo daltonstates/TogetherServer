@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus,
-  parseHostSharedWorldStatus, normalizedDirectIpHttpsEndpoint, parseSharingView } from './SharedWorldControls'
+  parseHostSharedWorldStatus, parseLiveOrphanReview, normalizedDirectIpHttpsEndpoint,
+  parseSharingView } from './SharedWorldControls'
 import type { Device } from './contracts'
 
 const profile = '11111111-1111-4111-8111-111111111111'
@@ -882,5 +883,94 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByText('Shared saves'))
     fireEvent.click(await screen.findByRole('button', { name: 'Check owner decisions' }))
     expect(await screen.findByRole('button', { name: 'Approve selected copy' })).toBeDisabled()
+  })
+
+  it('accepts only a consistent exact-hash interrupted-copy status', () => {
+    const versionHash = 'A'.repeat(64)
+    expect(parseLiveOrphanReview({ code: 'Verified', versionHash,
+      message: 'Signed file copy verified.' }).versionHash).toBe(versionHash)
+    for (const invalid of [
+      { code: 'Verified', versionHash: null, message: 'Missing hash' },
+      { code: 'None', versionHash, message: 'Wrong state' },
+      { code: 'Verified', versionHash: 'a'.repeat(64), message: 'Wrong casing' },
+      { code: 'Verified', versionHash: 'G'.repeat(64), message: 'Invalid hex' },
+      { code: 'ReviewRequired', versionHash: null, message: '' },
+      { code: 'Verified', versionHash, message: 'Extra field', path: 'C:/world' }
+    ]) expect(() => parseLiveOrphanReview(invalid)).toThrow()
+  })
+
+  it('shows only a verified copy under Technical details and refreshes after quarantine', async () => {
+    const versionHash = 'A'.repeat(64)
+    let quarantined = false
+    const posts: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/live-orphan/quarantine')) {
+        posts.push(JSON.parse(String(init?.body)))
+        quarantined = true
+        return reply({ ok: true, code: 'LiveSaveOrphanQuarantined',
+          message: 'The signed unpublished file copy was preserved for review.' })
+      }
+      if (url.endsWith('/live-orphan')) return reply(quarantined ?
+        { code: 'None', versionHash: null, message: 'No interrupted live file copy needs review.' } :
+        { code: 'Verified', versionHash, message: 'A signed interrupted live file copy is verified.' })
+      if (url.endsWith('/shared-world/handoff')) return reply(noHandoff)
+      if (url.endsWith('/shared-world/governance')) return reply(null)
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    expect(screen.queryByRole('button', { name: 'Quarantine for review' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Technical details'))
+    expect(await screen.findByText(versionHash)).toBeInTheDocument()
+    expect(screen.getByText(/preserves the signed files for review/)).toBeInTheDocument()
+    expect(screen.getByText(/does not publish or promote this copy/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Quarantine for review' }))
+    await waitFor(() => expect(posts).toEqual([{ versionHash }]))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Quarantine for review' })).not.toBeInTheDocument())
+    expect(screen.getByText('No interrupted live file copy needs review.')).toBeInTheDocument()
+  })
+
+  it('offers no quarantine action for an unverified copy and shows the review warning', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/live-orphan')) return reply({ code: 'ReviewRequired', versionHash: null,
+        message: 'An interrupted file copy could not be verified. Keep sharing blocked.' })
+      if (url.endsWith('/shared-world/handoff')) return reply(noHandoff)
+      if (url.endsWith('/shared-world/governance')) return reply(null)
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    fireEvent.click(screen.getByText('Technical details'))
+    expect(await screen.findByText(/An interrupted file copy could not be verified/)).toHaveAttribute('role', 'alert')
+    expect(screen.queryByRole('button', { name: 'Quarantine for review' })).not.toBeInTheDocument()
+  })
+
+  it('keeps an action error visible until the owner refreshes the review', async () => {
+    const versionHash = 'B'.repeat(64)
+    let cleared = false
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/live-orphan/quarantine') && init?.method === 'POST') return reply({
+        ok: false, code: 'LiveSaveOrphanQuarantineDenied',
+        message: 'The interrupted file copy could not be quarantined safely.' })
+      if (url.endsWith('/live-orphan')) return reply(cleared ?
+        { code: 'None', versionHash: null, message: 'No interrupted live file copy needs review.' } :
+        { code: 'Verified', versionHash, message: 'A signed interrupted live file copy is verified.' })
+      if (url.endsWith('/shared-world/handoff')) return reply(noHandoff)
+      if (url.endsWith('/shared-world/governance')) return reply(null)
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
+      onGrantChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('Shared saves'))
+    fireEvent.click(screen.getByText('Technical details'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Quarantine for review' }))
+    expect(await screen.findByText('The interrupted file copy could not be quarantined safely.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quarantine for review' })).toBeEnabled()
+    cleared = true
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh interrupted copy' }))
+    expect(await screen.findByText('No interrupted live file copy needs review.')).toBeInTheDocument()
+    expect(screen.queryByText('The interrupted file copy could not be quarantined safely.')).not.toBeInTheDocument()
   })
 })

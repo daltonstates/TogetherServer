@@ -48,6 +48,7 @@ public sealed record SharedWorldStatus(bool Enabled, SharedWorldVersion? Latest,
     string? Error = null, int ConfirmedCopies = 0,
     SharedWorldLiveSaveStatus? LiveSave = null, bool CanManageSharing = true,
     SharedWorldAuthorityStatus? Authority = null);
+public sealed record SharedWorldLiveOrphanReview(string Code, string? VersionHash, string Message);
 public sealed record SharedWorldResult(bool Ok, string Code, string Message,
     SharedWorldVersion? Version = null);
 public sealed record SharedWorldConsentRequest(bool Enabled);

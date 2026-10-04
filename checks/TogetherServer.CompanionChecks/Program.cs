@@ -23,6 +23,7 @@ if (args.Skip(1).Contains("--shared-transfer-alerts", StringComparer.OrdinalIgno
 if (args.Skip(1).Contains("--shared-live-core", StringComparer.OrdinalIgnoreCase))
 {
     SharedWorldLiveCaptureChecks.Run();
+    await LocalSharedLiveOrphanRequestChecks.RunAsync();
     return 0;
 }
 if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
