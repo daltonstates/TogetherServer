@@ -1777,6 +1777,8 @@ internal sealed partial class FriendLink
             if (version is null || !SharedWorldService.VerifySignature(version) || version.ProfileId != profileId ||
                 version.Game != profile.Kind || !SharedWorldSizeAllowed(version.Files))
                 return SharedFailure("InvalidManifest", "The published version failed integrity or identity checks.");
+            var copyDescription = version.CaptureKind == SharedWorldCaptureKinds.LiveSave ?
+                "live save copy" : "post-Stop file copy";
             Directory.CreateDirectory(root);
             var old = ReadReceivedLatest(root);
             var resolvedAnchor = ResolvedAuthorityAnchor(profileId, version);
@@ -1843,7 +1845,7 @@ internal sealed partial class FriendLink
             if (old?.VersionHash == version.VersionHash)
             {
                 await SendSharedReceiptAsync(profileId, old, deviceId, transferClient, transferToken);
-                return new(true, "AlreadyReceived", "This PC already has the latest hash-verified post-Stop file copy. Game load has not been checked.",
+                return new(true, "AlreadyReceived", $"This PC already has the latest hash-verified {copyDescription}. Game load has not been checked.",
                     LocalSharedWorldStatus(profileId));
             }
             var stage = Path.Combine(root, ".partial-" + version.VersionHash);
@@ -2002,8 +2004,8 @@ internal sealed partial class FriendLink
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             { /* A verified receipt is kept even if old-version cleanup fails. */ }
             return new(true, "SaveReceived", copyConfirmed ?
-                    "A post-Stop file copy passed its hash checks here and was confirmed to the Host. Game load has not been checked." :
-                    "A post-Stop file copy passed its hash checks here. Game load has not been checked. Host confirmation is pending; retry when connected.",
+                    $"A {copyDescription} passed its hash checks here and was confirmed to the Host. Game load has not been checked." :
+                    $"A {copyDescription} passed its hash checks here. Game load has not been checked. Host confirmation is pending; retry when connected.",
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -2785,7 +2787,7 @@ internal sealed partial class FriendLink
                         "ApprovalPending" => SharedFailure(code, "The Host has not approved this PC."),
                         "PermissionDenied" => SharedFailure(code, "The Host has not granted this PC shared save access."),
                         "SharingOff" => SharedFailure(code, "The Host turned off sharing for this server."),
-                        "NoPublishedSave" => SharedFailure(code, "The Host has no completed post-Stop save yet."),
+                        "NoPublishedSave" => SharedFailure(code, "The Host has no completed shared save yet."),
                         "SharedVersionUnavailable" => SharedFailure(code,
                             "This save version is no longer available from the Host. Check for the latest save."),
                         "SharedChunkUnavailable" => SharedFailure(code,
