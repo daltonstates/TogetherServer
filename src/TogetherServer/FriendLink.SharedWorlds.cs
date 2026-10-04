@@ -7,7 +7,8 @@ namespace TogetherServer;
 
 public sealed record ReceivedSharedWorldStatus(bool Consented, long? HostVersion, long? ThisPcVersion,
     string State, string? Error = null, long ReceivedBytes = 0, long TotalBytes = 0,
-    long? RosterRevision = null, string Trust = "Roster not verified");
+    long? RosterRevision = null, string Trust = "Roster not verified",
+    string? CapacityNotice = null, string? CapacityState = null);
 public sealed record ReceivedSharedWorldResult(bool Ok, string Code, string Message,
     ReceivedSharedWorldStatus? Status = null);
 public sealed record WorldAuthorityOfferResult(bool Ok, string Code, string Message,
@@ -379,9 +380,11 @@ internal sealed partial class FriendLink
         WorldAuthorityOffer offer, CancellationToken cancellationToken = default)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
-        await gate.WaitAsync(cancellationToken);
+        var entered = false;
         try
         {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
             if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
             if (!sharedHostLoss.MayPropose && offer.Proposal.Schema != 3)
@@ -393,22 +396,53 @@ internal sealed partial class FriendLink
                 config.SharedRosterFloors?.GetValueOrDefault(profileId) is not { } floor ||
                 offer.Proposal.Schema != 3 && config.SharedWorldConflicts?.Contains(profileId) == true)
                 return new(false, "RecoveryOfferRejected", "This offer does not match the trusted shared world on this PC.");
+            var voterId = config.DeviceId;
+            var hostId = config.HostId;
+            var hostEndpoint = config.Endpoint;
+            var ownerKey = config.SharedWorldSigningKeys[profileId];
             using var signer = LoadPcSigningKey();
+            var publicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+            var hash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
+            var isResolution = offer.Proposal.Schema == 3;
+            bool CurrentVoteContext(bool requireLoss)
+            {
+                if (config is null || config.DeviceId != voterId || config.HostId != hostId ||
+                    config.Endpoint != hostEndpoint ||
+                    !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                    config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
+                    config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != ownerKey ||
+                    config.SharedRosterFloors?.GetValueOrDefault(profileId) != floor ||
+                    (!isResolution && config.SharedWorldConflicts?.Contains(profileId) == true) ||
+                    config.PendingSharedWorldGroups?.ContainsKey(profileId) == true ||
+                    (requireLoss && !isResolution && !sharedHostLoss.MayPropose))
+                    return false;
+                var rosterBytes = data.LoadProtected(
+                    $"shared-world-roster-{voterId:N}-{profileId:N}.protected");
+                var currentRoster = rosterBytes is not null &&
+                    rosterBytes.LongLength <= SharedWorldService.MaximumManifestBytes ?
+                    JsonSerializer.Deserialize<SharedWorldRoster>(rosterBytes, Json) : null;
+                return currentRoster?.Signature == offer.Roster.Signature &&
+                    SharedWorldRosterTrust.HasRole(currentRoster, voterId, publicKey,
+                        grants => grants.RecoveryVoter) &&
+                    WorldAuthorityTrust.ProposalHash(offer.Proposal) == hash;
+            }
             using var candidate = MakeClient(offer.Proposal.CandidateAddress,
                 [offer.CandidateTlsFingerprint]);
-            var hash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
             var path = $"api/companion/servers/{profileId}/shared-world/recovery/{hash}";
+            // A candidate can also be a voter. Its HTTPS route probes Host loss
+            // through this same FriendLink, so network I/O cannot hold the gate.
+            gate.Release();
+            entered = false;
             using var challengeResponse = await candidate.GetAsync(
-                $"{path}/challenge/{config.DeviceId}", cancellationToken);
+                $"{path}/challenge/{voterId}", cancellationToken);
             var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
                 cancellationToken);
             var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
                 JsonSerializer.Deserialize<WorldAuthorityChallenge>(challengeBytes, Json) : null;
             if (challenge?.Nonce is not { Length: 44 })
                 return new(false, "CandidateUnavailable", "The candidate did not provide a valid secure challenge.");
-            var publicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
             var requestDraft = new WorldAuthorityOfferRequest(1, offer.Roster.GroupId, profileId,
-                hash, config.DeviceId, publicKey, challenge.Nonce, "");
+                hash, voterId, publicKey, challenge.Nonce, "");
             var request = requestDraft with
             {
                 Signature = Convert.ToBase64String(signer.SignData(
@@ -426,9 +460,16 @@ internal sealed partial class FriendLink
                 received.Roster.Signature != offer.Roster.Signature ||
                 received.Version.VersionHash != offer.Version.VersionHash)
                 return new(false, "CandidateOfferChanged", "The candidate's signed offer changed during review.");
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            if (!CurrentVoteContext(requireLoss: true))
+                return new(false, "RecoveryOfferRejected",
+                    "This PC's consent, signed roster, vote grant, or Host-loss check changed during review.");
             var store = new WorldAuthorityStore(data);
             var vote = SharedWorldElection.Vote(sharedHostLoss, ReceivedRoot(profileId), floor,
-                offer.Roster.OwnerPublicKey, received, config.DeviceId, signer, store);
+                ownerKey, received, voterId, signer, store);
+            gate.Release();
+            entered = false;
             using var voteResponse = await candidate.PostAsJsonAsync(path + "/vote", vote, Json,
                 cancellationToken);
             var resultBytes = await ReadBoundedSharedAsync(voteResponse.Content, 2 * 1024 * 1024,
@@ -437,6 +478,11 @@ internal sealed partial class FriendLink
                 JsonSerializer.Deserialize<WorldAuthorityVoteResult>(resultBytes, Json) : null;
             if (result is not { Ok: true })
                 return new(false, "VoteNotConfirmed", "The signed vote is saved on this PC. Retry with the same offer to confirm delivery.");
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            if (!CurrentVoteContext(requireLoss: false))
+                return new(false, "RecoveryOfferRejected",
+                    "This PC's consent, signed roster, or vote grant changed before the decision was saved.");
             if (result.Decision is { } decision)
                 store.AppendReceived(decision, profileId, offer.Roster.GroupId,
                     offer.Roster.OwnerPublicKey);
@@ -450,7 +496,7 @@ internal sealed partial class FriendLink
                                    CryptographicException or UnauthorizedAccessException or
                                    HttpRequestException or TaskCanceledException or ArgumentException)
         { return new(false, "RecoveryVoteUnavailable", "The secure recovery vote could not finish: " + ex.Message); }
-        finally { gate.Release(); ReleaseRetained(); }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<WorldResolutionInvitationResult> ImportResolutionInvitationAsync(
@@ -1151,6 +1197,18 @@ internal sealed partial class FriendLink
             // Persist the rollback floor before any manifest or chunks are trusted.
             config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
             config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature);
+            // The first verified group is the one this PC explicitly consented
+            // to receive. Older installs can have this floor without an
+            // approval entry; pin only that same group, never a changed source.
+            var observedDifferentGroup = config.LastSharedHostGroups?.TryGetValue(profileId,
+                out var observedGroup) == true && observedGroup != roster.GroupId;
+            if (config.ApprovedSharedWorldGroups?.ContainsKey(profileId) != true &&
+                config.PendingSharedWorldGroups?.ContainsKey(profileId) != true &&
+                (floor is null || floor.GroupId == roster.GroupId) && !observedDifferentGroup)
+            {
+                config.ApprovedSharedWorldGroups ??= [];
+                config.ApprovedSharedWorldGroups[profileId] = roster.GroupId;
+            }
             SaveConfig();
             // Retain the signed roster for recovery during a Host outage.
             data.SaveProtected($"shared-world-roster-{deviceId:N}-{profileId:N}.protected",
@@ -1359,6 +1417,16 @@ internal sealed partial class FriendLink
             return new(true, "SharedWorldChecked", "Latest Host version checked securely.",
                 LocalSharedWorldStatus(profileId));
         }
+        catch (SignedHistoryCapacityException ex)
+        {
+            sharedTransferHealth.Report(profileId, "Signed history full", ex.Message);
+            return SharedFailure("SignedHistoryFull", ex.Message);
+        }
+        catch (SignedHistorySpaceException ex)
+        {
+            sharedTransferHealth.Report(profileId, "Low space", ex.Message);
+            return SharedFailure("InsufficientSpace", ex.Message);
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException)
@@ -1399,11 +1467,20 @@ internal sealed partial class FriendLink
         }
         catch (Exception ex) when (ex is IOException or JsonException or CryptographicException or InvalidDataException)
         { error = "The stored save failed verification. The live world was not changed."; }
+        (string State, string Message)? historyNotice = null;
+        if (consent && error is null && !review && !conflict)
+        {
+            try { historyNotice = SignedHistoryNotice(root); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+            { error = "The signed save history could not be checked on this PC."; }
+        }
         return new(consent, hostVersion, received,
             DescribeReceivedHistory(consent, error, review, conflict,
                 hostVersion, hostHash, received, receivedHash), error,
             RosterRevision: floor?.Revision,
-            Trust: floor is null ? "Roster not verified" : "Owner signature and this PC's Receive grant verified when last checked");
+            Trust: floor is null ? "Roster not verified" : "Owner signature and this PC's Receive grant verified when last checked",
+            CapacityNotice: historyNotice?.Message,
+            CapacityState: historyNotice?.State);
     }
 
     internal static string DescribeReceivedHistory(bool consent, string? error, bool review,
@@ -1890,6 +1967,10 @@ internal sealed partial class FriendLink
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (SignedHistoryCapacityException ex)
+        { return SharedFailure("SignedHistoryFull", ex.Message); }
+        catch (SignedHistorySpaceException ex)
+        { return SharedFailure("InsufficientSpace", ex.Message); }
         catch (TaskCanceledException) { return SharedFailure("NetworkUnavailable", "The Host did not answer before the transfer timed out. Progress was kept for retry."); }
         catch (OperationCanceledException) { return SharedFailure("TransferCanceled", "The transfer stopped; progress was kept for retry."); }
         catch (HttpRequestException ex)
@@ -1944,47 +2025,54 @@ internal sealed partial class FriendLink
     {
         var records = new WorldAuthorityStore(data).Read(profileId);
         anchor ??= records.OrderBy(record => record.Proposal.Epoch).FirstOrDefault()?.Version;
-        if (anchor is null) return new(records.Count == 0 &&
-            latest.SigningPublicKey == config?.SharedWorldSigningKeys?.GetValueOrDefault(profileId), false);
         var pending = new Dictionary<long, SharedWorldVersion>();
-        return await VerifySharedChainBatchAsync(data, config?.DeviceId ?? Guid.Empty, profileId,
-            anchor, latest, records, async (number, token) =>
+        async Task<SharedWorldVersion?> Fetch(long number, CancellationToken token)
+        {
+            if (withdrawnSharedConsent.ContainsKey(profileId)) return null;
+            if (!pending.TryGetValue(number, out var item))
             {
-                if (withdrawnSharedConsent.ContainsKey(profileId)) return null;
-                if (!pending.TryGetValue(number, out var item))
+                var count = checked((int)Math.Min(WorldAuthorityTrust.ChainVersionsPerCheck,
+                    latest.Number - number));
+                using var response = await transferClient.GetAsync(
+                    $"api/companion/servers/{profileId}/shared-world/versions/range/{number}/{count}",
+                    HttpCompletionOption.ResponseHeadersRead, token);
+                if (!response.IsSuccessStatusCode)
                 {
-                    var count = checked((int)Math.Min(WorldAuthorityTrust.ChainVersionsPerCheck,
-                        latest.Number - number));
-                    using var response = await transferClient.GetAsync(
-                        $"api/companion/servers/{profileId}/shared-world/versions/range/{number}/{count}",
+                    // An older companion has only the single-version route.
+                    // A JSON denial from a current Host must not fall back.
+                    if (!await IsUnsupportedSharedVersionRangeAsync(response, token)) return null;
+                    using var older = await transferClient.GetAsync(
+                        $"api/companion/servers/{profileId}/shared-world/versions/{number}",
                         HttpCompletionOption.ResponseHeadersRead, token);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        // An older companion has only the single-version route.
-                        // A JSON denial from a current Host must not fall back.
-                        if (!await IsUnsupportedSharedVersionRangeAsync(response, token))
-                            return null;
-                        using var older = await transferClient.GetAsync(
-                            $"api/companion/servers/{profileId}/shared-world/versions/{number}",
-                            HttpCompletionOption.ResponseHeadersRead, token);
-                        var olderBytes = await ReadBoundedSharedAsync(older.Content,
-                            SharedWorldService.MaximumManifestBytes, token);
-                        return !older.IsSuccessStatusCode || olderBytes is null ? null :
-                            JsonSerializer.Deserialize<SharedWorldVersion>(olderBytes, Json);
-                    }
-                    var bytes = await ReadBoundedSharedAsync(response.Content,
-                        SharedWorldService.MaximumManifestBytes * count + 4096L, token);
-                    var range = bytes is null ? null :
-                        JsonSerializer.Deserialize<SharedWorldVersion[]>(bytes, Json);
-                    if (range?.Length != count || range.Where((value, index) =>
-                            value is null || value.Number != number + index).Any())
-                        return null;
-                    foreach (var value in range) pending.Add(value.Number, value);
-                    item = pending[number];
+                    var olderBytes = await ReadBoundedSharedAsync(older.Content,
+                        SharedWorldService.MaximumManifestBytes, token);
+                    return !older.IsSuccessStatusCode || olderBytes is null ? null :
+                        JsonSerializer.Deserialize<SharedWorldVersion>(olderBytes, Json);
                 }
-                pending.Remove(number);
-                return item;
-            }, cancellationToken);
+                var bytes = await ReadBoundedSharedAsync(response.Content,
+                    SharedWorldService.MaximumManifestBytes * count + 4096L, token);
+                var range = bytes is null ? null :
+                    JsonSerializer.Deserialize<SharedWorldVersion[]>(bytes, Json);
+                if (range?.Length != count || range.Where((value, index) =>
+                        value is null || value.Number != number + index).Any()) return null;
+                foreach (var value in range) pending.Add(value.Number, value);
+                item = pending[number];
+            }
+            pending.Remove(number);
+            return item;
+        }
+        if (anchor is null)
+        {
+            if (records.Count != 0) return new(false, false);
+            anchor = latest.Number == 1 ? latest : await Fetch(1, cancellationToken);
+            if (anchor is null || anchor.Number != 1 || anchor.ParentHash is not null ||
+                anchor.GroupId != latest.GroupId || anchor.ProfileId != latest.ProfileId ||
+                anchor.Game != latest.Game || anchor.WorldId != latest.WorldId ||
+                anchor.SigningPublicKey != config?.SharedWorldSigningKeys?.GetValueOrDefault(profileId))
+                return new(false, false);
+        }
+        return await VerifySharedChainBatchAsync(data, config?.DeviceId ?? Guid.Empty, profileId,
+            anchor, latest, records, Fetch, cancellationToken);
     }
 
     internal static async Task<bool> IsUnsupportedSharedVersionRangeAsync(
@@ -2038,16 +2126,22 @@ internal sealed partial class FriendLink
             catch (JsonException) { /* An unusable cursor only requires rechecking from the anchor. */ }
         }
         var prior = anchor;
+        var root = Path.Combine(data.RootPath, "received-shared-worlds",
+            deviceId.ToString("N"), profileId.ToString("N"));
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
         if (saved is { Schema: 1 } && saved.GroupId == anchor.GroupId &&
             saved.AnchorHash == anchor.VersionHash && saved.AuthorityHeadHash == authorityHeadHash &&
             saved.Last.Number >= anchor.Number &&
             saved.Last.GroupId == anchor.GroupId && saved.Last.ProfileId == anchor.ProfileId &&
             saved.Last.Game == anchor.Game && saved.Last.WorldId == anchor.WorldId &&
             SharedWorldService.VerifySignature(saved.Last) &&
-            ValidAtAuthorityBoundary(saved.Last, records))
+            ValidAtAuthorityBoundary(saved.Last, records) &&
+            HasArchivedChain(root, anchor, saved.Last))
             prior = saved.Last;
         if (prior.Number > latest.Number) return new(false, true);
         var used = 0;
+        var verified = new List<SharedWorldVersion> { anchor };
+        if (prior.VersionHash != anchor.VersionHash) verified.Add(prior);
         while (prior.Number < latest.Number && used < WorldAuthorityTrust.ChainVersionsPerCheck)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2061,9 +2155,11 @@ internal sealed partial class FriendLink
                 !ValidTransition(prior, item, records) || !ValidAtAuthorityBoundary(item, records))
                 return new(false, true);
             prior = item;
+            verified.Add(item);
             used++;
         }
         cancellationToken.ThrowIfCancellationRequested();
+        foreach (var item in verified) KeepSignedManifest(root, item);
         if (used > 0)
             data.SaveProtected(progressName, JsonSerializer.SerializeToUtf8Bytes(
                 new SharedChainProgress(1, anchor.GroupId, anchor.VersionHash, authorityHeadHash, prior), Json));
@@ -2244,6 +2340,166 @@ internal sealed partial class FriendLink
             SharedWorldService.VerifyFile(SharedWorldService.SafeChild(
                 Path.Combine(root, version.VersionHash, SharedWorldService.PayloadDirectory), file.Path), file);
         return version;
+    }
+
+    private const int MaximumLocalLineageVersions = 4096;
+    private const long MaximumSignedHistoryBytes = 256L * 1024 * 1024;
+    private sealed class SignedHistoryCapacityException(string message) : IOException(message);
+    private sealed class SignedHistorySpaceException(string message) : IOException(message);
+    private static string SignedHistoryRoot(string root) => Path.Combine(root, "signed-history");
+
+    internal static (int Count, long Bytes) SignedHistoryUsage(string root)
+    {
+        var history = SignedHistoryRoot(root);
+        SharedWorldService.EnsureUnlinkedRoot(root, history);
+        if (!Directory.Exists(history)) return (0, 0);
+        // Count interrupted .new writes too. Leaving them out would let repeated
+        // crashes consume disk outside the archive's fixed budget.
+        var entries = Directory.EnumerateFileSystemEntries(history)
+            .Take(MaximumLocalLineageVersions + 1).ToArray();
+        if (entries.Any(Directory.Exists))
+            throw new InvalidDataException("The signed save history contains an unexpected directory.");
+        var files = entries.Select(path => new FileInfo(path)).ToArray();
+        if (files.Any(file => file.Length > SharedWorldService.MaximumManifestBytes ||
+            (file.Attributes & FileAttributes.ReparsePoint) != 0))
+            throw new InvalidDataException("The signed save history contains an invalid file.");
+        return (files.Length, files.Sum(file => file.Length));
+    }
+
+    private static (string State, string Message)? SignedHistoryNotice(string root)
+    {
+        var usage = SignedHistoryUsage(root);
+        if (usage.Count >= MaximumLocalLineageVersions ||
+            usage.Bytes >= MaximumSignedHistoryBytes)
+            return ("Signed history full",
+                "This PC cannot store another signed save history entry. Earlier verified copies are safe; use another receiving PC.");
+        if (usage.Count >= MaximumLocalLineageVersions * 9 / 10 ||
+            usage.Bytes >= MaximumSignedHistoryBytes * 9 / 10)
+            return ("Signed history nearly full",
+                "This PC is nearing its signed save history limit. New saves will pause at the limit; use another receiving PC.");
+        return null;
+    }
+
+    internal static void KeepSignedManifest(string root, SharedWorldVersion version)
+    {
+        if (!SharedWorldService.VerifySignature(version) ||
+            version.VersionHash.Length != 64 || !version.VersionHash.All(Uri.IsHexDigit))
+            throw new InvalidDataException("A signed save manifest is invalid.");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(version, Json);
+        if (bytes.Length > SharedWorldService.MaximumManifestBytes)
+            throw new InvalidDataException("A signed save manifest is oversized.");
+        var history = SignedHistoryRoot(root);
+        SharedWorldService.EnsureUnlinkedRoot(root, history);
+        Directory.CreateDirectory(history);
+        SharedWorldService.EnsureUnlinkedRoot(root, history);
+        var destination = SharedWorldService.SafeChild(history, version.VersionHash + ".json");
+        if (File.Exists(destination))
+        {
+            var existing = ReadSignedManifest(root, version.VersionHash);
+            if (existing?.VersionHash != version.VersionHash ||
+                !JsonSerializer.SerializeToUtf8Bytes(existing, Json).AsSpan().SequenceEqual(bytes))
+                throw new InvalidDataException("A saved signed manifest changed.");
+            return;
+        }
+        var usage = SignedHistoryUsage(root);
+        if (usage.Count >= MaximumLocalLineageVersions ||
+            usage.Bytes + bytes.Length > MaximumSignedHistoryBytes)
+            throw new SignedHistoryCapacityException(
+                "This PC's signed save history is full. New saves are paused; older verified copies were kept. Choose another receiving PC.");
+        if (!HasReceiverReserve(new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!)
+                .AvailableFreeSpace, bytes.Length))
+            throw new SignedHistorySpaceException(
+                "Keep at least 1 GiB free before receiving another signed save. Verified copies were kept.");
+        var temporary = SharedWorldService.SafeChild(history,
+            Guid.NewGuid().ToString("N") + ".new");
+        try
+        {
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None))
+            {
+                file.Write(bytes);
+                file.Flush(true);
+            }
+            SharedWorldService.EnsureUnlinkedRoot(root, history);
+            File.Move(temporary, destination, false);
+        }
+        finally
+        {
+            SharedWorldService.EnsureUnlinkedRoot(root, history);
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private static SharedWorldVersion? ReadSignedManifest(string root, string hash)
+    {
+        if (hash.Length != 64 || !hash.All(Uri.IsHexDigit)) return null;
+        var history = SignedHistoryRoot(root);
+        SharedWorldService.EnsureUnlinkedRoot(root, history);
+        var path = SharedWorldService.SafeChild(history, hash + ".json");
+        if (!File.Exists(path)) return null;
+        if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("A saved signed manifest is oversized or linked.");
+        var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        if (version?.VersionHash != hash || !SharedWorldService.VerifySignature(version))
+            throw new InvalidDataException("A saved signed manifest failed verification.");
+        return version;
+    }
+
+    private static bool HasArchivedChain(string root, SharedWorldVersion anchor,
+        SharedWorldVersion head)
+    {
+        if (head.Number < anchor.Number ||
+            head.Number - anchor.Number >= MaximumLocalLineageVersions) return false;
+        var current = head;
+        for (var number = head.Number; number > anchor.Number; number--)
+        {
+            if (ReadSignedManifest(root, current.VersionHash) is null ||
+                current.ParentHash is not { Length: 64 } hash || !hash.All(Uri.IsHexDigit))
+                return false;
+            var prior = ReadSignedManifest(root, hash);
+            if (prior is null || prior.Number != number - 1 ||
+                prior.VersionHash != current.ParentHash) return false;
+            current = prior;
+        }
+        return current.VersionHash == anchor.VersionHash;
+    }
+
+    // Retain signed metadata independently of the three most recent payloads.
+    // A takeover can prove ancestry only when every predecessor is available.
+    internal static IEnumerable<SharedWorldVersion> ReadVerifiedReceivedLineage(
+        string root, SharedWorldVersion latest, SharedWorldVersion? parent)
+    {
+        var current = ReadReceivedLatest(root);
+        if (current?.VersionHash != latest.VersionHash ||
+            parent is not null && (parent.GroupId != latest.GroupId ||
+                parent.ProfileId != latest.ProfileId || parent.Game != latest.Game ||
+                parent.WorldId != latest.WorldId || parent.Number >= latest.Number))
+            throw new InvalidDataException("The candidate's verified save head changed.");
+        var first = parent?.Number + 1 ?? 1;
+        if (latest.Number < first || latest.Number - first + 1 > MaximumLocalLineageVersions)
+            throw new InvalidDataException("The complete signed save lineage is not available on this PC.");
+        var reversed = new List<string>();
+        for (var number = latest.Number; number >= first; number--)
+        {
+            if (current is null || current.Number != number ||
+                current.GroupId != latest.GroupId || current.ProfileId != latest.ProfileId ||
+                current.Game != latest.Game || current.WorldId != latest.WorldId)
+                throw new InvalidDataException("An earlier verified save is missing from this PC.");
+            reversed.Add(current.VersionHash);
+            if (number == first) break;
+            if (current.ParentHash is not { Length: 64 } hash || !hash.All(Uri.IsHexDigit))
+                throw new InvalidDataException("The signed save parent is invalid.");
+            current = ReadSignedManifest(root, hash) ??
+                ReadVersionForRetention(SharedWorldService.SafeChild(root, hash));
+        }
+        reversed.Reverse();
+        if (current is null || parent is null && current.ParentHash is not null ||
+            parent is not null && current.ParentHash != parent.VersionHash)
+            throw new InvalidDataException("The signed save lineage does not extend the authority head.");
+        return reversed.Select(hash => ReadSignedManifest(root, hash) ??
+            ReadVersionForRetention(SharedWorldService.SafeChild(root, hash)) ??
+            throw new InvalidDataException("An earlier verified save manifest is missing."));
     }
 
     internal static void PruneReceived(string root, string newest,

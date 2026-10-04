@@ -1624,8 +1624,17 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/offer-code", (Http
     Results.NotFound(new { code = "NoArmedOffer", message = "No signed offer is armed on this PC." }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/offer/{selectedHeadHash}",
     async (Guid id, string selectedHeadHash) =>
-    friendMode ? Results.Json(await friend.PrepareResolutionOfferAsync(id, selectedHeadHash)) :
-    Results.Conflict(new { code = "HostMode" }));
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+        var result = await friend.PrepareResolutionOfferAsync(id, selectedHeadHash);
+        return Results.Json(await SharedWorldCandidateListener.ActivateAsync(result, manager,
+            companionServer));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapGet("/api/local/friend/{id:guid}/shared-world/resolution/heads",
     (HttpContext context, Guid id) =>
 {
@@ -1637,8 +1646,17 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/resolution/heads",
 });
 app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/owner-offer/{selectedHeadHash}",
     async (Guid id, string selectedHeadHash) =>
-    friendMode ? Results.Json(await friend.PrepareResolutionOfferAsync(id, selectedHeadHash, true)) :
-    Results.Conflict(new { code = "HostMode" }));
+{
+    await modeGate.WaitAsync();
+    try
+    {
+        if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+        var result = await friend.PrepareResolutionOfferAsync(id, selectedHeadHash, true);
+        return Results.Json(await SharedWorldCandidateListener.ActivateAsync(result, manager,
+            companionServer));
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/vote", async (HttpContext context, Guid id) =>
 {
     if (!friendMode) return Results.Conflict(new { code = "HostMode" });

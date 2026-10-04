@@ -65,6 +65,33 @@ internal sealed partial class FriendLink
                     record.Roster.Signature != floor.Signature)
                 return new(false, "HandoffProofInvalid",
                     "The signed handoff or membership history did not pass verification.");
+            var authorityStore = new WorldAuthorityStore(data);
+            var acceptedAuthority = authorityStore.Read(profileId);
+            if (record.VersionLineageDigest is not null &&
+                !acceptedAuthority.Any(item => item.RecordHash == record.RecordHash))
+            {
+                var parent = acceptedAuthority.SingleOrDefault(item =>
+                    item.RecordHash == record.Proposal.ParentAuthorityHash);
+                var staged = await StageAuthorityProofBatchAsync(authorityStore, record, parent,
+                    WorldAuthorityTrust.ProofVersionsPerCheck, async (number, token) =>
+                    {
+                        using var proofResponse = await client.GetAsync(
+                            $"api/companion/servers/{profileId}/shared-world/authority/{record.RecordHash}/proof/{number}",
+                            HttpCompletionOption.ResponseHeadersRead, token);
+                        var proofBytes = await ReadBoundedSharedAsync(proofResponse.Content,
+                            SharedWorldService.MaximumManifestBytes, token);
+                        return !proofResponse.IsSuccessStatusCode || proofBytes is null ? null :
+                            JsonSerializer.Deserialize<SharedWorldVersion>(proofBytes, Json);
+                    }, cancellationToken);
+                if (!staged.Complete)
+                    return new(false, "HandoffProofPending",
+                        "The signed save history is still being checked. Stage again to continue.");
+                var sealedProof = VerifyStagedAuthorityProofBatch(authorityStore, record, parent,
+                    WorldAuthorityTrust.ProofVersionsPerCheck - staged.Used, cancellationToken);
+                if (!sealedProof.Complete)
+                    return new(false, "HandoffProofPending",
+                        "The signed save history is still being checked. Stage again to continue.");
+            }
             using var key = LoadPcSigningKey(deviceId);
             return await PlannedHandoffReceiver.StageAsync(data, vault, record, profileId,
                 groupId, ownerKey, deviceId, key, async () =>

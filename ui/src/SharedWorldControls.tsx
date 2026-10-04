@@ -11,7 +11,8 @@ type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versi
   hostDeviceId: string; hostPublicKey: string; hostAddress: string }
 type AuthorityStatus = { state: 'NoTakeover' | 'OldHostFenced' | 'ThisPcHost' | 'CompetingHistories' | 'ReviewRequired';
   message: string; head: AuthorityHead | null; competingHeads: AuthorityHead[]; exactManagedProcessRunning: boolean }
-type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null }
+type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null;
+  capacityNotice: string | null; capacityState: 'Signed history full' | 'Signed history nearly full' | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
 type RosterMember = { deviceId: string; grants: Grants; revoked: boolean; accessExpiresUtc: string | null }
@@ -215,6 +216,9 @@ export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
     hostVersion: numberOrNull(source.hostVersion, 'Host version'),
     thisPcVersion: numberOrNull(source.thisPcVersion, 'This PC version'),
     state: source.state, error: textOrNull(source.error, 'Received save error'),
+    capacityNotice: textOrNull(source.capacityNotice ?? null, 'Signed history notice'),
+    capacityState: source.capacityState === 'Signed history full' ||
+      source.capacityState === 'Signed history nearly full' ? source.capacityState : null,
     receivedBytes: numberOrNull(source.receivedBytes ?? 0, 'Received bytes') ?? 0,
     totalBytes: numberOrNull(source.totalBytes ?? 0, 'Total bytes') ?? 0,
     rosterRevision: numberOrNull(source.rosterRevision ?? null, 'Roster revision'),
@@ -808,19 +812,24 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   const headline = status?.state === 'Ready' ? 'Verified copy on this PC' :
     status?.state === 'Receiving' ? 'Receiving completed save' :
     status?.state === 'Low space' ? 'Low space — receiving paused' :
+    status?.state === 'Signed history full' ? 'Signed save history full — receiving paused' :
+    status?.state === 'Signed history nearly full' ? 'Signed save history nearly full' :
     status?.state === 'Stalled' ? 'Receiving stalled — retrying' :
     status?.state.startsWith('Host save source changed') ? status.state :
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
       `${status.hostVersion - status.thisPcVersion} version(s) behind` : status?.state
-  const transferAlert = status?.state === 'Low space' || status?.state === 'Stalled'
+  const transferAlert = status?.state === 'Low space' || status?.state === 'Stalled' ||
+    status?.state === 'Signed history full'
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds
-    {transferAlert && <span className="warning-text" role="alert"> · {headline}</span>}</summary>
+    {transferAlert && <span className="warning-text" role="alert"> · {headline}</span>}
+    {!transferAlert && status?.capacityState && <span className="warning-text" role="alert"> · {status.capacityState === 'Signed history full' ? 'Save history full' : 'Save history near limit'}</span>}</summary>
     <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>Update the Host app before receiving shared saves.</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
     {status && <p className="helper-text" role={status.state.startsWith('Host save source changed') ? 'alert' : 'status'}>{headline}</p>}
+    {status?.capacityNotice && <p role="alert">{status.capacityNotice}</p>}
     {status && <p className="helper-text">Trust: {status.trust}.
       Roster revision {status.rosterRevision ?? 'not checked'}. This is a verified copy status, not takeover readiness.</p>}
     {status?.state === 'Receiving' && <p role="status">Receiving {status.receivedBytes} of {status.totalBytes} bytes.</p>}

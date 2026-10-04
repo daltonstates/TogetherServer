@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using TogetherServer;
 
 internal static class SharedWorldTransferAlertChecks
@@ -82,6 +83,14 @@ internal static class SharedWorldTransferAlertChecks
         health.Complete(world, lowSpace, Failure("InsufficientSpace"));
         Require(health.Issue(world)?.State == "Low space" &&
             health.Issue(world)?.ReceivedBytes == 32, "low space was not reported immediately");
+        var historyFull = health.Begin(world);
+        health.Complete(world, historyFull, Failure("SignedHistoryFull"));
+        Require(health.Issue(world)?.State == "Signed history full",
+            "signed-history capacity was hidden as a generic transfer failure");
+        health.Report(otherWorld, "Signed history full", "Another PC is needed.");
+        Require(health.Issue(otherWorld)?.State == "Signed history full" &&
+            health.Issue(otherWorld)?.Message == "Another PC is needed.",
+            "a pre-transfer history check did not surface its capacity alert");
         health.Complete(world, health.Begin(world), new(true, "AlreadyReceived", "Verified."));
         Require(health.Issue(world) is null, "verified receipt left an old alert");
 
@@ -91,7 +100,58 @@ internal static class SharedWorldTransferAlertChecks
         health.Complete(world, inFlight, Failure("InsufficientSpace"));
         Require(health.Issue(world) is null, "an old transfer restored an alert after consent changed");
 
+        CheckInterruptedSignedHistoryWrite();
         Console.WriteLine("PASS shared-world transfer alert transitions");
+    }
+
+    private static void CheckInterruptedSignedHistoryWrite()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "TogetherServer-signed-history-checks",
+            Guid.NewGuid().ToString("N"));
+        var history = Path.Combine(root, "signed-history");
+        Directory.CreateDirectory(history);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(history, "interrupted.new"), [1, 2, 3]);
+            var usage = FriendLink.SignedHistoryUsage(root);
+            Require(usage == (1, 3),
+                "an interrupted signed-history write was omitted from the storage budget");
+
+            using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var draft = new SharedWorldVersion(4, Guid.NewGuid(), 1, null,
+                Guid.NewGuid(), GameKinds.Valheim, "fixture-world", DateTimeOffset.UtcNow,
+                SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(),
+                new SharedWorldPortableSetup(2456, false, "fixture", [], []),
+                [new SharedWorldFile("world.dat", 1,
+                    Convert.ToHexString(SHA256.HashData([1])))], "", "", "");
+            var first = SharedWorldService.SignVersion(draft, signer);
+            FriendLink.KeepSignedManifest(root, first);
+            usage = FriendLink.SignedHistoryUsage(root);
+            Require(usage.Count == 2 && usage.Bytes > 3,
+                "a verified manifest and interrupted write were not both counted");
+
+            for (var number = usage.Count; number < 4096; number++)
+                File.WriteAllBytes(Path.Combine(history, $"interrupted-{number}.new"), []);
+            var next = SharedWorldService.SignVersion(draft with
+            {
+                Number = 2,
+                ParentHash = first.VersionHash
+            }, signer);
+            var blocked = false;
+            try { FriendLink.KeepSignedManifest(root, next); }
+            catch (IOException ex) { blocked = ex.Message.Contains("full", StringComparison.OrdinalIgnoreCase); }
+            Require(blocked && FriendLink.SignedHistoryUsage(root).Count == 4096 &&
+                File.Exists(Path.Combine(history, first.VersionHash + ".json")),
+                "the archive accepted an entry beyond its count cap or removed its verified manifest");
+        }
+        finally
+        {
+            var expectedParent = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
+                "TogetherServer-signed-history-checks")) + Path.DirectorySeparatorChar;
+            if (!Path.GetFullPath(root).StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The signed-history check directory changed unexpectedly.");
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static ReceivedSharedWorldResult Failure(string code) =>

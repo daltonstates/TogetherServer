@@ -69,6 +69,16 @@ internal sealed class SharedWorldTransferHealth
         lock (sync) return worlds.TryGetValue(profileId, out var state) ? state.Issue : null;
     }
 
+    internal void Report(Guid profileId, string stateName, string message)
+    {
+        lock (sync)
+        {
+            var state = State(profileId);
+            state.NoProgressFailures = 0;
+            state.Issue = new(stateName, message, 0, 0);
+        }
+    }
+
     internal void Cancel(Guid profileId, Attempt attempt)
     {
         lock (sync)
@@ -98,10 +108,12 @@ internal sealed class SharedWorldTransferHealth
                 return;
             }
 
-            if (result.Code == "InsufficientSpace")
+            if (result.Code is "InsufficientSpace" or "SignedHistoryFull")
             {
                 state.NoProgressFailures = 0;
-                state.Issue = new("Low space", result.Message, attempt.ReceivedBytes, attempt.TotalBytes);
+                state.Issue = new(result.Code == "SignedHistoryFull" ?
+                    "Signed history full" : "Low space", result.Message,
+                    attempt.ReceivedBytes, attempt.TotalBytes);
                 return;
             }
 

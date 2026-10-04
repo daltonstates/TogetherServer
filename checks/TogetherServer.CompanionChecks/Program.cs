@@ -30,6 +30,11 @@ if (args.Skip(1).Contains("--shared-world-journey", StringComparer.OrdinalIgnore
     await SharedWorldJourney.RunAsync(appPath, valheimFixturePath);
     return 0;
 }
+if (args.Skip(1).Contains("--shared-resolution-off", StringComparer.OrdinalIgnoreCase))
+{
+    await SharedWorldJourney.RunOverrideOffResolutionAsync(appPath, valheimFixturePath);
+    return 0;
+}
 var root = Path.GetFullPath("local-data/companion-checks/" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var hostData = Path.Combine(root, "host");

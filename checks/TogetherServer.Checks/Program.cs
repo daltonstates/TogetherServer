@@ -6838,7 +6838,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         var vote0 = SharedWorldElection.Vote(losses[0], vaults[0], floor, roster.OwnerPublicKey,
             offer, ids[0], keys[0], new WorldAuthorityStore(pcs[0]));
         RequireThrows<InvalidDataException>(() => SharedWorldElection.ConfirmQuorum(offer, [vote0],
-            new WorldAuthorityStore(pcs[0])), "one of three designated voters made a majority");
+            new WorldAuthorityStore(pcs[0]), vaults[0]), "one of three designated voters made a majority");
         var vote1 = SharedWorldElection.Vote(losses[1], vaults[1], floor, roster.OwnerPublicKey,
             offer, ids[1], keys[1], new WorldAuthorityStore(pcs[1]));
         pcs[0].SaveProtected($"shared-world-pc-signing-{ids[0]:N}.protected",
@@ -7058,7 +7058,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             Convert.ToBase64String(keys[0].ExportSubjectPublicKeyInfo()), out _) == false,
             "signed successor stayed fenced after proving its local PC identity");
         var accepted = SharedWorldElection.ConfirmQuorum(offer, [vote0, vote1],
-            new WorldAuthorityStore(pcs[0]));
+            new WorldAuthorityStore(pcs[0]), vaults[0]);
         Require(WorldAuthorityTrust.Verify(accepted) &&
             new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 1,
             "two of three designated voters did not produce a durable signed decision");
@@ -7155,7 +7155,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             using var client = new HttpClient(handler) { BaseAddress = new Uri(candidateAddress + "/") };
             var route = $"api/companion/servers/{profile.Id}/shared-world/recovery/{staleHash}";
             var next = SharedWorldElection.ConfirmQuorum(otherChild, [otherVote1, otherVote2],
-                new WorldAuthorityStore(pcs[0]));
+                new WorldAuthorityStore(pcs[0]), vaults[0]);
             Require(next.Proposal.ParentAuthorityHash == quorumResult.Decision!.RecordHash &&
                 new WorldAuthorityStore(pcs[0]).Read(profile.Id).Count == 2,
                 "different signed child authority did not supersede the armed offer");
@@ -7190,7 +7190,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 WorldAuthorityTrust.VoteBasis(forkDraft), HashAlgorithmName.SHA256))
             };
             SharedWorldElection.ConfirmQuorum(childOffer, [staleVote, forkVote],
-                new WorldAuthorityStore(pcs[0]));
+                new WorldAuthorityStore(pcs[0]), vaults[0]);
             var conflict = new SharedWorldVoteInbox(pcs[0]).Status(profile.Id, ids[0]);
             Require(conflict.State == "HistoryReviewRequired" && !conflict.MajorityReached &&
                 conflict.CandidateDeviceId is null && inboxAfterRestart.Armed(profile.Id) is null &&
