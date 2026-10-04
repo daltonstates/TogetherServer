@@ -58,6 +58,14 @@ internal static class SharedWorldLiveCaptureChecks
             var completion = new LiveSaveCompletionEvidence(profile.Id, run.OperationId,
                 run.ProcessId!.Value, run.StartTimeUtcTicks!.Value,
                 LiveSaveEvidence.RunScopedCompletion, DateTimeOffset.UtcNow, true);
+            foreach (var realGame in new[] { GameKinds.Valheim, GameKinds.MinecraftJava,
+                         GameKinds.MinecraftBedrock, GameKinds.Factorio, GameKinds.Terraria })
+            {
+                profile.Kind = realGame;
+                ExpectInvalid(() => shared.StageLiveCapture(profile, run, completion),
+                    $"{realGame} staged mutable bytes using completion evidence alone");
+            }
+            profile.Kind = GameKinds.Fixture;
             ExpectInvalid(() => shared.StageLiveCapture(profile, run, completion),
                 "an unrecorded managed run staged a save");
             data.SaveRuns([run]);
@@ -227,11 +235,12 @@ internal static class SharedWorldLiveCaptureChecks
                 live.Version!.GroupId.ToString("N"));
             var orphanRoot = Path.Combine(versionGroupRoot, "3");
             Directory.CreateDirectory(Path.Combine(orphanRoot, "payload"));
+            SharedWorldVersion orphan;
             using (var publishingKey = ECDsa.Create())
             {
                 publishingKey.ImportPkcs8PrivateKey(
                     data.LoadProtected("shared-world-signing-key.protected")!, out _);
-                var orphan = SharedWorldService.SignVersion(live.Version with
+                orphan = SharedWorldService.SignVersion(live.Version with
                 {
                     Number = 3, ParentHash = live.Version.VersionHash,
                     BackupId = Guid.NewGuid(), CreatedUtc = DateTimeOffset.UtcNow,
@@ -242,14 +251,78 @@ internal static class SharedWorldLiveCaptureChecks
                 File.WriteAllBytes(Path.Combine(orphanRoot, "version.json"),
                     JsonSerializer.SerializeToUtf8Bytes(orphan, json));
             }
-            Require(!shared.PublishAfterStop(profile, secondBackup.Backup!.Id).Ok &&
-                shared.Status(profile).Latest?.VersionHash == live.Version.VersionHash,
+            var pointerPath = Path.Combine(root, "shared-worlds", profile.Id.ToString("N"),
+                "latest.json");
+            var pointerBytes = File.ReadAllBytes(pointerPath);
+            var orphanManifestBytes = File.ReadAllBytes(Path.Combine(orphanRoot, "version.json"));
+            var orphanPayloadBytes = File.ReadAllBytes(Path.Combine(orphanRoot, "payload", "world.dat"));
+            // A new service instance must see the same orphan and recover it
+            // without relying on the publisher's in-memory state.
+            var resumed = new SharedWorldService(data, backups)
+            {
+                LiveGameRegistryForChecks = new GameServerRegistry(data, includeFixture: true),
+                FixtureLiveRunIdentityForChecks = current => current.ProcessId == 4242,
+                FixtureLiveCaptureAcceptedForChecks = true
+            };
+            File.WriteAllText(world, "an unrelated later live save");
+            var unrelatedCapture = shared.StageLiveCapture(profile, run,
+                completion with { CompletedUtc = DateTimeOffset.UtcNow });
+            Require(!resumed.PublishAfterStop(profile, secondBackup.Backup!.Id).Ok &&
+                resumed.Status(profile).Latest?.VersionHash == live.Version.VersionHash,
                 "a crash orphan live version bypassed approval during post-Stop reconciliation");
-            File.Delete(Path.Combine(orphanRoot, "payload", "world.dat"));
-            Directory.Delete(Path.Combine(orphanRoot, "payload"));
-            File.Delete(Path.Combine(orphanRoot, "version.json"));
-            Directory.Delete(orphanRoot);
-            var postStop = shared.PublishAfterStop(profile, secondBackup.Backup!.Id);
+            Require(!resumed.PublishLiveCapture(profile, unrelatedCapture,
+                    new(unrelatedCapture, run.OperationId, true)).Ok &&
+                resumed.Status(profile).Latest?.VersionHash == live.Version.VersionHash,
+                "an unrelated live capture bypassed the crash orphan");
+            Require(!resumed.QuarantineVerifiedLiveOrphan(profile, new string('0', 64)).Ok &&
+                Directory.Exists(orphanRoot), "quarantine accepted the wrong orphan identity");
+            var orphanPayloadPath = Path.Combine(orphanRoot, "payload", "world.dat");
+            File.WriteAllText(orphanPayloadPath, "tampered orphan payload");
+            Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                !resumed.PublishAfterStop(profile, secondBackup.Backup.Id).Ok &&
+                Directory.Exists(orphanRoot),
+                "a tampered live orphan was quarantined or promoted");
+            File.WriteAllBytes(orphanPayloadPath, orphanPayloadBytes);
+            var orphanManifestPath = Path.Combine(orphanRoot, "version.json");
+            File.WriteAllText(orphanManifestPath, "malformed manifest");
+            Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                !resumed.PublishAfterStop(profile, secondBackup.Backup.Id).Ok &&
+                Directory.Exists(orphanRoot),
+                "a malformed live orphan was quarantined or promoted");
+            File.WriteAllBytes(orphanManifestPath, orphanManifestBytes);
+            var extraOrphanPath = Path.Combine(orphanRoot, "payload", "unsigned.dat");
+            File.WriteAllText(extraOrphanPath, "not in the signed file list");
+            Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                Directory.Exists(orphanRoot),
+                "an orphan with an extra payload file entered quarantine");
+            File.Delete(extraOrphanPath);
+            var publishedPayloadPath = Path.Combine(versionGroupRoot, "2", "payload", "world.dat");
+            File.WriteAllText(publishedPayloadPath, "damaged prior head");
+            Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                Directory.Exists(orphanRoot),
+                "recovery abandoned an orphan when the published head payload was damaged");
+            File.WriteAllBytes(publishedPayloadPath, bytes);
+            var quarantineBase = Path.Combine(root, "shared-worlds", profile.Id.ToString("N"),
+                ".quarantined-live");
+            for (var index = 0; index < 8; index++)
+                Directory.CreateDirectory(Path.Combine(quarantineBase, $"fixture-{index}"));
+            Require(!resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash).Ok &&
+                Directory.Exists(orphanRoot), "quarantine exceeded its eight-version bound");
+            for (var index = 0; index < 8; index++)
+                Directory.Delete(Path.Combine(quarantineBase, $"fixture-{index}"));
+            Require(File.ReadAllBytes(pointerPath).AsSpan().SequenceEqual(pointerBytes),
+                "denied recovery changed the signed latest pointer");
+            var quarantined = resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash);
+            var quarantineRoot = Path.Combine(quarantineBase,
+                $"{orphan.GroupId:N}-{orphan.Number}-{orphan.VersionHash}");
+            Require(quarantined.Ok && !Directory.Exists(orphanRoot) &&
+                File.ReadAllBytes(Path.Combine(quarantineRoot, "version.json")).AsSpan()
+                    .SequenceEqual(orphanManifestBytes) &&
+                File.ReadAllBytes(Path.Combine(quarantineRoot, "payload", "world.dat")).AsSpan()
+                    .SequenceEqual(orphanPayloadBytes) &&
+                File.ReadAllBytes(pointerPath).AsSpan().SequenceEqual(pointerBytes),
+                "verified recovery lost signed evidence, payload bytes, or the latest pointer");
+            var postStop = resumed.PublishAfterStop(profile, secondBackup.Backup!.Id);
             Require(postStop.Ok && postStop.Version is { Number: 3,
                 CaptureKind: SharedWorldCaptureKinds.PostStopBackup } &&
                 postStop.Version!.ParentHash == live.Version!.VersionHash,
@@ -347,7 +420,7 @@ internal static class SharedWorldLiveCaptureChecks
             }, signer);
             Require(SharedWorldService.VerifySignature(legacy),
                 "legacy post-Stop signature was rejected");
-            Console.WriteLine("PASS Shared Worlds live core: exact-run/tamper/approval denial, signed fixture publication, chunk and receipt checks, bounded low-space retention, post-Stop continuity, legacy format");
+            Console.WriteLine("PASS Shared Worlds live core: real-game staging denied, exact-run/tamper/approval denial, signed fixture publication, verified bounded orphan quarantine after restart, post-Stop continuity, chunk/receipt/retention and legacy format");
         }
         finally
         {
