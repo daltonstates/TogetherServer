@@ -34,7 +34,7 @@
   <ItemGroup>
     <EmbeddedResource Include="..\..\ui\dist\**\*" LogicalName="Ui/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
-  <Target Name="EnsureUiAssets" BeforeTargets="PrepareForBuild">
+  <Target Name="EnsureUiAssets" BeforeTargets="PrepareForBuild" Condition="'$(CodeOnlyVerification)' != 'true'">
     <Error Condition="!Exists('..\..\ui\dist\index.html')" Text="Build ui/ with npm ci and npm run build before building TogetherServer." />
   </Target>
   <Target Name="RemoveUnusedWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
