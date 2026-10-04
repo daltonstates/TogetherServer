@@ -265,6 +265,7 @@ public sealed class FriendService : IDisposable
     }
 
     public Task<WorldHistoryReviewResult> ReviewSharedHistoryAsync(Guid profileId,
+        WorldHistoryReviewRequest? request = null,
         CancellationToken cancellationToken = default)
     {
         lock (sync)
@@ -272,7 +273,7 @@ public sealed class FriendService : IDisposable
             var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
             return link is null ? Task.FromResult(new WorldHistoryReviewResult(false, "NotPaired",
                 "Choose a saved Host connection.")) :
-                link.ReviewSharedHistoryAsync(profileId, cancellationToken);
+                link.ReviewSharedHistoryAsync(profileId, request, cancellationToken);
         }
     }
 

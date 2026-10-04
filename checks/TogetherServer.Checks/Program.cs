@@ -642,6 +642,109 @@ await Check("shared roster separates grants, proves PC key, and rejects rollback
     return Task.CompletedTask;
 });
 
+await Check("voter-only PC enrolls and explicitly trusts signed history without save consent", async () =>
+{
+    using var hostData = Data("voter-history-owner");
+    using var voterData = Data("voter-history-friend");
+    var profile = Profile("voter-history", "voter-history-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.SharedSavesEnabled = true;
+    using var portReservation = new TcpListener(IPAddress.Loopback, 0);
+    portReservation.Start();
+    var companionPort = ((IPEndPoint)portReservation.LocalEndpoint).Port;
+    portReservation.Stop();
+    var address = $"https://127.0.0.1:{companionPort}";
+    var settings = Settings(profile);
+    settings.CompanionEndpoint = address;
+    settings.CompanionPort = companionPort;
+    settings.CompanionBindAddress = "127.0.0.1";
+    settings.CompanionListeningEnabled = true;
+    hostData.SaveSettings(settings);
+    using var certificate = new HostIdentity(hostData).Ensure(address);
+    var deviceId = Guid.NewGuid();
+    var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    hostData.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
+        {
+            Id = deviceId, AssignedProfileIds = [profile.Id],
+            CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) }
+        }]
+    });
+    var pairing = new PairingService(hostData);
+    var manager = new HostManager(hostData, Games(hostData));
+    if (pairing.SharedRosterDirty(profile.Id))
+    {
+        var initial = await manager.PublishSharedWorldRosterAsync(profile.Id,
+            pairing.SharedRosterMembers(profile.Id));
+        pairing.ConfirmSharedRosterPublished(profile.Id, initial);
+    }
+    voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+        new FriendConfiguration
+        {
+            Endpoint = address, Fingerprint = HostIdentity.Fingerprint(certificate),
+            DeviceId = deviceId, Credential = bearer,
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    using var voter = new FriendLink(voterData, "friend.protected");
+    using var modeGate = new SemaphoreSlim(1, 1);
+    var listener = new CompanionServer(hostData, manager, pairing, Games(hostData),
+        new ServerLogService(hostData, manager), modeGate, companionPort + 2);
+    try
+    {
+        await listener.SyncAsync();
+        Require(listener.ListenerState == CompanionListenerStates.Listening,
+            "voter enrollment fixture did not open its disposable HTTPS listener");
+        var pending = await voter.ReviewSharedHistoryAsync(profile.Id);
+        Require(pending.Code == "GroupReviewRequired" && pending.GroupId is not null &&
+            pending.OwnerPublicKey is not null &&
+            pairing.Views().Single(item => item.Id == deviceId).SharedWorldKeyEnrolled &&
+            voterData.LoadProtected("friend.protected") is not null,
+            "voter-only PC did not enroll and require signed group review");
+        var rejected = await voter.ReviewSharedHistoryAsync(profile.Id,
+            new WorldHistoryReviewRequest(Guid.NewGuid(), pending.OwnerPublicKey));
+        Require(rejected.Code == "GroupReviewRequired",
+            "voter-only PC accepted confirmation for another group");
+        var wrongOwner = await voter.ReviewSharedHistoryAsync(profile.Id,
+            new WorldHistoryReviewRequest(pending.GroupId, "another owner"));
+        Require(wrongOwner.Code == "GroupReviewRequired",
+            "voter-only PC accepted confirmation for another owner identity");
+        var confirmed = await voter.ReviewSharedHistoryAsync(profile.Id,
+            new WorldHistoryReviewRequest(pending.GroupId, pending.OwnerPublicKey));
+        var saved = JsonSerializer.Deserialize<FriendConfiguration>(
+            voterData.LoadProtected("friend.protected")!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Require(confirmed.Ok && confirmed.Code == "HistoryReviewed" &&
+            saved.ConsentedSharedWorldProfiles.Count == 0 &&
+            saved.ApprovedSharedWorldGroups[profile.Id] == pending.GroupId &&
+            saved.SharedWorldSigningKeys[profile.Id] == pending.OwnerPublicKey,
+            "voter-only review did not pin the signed owner/group separately from save consent");
+        using var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, seen, _, _) => seen is not null &&
+                HostIdentity.Fingerprint(seen) == HostIdentity.Fingerprint(certificate)
+        };
+        using var client = new HttpClient(handler) { BaseAddress = new Uri(address + "/") };
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+        client.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());
+        using var deniedSave = await client.GetAsync($"api/companion/servers/{profile.Id}/shared-world");
+        Require(deniedSave.StatusCode == HttpStatusCode.Forbidden,
+            "voter-only enrollment acquired save transfer permission");
+        var dirtyPath = Path.Combine(hostData.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "roster-dirty");
+        File.WriteAllText(dirtyPath, "review required");
+        Require(!(await voter.ReviewSharedHistoryAsync(profile.Id)).Ok,
+            "dirty signed membership allowed voter history review");
+        File.Delete(dirtyPath);
+        Require(pairing.Revoke(deviceId).Ok &&
+            !(await voter.ReviewSharedHistoryAsync(profile.Id)).Ok,
+            "revoked voter continued reading signed history");
+    }
+    finally { await listener.StopAsync(); }
+});
+
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
 {
     using var data = Data("shared-roster-missing-before-save");
@@ -3776,17 +3879,18 @@ await Check("shared world authority requires signed majority, fences old Host, a
                             Fingerprint = HostIdentity.Fingerprint(oldCertificate),
                             DeviceId = voters[1].Id,
                             Credential = bearer,
-                            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
-                            ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId },
-                            SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
-                            SharedRosterFloors = new() { [profile.Id] = new(roster.GroupId,
-                                noOverrideRoster.Epoch, noOverrideRoster.Revision,
-                                noOverrideRoster.Signature) }
+                            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
                         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     voterData.SaveProtected($"shared-world-pc-signing-{voters[1].Id:N}.protected",
                         voters[1].Key.ExportPkcs8PrivateKey());
                     using var voterLink = new FriendLink(voterData, "friend.protected");
-                    var voterReview = await voterLink.ReviewSharedHistoryAsync(profile.Id);
+                    var pendingReview = await voterLink.ReviewSharedHistoryAsync(profile.Id);
+                    Require(pendingReview.Code == "GroupReviewRequired" &&
+                        pendingReview.GroupId == roster.GroupId &&
+                        pendingReview.OwnerPublicKey == roster.OwnerPublicKey,
+                        "voter-only Friend did not require explicit signed group and owner review");
+                    var voterReview = await voterLink.ReviewSharedHistoryAsync(profile.Id,
+                        new WorldHistoryReviewRequest(roster.GroupId, roster.OwnerPublicKey));
                     Require(voterReview.Ok && voterReview.RecordCount == 2 &&
                         voterReview.CompetingHeads == 2,
                         "voter-only Friend could not fetch signed conflict history without save consent: " +
