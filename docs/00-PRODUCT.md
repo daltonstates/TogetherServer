@@ -23,6 +23,10 @@ Let the owner host a dedicated game server on a Windows PC and let a small, know
 6. A permitted friend may request Stop only when the Ready game server returns a fresh online-player count of zero. Host asks the same built-in driver for the count again immediately before the graceful stop signal. A positive, missing, malformed, partial, or unknown count denies remote Stop. The owner can request local Stop independently, including while players are online.
 7. The owner can turn **remote controls off** without stopping a running game. Host rejects new remote Start, Stop, Restart, replacement, and timer-extension requests immediately, keeps an authenticated read-only heartbeat/status channel so connected Friend apps can display the disabled notice, and shows it after an offline Friend reconnects. Revoking a Friend device invalidates its credential and is shown as Revoked on its next request.
 
+## Server chat
+
+Each saved server has one room for discussion and issue reports. The owner can add or remove an assigned Friend PC from that room independently of lifecycle and log permissions. The room stays available while a game server is stopped or remote Start/Stop is paused. Messages have a 500-character limit and Windows-protected local copies retain at most 200 messages from 30 days. Connected PCs reconcile their copies over the existing Host companion route, regardless of whether the owner chose direct Internet, private mesh, or advanced address. A Friend may queue up to 20 drafts while disconnected; they are sent when authenticated Host access returns. A Host can rebuild a lost chat log from messages previously signed by its durable chat key and returned by a connected Friend. Existing copies cannot be recalled from a removed PC. Current chat cannot deliver a new message directly between Friend PCs while the Host listener is offline; that requires an independently reachable, authenticated peer route.
+
 ## Auto shutdown
 
 - The owner sets an idle duration in minutes and can disable auto shutdown. Default it to **off**, and keep the missing real-game acceptance visible before recommending it for a valued world.

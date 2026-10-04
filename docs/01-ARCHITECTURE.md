@@ -51,6 +51,10 @@ The Host and Friend capabilities may run concurrently in the same process. Host 
 - `GET /api/local/profiles/{savedProfileId}/sessions` is another loopback Host-owner projection requiring the exact local header. It accepts only a saved profile ID and a limit from 1 through 20, returns safe typed summary fields, and accepts no path, source, or other query. There is no companion route, Friend proxy, or Friend permission for archived sessions.
 - Support-report serialization is a separate allowlisted projection, not a dump of settings, state files, environment, or logs. It applies existing display-log sanitization plus support-specific address, endpoint, private-path, identity, length, count, and total UTF-8 size bounds before returning JSON. Diagnostic state is read-only and cannot feed readiness, occupancy, lifecycle gates, route claims, or game-join acceptance.
 
+## Server chat replication
+
+`ServerChat` stores one bounded, Windows-protected log per Host identity and saved profile. The Host signs each accepted immutable message with a durable P-256 key independent of its rotating TLS certificate. A Friend pins the chat public key after an authenticated Host response, keeps its own protected room copy and a bounded pending-draft queue, and reconciles messages over `POST /api/companion/servers/{profileId}/chat/sync`. The Host verifies returned signatures before merging a peer copy, then stamps drafts with the authenticated current device identity. Message IDs make lost-response retries idempotent. The Host can recover its log from a Friend copy if its signing key and access state survive. Background Friend polling rotates across assigned rooms; an open room also polls for updates. Chat persistence never feeds game readiness, player counts, lifecycle, world files, or backup authority. The existing Host HTTPS route handles direct Internet, private mesh, and advanced addresses. No Friend listener or independent offline Friend-to-Friend route is created by this slice.
+
 ## Friend internals
 
 - The same executable runs in Friend mode and serves its React UI locally. It stores only its own pairing material, protected on that Windows account.

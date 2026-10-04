@@ -37,6 +37,12 @@ Keep the project small and deliver working vertical slices. Start implementation
 - With the owner's explicit approval, test the chosen public-IP control port from an actual Friend network and the game join path separately. Do not change public router/firewall/DNS settings automatically. A localhost test is not a public reachability pass.
 - Record a real Friend start/stop permission test, disable notice, actual game client join, save, stop, restart, idle behavior, and Host recovery. Keep any missing external test marked **blocked**, not passed.
 
+## Server chat acceptance
+
+- With two isolated Friend app processes paired to one disposable Host, send a Host issue report, have one Friend reply, and verify both Friends see the same accepted message IDs in that server's room. A different server room must remain separate. Verify that removing a PC denies its next chat sync without revoking unrelated server status, that adding it back restores sync, and that a revoked or expired device still fails before chat content is returned.
+- Verify message size/body caps, invalid signatures, wrong Host/profile IDs, duplicate retry IDs, stale timestamps, protected local copies, and recovery of a lost Host log from a signed Friend copy. Restart Host and Friend apps and confirm room history persists. Test offline draft queuing and later authenticated delivery without displaying queued text as delivered.
+- Test the actual selected direct Internet, private mesh, or advanced route on separate Friend PCs before claiming external chat reachability. The current design has no direct Friend-to-Friend exchange while the Host listener is offline; this must remain visible as a product limit until an authenticated peer route is built and accepted.
+
 ## V1 acceptance gate
 
 V1 is accepted only when the owner can run the bundled Host app; every Friend requesting controls uses the bundled Friend mode; remote Start/Stop and disable/revoke work over the deliberately selected direct, private-mesh, or advanced route; max-concurrent and one-world writer rules hold; no remote or automatic action treats an unknown player count as zero; Valheim starts, reports a real player transition, accepts a real friend, stops gracefully, and preserves a recognizable world change through restart. Record exact versions, commands, screenshots/log excerpts with private details removed, and pass/fail/skip counts.

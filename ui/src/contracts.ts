@@ -306,9 +306,14 @@ export type FriendSnapshot = {
   hostId?: string
   connectionName?: string | null
   activity?: ActivityEvent[]
+  chatProfiles?: { id: string; name: string; supported: boolean }[]
 }
 
 export type Snapshot = HostSnapshot | FriendSnapshot
+export type ChatEntry = { id: string; hostId: string; profileId: string; authorId: string; author: string; sentUtc: string; text: string; signature: string }
+export type ChatDraft = { id: string; text: string }
+export type ChatMember = { deviceId: string; name: string; allowed: boolean }
+export type ChatRoomView = { ok: boolean; code: string; message: string; hostId: string; profileId: string; entries: ChatEntry[]; pending: ChatDraft[]; members: ChatMember[] | null }
 export type DataRecoveryNotice = {
   stateFile: string
   quarantinedFile: string
@@ -798,7 +803,13 @@ const parseFriendSnapshotInternal = (value: unknown, context: string, depth: num
     expiryWarning: optionalNullableText(source.expiryWarning, `${context}.expiryWarning`), routeMode: optionalText(source.routeMode, `${context}.routeMode`),
     routeAddress: optionalNullableText(source.routeAddress, `${context}.routeAddress`), hostId: optionalText(source.hostId, `${context}.hostId`),
     connectionName: optionalNullableText(source.connectionName, `${context}.connectionName`),
-    activity: source.activity === undefined || source.activity === null ? undefined : list(source.activity, `${context}.activity`, parseActivity)
+    activity: source.activity === undefined || source.activity === null ? undefined : list(source.activity, `${context}.activity`, parseActivity),
+    chatProfiles: source.chatProfiles === undefined || source.chatProfiles === null ? undefined :
+      list(source.chatProfiles, `${context}.chatProfiles`, (item, itemContext) => {
+        const profile = object(item, itemContext ?? `${context}.chatProfiles`)
+        return { id: text(profile.id, `${itemContext}.id`), name: text(profile.name, `${itemContext}.name`),
+          supported: flag(profile.supported, `${itemContext}.supported`) }
+      })
   }
 }
 
@@ -810,6 +821,35 @@ export const parseSnapshot: Decoder<Snapshot> = (value, context = 'snapshot') =>
 }
 
 export const parseFriendSnapshot: Decoder<FriendSnapshot> = (value, context = 'friend snapshot') => parseFriendSnapshotInternal(value, context, 0)
+
+export const parseChatRoomView: Decoder<ChatRoomView> = (value, context = 'chat room') => {
+  const source = object(value, context)
+  const entries = list(source.entries, `${context}.entries`, (item, itemContext) => {
+    const entry = object(item, itemContext ?? `${context}.entries`)
+    return {
+      id: text(entry.id, `${itemContext}.id`), hostId: text(entry.hostId, `${itemContext}.hostId`),
+      profileId: text(entry.profileId, `${itemContext}.profileId`), authorId: text(entry.authorId, `${itemContext}.authorId`),
+      author: text(entry.author, `${itemContext}.author`), sentUtc: text(entry.sentUtc, `${itemContext}.sentUtc`),
+      text: text(entry.text, `${itemContext}.text`), signature: text(entry.signature, `${itemContext}.signature`)
+    }
+  })
+  const pending = list(source.pending, `${context}.pending`, (item, itemContext) => {
+    const draft = object(item, itemContext ?? `${context}.pending`)
+    return { id: text(draft.id, `${itemContext}.id`), text: text(draft.text, `${itemContext}.text`) }
+  })
+  const members = source.members === null || source.members === undefined ? null :
+    list(source.members, `${context}.members`, (item, itemContext) => {
+      const member = object(item, itemContext ?? `${context}.members`)
+      return { deviceId: text(member.deviceId, `${itemContext}.deviceId`),
+        name: text(member.name, `${itemContext}.name`), allowed: flag(member.allowed, `${itemContext}.allowed`) }
+    })
+  if (entries.length > 200 || pending.length > 20 || entries.some(entry => entry.text.length > 500) ||
+      pending.some(draft => draft.text.length > 500))
+    throw new ContractError(`${context} exceeded chat limits.`)
+  return { ok: flag(source.ok, `${context}.ok`), code: text(source.code, `${context}.code`),
+    message: text(source.message, `${context}.message`), hostId: text(source.hostId, `${context}.hostId`),
+    profileId: text(source.profileId, `${context}.profileId`), entries, pending, members }
+}
 
 export const parseDataRecoveryView: Decoder<DataRecoveryView> = (value, context = 'data recovery') => {
   const source = object(value, context)

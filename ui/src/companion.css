@@ -185,6 +185,20 @@
   .join-row { align-items: stretch; flex-direction: column; }
 }
 
+.server-chat { display: grid; gap: .8rem; padding: .8rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.server-chat-heading, .server-chat-message > div, .server-chat-compose > div, .server-chat-members li { display: flex; align-items: center; justify-content: space-between; gap: .7rem; }
+.server-chat-heading h3, .server-chat-heading p, .server-chat-message p { margin: 0; }
+.server-chat-heading p, .server-chat-message time, .server-chat-message small, .server-chat-compose small, .server-chat-members small { color: var(--color-text-muted); font-size: .76rem; }
+.server-chat-messages { min-height: 7rem; max-height: 22rem; overflow-y: auto; display: grid; align-content: start; gap: .55rem; padding: .4rem; }
+.server-chat-message { padding: .65rem .75rem; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-md); background: var(--color-surface); overflow-wrap: anywhere; }
+.server-chat-message p { margin-top: .3rem; white-space: pre-wrap; }
+.server-chat-message.pending { opacity: .7; }
+.server-chat-compose { display: grid; gap: .35rem; }
+.server-chat-compose textarea { width: 100%; resize: vertical; }
+.server-chat-members summary { cursor: pointer; }
+.server-chat-members ul { list-style: none; padding: 0; display: grid; gap: .45rem; }
+.server-chat-members li { padding: .35rem 0; border-bottom: 1px solid var(--color-border-subtle); }
+
 /* Keep the ordinary Host and Friend actions visually ahead of setup details. */
 .compact-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--color-text-muted); font-size: 12px; margin: 0 0 16px; }
 .compact-status .status { display: inline-block; }

@@ -77,6 +77,68 @@ LocalData Data(string name) => new(Path.Combine(root, name));
 GameServerRegistry Games(LocalData data) => new(data, true, PortProbeMode.ObserveOnly);
 HostManager Manager(LocalData data) => new(data, Games(data));
 
+await Check("server chat signed copies recover without trusting peer authors", () =>
+{
+    var hostId = Guid.NewGuid();
+    var profileId = Guid.NewGuid();
+    var otherProfile = Guid.NewGuid();
+    var friendId = Guid.NewGuid();
+    using var hostData = Data("chat-host");
+    using var peerData = Data("chat-peer");
+    var host = new ServerChat(hostData);
+    var peer = new ServerChat(peerData);
+    var key = host.OwnerPublicKey();
+    var first = host.Post(hostId, profileId, Guid.Empty, "Host", "Server issue reported");
+    var second = host.Post(hostId, profileId, friendId, "Friend", "I can reproduce it");
+    Require(ServerChat.Verify(first, key, hostId, profileId) &&
+        ServerChat.Verify(second, key, hostId, profileId), "accepted messages were not signed");
+    var longName = host.Post(hostId, otherProfile, friendId, new string('F', 80), "Device name stays valid");
+    Require(ServerChat.Verify(longName, key, hostId, otherProfile) && longName.Author.Length == 80,
+        "a valid saved device name could not send chat");
+    Require(peer.Merge(hostId, profileId, [first, second], key) &&
+        peer.Read(hostId, profileId).Count == 2 &&
+        peer.Read(hostId, otherProfile).Count == 0,
+        "peer did not keep an isolated room copy");
+    var forged = second with { Author = "Host" };
+    Require(!peer.Merge(hostId, profileId, [forged], key) &&
+        !host.Merge(hostId, profileId, [forged], key),
+        "a peer changed an accepted message author");
+    var queued = peer.Queue(hostId, profileId, friendId, "Will retry after reconnect");
+    Require(peer.Pending(hostId, profileId, friendId).Single().Id == queued.Id,
+        "offline draft was not durable");
+    var confirmed = host.Post(hostId, profileId, friendId, "Friend", queued.Text, queued.Id);
+    Require(host.Post(hostId, profileId, friendId, "Friend", queued.Text, queued.Id) == confirmed,
+        "retried draft was duplicated");
+    Require(peer.Merge(hostId, profileId, [confirmed], key), "peer rejected Host-signed confirmation");
+    peer.Confirm(hostId, profileId, friendId);
+    Require(peer.Pending(hostId, profileId, friendId).Count == 0, "confirmed draft remained queued");
+    RequireThrows<ArgumentException>(() => host.Post(hostId, profileId, friendId, "Friend",
+        new string('x', ServerChat.MaximumTextLength + 1)), "oversized message was accepted");
+    host.SetMember(profileId, friendId, false);
+    Require(!host.IsMember(profileId, friendId) && host.IsMember(otherProfile, friendId),
+        "room removal affected another server");
+    host.SetMember(profileId, friendId, true);
+    Require(host.IsMember(profileId, friendId), "room access was not restored");
+    hostData.SaveProtected($"chat-members-{otherProfile:N}.protected", Encoding.UTF8.GetBytes("{broken"));
+    Require(!host.IsMember(otherProfile, friendId) && !host.IsMember(otherProfile, friendId),
+        "a damaged room membership list failed open after quarantine");
+    hostData.DeleteProtected($"chat-{hostId:N}-{profileId:N}.protected");
+    Require(host.Merge(hostId, profileId, peer.Read(hostId, profileId), key) &&
+        host.Read(hostId, profileId).Count == 3 &&
+        new ServerChat(hostData).OwnerPublicKey() == key,
+        "Host did not restore chat from a signed peer copy after losing only its log");
+    var parallelPosts = Enumerable.Range(0, 4).Select(number => Task.Run(() =>
+        new ServerChat(hostData).Post(hostId, profileId, Guid.Empty, "Host", $"Update {number}"))).ToArray();
+    Task.WaitAll(parallelPosts);
+    Require(host.Read(hostId, profileId).Count == 7,
+        "two Host chat instances lost a concurrent protected-room write");
+    peer.Queue(hostId, profileId, friendId, "Unsynced note");
+    peer.Forget(hostId, friendId, [profileId], preserveSharedRoomCopies: true);
+    Require(peer.Read(hostId, profileId).Count == 3 && peer.Pending(hostId, profileId, friendId).Count == 0,
+        "forgetting one saved route erased another route's room copy or retained its draft");
+    return Task.CompletedTask;
+});
+
 await Check("live save candidates stay closed until a real load test", () =>
 {
     using var data = Data("live-save-candidates");

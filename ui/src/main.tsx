@@ -34,6 +34,7 @@ import {
 import { Icon } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
+import { ServerChat } from './ServerChat'
 import { ServerFilesPanel } from './ServerFilesPanel'
 import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
@@ -59,7 +60,7 @@ import './style.css'
 import './companion.css'
 
 type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
-type HostServerTab = 'overview' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
+type HostServerTab = 'overview' | 'chat' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
 
@@ -237,6 +238,7 @@ function App() {
   const [selectedHostProfileId, setSelectedHostProfileId] = useState('')
   const [hostServerTab, setHostServerTab] = useState<HostServerTab>('overview')
   const [friendLogProfileId, setFriendLogProfileId] = useState('')
+  const [friendChatProfileId, setFriendChatProfileId] = useState('')
   const [hostMobileDetail, setHostMobileDetail] = useState(false)
   const [activityClearMarkers, setActivityClearMarkers] = useState<Record<string, string>>(() =>
     readActivityClearMarkersFrom(() => window.localStorage))
@@ -1462,11 +1464,33 @@ function App() {
               {profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')}
                 onAddressChange={openFriendAddressRecovery} />}
+              <div className="friend-chat-surface"><Button className="secondary"
+                aria-expanded={friendChatProfileId === profile.id}
+                onClick={() => setFriendChatProfileId(current => current === profile.id ? '' : profile.id)}>
+                {friendChatProfileId === profile.id ? 'Hide chat' : 'Open chat'}</Button>
+                {friendChatProfileId === profile.id && <PaneErrorBoundary title="Server chat" resetKey={profile.id}>
+                  <ServerChat profileId={profile.id} host={false}
+                    visible={workspacePage === 'join' && friendChatProfileId === profile.id}
+                    supported={snapshot.hostCapabilities.includes('server-chat-v1')} />
+                </PaneErrorBoundary>}</div>
               {profile.state === 'Offline' && !profile.canStart && snapshot.state === 'Connected' && <p className="helper-text">The Host has not allowed this PC to start this server.</p>}
               {['Ready', 'Listening'].includes(profile.state) && !profile.joinAddress && <p className="helper-text">The Host has not found a current game address yet.</p>}
             </article>
           })}
           </div>}
+          {snapshot.endpoint && !showPairing && snapshot.state === 'Disconnected/Unknown' &&
+            !!snapshot.chatProfiles?.some(profile => profile.supported) &&
+            <div className="friend-server-list"><h3>Chats saved on this PC</h3>
+              <p className="helper-text">The Host connection is unavailable. You can write a message now; it will wait on this PC until the Host reconnects.</p>
+              {snapshot.chatProfiles.filter(profile => profile.supported).map(profile =>
+                <article className="profile-card" key={profile.id}><div className="profile-top"><h3>{profile.name}</h3>
+                  <Button className="secondary" aria-expanded={friendChatProfileId === profile.id}
+                    onClick={() => setFriendChatProfileId(current => current === profile.id ? '' : profile.id)}>
+                    {friendChatProfileId === profile.id ? 'Hide chat' : 'Open chat'}</Button></div>
+                  {friendChatProfileId === profile.id && <PaneErrorBoundary title="Saved server chat" resetKey={profile.id}>
+                    <ServerChat profileId={profile.id} host={false}
+                      visible={workspacePage === 'join' && friendChatProfileId === profile.id} />
+                  </PaneErrorBoundary>}</article>)}</div>}
         </section>
       </>}
 
@@ -1488,7 +1512,7 @@ function App() {
             <section className="server-detail" data-server-tab={hostServerTab} aria-label={selectedHostProfile ? `${selectedHostProfile.name} workspace` : 'Server workspace'}>
               <Button className="mobile-back secondary" onClick={() => setHostMobileDetail(false)}>Back to all servers</Button>
               <nav className="server-tabs" aria-label="Selected server sections">
-                {(['overview', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => setHostServerTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</Button>)}
+                {(['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => setHostServerTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</Button>)}
               </nav>
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
@@ -1521,6 +1545,9 @@ function App() {
                   <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
                 {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   visible={workspacePage === 'host' && hostServerTab === 'logs'} /></PaneErrorBoundary>}
+                {hostServerTab === 'chat' && <PaneErrorBoundary title="Server chat" resetKey={profile.id}>
+                  <ServerChat profileId={profile.id} host visible={workspacePage === 'host' && hostServerTab === 'chat'} />
+                </PaneErrorBoundary>}
                 {hostServerTab === 'files' && <PaneErrorBoundary title="Server files" resetKey={profile.id}><ServerFilesPanel
                   profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
                   busy={!!pending || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}

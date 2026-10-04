@@ -32,6 +32,8 @@ public sealed class FriendConfiguration
     public Dictionary<Guid, SharedWorldVersion> LastSharedHostManifests { get; set; } = [];
     public Dictionary<Guid, List<SharedWorldVersion>> CompetingSharedHostManifests { get; set; } = [];
     public HashSet<Guid> SharedWorldConflicts { get; set; } = [];
+    public Dictionary<Guid, string> ChatOwnerKeys { get; set; } = [];
+    public HashSet<Guid> ChatDeniedProfiles { get; set; } = [];
     public Dictionary<Guid, Guid> LastSharedHostGroups { get; set; } = [];
     public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];
     public Dictionary<Guid, Guid> ApprovedSharedWorldGroups { get; set; } = [];
@@ -62,6 +64,7 @@ public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice,
     bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null,
     HostCertificateState? Certificates = null, ConnectionRoute? Route = null,
     IReadOnlyList<ActivityEvent>? Activity = null);
+public sealed record ChatProfile(Guid Id, string Name, bool Supported);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
     IReadOnlyList<string> HostCapabilities,
@@ -71,7 +74,8 @@ public sealed record FriendView(string Mode, string State, string Detail, string
     DateTimeOffset? CredentialExpiresUtc = null, DateTimeOffset? CertificateExpiresUtc = null,
     string? ExpiryWarning = null, string RouteMode = ConnectionRouteModes.DirectInternet,
     string? RouteAddress = null, Guid HostId = default, string? ConnectionName = null,
-    IReadOnlyList<ActivityEvent>? Activity = null);
+    IReadOnlyList<ActivityEvent>? Activity = null,
+    IReadOnlyList<ChatProfile>? ChatProfiles = null);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status,
     IReadOnlyList<PortConflictView>? PortConflicts = null, Guid? OperationId = null,
     string? OperationState = null);
@@ -83,12 +87,15 @@ internal sealed partial class FriendLink : IDisposable
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly object lifetimeSync = new();
     private readonly LocalData data;
+    private readonly ServerChat chat;
     private readonly string configFile;
     private readonly Func<string, IEnumerable<string>, HttpClient>? historyReviewClientFactory;
     private FriendConfiguration? config;
     private FriendView view;
     private Guid instanceId = Guid.NewGuid();
     private long sequence;
+    private DateTimeOffset lastChatSyncUtc;
+    private int nextChatProfile;
     private HttpClient? client;
     private readonly Func<string, IEnumerable<string>, HttpClient> makeClient;
     private readonly SharedWorldHostLoss sharedHostLoss = new();
@@ -161,6 +168,7 @@ internal sealed partial class FriendLink : IDisposable
     {
         makeClient = clientFactory ?? MakeClient;
         this.data = data;
+        chat = new ServerChat(data);
         this.configFile = configFile;
         historyReviewClientFactory = clientFactory;
         config = LoadConfig(data, configFile);
@@ -177,14 +185,18 @@ internal sealed partial class FriendLink : IDisposable
                     item.RequestedUtc >= DateTimeOffset.UtcNow.AddDays(-30))
                 .OrderBy(item => item.RequestedUtc).TakeLast(20).ToList();
             config.CachedProfiles ??= [];
+            config.ChatOwnerKeys ??= [];
+            config.ChatDeniedProfiles ??= [];
         }
         view = config is null
             ? new("Friend", "Not connected", "Paste the server code from the Host PC.", "", null, false, false, false, [], [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
-                null, false, false, false, [], [], ConnectionName: config.DisplayName);
+                null, false, false, false, [], [], ConnectionName: config.DisplayName,
+                ChatProfiles: CachedChatProfiles());
     }
 
     public FriendView View() => view;
+    internal Guid ChatHostId => config?.HostId ?? Guid.Empty;
     internal bool Configured => config is not null;
 
     public GameEndpointProbeResult ProbeGameEndpoint(Guid profileId)
@@ -433,6 +445,20 @@ internal sealed partial class FriendLink : IDisposable
                 if (status is null) throw new IOException("Host status was empty.");
                 ObserveSharedHost(HostReachabilityObservation.Authenticated);
                 ApplyStatus(status);
+                if (DateTimeOffset.UtcNow - lastChatSyncUtc >= TimeSpan.FromSeconds(15))
+                {
+                    lastChatSyncUtc = DateTimeOffset.UtcNow;
+                    var profiles = view.Profiles;
+                    if (profiles.Count > 0 && view.HostCapabilities.Contains(CompanionProtocol.ServerChatCapability))
+                    {
+                        var profile = profiles[nextChatProfile++ % profiles.Count];
+                        try { _ = await SyncChatCoreAsync(profile.Id); }
+                        catch (Exception ex) when (ex is IOException or InvalidDataException or
+                                                   UnauthorizedAccessException or CryptographicException or
+                                                   ArgumentException or InvalidOperationException)
+                        { data.TryAudit($"chat-sync-unavailable {ex.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
+                    }
+                }
                 await ReturnAuthorityToOriginalHostAsync();
                 return view;
             }
@@ -531,7 +557,7 @@ internal sealed partial class FriendLink : IDisposable
         finally { gate.Release(); ReleaseRetained(); }
     }
 
-    public async Task<FriendActionResult> ForgetAsync()
+    public async Task<FriendActionResult> ForgetAsync(bool preserveSharedRoomCopies = false)
     {
         if (!TryRetain()) return ClosedAction();
         CancelSharedTransfers();
@@ -554,6 +580,8 @@ internal sealed partial class FriendLink : IDisposable
             }
             client?.Dispose();
             client = null;
+            chat.Forget(config.HostId, config.DeviceId,
+                config.CachedProfiles?.Select(profile => profile.Id) ?? [], preserveSharedRoomCopies);
             data.DeleteProtected(configFile);
             data.DeleteProtected($"shared-world-pc-signing-{config.DeviceId:N}.protected");
             config = null;
@@ -887,7 +915,12 @@ internal sealed partial class FriendLink : IDisposable
             RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
             RouteAddress: config.Route?.Address, HostId: config.HostId,
             ConnectionName: config.DisplayName, Activity: status.Activity);
+        view = view with { ChatProfiles = CachedChatProfiles() };
     }
+
+    private IReadOnlyList<ChatProfile> CachedChatProfiles() =>
+        config?.CachedProfiles?.Select(profile => new ChatProfile(profile.Id, profile.Name,
+            config.ChatOwnerKeys?.ContainsKey(profile.Id) == true)).ToList() ?? [];
 
     private static bool ValidLogResult(ServerLogResult? result)
     {

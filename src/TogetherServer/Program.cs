@@ -108,6 +108,7 @@ catch (Exception ex) when (ex is IOException or InvalidDataException or System.S
 var acceptanceRecorder = new AcceptanceRecorder(data, TimeProvider.System);
 var updateCheckpoints = new StateCheckpointService(data, TimeProvider.System);
 var serverLogs = new ServerLogService(data, manager);
+var serverChat = new ServerChat(data);
 var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
@@ -127,7 +128,7 @@ var updatePending = false;
 var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
     () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
-    friend.CurrentRecoveryHostLoss);
+    friend.CurrentRecoveryHostLoss, serverChat: serverChat);
 manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
@@ -678,6 +679,56 @@ app.MapPut("/api/local/profiles/{id:guid}/acceptance", async (Guid id, Acceptanc
     finally { modeGate.Release(); }
 });
 app.MapPost("/api/local/profiles/{id:guid}/forget", (Guid id) => HostOnly(() => manager.ForgetAsync(id)));
+ChatRoomView HostChatRoom(Guid profileId)
+{
+    var saved = data.LoadSettings().Profiles.Any(profile => profile.Id == profileId);
+    var hostId = identity.State()?.HostId ?? Guid.Empty;
+    if (!saved || hostId == Guid.Empty)
+        return new(false, saved ? "ChatUnavailable" : "UnknownProfile",
+            saved ? "Invite friends to start this server's chat room." : "Choose a saved server.",
+            hostId, profileId, [], []);
+    var members = pairing.Views().Where(device => device.AssignedProfileIds.Contains(profileId) &&
+        !device.Revoked).Select(device => new ChatMember(device.Id, device.Name,
+            serverChat.IsMember(profileId, device.Id))).ToList();
+    return new(true, "ChatReady", "Messages are copied to connected members.", hostId,
+        profileId, serverChat.Read(hostId, profileId), [], members);
+}
+app.MapGet("/api/local/profiles/{id:guid}/chat", (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Conflict(new { code = "FriendMode" }) : Results.Json(HostChatRoom(id)));
+app.MapPost("/api/local/profiles/{id:guid}/chat/messages", (Guid id, ChatPostRequest request) =>
+{
+    if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+    var room = HostChatRoom(id);
+    if (!room.Ok) return Results.Json(room, statusCode: 409);
+    if (!ServerChat.ValidText(request.Text))
+        return Results.BadRequest(new { code = "InvalidChatText", message = "Write a message of at most 500 characters." });
+    try
+    {
+        serverChat.Post(room.HostId, id, Guid.Empty, "Host", request.Text!);
+        return Results.Json(HostChatRoom(id));
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or
+                               System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
+    { return Results.Json(new { code = "ChatUnavailable", message = "Chat could not be saved." }, statusCode: 503); }
+});
+app.MapPut("/api/local/profiles/{id:guid}/chat/members/{deviceId:guid}",
+    (Guid id, Guid deviceId, ChatMemberChange change) =>
+{
+    if (friendMode) return Results.Conflict(new { code = "FriendMode" });
+    if (!data.LoadSettings().Profiles.Any(profile => profile.Id == id))
+        return Results.NotFound(new { code = "UnknownProfile" });
+    if (!pairing.Views().Any(device => device.Id == deviceId && !device.Revoked &&
+        device.AssignedProfileIds.Contains(id)))
+        return Results.NotFound(new { code = "UnknownChatMember" });
+    try
+    {
+        serverChat.SetMember(id, deviceId, change.Allowed);
+        return Results.Json(HostChatRoom(id));
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+    { return Results.Json(new { code = "ChatUnavailable", message = "Room access needs owner review." }, statusCode: 503); }
+});
 app.MapGet("/api/local/profiles/{id:guid}/backups", async (Guid id) => friendMode
     ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backups are local-owner-only." })
     : Results.Json(await manager.BackupsAsync(id)));
@@ -1538,6 +1589,14 @@ app.MapPut("/api/local/friend/connections/{id:guid}/endpoint", async (Guid id, E
     friendMode ? Results.Json(await friend.RecoverEndpointAsync(id, request.Endpoint)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapPost("/api/local/friend/poll", async () =>
     friendMode ? Results.Json(await friend.PollAsync()) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapGet("/api/local/friend/{id:guid}/chat", (HttpContext context, Guid id) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+    friendMode ? Results.Json(friend.ChatRoom(id)) : Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/chat/sync", async (Guid id) =>
+    friendMode ? Results.Json(await friend.SyncChatAsync(id)) : Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/chat/messages", async (Guid id, ChatPostRequest request) =>
+    friendMode ? Results.Json(await friend.PostChatAsync(id, request.Text)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/probe-game", async (Guid id) =>
     friendMode ? Results.Json(await friend.ProbeGameEndpointAsync(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/shared-world", (HttpContext context, Guid id) =>

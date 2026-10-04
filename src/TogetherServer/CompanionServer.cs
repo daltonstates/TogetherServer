@@ -24,7 +24,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     Func<bool>? isShuttingDown = null,
     Func<Guid, CancellationToken, Task<bool>>? recoveryLossProbe = null,
     Func<Guid, bool>? recoveryLossCurrent = null,
-    Action<IWebHostBuilder>? inMemoryTransport = null)
+    Action<IWebHostBuilder>? inMemoryTransport = null,
+    ServerChat? serverChat = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -36,6 +37,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     private readonly SharedWorldEnrollmentNonces sharedEnrollment = new();
     private readonly SharedWorldEnrollmentNonces successorEnrollment = new();
     private readonly SharedWorldVoteInbox recoveryVotes = new(data);
+    private readonly ServerChat chat = serverChat ?? new ServerChat(data);
     private const int MaximumAuthorityRecordBytes = 2 * 1024 * 1024;
 
     private static async Task<byte[]?> ReadBoundedAuthorityAsync(Stream body, long? declaredLength,
@@ -212,7 +214,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 "/shared-world/authority", StringComparison.Ordinal) == true ||
                 context.Request.Path.Value?.EndsWith(
                     "/shared-world/resolution/owner-offer", StringComparison.Ordinal) == true;
-            var maximumBody = authorityIngest ? 2 * 1024 * 1024 : 4096;
+            var chatSync = context.Request.Path.Value?.EndsWith(
+                "/chat/sync", StringComparison.Ordinal) == true;
+            var maximumBody = authorityIngest ? 2 * 1024 * 1024 :
+                chatSync ? ServerChat.MaximumWireBytes : 4096;
             if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
                 context.Connection.LocalPort != settings.CompanionPort ||
                 !context.Request.Path.StartsWithSegments("/api/companion") ||
@@ -681,6 +686,47 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!Reauthorize(device, out _, out decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(status);
+        });
+        companion.MapPost("/servers/{profileId:guid}/chat/sync",
+            (HttpContext context, Guid profileId, ChatSyncRequest request) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol))
+                return Results.Json(new { code = "ChatUpdateRequired" }, statusCode: 409);
+            if (!pairing.CanAccess(device!, profileId) || !chat.IsMember(profileId, device!.Id))
+                return Results.Json(new { code = "ChatAccessDenied" }, statusCode: 403);
+            var hostId = identity.State()?.HostId ?? Guid.Empty;
+            if (hostId == Guid.Empty) return Results.Json(new { code = "ChatUnavailable" }, statusCode: 503);
+            if (request is null || request.Entries?.Count > ServerChat.MaximumEntries ||
+                request.Drafts?.Count > ServerChat.MaximumDrafts ||
+                request.Drafts?.Any(draft => draft is null || draft.Id == Guid.Empty ||
+                    !ServerChat.ValidText(draft.Text)) == true ||
+                request.Drafts?.Select(draft => draft.Id).Distinct().Count() != request.Drafts?.Count)
+                return Results.BadRequest(new { code = "InvalidChatRequest" });
+            try
+            {
+                var publicKey = chat.OwnerPublicKey();
+                if (!chat.Merge(hostId, profileId, request.Entries, publicKey))
+                    return Results.BadRequest(new { code = "InvalidChatCopy" });
+                // Draft identity comes from the current authenticated device, not the body.
+                if (!pairing.AuthorizeActiveDevice(device.Id, out var current).Ok ||
+                    current is null || !pairing.CanAccess(current, profileId) ||
+                    !chat.IsMember(profileId, current.Id))
+                    return Results.Json(new { code = "ChatAccessDenied" }, statusCode: 403);
+                foreach (var draft in request.Drafts ?? [])
+                    chat.Post(hostId, profileId, current.Id, current.Name, draft.Text, draft.Id);
+                if (!pairing.AuthorizeActiveDevice(device.Id, out current).Ok ||
+                    current is null || !pairing.CanAccess(current, profileId) ||
+                    !chat.IsMember(profileId, current.Id))
+                    return Results.Json(new { code = "ChatAccessDenied" }, statusCode: 403);
+                return Results.Json(new ChatSyncResponse(true, "ChatSynced", "Chat is up to date.",
+                    hostId, profileId, publicKey, chat.Read(hostId, profileId)));
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or
+                                       CryptographicException or UnauthorizedAccessException or ArgumentException)
+            { return Results.Json(new { code = "ChatUnavailable" }, statusCode: 503); }
         });
         companion.MapGet("/servers/{profileId:guid}/shared-world/enrollment", (HttpContext context, Guid profileId) =>
         {

@@ -84,6 +84,34 @@ public sealed class FriendService : IDisposable
         return View();
     }
 
+    public ChatRoomView ChatRoom(Guid profileId)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link?.ChatRoom(profileId) ?? new(false, "NotPaired",
+                "Choose a saved Host connection first.", Guid.Empty, profileId, [], []);
+        }
+    }
+
+    public Task<ChatRoomView> SyncChatAsync(Guid profileId)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link?.SyncChatAsync(profileId) ?? Task.FromResult(ChatRoom(profileId));
+        }
+    }
+
+    public Task<ChatRoomView> PostChatAsync(Guid profileId, string? text)
+    {
+        lock (sync)
+        {
+            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
+            return link?.PostChatAsync(profileId, text) ?? Task.FromResult(ChatRoom(profileId));
+        }
+    }
+
     public void ScheduleSharedCatchUp(CancellationToken shutdown)
     {
         (Guid Id, FriendLink Link)[] current;
@@ -125,13 +153,16 @@ public sealed class FriendService : IDisposable
     public async Task<FriendActionResult> ForgetAsync(Guid connectionId)
     {
         FriendLink? link;
+        var preserveSharedRoomCopies = false;
         lock (sync)
         {
             if (disposed) return ClosedAction();
             link = links.SingleOrDefault(item => item.Id == connectionId).Link;
+            preserveSharedRoomCopies = link is not null && links.Any(item => item.Id != connectionId &&
+                item.Link.ChatHostId == link.ChatHostId);
         }
         if (link is null) return new(false, "UnknownConnection", "Choose a saved Host connection.", null);
-        var result = await link.ForgetAsync();
+        var result = await link.ForgetAsync(preserveSharedRoomCopies);
         if (!result.Ok) return result;
         lock (sync)
         {

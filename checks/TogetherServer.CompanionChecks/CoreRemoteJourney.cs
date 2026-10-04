@@ -16,9 +16,11 @@ internal static class CoreRemoteJourney
             Guid.NewGuid().ToString("N")));
         var hostData = Path.Combine(root, "host");
         var friendData = Path.Combine(root, "friend");
+        var secondFriendData = Path.Combine(root, "second-friend");
         var hostPort = FreeTcpPort();
         var companionPort = FreeTcpPort(hostPort);
         var friendPort = FreeTcpPort(hostPort, companionPort);
+        var secondFriendPort = FreeTcpPort(hostPort, companionPort, friendPort);
         var gamePort = FreeUdpPair();
         var endpoint = $"https://127.0.0.1:{companionPort}";
         var profile = new ServerProfile
@@ -36,13 +38,16 @@ internal static class CoreRemoteJourney
 
         Process? host = null;
         Process? friend = null;
+        Process? secondFriend = null;
         var passes = 0;
         try
         {
             host = StartApp(appPath, "--host", hostPort, hostData);
             friend = StartApp(appPath, "--friend", friendPort, friendData);
+            secondFriend = StartApp(appPath, "--friend", secondFriendPort, secondFriendData);
             await WaitLocalAsync(hostPort);
             await WaitLocalAsync(friendPort);
+            await WaitLocalAsync(secondFriendPort);
             WindowsListenerOwners.RequireTogetherServerOwner(hostPort, host);
             WindowsListenerOwners.RequireTogetherServerOwner(friendPort, friend);
             var appAssembly = typeof(CompanionServer).Assembly;
@@ -53,6 +58,7 @@ internal static class CoreRemoteJourney
                 throw new Exception("Tray notifications are not implemented in the packaged app assembly.");
             using var owner = LocalClient(hostPort);
             using var friendLocal = LocalClient(friendPort);
+            using var secondFriendLocal = LocalClient(secondFriendPort);
 
             var settings = new HostSettings
             {
@@ -93,8 +99,50 @@ internal static class CoreRemoteJourney
             Console.WriteLine("PASS authenticated Friend-to-Host connection is verified beyond an open TCP port");
             passes++;
 
-            var companion = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
-            var deviceId = companion.GetProperty("devices").EnumerateArray().Single().GetProperty("id").GetGuid();
+            var secondPaired = await PostAsync<FriendPairRequest, FriendActionResult>(secondFriendLocal,
+                "/api/local/friend/pair", new(password!));
+            Require(secondPaired.Ok, "second isolated Friend could not pair for server chat");
+            var secondConnected = await PostAsync<object, FriendView>(secondFriendLocal,
+                "/api/local/friend/poll", new { });
+            Require(secondConnected.State == "Connected", "second Friend was not authenticated");
+            var hostChat = await PostAsync<ChatPostRequest, ChatRoomView>(owner,
+                $"/api/local/profiles/{profile.Id}/chat/messages", new("Check the server issue"));
+            Require(hostChat.Ok && hostChat.Entries.Count == 1, "Host chat message was not saved");
+            var firstCopy = await PostAsync<object, ChatRoomView>(friendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { });
+            var secondCopy = await PostAsync<object, ChatRoomView>(secondFriendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { });
+            Require(firstCopy.Ok && secondCopy.Ok &&
+                firstCopy.Entries.Single().Text == "Check the server issue" &&
+                secondCopy.Entries.Single().Id == firstCopy.Entries.Single().Id,
+                "both Friends did not receive the same signed room message");
+            var reply = await PostAsync<ChatPostRequest, ChatRoomView>(friendLocal,
+                $"/api/local/friend/{profile.Id}/chat/messages", new("I can reproduce it"));
+            Require(reply.Ok && reply.Entries.Count == 2, "Friend chat reply was not accepted");
+            secondCopy = await PostAsync<object, ChatRoomView>(secondFriendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { });
+            Require(secondCopy.Entries.Any(entry => entry.Text == "I can reproduce it"),
+                "second Friend did not receive the first Friend's reply");
+            var firstDevice = (await owner.GetFromJsonAsync<JsonElement>("/api/local/companion"))
+                .GetProperty("devices").EnumerateArray().First().GetProperty("id").GetGuid();
+            var removed = await PutAsync<ChatMemberChange, ChatRoomView>(owner,
+                $"/api/local/profiles/{profile.Id}/chat/members/{firstDevice}", new(false));
+            Require(removed.Members?.Single(member => member.DeviceId == firstDevice).Allowed == false,
+                "Host could not remove the first Friend from this room");
+            var denied = await PostAsync<object, ChatRoomView>(friendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { });
+            Require(!denied.Ok && denied.Code == "ChatAccessDenied" && denied.Entries.Count == 0,
+                "removed Friend kept reading chat through the companion API");
+            Require((await PutAsync<ChatMemberChange, ChatRoomView>(owner,
+                $"/api/local/profiles/{profile.Id}/chat/members/{firstDevice}", new(true))).Ok,
+                "Host could not add the Friend back to the room");
+            Require((await PostAsync<object, ChatRoomView>(friendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { })).Entries.Count == 2,
+                "re-added Friend did not regain its room copy");
+            Console.WriteLine("PASS two isolated Friends exchange signed server chat and owner removal takes effect on next sync");
+            passes++;
+
+            var deviceId = firstDevice;
             Require((await PutAsync<DevicePermissionRequest, PairingDecision>(owner,
                 $"/api/local/devices/{deviceId}/permissions", new(true, true))).Ok,
                 "Host could not grant core Start and Stop permissions");
@@ -150,19 +198,37 @@ internal static class CoreRemoteJourney
             Require(closed.State == "Disconnected/Unknown" && closed.ConnectionCode == "HostPortClosed" &&
                 closed.LastConnectedUtc == beforeDisconnect.LastConnectedUtc,
                 $"closed Host port was not reported explicitly: {closed.State} {closed.ConnectionCode} {closed.Detail}");
+            var queuedChat = await PostAsync<ChatPostRequest, ChatRoomView>(friendLocal,
+                $"/api/local/friend/{profile.Id}/chat/messages", new("I will try again when the Host returns"));
+            Require(queuedChat.Ok && queuedChat.Code == "ChatQueued" &&
+                queuedChat.Pending.Count == 1 && queuedChat.Entries.Count == 2,
+                "Friend did not retain an explicitly pending offline chat draft");
             Console.WriteLine("PASS closed Host listener is detected without erasing the last authenticated connection");
             passes++;
 
             StopApp(friend);
             friend = null;
+            StopApp(secondFriend);
+            secondFriend = null;
             host = StartApp(appPath, "--host", hostPort, hostData);
             friend = StartApp(appPath, "--friend", friendPort, friendData);
+            secondFriend = StartApp(appPath, "--friend", secondFriendPort, secondFriendData);
             await WaitLocalAsync(hostPort);
             await WaitLocalAsync(friendPort);
+            await WaitLocalAsync(secondFriendPort);
             var reconnected = await WaitForConnectedAsync(friendLocal);
             Require(reconnected.LastConnectedUtc is not null && reconnected.Profiles.Single().Id == profile.Id &&
                 reconnected.CanStart && reconnected.CanStop,
                 "saved pin, credential, assignment, or permissions did not reconnect after both apps restarted");
+            var deliveredChat = await PostAsync<object, ChatRoomView>(friendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { });
+            Require(deliveredChat.Ok && deliveredChat.Pending.Count == 0 &&
+                deliveredChat.Entries.Any(entry => entry.Text == "I will try again when the Host returns"),
+                "queued offline chat draft was not delivered after authenticated reconnection");
+            var chatAfterRestart = await PostAsync<object, ChatRoomView>(secondFriendLocal,
+                $"/api/local/friend/{profile.Id}/chat/sync", new { });
+            Require(chatAfterRestart.Ok && chatAfterRestart.Entries.Count == 3,
+                "signed chat copy did not survive isolated Host and Friend app restarts");
 
             var restarted = await FriendActionAsync(friendLocal, profile.Id, "start");
             Require(restarted.Ok && restarted.Code == "ValheimStarting",
@@ -186,6 +252,7 @@ internal static class CoreRemoteJourney
         {
             await TryStopManagedRunAsync(hostPort, profile.Id, host);
             StopApp(friend);
+            StopApp(secondFriend);
             StopApp(host);
         }
     }
