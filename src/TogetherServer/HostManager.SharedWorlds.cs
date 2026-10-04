@@ -21,6 +21,8 @@ internal sealed record PendingPlannedHandoff(int Schema, Guid ProfileId, Guid Gr
 
 public sealed partial class HostManager
 {
+    private static readonly JsonSerializerOptions SharedVersionRangeJson = new(JsonSerializerDefaults.Web);
+
     private static string PlannedHandoffName(Guid profileId) =>
         $"planned-handoff-{profileId:N}.protected";
 
@@ -386,6 +388,25 @@ public sealed partial class HostManager
         if (SharedAuthorityBlocked(latest.ProfileId, out _))
             throw new InvalidDataException("Shared world authority blocks transfer from this PC.");
         return sharedWorlds.ReadEarlierVersion(latest, number);
+    }
+
+    internal IReadOnlyList<SharedWorldVersion> ReadEarlierSharedVersionRange(
+        SharedWorldVersion latest, long start, int count)
+    {
+        if (count is < 1 or > WorldAuthorityTrust.ChainVersionsPerCheck ||
+            start < 1 || start > latest.Number - count ||
+            SharedAuthorityBlocked(latest.ProfileId, out _))
+            throw new InvalidDataException("Shared version range is unavailable.");
+        var versions = new List<SharedWorldVersion>(count);
+        for (var number = start; number < start + count; number++)
+        {
+            var version = sharedWorlds.ReadEarlierVersion(latest, number);
+            if (JsonSerializer.SerializeToUtf8Bytes(version, SharedVersionRangeJson).LongLength >
+                SharedWorldService.MaximumManifestBytes)
+                throw new InvalidDataException("A shared version exceeds the transfer limit.");
+            versions.Add(version);
+        }
+        return versions;
     }
 
     internal async Task ApplySharedWorldAuthorityAsync(WorldAuthorityRecord record,

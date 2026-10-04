@@ -713,8 +713,10 @@ await Check("first-time voter reviews multi-version history through a fenced Hos
     voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
         new FriendConfiguration
         {
-            Endpoint = address, Fingerprint = HostIdentity.Fingerprint(certificate),
-            DeviceId = deviceId, Credential = bearer,
+            Endpoint = address,
+            Fingerprint = HostIdentity.Fingerprint(certificate),
+            DeviceId = deviceId,
+            Credential = bearer,
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     using var voter = new FriendLink(voterData, "friend.protected");
@@ -781,8 +783,11 @@ await Check("first-time voter reviews multi-version history through a fenced Hos
         {
             var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(proposal),
                 voterId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), "");
-            return draft with { Signature = Convert.ToBase64String(key.SignData(
-                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+            return draft with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+            };
         }
         var recordDraft = new WorldAuthorityRecord(1, proposal, roster, secondVersion,
             [SignVote(deviceId, voterKey), SignVote(otherVoterId, otherVoterKey)], null, "",
@@ -2572,10 +2577,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-    {
-        Name: "fixturemod", Version: "1.0.0",
-        RequiredGameVersion: "2.0", Type: "Factorio mod"
-    }],
+        {
+            Name: "fixturemod", Version: "1.0.0",
+            RequiredGameVersion: "2.0", Type: "Factorio mod"
+        }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -3048,6 +3053,89 @@ await Check("shared save receipt resumes bounded chunks, keeps three verified co
     RequireThrows<InvalidDataException>(() => FriendLink.ReadReceivedLatest(receiver),
         "tampered received copy was reported verified");
     return Task.CompletedTask;
+});
+
+await Check("128 save catch-up reads Host history once and still denies a changed manifest", async () =>
+{
+    using var hostData = Data("shared-history-index");
+    using var receiverData = Data("shared-history-index-receiver");
+    var shares = new SharedWorldService(hostData,
+        new WorldBackupService(hostData, TimeProvider.System));
+    using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var groupId = Guid.NewGuid();
+    var profileId = Guid.NewGuid();
+    var template = new SharedWorldVersion(4, groupId, 1, null, profileId,
+        GameKinds.Fixture, "indexed-world", DateTimeOffset.UtcNow,
+        SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(),
+        new SharedWorldPortableSetup(25565, false, "Fixture", [], []),
+        [new SharedWorldFile("world.dat", 1, new string('A', 64))], "", "", "");
+    var versions = new List<SharedWorldVersion>();
+    var version = SharedWorldService.SignVersion(template, signer);
+    for (var number = 1; number <= 131; number++)
+    {
+        if (number > 1)
+            version = SharedWorldService.SignVersion(version with
+            {
+                Number = number,
+                ParentHash = version.VersionHash,
+                BackupId = Guid.NewGuid(),
+                CreatedUtc = version.CreatedUtc.AddSeconds(1)
+            }, signer);
+        versions.Add(version);
+        var folder = Path.Combine(hostData.RootPath, "shared-worlds", profileId.ToString("N"),
+            groupId.ToString("N"), number.ToString());
+        Directory.CreateDirectory(folder);
+        File.WriteAllBytes(Path.Combine(folder, "version.json"),
+            JsonSerializer.SerializeToUtf8Bytes(version,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+    var anchor = versions[0];
+    var latest = versions[^1];
+    var receivingDevice = Guid.NewGuid();
+    FriendLink.SharedChainCheck result;
+    var batches = 0;
+    do
+    {
+        result = await FriendLink.VerifySharedChainBatchAsync(receiverData,
+            receivingDevice, profileId, anchor, latest, [],
+            (number, _) => Task.FromResult<SharedWorldVersion?>(
+                number == latest.Number ? latest : shares.ReadEarlierVersion(latest, number)),
+            CancellationToken.None);
+        Require(++batches <= 2, "a 130-save gap exceeded the bounded Friend check batches");
+    } while (result.Pending);
+    Require(result.Valid && shares.HistoricalManifestReadCount <= 260 &&
+        shares.HistoricalVersionStepCount <= 260,
+        $"Host rescanned signed history for every requested version: {shares.HistoricalVersionStepCount} steps, {shares.HistoricalManifestReadCount} manifests");
+    var manager = new HostManager(hostData, Games(hostData));
+    var range = manager.ReadEarlierSharedVersionRange(latest, 2, 128);
+    Require(range.Count == 128 && range[0].VersionHash == versions[1].VersionHash &&
+        range[^1].VersionHash == versions[128].VersionHash,
+        "a bounded Host range omitted or reordered signed versions");
+    RequireThrows<InvalidDataException>(() =>
+        manager.ReadEarlierSharedVersionRange(latest, 2, 129),
+        "Host allowed more than one check batch of historical versions");
+    var disconnectedHead = SharedWorldService.SignVersion(latest with
+    { ParentHash = "BAD", BackupId = Guid.NewGuid() }, signer);
+    RequireThrows<InvalidDataException>(() => shares.ReadEarlierVersion(disconnectedHead, 50),
+        "a signed fork reused the cached latest-head lineage index");
+    var changedPath = Path.Combine(hostData.RootPath, "shared-worlds", profileId.ToString("N"),
+        groupId.ToString("N"), "50", "version.json");
+    var original = File.ReadAllBytes(changedPath);
+    try
+    {
+        var changed = SharedWorldService.SignVersion(versions[49] with
+        { BackupId = Guid.NewGuid() }, signer);
+        File.WriteAllBytes(changedPath, JsonSerializer.SerializeToUtf8Bytes(changed,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        RequireThrows<InvalidDataException>(() => shares.ReadEarlierVersion(latest, 50),
+            "the cached lineage accepted a newly signed fork at the requested number");
+        RequireThrows<InvalidDataException>(() =>
+            manager.ReadEarlierSharedVersionRange(latest, 50, 1),
+            "a bounded Host range served a changed signed fork");
+    }
+    finally { File.WriteAllBytes(changedPath, original); }
+    Require(shares.ReadEarlierVersion(latest, 50).VersionHash == versions[49].VersionHash,
+        "a restored exact manifest could not resume indexed catch-up");
 });
 
 await Check("shared save source changes hide old publication and rotate the group", () =>
@@ -3959,9 +4047,12 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     valid.StatusCode + " " + await valid.Content.ReadAsStringAsync());
                 using var reviewRoster = await client.GetAsync(
                     $"api/companion/servers/{profile.Id}/shared-world/roster");
+                using var fencedRange = await client.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world/versions/range/1/1");
                 using var reviewHistory = await client.GetAsync(route);
                 var reviewed = await reviewHistory.Content.ReadFromJsonAsync<List<WorldAuthorityRecord>>();
                 Require(reviewRoster.IsSuccessStatusCode && reviewHistory.IsSuccessStatusCode &&
+                    !fencedRange.IsSuccessStatusCode &&
                     reviewed?.Count == 2 &&
                     reviewed.Select(item => item.RecordHash).ToHashSet().SetEquals(
                         [accepted.RecordHash, newer.RecordHash]),
@@ -4769,7 +4860,8 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 "a long signed review proof index returned the wrong piece");
         }
         Require(indexedReview.ReviewFullValidationCount == 1 &&
-            indexedReview.ReviewProofIndexBuildCount == 1,
+            indexedReview.ReviewProofIndexBuildCount == 1 &&
+            indexedReview.ReviewProofPieceReadCount <= longLineage.Count * 3,
             "reviewing more than 70 proof pieces repeated the full lineage scan");
         var reviewProofPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
             "authority", "proof-" + third.RecordHash, longLineage[35].Number + ".json");
@@ -4811,14 +4903,17 @@ await Check("shared world authority requires signed majority, fences old Host, a
             reviewSettings.CompanionListeningEnabled = true;
             data.SaveSettings(reviewSettings);
             var reviewBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+            data.SavePairingState(new PairingPersistentState
+            {
+                Devices = [new PairedDevice
             {
                 Id = voters[2].Id, AssignedProfileIds = [profile.Id],
                 CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(reviewBearer))),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
                 SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
                 SharedWorldPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo())
-            }] });
+            }]
+            });
             var dirtyPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
                 "roster-dirty");
             if (File.Exists(dirtyPath)) File.Delete(dirtyPath);
@@ -4842,9 +4937,12 @@ await Check("shared world authority requires signed majority, fences old Host, a
                         CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
                         ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId },
                         SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
-                        SharedRosterFloors = new() { [profile.Id] = new(roster.GroupId,
+                        SharedRosterFloors = new()
+                        {
+                            [profile.Id] = new(roster.GroupId,
                             noOverrideRoster.Epoch, noOverrideRoster.Revision,
-                            noOverrideRoster.Signature) }
+                            noOverrideRoster.Signature)
+                        }
                     }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                 voterData.SaveProtected($"shared-world-pc-signing-{voters[2].Id:N}.protected",
                     voters[2].Key.ExportPkcs8PrivateKey());

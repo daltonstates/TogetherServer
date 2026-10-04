@@ -65,11 +65,25 @@ internal sealed partial class SharedWorldService
     internal const long MaximumSharedWorldBytes = 64L * 1024 * 1024 * 1024;
     private sealed record SourceBinding(string Directory, string Game, string WorldId, Guid GroupId);
     private const string SigningKeyFile = "shared-world-signing-key.protected";
+    private const int MaximumIndexedVersions = 100_000;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly LocalData data;
     private readonly ISharedWorldCaptureAdapter capture;
-    private WorldAuthorityStore Authority => new(data);
+    private readonly WorldAuthorityStore authority;
+    private WorldAuthorityStore Authority => authority;
     private readonly object sync = new();
+    private sealed class EarlierVersionIndex(SharedWorldVersion latest, string? authorityHash)
+    {
+        internal string LatestHash { get; } = latest.VersionHash;
+        internal string? AuthorityHash { get; } = authorityHash;
+        internal Dictionary<long, string> Hashes { get; } = [];
+        internal SharedWorldVersion Lowest { get; set; } = latest;
+    }
+    private readonly Dictionary<Guid, EarlierVersionIndex> earlierVersionIndexes = [];
+    internal long HistoricalVersionStepCount { get; private set; }
+    internal long HistoricalManifestReadCount { get; private set; }
+    internal int HistoricalProofIndexBuildCount => Authority.ReviewProofIndexBuildCount;
+    internal long HistoricalProofManifestReadCount => Authority.ReviewProofPieceReadCount;
     // Invoked only by deterministic core checks while the publication gates are held.
     internal Action? AfterGovernanceCheckForChecks { get; set; }
     private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
@@ -139,12 +153,14 @@ internal sealed partial class SharedWorldService
     {
         this.data = data;
         capture = new PostStopBackupCaptureAdapter(backups);
+        authority = new WorldAuthorityStore(data);
     }
 
     internal SharedWorldService(LocalData data, ISharedWorldCaptureAdapter capture)
     {
         this.data = data;
         this.capture = capture;
+        authority = new WorldAuthorityStore(data);
     }
 
     private string Root(Guid profileId)
@@ -498,45 +514,71 @@ internal sealed partial class SharedWorldService
 
     public SharedWorldVersion ReadEarlierVersion(SharedWorldVersion latest, long number)
     {
-        lock (sync)
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             if (!VerifySignature(latest) || number < 1 || number >= latest.Number)
                 throw new InvalidDataException("Shared version number is invalid.");
-            var head = Authority.LocalAuthorizedHead(latest.ProfileId);
-            if (head is null && Authority.Read(latest.ProfileId).Count > 0)
+            var head = Authority.LocalAuthorizedHeadForTransfer(latest.ProfileId);
+            if (head is null && Authority.ReadReviewRecords(latest.ProfileId).Count > 0)
                 throw new InvalidDataException("No local authority is authorized to serve this save.");
             if (head is not null && (!AuthorizedPublishedLineageForLatest(latest, head) ||
                 latest.Number < head.Version.Number ||
                 latest.Number == head.Version.Number && latest.VersionHash != head.Version.VersionHash))
                 throw new InvalidDataException("The published save is outside the selected authority lineage.");
-            var current = latest;
-            while (current.Number > number)
+            if (!earlierVersionIndexes.TryGetValue(latest.ProfileId, out var index) ||
+                index.LatestHash != latest.VersionHash || index.AuthorityHash != head?.RecordHash)
             {
-                var priorNumber = current.Number - 1;
-                var prior = head is not null && priorNumber <= head.Version.Number
-                    ? Authority.FindProvenVersion(latest.ProfileId, priorNumber)
-                    : null;
-                if (prior is null)
-                {
-                    var versionRoot = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
-                        priorNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                    var path = SafeChild(versionRoot, "version.json");
-                    if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes ||
-                        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                        throw new InvalidDataException("Earlier shared version is missing or linked.");
-                    prior = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
-                }
-                if (prior is null || !VerifySignature(prior) || prior.Number != priorNumber ||
-                    prior.GroupId != latest.GroupId || prior.ProfileId != latest.ProfileId ||
-                    prior.Game != latest.Game || prior.WorldId != latest.WorldId ||
-                    current.ParentHash != prior.VersionHash ||
-                    head is not null && priorNumber == head.Version.Number &&
-                    prior.VersionHash != head.Version.VersionHash)
-                    throw new InvalidDataException("Earlier shared version is outside the selected lineage.");
-                current = prior;
+                index = new(latest, head?.RecordHash);
+                earlierVersionIndexes[latest.ProfileId] = index;
             }
-            return current;
+            while (index.Lowest.Number > number)
+            {
+                if (index.Hashes.Count >= MaximumIndexedVersions)
+                    throw new InvalidDataException("This missed-save gap exceeds the bounded version index.");
+                var prior = ReadHistoricalVersion(latest, index.Lowest.Number - 1, head);
+                CheckHistoricalLink(latest, index.Lowest, prior, head);
+                index.Hashes.Add(prior.Number, prior.VersionHash);
+                index.Lowest = prior;
+            }
+            var result = ReadHistoricalVersion(latest, number, head);
+            if (!index.Hashes.TryGetValue(number, out var expectedHash) ||
+                result.VersionHash != expectedHash || !VerifySignature(result) ||
+                result.Number != number || result.GroupId != latest.GroupId ||
+                result.ProfileId != latest.ProfileId || result.Game != latest.Game ||
+                result.WorldId != latest.WorldId)
+                throw new InvalidDataException("Earlier shared version changed after lineage verification.");
+            return result;
         }
+    }
+
+    private SharedWorldVersion ReadHistoricalVersion(SharedWorldVersion latest, long number,
+        WorldAuthorityRecord? head)
+    {
+        HistoricalVersionStepCount++;
+        if (head is not null && number <= head.Version.Number)
+            return Authority.FindProvenVersionForTransfer(latest.ProfileId, number) ??
+                throw new InvalidDataException("Earlier authority proof is missing.");
+        var versionRoot = Path.Combine(Root(latest.ProfileId), latest.GroupId.ToString("N"),
+            number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var path = SafeChild(versionRoot, "version.json");
+        if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Earlier shared version is missing or linked.");
+        HistoricalManifestReadCount++;
+        return JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json) ??
+            throw new InvalidDataException("Earlier shared version is malformed.");
+    }
+
+    private static void CheckHistoricalLink(SharedWorldVersion latest, SharedWorldVersion current,
+        SharedWorldVersion prior, WorldAuthorityRecord? head)
+    {
+        if (!VerifySignature(prior) || prior.Number != current.Number - 1 ||
+            prior.GroupId != latest.GroupId || prior.ProfileId != latest.ProfileId ||
+            prior.Game != latest.Game || prior.WorldId != latest.WorldId ||
+            current.ParentHash != prior.VersionHash ||
+            head is not null && prior.Number == head.Version.Number &&
+            prior.VersionHash != head.Version.VersionHash)
+            throw new InvalidDataException("Earlier shared version is outside the selected lineage.");
     }
 
     // Read a signed manifest only for authority-history review. This does not
