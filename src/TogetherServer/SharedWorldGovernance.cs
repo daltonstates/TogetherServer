@@ -130,7 +130,7 @@ internal static class SharedWorldRosterTrust
 
     internal static bool Verify(SharedWorldRoster? roster) => VerifySignature(roster) &&
         (roster!.Schema < 3 || roster.SignerDeviceId == Guid.Empty &&
-            roster.SignerPublicKey == roster.OwnerPublicKey);
+            roster.SignerPublicKey == roster.OwnerPublicKey || VerifyHostAcceptance(roster));
 
     internal static bool VerifySignature(SharedWorldRoster? roster)
     {
@@ -247,7 +247,7 @@ internal static class SharedWorldRosterTrust
 
     internal static bool HasRole(SharedWorldRoster roster, Guid deviceId, string deviceKey,
         Func<SharedWorldGrants, bool> role, TimeProvider? clock = null) =>
-        roster.Schema == 2 && Verify(roster) &&
+        roster.Schema is 2 or 3 && Verify(roster) &&
         roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is
         { Revoked: false } member && member.PublicKey == deviceKey &&
         HasActiveAccess(member, clock) && role(member.Grants);

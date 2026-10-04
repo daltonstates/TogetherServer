@@ -24,7 +24,7 @@ internal static class SharedWorldReadiness
     internal static TakeoverReadiness Check(string vaultRoot, string rehearsalRoot,
         TakeoverLocalSetup setup, TakeoverAuthority authority, string? pinnedKey, Guid? approvedGroup,
         Func<string, long>? freeBytes = null, bool ownedControlListener = false,
-        int requiredCopies = 1)
+        int requiredCopies = 1, IReadOnlyList<WorldAuthorityRecord>? authorityRecords = null)
     {
         var reasons = new List<string>();
         SharedWorldVersion? version = null;
@@ -44,7 +44,8 @@ internal static class SharedWorldReadiness
         if (version is not null)
         {
             if (string.IsNullOrWhiteSpace(pinnedKey) || approvedGroup is null ||
-                version.SigningPublicKey != pinnedKey || version.GroupId != approvedGroup)
+                !FriendLink.AuthorizedVersionSignerForRecords(pinnedKey, version, authorityRecords ?? []) ||
+                version.GroupId != approvedGroup)
                 reasons.Add("This save is not from the approved Host signing identity and group.");
             if (version.Schema < 4) reasons.Add("Receive a save with current portable setup details.");
             if (version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock &&
@@ -134,11 +135,13 @@ internal static class SharedWorldReadiness
 
     internal static TakeoverReadiness Rehearse(string dataRoot, string vaultRoot,
         TakeoverLocalSetup setup, TakeoverAuthority authority, string? pinnedKey, Guid? approvedGroup,
-        Func<string, long>? freeBytes = null)
+        Func<string, long>? freeBytes = null,
+        IReadOnlyList<WorldAuthorityRecord>? authorityRecords = null)
     {
         var root = Path.Combine(dataRoot, "shared-world-rehearsals");
         SharedWorldService.EnsureUnlinkedRoot(dataRoot, root);
-        var checkedState = Check(vaultRoot, root, setup, authority, pinnedKey, approvedGroup, freeBytes);
+        var checkedState = Check(vaultRoot, root, setup, authority, pinnedKey, approvedGroup, freeBytes,
+            authorityRecords: authorityRecords);
         if (checkedState.Reasons.Any(reason => reason.Contains("verification", StringComparison.OrdinalIgnoreCase) ||
             reason.Contains("approved Host signing identity", StringComparison.OrdinalIgnoreCase)))
             return checkedState;
@@ -148,7 +151,8 @@ internal static class SharedWorldReadiness
             System.Text.Json.JsonException or CryptographicException)
         { return checkedState with { Reasons = [.. checkedState.Reasons, "The received save changed during rehearsal. No copy was made."] }; }
         if (version is not null && (version.VersionHash != checkedState.VersionHash ||
-            version.SigningPublicKey != pinnedKey || version.GroupId != approvedGroup))
+            !FriendLink.AuthorizedVersionSignerForRecords(pinnedKey, version, authorityRecords ?? []) ||
+            version.GroupId != approvedGroup))
             return checkedState with
             {
                 Reasons = [.. checkedState.Reasons,

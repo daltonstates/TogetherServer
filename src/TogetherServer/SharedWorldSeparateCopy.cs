@@ -20,7 +20,7 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
         IReadOnlyList<string>? ReturnedBranches = null);
     private sealed record BranchFloor(int Schema, int Count, string Sha256);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly object sync = new();
+    private readonly object sync = SharedWorldMutationGate.For(data.RootPath);
     private static string Name(Guid profileId) => $"shared-world-separate-{profileId:N}.protected";
     private static string FloorName(Guid profileId) => $"shared-world-separate-floor-{profileId:N}.protected";
     private static byte[] Basis(WorldSeparateCopyBranch branch) => Encoding.UTF8.GetBytes(

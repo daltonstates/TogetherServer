@@ -502,7 +502,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         IReadOnlyList<WorldAuthorityRecord> Records,
         Dictionary<string, IReadOnlyDictionary<long, string>> ProofHashes);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly object sync = new();
+    private readonly object sync = SharedWorldMutationGate.For(data.RootPath);
     private readonly HashSet<string> verifiedStagingRecords = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, ReviewCache> reviewCaches = [];
     internal int ReviewFullValidationCount { get; private set; }
@@ -881,6 +881,21 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         return !requireCurrent ||
             SharedWorldRosterTrust.Hash(heads[0]) == SharedWorldRosterTrust.Hash(roster);
     }
+
+    internal bool TrustsCurrentRoster(SharedWorldRoster roster)
+    {
+        lock (sync) return TrustedRoster(roster, true);
+    }
+
+    internal WorldAuthorityRecord PrepareLocalDecision(WorldAuthorityRecord record)
+    {
+        lock (sync)
+        {
+            if (!TrustedRoster(record.Roster, true) || !EligibleAtAcceptance(record))
+                throw new InvalidDataException("The decision requires current signed membership and active grants.");
+            return AttestLocalAcceptance(record);
+        }
+    }
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     private IReadOnlyList<LocalVoteEntry> ReadLocalVotes(Guid profileId)
     {
@@ -1172,6 +1187,10 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             }
             else if (!HasLocalSuccessorKeys(profileId, record.Proposal, deviceId))
                 throw new InvalidDataException("This PC does not own the signed successor keys.");
+            // Retry an already completed binding without replacing durable state.
+            // Membership and both private keys are still checked above.
+            if (data.LoadProtectedJson<LocalHostBinding>(HostBindingName(profileId)) == binding)
+                return;
             data.SaveProtected(HostBindingName(profileId), JsonSerializer.SerializeToUtf8Bytes(binding, Json));
         }
     }

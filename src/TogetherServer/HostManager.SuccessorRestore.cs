@@ -277,7 +277,7 @@ public sealed partial class HostManager
                 settings.CompanionListeningEnabled &&
                 settings.CompanionEndpoint == record.Proposal.CandidateAddress &&
                 authority.LocalAuthorizedHead(profileId)?.RecordHash == record.RecordHash,
-                requiredCopies: 3);
+                requiredCopies: 3, authorityRecords: authority.Read(profileId));
             if (local.Reasons.Count > 0)
                 return new(false, "LocalSetupIncomplete", "Finish the local game, add-on, password, port, and space checks before restoring.",
                     PendingChecks: local.Reasons);
@@ -434,7 +434,8 @@ public sealed partial class HostManager
         var latest = FriendLink.ReadReceivedLatest(vault);
         if (latest?.VersionHash != record.Version.VersionHash ||
             latest.GroupId != record.Proposal.GroupId ||
-            latest.SigningPublicKey != record.Roster.OwnerPublicKey)
+            !FriendLink.AuthorizedVersionSignerForRecords(record.Roster.OwnerPublicKey,
+                latest, authority.Read(record.Proposal.ProfileId)))
             throw new InvalidDataException("The exact signed save is missing from this PC's vault.");
         foreach (var file in record.Version.Files)
             SharedWorldService.VerifyFile(SharedWorldService.SafeChild(Path.Combine(vault,
@@ -457,11 +458,12 @@ public sealed partial class HostManager
         })));
 
     private string? SuccessorStorageIssue(SuccessorRestoreState state,
-        WorldAuthorityRecord record, Func<string, long>? freeBytes = null)
+        WorldAuthorityRecord record, Func<string, long>? freeBytes = null,
+        SharedWorldVersion? currentVersion = null)
     {
         // The restored payload is already present. Its first graceful Stop needs
         // one rolling backup and one published copy on the managed volume.
-        var size = SharedWorldService.BoundedTotalBytes(record.Version.Files);
+        var size = SharedWorldService.BoundedTotalBytes((currentVersion ?? record.Version).Files);
         return SharedWorldReadiness.HasSpaceForCopies(state.WorldDirectory, size, 2,
             freeBytes ?? SuccessorFreeBytesForChecks) ? null :
             "Free space for a rolling backup and shared publication of this save, plus 1 GiB, before Start.";
@@ -496,19 +498,23 @@ public sealed partial class HostManager
             !settings.CompanionListeningEnabled)
             return "Local Host setup or direct-IP control address changed.";
         if (requireVault) VerifyVaultCopy(record);
-        bool originalCopy;
+        var currentVersion = record.Version;
+        if (sharedWorlds.Status(profile).Latest is { } latest && latest.Number > record.Version.Number)
+        {
+            if (!sharedWorlds.AuthorizedPublishedLineage(profile))
+                return "The newer signed save does not continue the hosting decision.";
+            currentVersion = latest;
+        }
+        bool verifiedCopy;
         try
         {
-            originalCopy = VerifiedSuccessorCopy(
-            SuccessorPayloadRoot(state.WorldDirectory, record.Version), record.Version);
+            verifiedCopy = VerifiedSuccessorCopy(
+                SuccessorPayloadRoot(state.WorldDirectory, currentVersion), currentVersion);
         }
-        catch (InvalidDataException) { originalCopy = false; }
-        if (!originalCopy &&
-            (sharedWorlds.Status(profile).Latest is not { } latest ||
-             latest.Number <= record.Version.Number ||
-             !sharedWorlds.AuthorizedPublishedLineage(profile)))
-            return "The restored world differs from the signed save and has no newer signed Stop save.";
-        if (SuccessorStorageIssue(state, record) is { } storageIssue)
+        catch (InvalidDataException) { verifiedCopy = false; }
+        if (!verifiedCopy)
+            return "The local world differs from the latest signed save. Keep it offline for review.";
+        if (SuccessorStorageIssue(state, record, currentVersion: currentVersion) is { } storageIssue)
             return storageIssue;
         if (record.Version.Game == GameKinds.Valheim &&
             data.LoadValheimPassword(profileId) is not { Length: >= 5 and <= 64 })

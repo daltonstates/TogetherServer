@@ -14,6 +14,8 @@ public sealed record WorldAuthorityOffer(WorldAuthorityProposal Proposal,
 
 internal static class SharedWorldElection
 {
+    private static readonly System.Text.Json.JsonSerializerOptions Json =
+        new(System.Text.Json.JsonSerializerDefaults.Web);
     internal static WorldAuthorityOffer PrepareResolutionOffer(string receivedRoot,
         SharedWorldRoster roster, SharedRosterFloor floor, Guid candidateId,
         ECDsa candidateKey, string candidateAddress, string candidateTlsFingerprint,
@@ -25,7 +27,7 @@ internal static class SharedWorldElection
         var candidatePublicKey = Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo());
         if (heads.Length < 2 || selected is null || version?.VersionHash != selected.Version.VersionHash ||
             ownerOverride && !roster.OwnerOverride ||
-            !TrustedResolutionRoster(roster, floor, version) ||
+            !TrustedResolutionRoster(roster, floor, version, authority) ||
             roster.OwnerPublicKey != selected.Roster.OwnerPublicKey ||
             !SharedWorldRosterTrust.HasRole(roster, candidateId, candidatePublicKey,
                 grants => grants.EligibleHost && grants.Receive) ||
@@ -78,7 +80,7 @@ internal static class SharedWorldElection
         var version = FriendLink.ReadReceivedLatest(receivedRoot) ??
             throw new InvalidDataException("This PC has no hash-verified post-Stop file copy to offer.");
         var candidatePublicKey = Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo());
-        if (!TrustedRoster(roster, floor, version) ||
+        if (!TrustedRoster(roster, floor, version, authority) ||
             !SharedWorldRosterTrust.HasRole(roster, candidateId, candidatePublicKey,
                 grants => grants.EligibleHost && grants.Receive) ||
             !HostIdentity.TryEndpoint(candidateAddress, out var endpoint) ||
@@ -93,8 +95,8 @@ internal static class SharedWorldElection
         if (heads.Length > 1)
             throw new InvalidDataException("Competing authorities require review before another takeover.");
         var parent = heads.SingleOrDefault();
-        if (parent is not null && parent.Version.VersionHash != version.VersionHash)
-            throw new InvalidDataException("The existing authority and this PC have different save heads.");
+        if (!VerifiedCandidateLineage(receivedRoot, roster.OwnerPublicKey, version, prior))
+            throw new InvalidDataException("The offered save does not extend the verified current authority.");
         var hostingPublicKey = authority.PrepareLocalHostingKey(roster.ProfileId);
         var draft = new WorldAuthorityProposal(2, roster.GroupId, roster.ProfileId,
             parent?.Proposal.Epoch + 1 ?? 1, parent?.RecordHash,
@@ -120,9 +122,14 @@ internal static class SharedWorldElection
             Signature = Convert.ToBase64String(candidateKey.SignData(
             SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
         };
-        return new(proposal, roster, version, receipt, ancestors ?? [],
+        var offer = new WorldAuthorityOffer(proposal, roster, version, receipt, ancestors ?? [],
             candidateTlsFingerprint, Convert.ToBase64String(candidateKey.SignData(
                 TransportBasis(proposal, candidateTlsFingerprint), HashAlgorithmName.SHA256)));
+        return ancestors is null ? offer with
+        {
+            Ancestors = OfferAncestors(receivedRoot, version, Math.Max(0, 512 * 1024 -
+                System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(offer, Json).Length))
+        } : offer;
     }
 
     internal static WorldAuthorityVote Vote(SharedWorldHostLoss loss, string receivedRoot,
@@ -132,20 +139,25 @@ internal static class SharedWorldElection
         if (!loss.MayPropose && offer.Proposal.Schema != 3)
             throw new InvalidDataException("This PC has not confirmed two minutes without the pinned Host.");
         var local = FriendLink.ReadReceivedLatest(receivedRoot);
+        var prior = store.Read(offer.Roster.ProfileId);
         if (!VerifyOffer(offer) || offer.Proposal.Kind == "ResolutionOwnerOverride" ||
             !(offer.Proposal.Schema == 3
-                ? TrustedResolutionRoster(offer.Roster, floor, offer.Version)
-                : local is not null && TrustedRoster(offer.Roster, floor, offer.Version)) ||
+                ? TrustedResolutionRoster(offer.Roster, floor, offer.Version, store)
+                : local is not null && TrustedRoster(offer.Roster, floor, offer.Version, store)) ||
             offer.Roster.OwnerPublicKey != pinnedOwnerKey ||
-            offer.Proposal.Schema != 3 && !(local!.VersionHash == offer.Version.VersionHash && offer.Ancestors.Count == 0 ||
+            offer.Proposal.Schema != 3 &&
+            (!FriendLink.AuthorizedVersionSignerForRecords(pinnedOwnerKey, offer.Version, prior) ||
+             !(local!.VersionHash == offer.Version.VersionHash &&
+               VerifiedCandidateLineage(receivedRoot, pinnedOwnerKey, local, prior) ||
               local.Number < offer.Version.Number &&
-              FriendLink.VerifySharedChain(local, offer.Version, offer.Ancestors)))
+              FriendLink.VerifySharedChain(local, offer.Version,
+                  offer.Ancestors.Where(item => item.Number > local.Number &&
+                      item.Number < offer.Version.Number).ToArray(), prior))))
             throw new InvalidDataException("The offered save is not a verified descendant of this PC's copy.");
         var voterPublicKey = Convert.ToBase64String(voterKey.ExportSubjectPublicKeyInfo());
         if (!SharedWorldRosterTrust.HasRole(offer.Roster, voterId, voterPublicKey,
                 grants => grants.RecoveryVoter))
             throw new InvalidDataException("This PC does not have an active recovery vote.");
-        var prior = store.Read(offer.Roster.ProfileId);
         var heads = WorldAuthorityTrust.EffectiveHeads(prior);
         if (offer.Proposal.Schema == 3)
         {
@@ -188,26 +200,84 @@ internal static class SharedWorldElection
             RecordHash = WorldAuthorityTrust.Hash(
             WorldAuthorityTrust.RecordBasis(draft))
         };
+        record = store.PrepareLocalDecision(record);
         if (!WorldAuthorityTrust.Verify(record))
             throw new InvalidDataException("The designated voters did not produce a valid majority.");
         store.Append(record, externalLineage: lineage);
         return record;
     }
 
+    internal static void RecordDecision(WorldAuthorityOffer offer, WorldAuthorityRecord decision,
+        WorldAuthorityStore store, string receivedRoot)
+    {
+        if (!VerifyOffer(offer) || !WorldAuthorityTrust.Verify(decision) ||
+            WorldAuthorityTrust.ProposalHash(decision.Proposal) !=
+                WorldAuthorityTrust.ProposalHash(offer.Proposal))
+            throw new InvalidDataException("The returned decision does not match the reviewed offer.");
+        // A voter can be behind the candidate. Preserve signed metadata, never
+        // advance its received payload pointer, then verify the decision's full
+        // lineage against the existing owner-rooted authority journal.
+        foreach (var version in offer.Ancestors) FriendLink.KeepSignedManifest(receivedRoot, version);
+        FriendLink.KeepSignedManifest(receivedRoot, offer.Version);
+        var parent = store.Read(offer.Proposal.ProfileId).SingleOrDefault(record =>
+            record.RecordHash == offer.Proposal.ParentAuthorityHash);
+        store.AppendReceived(decision, offer.Proposal.ProfileId, offer.Roster.GroupId,
+            offer.Roster.OwnerPublicKey, decision.VersionLineageDigest is null ? null :
+                FriendLink.ReadVerifiedReceivedManifestLineage(receivedRoot, decision.Version, parent?.Version));
+    }
+
+    private static IReadOnlyList<SharedWorldVersion> OfferAncestors(string root, SharedWorldVersion latest,
+        int maximumBytes)
+    {
+        var versions = new List<SharedWorldVersion>();
+        long bytes = 0;
+        var hash = latest.ParentHash;
+        for (var number = latest.Number - 1; number >= 1 && versions.Count < 64 && hash is not null; number--)
+        {
+            var version = FriendLink.ReadReceivedManifest(root, number, hash);
+            if (version is null || version.GroupId != latest.GroupId || version.ProfileId != latest.ProfileId ||
+                version.Game != latest.Game || version.WorldId != latest.WorldId) break;
+            bytes += System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(version, Json).LongLength + 1;
+            if (bytes > maximumBytes) break;
+            versions.Insert(0, version);
+            hash = version.ParentHash;
+        }
+        return versions;
+    }
+
     private static bool TrustedRoster(SharedWorldRoster roster, SharedRosterFloor floor,
-        SharedWorldVersion version) =>
-        SharedWorldRosterTrust.Verify(roster) &&
+        SharedWorldVersion version, WorldAuthorityStore store) =>
+        SharedWorldRosterTrust.Verify(roster) && store.TrustsCurrentRoster(roster) &&
         roster.GroupId == floor.GroupId && roster.Epoch >= floor.Epoch &&
         roster.Revision >= floor.Revision &&
         (roster.Epoch != floor.Epoch || roster.Revision != floor.Revision ||
             roster.Signature == floor.Signature) &&
         roster.GroupId == version.GroupId && roster.ProfileId == version.ProfileId &&
-        roster.OwnerPublicKey == version.SigningPublicKey &&
         SharedWorldService.VerifySignature(version);
 
+    private static bool VerifiedCandidateLineage(string root, string ownerKey,
+        SharedWorldVersion version, IReadOnlyList<WorldAuthorityRecord> records)
+    {
+        if (!FriendLink.AuthorizedVersionSignerForRecords(ownerKey, version, records)) return false;
+        var head = WorldAuthorityTrust.EffectiveHeads(records).SingleOrDefault();
+        if (head?.Version.VersionHash == version.VersionHash) return true;
+        if (head is null && version.Number == 1) return version.ParentHash is null;
+        // Verify the full archived chain before arming an offer or consuming a
+        // durable vote. Large histories stay on disk rather than in the offer.
+        var expectedSigner = head?.Proposal.CandidatePublicKey ?? ownerKey;
+        try
+        {
+            return FriendLink.ReadVerifiedReceivedLineage(root, version, head?.Version)
+                .All(item => item.SigningPublicKey == expectedSigner);
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or
+            UnauthorizedAccessException or CryptographicException)
+        { return false; }
+    }
+
     private static bool TrustedResolutionRoster(SharedWorldRoster roster,
-        SharedRosterFloor floor, SharedWorldVersion version) =>
-        SharedWorldRosterTrust.Verify(roster) && roster.GroupId == floor.GroupId &&
+        SharedRosterFloor floor, SharedWorldVersion version, WorldAuthorityStore store) =>
+        SharedWorldRosterTrust.Verify(roster) && store.TrustsCurrentRoster(roster) && roster.GroupId == floor.GroupId &&
         roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
         roster.Signature == floor.Signature && roster.GroupId == version.GroupId &&
         roster.ProfileId == version.ProfileId && SharedWorldService.VerifySignature(version);
@@ -216,6 +286,7 @@ internal static class SharedWorldElection
     {
         if (offer?.Proposal is null || offer.Roster is null || offer.Version is null ||
             offer.CandidateReceipt is null || offer.Ancestors is null ||
+            !SharedWorldRosterTrust.Verify(offer.Roster) ||
             !WorldAuthorityTrust.VerifyProposal(offer.Proposal, offer.Roster) ||
             offer.Proposal.Kind is not ("Quorum" or "ResolutionQuorum" or
                 "ResolutionOwnerOverride") ||

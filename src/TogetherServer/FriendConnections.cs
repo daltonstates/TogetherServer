@@ -17,6 +17,13 @@ public sealed class FriendService : IDisposable
     private int retainedOperations;
     private sealed record SavedConnections(List<Guid> Ids, Guid SelectedId);
 
+    private FriendLink? SelectedLink()
+    {
+        // Never enter a connection's authority or lifecycle gate while holding
+        // the connection-list lock. Vote callbacks read the selected link.
+        lock (sync) return disposed ? null : links.FirstOrDefault(item => item.Id == selectedId).Link;
+    }
+
     public FriendService(LocalData data) : this(data, null) { }
 
     internal FriendService(LocalData data,
@@ -86,30 +93,21 @@ public sealed class FriendService : IDisposable
 
     public ChatRoomView ChatRoom(Guid profileId)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link?.ChatRoom(profileId) ?? new(false, "NotPaired",
-                "Choose a saved Host connection first.", Guid.Empty, profileId, [], []);
-        }
+        var link = SelectedLink();
+        return link?.ChatRoom(profileId) ?? new(false, "NotPaired",
+            "Choose a saved Host connection first.", Guid.Empty, profileId, [], []);
     }
 
     public Task<ChatRoomView> SyncChatAsync(Guid profileId)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link?.SyncChatAsync(profileId) ?? Task.FromResult(ChatRoom(profileId));
-        }
+        var link = SelectedLink();
+        return link?.SyncChatAsync(profileId) ?? Task.FromResult(ChatRoom(profileId));
     }
 
     public Task<ChatRoomView> PostChatAsync(Guid profileId, string? text)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link?.PostChatAsync(profileId, text) ?? Task.FromResult(ChatRoom(profileId));
-        }
+        var link = SelectedLink();
+        return link?.PostChatAsync(profileId, text) ?? Task.FromResult(ChatRoom(profileId));
     }
 
     public void ScheduleSharedCatchUp(CancellationToken shutdown)
@@ -307,185 +305,143 @@ public sealed class FriendService : IDisposable
 
     public Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) : link.SetSharedWorldConsentAsync(profileId, enabled);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) : link.SetSharedWorldConsentAsync(profileId, enabled);
     }
 
     public Task<ReceivedSharedWorldResult> PullSharedWorldAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) : link.PullSharedWorldAsync(profileId, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) : link.PullSharedWorldAsync(profileId, cancellationToken);
     }
 
     public Task<PlannedHandoffStageResult> StagePlannedHandoffAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new PlannedHandoffStageResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) :
-                link.StagePlannedHandoffAsync(profileId, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new PlannedHandoffStageResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) :
+            link.StagePlannedHandoffAsync(profileId, cancellationToken);
     }
 
     public Task<ReceivedSharedWorldResult> CheckSharedWorldAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) : link.CheckSharedWorldAsync(profileId, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) : link.CheckSharedWorldAsync(profileId, cancellationToken);
     }
 
     public Task<ReceivedSharedWorldResult> ChangeSharedWorldGrantsAsync(Guid profileId,
         SharedWorldDelegateChangeRequest change, CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) :
-                link.ChangeSharedWorldGrantsAsync(profileId, change, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new ReceivedSharedWorldResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) :
+            link.ChangeSharedWorldGrantsAsync(profileId, change, cancellationToken);
     }
 
     public Task<SharedWorldSharingView> CheckSharedWorldSharingAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new SharedWorldSharingView(false, false,
-                Guid.Empty, null, "NotPaired", "Choose a saved Host connection first.", [])) :
-                link.CheckSharedWorldSharingAsync(profileId, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new SharedWorldSharingView(false, false,
+            Guid.Empty, null, "NotPaired", "Choose a saved Host connection first.", [])) :
+            link.CheckSharedWorldSharingAsync(profileId, cancellationToken);
     }
 
     public Task<WorldHistoryReviewResult> ReviewSharedHistoryAsync(Guid profileId,
         WorldHistoryReviewRequest? request = null,
         CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldHistoryReviewResult(false, "NotPaired",
-                "Choose a saved Host connection.")) :
-                link.ReviewSharedHistoryAsync(profileId, request, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldHistoryReviewResult(false, "NotPaired",
+            "Choose a saved Host connection.")) :
+            link.ReviewSharedHistoryAsync(profileId, request, cancellationToken);
     }
 
     public Task<WorldAuthorityOfferResult> PrepareRecoveryOfferAsync(Guid profileId)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldAuthorityOfferResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) : link.PrepareRecoveryOfferAsync(profileId);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldAuthorityOfferResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) : link.PrepareRecoveryOfferAsync(profileId);
     }
 
     internal Guid? RecoveryDeviceId(Guid profileId)
     {
-        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+        return SelectedLink()?
             .RecoveryDeviceId(profileId);
     }
     public Task<WorldAuthorityOfferResult> PrepareResolutionOfferAsync(Guid profileId,
         string selectedHeadHash, bool ownerOverride = false)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldAuthorityOfferResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) :
-                link.PrepareResolutionOfferAsync(profileId, selectedHeadHash, ownerOverride);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldAuthorityOfferResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) :
+            link.PrepareResolutionOfferAsync(profileId, selectedHeadHash, ownerOverride);
     }
 
     public IReadOnlyList<WorldResolutionChoice> ResolutionChoices(Guid profileId)
     {
-        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+        return SelectedLink()?
             .ResolutionChoices(profileId) ?? [];
     }
 
     internal Task<bool> ProbeRecoveryHostLossAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link?.ProbeRecoveryHostLossAsync(profileId, cancellationToken) ?? Task.FromResult(false);
-        }
+        var link = SelectedLink();
+        return link?.ProbeRecoveryHostLossAsync(profileId, cancellationToken) ?? Task.FromResult(false);
     }
 
     internal bool CurrentRecoveryHostLoss(Guid profileId)
     {
-        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+        return SelectedLink()?
             .CurrentRecoveryHostLoss(profileId) == true;
     }
 
     public Task<WorldAuthorityVoteAction> VoteOnRecoveryOfferAsync(Guid profileId,
         WorldAuthorityOffer offer, CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false, "NotPaired",
-                "Choose a saved Host connection first.")) :
-                link.VoteOnRecoveryOfferAsync(profileId, offer, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false, "NotPaired",
+            "Choose a saved Host connection first.")) :
+            link.VoteOnRecoveryOfferAsync(profileId, offer, cancellationToken);
     }
 
     public Task<WorldResolutionInvitationResult> ImportResolutionInvitationAsync(Guid profileId,
         WorldAuthorityOffer offer)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldResolutionInvitationResult(false,
-                "NotPaired", "Choose a saved Host connection first.")) :
-                link.ImportResolutionInvitationAsync(profileId, offer);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldResolutionInvitationResult(false,
+            "NotPaired", "Choose a saved Host connection first.")) :
+            link.ImportResolutionInvitationAsync(profileId, offer);
     }
 
     public Task<WorldAuthorityVoteAction> VoteOnResolutionIdAsync(Guid profileId,
         string proposalHash, CancellationToken cancellationToken = default)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false,
-                "NotPaired", "Choose a saved Host connection first.")) :
-                link.VoteOnResolutionIdAsync(profileId, proposalHash, cancellationToken);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldAuthorityVoteAction(false,
+            "NotPaired", "Choose a saved Host connection first.")) :
+            link.VoteOnResolutionIdAsync(profileId, proposalHash, cancellationToken);
     }
 
     public Task<WorldSeparateCopyResult> DeclareSeparateCopyAsync(Guid profileId,
         bool acceptSplitWarning)
     {
-        lock (sync)
-        {
-            var link = links.FirstOrDefault(item => item.Id == selectedId).Link;
-            return link is null ? Task.FromResult(new WorldSeparateCopyResult(false, "NotPaired",
-                "Choose a saved Host connection first.")) :
-                link.DeclareSeparateCopyAsync(profileId, acceptSplitWarning);
-        }
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(new WorldSeparateCopyResult(false, "NotPaired",
+            "Choose a saved Host connection first.")) :
+            link.DeclareSeparateCopyAsync(profileId, acceptSplitWarning);
     }
 
     public IReadOnlyList<WorldSeparateCopyBranch> SeparateCopyBranches(Guid profileId)
     {
-        lock (sync) return links.FirstOrDefault(item => item.Id == selectedId).Link?
+        return SelectedLink()?
             .SeparateCopyBranches(profileId) ?? [];
     }
 

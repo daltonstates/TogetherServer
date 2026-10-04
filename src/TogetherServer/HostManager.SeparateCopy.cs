@@ -240,7 +240,8 @@ public sealed partial class HostManager
         var version = FriendLink.ReadReceivedLatest(vault);
         if (version?.VersionHash != branch.Offer.Version.VersionHash ||
             version.GroupId != proposal.GroupId ||
-            version.SigningPublicKey != branch.Offer.Roster.OwnerPublicKey)
+            !FriendLink.AuthorizedVersionSignerForRecords(branch.Offer.Roster.OwnerPublicKey,
+                version, authority.Read(proposal.ProfileId)))
             throw new InvalidDataException("The exact signed save is missing from this PC's vault.");
         var payload = Path.Combine(vault, version.VersionHash,
             SharedWorldService.PayloadDirectory);
@@ -356,7 +357,8 @@ public sealed partial class HostManager
             var local = SharedWorldReadiness.Check(vault, worldRoot, setup,
                 new TakeoverAuthority(true, true, true, true, true, true),
                 branch.Offer.Roster.OwnerPublicKey, version.GroupId, freeBytes,
-                ownedControlListener: OwnsSeparateControlListener(branch));
+                ownedControlListener: OwnsSeparateControlListener(branch),
+                authorityRecords: authority.Read(branch.Offer.Proposal.ProfileId));
             if (local.Reasons.Count > 0)
                 return new(false, "LocalSetupIncomplete", "Complete local game, add-on, password, port, and space checks.",
                     PendingChecks: local.Reasons);
@@ -508,7 +510,8 @@ public sealed partial class HostManager
         var readiness = SharedWorldReadiness.Check(vault, state.WorldDirectory, setup,
             new TakeoverAuthority(true, true, true, true, true, true),
             branch.Offer.Roster.OwnerPublicKey, version.GroupId,
-            ownedControlListener: OwnsSeparateControlListener(branch));
+            ownedControlListener: OwnsSeparateControlListener(branch),
+            authorityRecords: authority.Read(branch.Offer.Proposal.ProfileId));
         if (readiness.Reasons.Count > 0)
             return readiness.Reasons[0];
         var installed = ServerAddOns.List(data, profile);

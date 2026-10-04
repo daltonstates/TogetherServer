@@ -723,11 +723,17 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   useEffect(() => { setHistoryMessage(''); setPendingHistoryGroup(null) }, [profileId])
   useEffect(() => {
     if (!open && (!available || !status?.consented)) return
-    const timer = window.setInterval(() => {
-      void getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
-        .then(setStatus).catch(() => {})
-    }, open ? 2000 : 5000)
-    return () => window.clearInterval(timer)
+    let active = true
+    let timer: number | undefined
+    const poll = async () => {
+      try {
+        const value = await getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
+        if (active) setStatus(value)
+      } catch { /* Keep the last observed status until the next check. */ }
+      if (active) timer = window.setTimeout(() => void poll(), open ? 2000 : 5000)
+    }
+    timer = window.setTimeout(() => void poll(), open ? 2000 : 5000)
+    return () => { active = false; window.clearTimeout(timer) }
   }, [available, open, profileId, status?.consented])
   useEffect(() => {
     let active = true

@@ -332,6 +332,7 @@ internal sealed partial class FriendLink
 
     public IReadOnlyList<WorldResolutionChoice> ResolutionChoices(Guid profileId)
     {
+        if (!TryRetain()) return [];
         gate.Wait();
         try
         {
@@ -344,7 +345,7 @@ internal sealed partial class FriendLink
             return heads.Select(head => new WorldResolutionChoice(head.RecordHash,
                 head.Version.Number, local?.VersionHash == head.Version.VersionHash)).ToArray();
         }
-        finally { gate.Release(); }
+        finally { gate.Release(); ReleaseRetained(); }
     }
     private readonly HashSet<string> deliveredAuthority = new(StringComparer.Ordinal);
 
@@ -422,7 +423,7 @@ internal sealed partial class FriendLink
             if (roster is null || roster.OwnerPublicKey != pinnedOwner)
                 return new(false, "RosterRejected", "The saved roster does not match this world identity.");
             var settings = data.LoadSettings();
-            if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out _))
+            if (!SharedWorldRouteTrust.DirectIpAddress(settings.CompanionEndpoint))
                 return new(false, "CandidateRouteUnavailable",
                     "Set this PC's direct HTTPS address before proposing takeover. Open Friend connections only when ready to receive votes.");
             using var certificate = new HostIdentity(data).Ensure(settings.CompanionEndpoint);
@@ -471,7 +472,7 @@ internal sealed partial class FriendLink
             if (ownerOverride && !roster.OwnerOverride)
                 return new(false, "OwnerOverrideDisabled", "The signed roster has owner override off.");
             var settings = data.LoadSettings();
-            if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out _))
+            if (!SharedWorldRouteTrust.DirectIpAddress(settings.CompanionEndpoint))
                 return new(false, "CandidateRouteUnavailable", "Set this PC's direct HTTPS address first.");
             using var certificate = new HostIdentity(data).Ensure(settings.CompanionEndpoint);
             using var key = LoadPcSigningKey();
@@ -503,7 +504,9 @@ internal sealed partial class FriendLink
             if (!CurrentRecoveryHostLoss(profileId) && offer.Proposal.Schema != 3)
                 return new(false, "HostLossNotConfirmed",
                     "Select the current Host connection and confirm two minutes without it before voting.");
-            if (!SharedWorldElection.VerifyOffer(offer) || offer.Proposal.ProfileId != profileId ||
+            if (!SharedWorldElection.VerifyOffer(offer) ||
+                !SharedWorldRouteTrust.DirectIpAddress(offer.Proposal.CandidateAddress) ||
+                offer.Proposal.ProfileId != profileId ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
                 config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != offer.Roster.OwnerPublicKey ||
                 config.SharedRosterFloors?.GetValueOrDefault(profileId) is not { } floor ||
@@ -601,8 +604,7 @@ internal sealed partial class FriendLink
                 return new(false, "RecoveryOfferRejected",
                     "This PC's consent, signed roster, or vote grant changed before the decision was saved.");
             if (result.Decision is { } decision)
-                store.AppendReceived(decision, profileId, offer.Roster.GroupId,
-                    offer.Roster.OwnerPublicKey);
+                SharedWorldElection.RecordDecision(received, decision, store, ReceivedRoot(profileId));
             return new(true, result.Code,
                 result.Decision is null ? "Your recovery vote was recorded." :
                     "A majority approved this exact save. The game server has not started.",
@@ -654,6 +656,14 @@ internal sealed partial class FriendLink
 
     public async Task<WorldAuthorityVoteAction> VoteOnResolutionIdAsync(Guid profileId,
         string proposalHash, CancellationToken cancellationToken = default)
+    {
+        if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
+        try { return await VoteOnResolutionIdCoreAsync(profileId, proposalHash, cancellationToken); }
+        finally { ReleaseRetained(); }
+    }
+
+    private async Task<WorldAuthorityVoteAction> VoteOnResolutionIdCoreAsync(Guid profileId,
+        string proposalHash, CancellationToken cancellationToken)
     {
         if (proposalHash.Length != 64 || !proposalHash.All(Uri.IsHexDigit))
             return new(false, "InvalidResolutionId", "Choose a reviewed invitation.");
@@ -711,46 +721,39 @@ internal sealed partial class FriendLink
         finally { gate.Release(); ReleaseRetained(); }
     }
     internal TakeoverReadiness CheckTakeoverReadiness(Guid profileId, TakeoverLocalSetup setup)
-    {
-        string? vault;
-        string? pinned;
-        Guid? group;
-        Guid deviceId;
-        gate.Wait();
-        try
-        {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
-                return new(false, ["Allow saves on this PC and receive a verified copy first."], null, null);
-            vault = ReceivedRoot(profileId);
-            pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
-            group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
-            deviceId = config.DeviceId;
-        }
-        finally { gate.Release(); }
-        return SharedWorldReadiness.Check(vault,
-            Path.Combine(data.RootPath, "shared-world-rehearsals"), setup,
-            LocalTakeoverAuthority(profileId, deviceId), pinned, group);
-    }
+        => TakeoverSetupReadiness(profileId, setup, false);
 
     internal TakeoverReadiness RehearseTakeover(Guid profileId, TakeoverLocalSetup setup)
+        => TakeoverSetupReadiness(profileId, setup, true);
+
+    private TakeoverReadiness TakeoverSetupReadiness(Guid profileId, TakeoverLocalSetup setup, bool rehearse)
     {
-        string? vault;
-        string? pinned;
-        Guid? group;
-        Guid deviceId;
-        gate.Wait();
+        if (!TryRetain()) return new(false, ["This connection is closing."], null, null);
         try
         {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
-                return new(false, ["Allow saves on this PC and receive a verified copy first."], null, null);
-            vault = ReceivedRoot(profileId);
-            pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
-            group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
-            deviceId = config.DeviceId;
+            string vault;
+            string? pinned;
+            Guid? group;
+            Guid deviceId;
+            gate.Wait();
+            try
+            {
+                if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                    return new(false, ["Allow saves on this PC and receive a verified copy first."], null, null);
+                vault = ReceivedRoot(profileId);
+                pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
+                group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+                deviceId = config.DeviceId;
+            }
+            finally { gate.Release(); }
+            var records = new WorldAuthorityStore(data).Read(profileId);
+            var localAuthority = LocalTakeoverAuthority(profileId, deviceId);
+            return rehearse ? SharedWorldReadiness.Rehearse(data.RootPath, vault, setup,
+                localAuthority, pinned, group, authorityRecords: records) :
+                SharedWorldReadiness.Check(vault, Path.Combine(data.RootPath, "shared-world-rehearsals"),
+                    setup, localAuthority, pinned, group, authorityRecords: records);
         }
-        finally { gate.Release(); }
-        return SharedWorldReadiness.Rehearse(data.RootPath, vault, setup,
-            LocalTakeoverAuthority(profileId, deviceId), pinned, group);
+        finally { ReleaseRetained(); }
     }
 
     private TakeoverAuthority LocalTakeoverAuthority(Guid profileId, Guid deviceId)
@@ -759,9 +762,10 @@ internal sealed partial class FriendLink
         {
             var records = new WorldAuthorityStore(data).Read(profileId);
             var heads = WorldAuthorityTrust.EffectiveHeads(records);
-            var eligible = heads.Length == 1 && heads[0].Proposal.Kind == "Planned" &&
+            var eligible = heads.Length == 1 &&
+                (heads[0].Proposal.Kind is "Planned" or "Quorum" || WorldAuthorityTrust.IsResolution(heads[0])) &&
                 heads[0].Roster.Members.Any(member => member.DeviceId == deviceId &&
-                    member.PublicKey == heads[0].Proposal.CandidatePublicKey &&
+                    member.PublicKey == WorldAuthorityTrust.CandidateDevicePublicKey(heads[0].Proposal) &&
                     member.Grants.EligibleHost && !member.Revoked &&
                     (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow));
             return new(eligible, false, false,
@@ -1632,7 +1636,8 @@ internal sealed partial class FriendLink
                 !(heads[0].Proposal.Schema == 1 && heads[0].Proposal.Kind == "Planned" &&
                   heads[0].SuccessorReceipt is not null) ||
             heads[0].Roster.OwnerPublicKey != pinnedOwner ||
-            heads[0].Proposal.GroupId != version.GroupId) return false;
+            heads[0].Proposal.GroupId != version.GroupId ||
+            heads[0].Proposal.ProfileId != version.ProfileId) return false;
         var head = heads[0];
         if (version.VersionHash == head.Version.VersionHash)
             return true;
@@ -2648,8 +2653,16 @@ internal sealed partial class FriendLink
     internal static IEnumerable<SharedWorldVersion> ReadVerifiedReceivedLineage(
         string root, SharedWorldVersion latest, SharedWorldVersion? parent)
     {
-        SignedHistoryUsage(root); // Takeover audits every archive entry once.
-        var current = ReadReceivedLatest(root);
+        if (ReadReceivedLatest(root)?.VersionHash != latest.VersionHash)
+            throw new InvalidDataException("The candidate's verified save head changed.");
+        foreach (var version in ReadVerifiedReceivedManifestLineage(root, latest, parent)) yield return version;
+    }
+
+    internal static IEnumerable<SharedWorldVersion> ReadVerifiedReceivedManifestLineage(
+        string root, SharedWorldVersion latest, SharedWorldVersion? parent)
+    {
+        SignedHistoryUsage(root); // Audit every archive entry once.
+        var current = ReadReceivedManifest(root, latest.Number, latest.VersionHash);
         if (current?.VersionHash != latest.VersionHash ||
             parent is not null && (parent.GroupId != latest.GroupId ||
                 parent.ProfileId != latest.ProfileId || parent.Game != latest.Game ||
@@ -2747,6 +2760,9 @@ internal sealed partial class FriendLink
             Directory.Delete(path, true);
         }
     }
+
+    internal static SharedWorldVersion? ReadReceivedManifest(string root, long number, string hash) =>
+        ReadSignedManifest(root, number, hash) ?? ReadVersionForRetention(SharedWorldService.SafeChild(root, hash));
 
     private static SharedWorldVersion? ReadVersionForRetention(string path)
     {

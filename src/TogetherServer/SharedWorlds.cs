@@ -75,7 +75,7 @@ internal sealed partial class SharedWorldService
     private readonly ISharedWorldCaptureAdapter capture;
     private readonly WorldAuthorityStore authority;
     private WorldAuthorityStore Authority => authority;
-    private readonly object sync = new();
+    private readonly object sync;
     private sealed class EarlierVersionIndex(SharedWorldVersion latest, string? authorityHash)
     {
         internal string LatestHash { get; } = latest.VersionHash;
@@ -163,6 +163,7 @@ internal sealed partial class SharedWorldService
     public SharedWorldService(LocalData data, WorldBackupService backups)
     {
         this.data = data;
+        sync = SharedWorldMutationGate.For(data.RootPath);
         capture = new PostStopBackupCaptureAdapter(backups);
         authority = new WorldAuthorityStore(data);
     }
@@ -170,6 +171,7 @@ internal sealed partial class SharedWorldService
     internal SharedWorldService(LocalData data, ISharedWorldCaptureAdapter capture)
     {
         this.data = data;
+        sync = SharedWorldMutationGate.For(data.RootPath);
         this.capture = capture;
         authority = new WorldAuthorityStore(data);
     }

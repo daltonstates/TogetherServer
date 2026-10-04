@@ -1424,7 +1424,7 @@ function App() {
             const operationBusy = profile.operation?.state === 'Pending' || profile.operation?.state === 'Running'
             const operationConflict = profile.operation?.code === 'PortConflict' && profile.operation.portConflicts?.length
               ? { message: profile.operation.message, conflicts: profile.operation.portConflicts } : null
-            return <article className="profile-card" key={profile.id} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
+            return <article className="profile-card" key={connectionKey} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
               <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
                 refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
                 onRefresh={() => void friendAction(profile.id, 'refresh')} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>

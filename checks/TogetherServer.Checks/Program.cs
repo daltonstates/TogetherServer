@@ -3814,10 +3814,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-        {
-            Name: "fixturemod", Version: "1.0.0",
-            RequiredGameVersion: "2.0", Type: "Factorio mod"
-        }],
+    {
+        Name: "fixturemod", Version: "1.0.0",
+        RequiredGameVersion: "2.0", Type: "Factorio mod"
+    }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -4550,6 +4550,15 @@ await Check("shared save consent withdrawal prevents final receipt pointer", () 
         "a retained-copy retry bypassed consent withdrawal or cancellation");
     return Task.CompletedTask;
 });
+
+await Check("shared recovery chain keeps successor progress through a second majority and restore", () =>
+    SharedWorldRecoveryChainChecks.RunAsync(Path.Combine(root, "shared-recovery-chain"), fixture));
+
+await Check("shared recovery owner revision supports a majority after sharing changes", () =>
+    SharedWorldRecoveryChainChecks.RunAsync(Path.Combine(root, "shared-recovery-owner"), fixture, "Owner"));
+
+await Check("shared recovery delegated revision supports a majority with the owner offline", () =>
+    SharedWorldRecoveryChainChecks.RunAsync(Path.Combine(root, "shared-recovery-delegated"), fixture, "Delegated"));
 
 await Check("shared retained receipt retry repairs interrupted pointer and confirms exact copy", () =>
     SharedSaveReceiptRetryChecks.RunAsync(Path.Combine(root, "shared-retained-retry"), fixture));
@@ -5907,6 +5916,47 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 resolution.ReadUniqueHead(profile.Id)?.RecordHash == majority.Decision!.RecordHash &&
                 WorldAuthorityTrust.EffectiveHeads(resolution.Read(profile.Id)).Length == 1,
                 "resolution did not retire exactly the competing leaves or retry idempotently");
+            void CheckResolvedCandidateReadiness(LocalData candidateData)
+            {
+                var vault = Path.Combine(candidateData.RootPath, "received-shared-worlds",
+                    voters[0].Id.ToString("N"), profile.Id.ToString("N"));
+                var copy = Path.Combine(vault, version.VersionHash);
+                Directory.CreateDirectory(Path.Combine(copy, SharedWorldService.PayloadDirectory));
+                foreach (var file in version.Files)
+                {
+                    var target = SharedWorldService.SafeChild(Path.Combine(copy,
+                        SharedWorldService.PayloadDirectory), file.Path);
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.Copy(SharedWorldService.SafeChild(profile.WorldDirectory, file.Path), target);
+                }
+                var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+                File.WriteAllBytes(Path.Combine(copy, "version.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(version, json));
+                File.WriteAllBytes(Path.Combine(vault, "latest.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(version, json));
+                candidateData.SaveProtected("readiness-friend.protected",
+                    JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
+                    {
+                        Endpoint = "https://192.0.2.20:5132",
+                        DeviceId = voters[0].Id,
+                        HostId = Guid.NewGuid(),
+                        Credential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                        Fingerprint = new string('A', 64),
+                        ConsentedSharedWorldProfiles = [profile.Id],
+                        SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+                        ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId }
+                    }, json));
+                using var readinessLink = new FriendLink(candidateData, "readiness-friend.protected",
+                    (_, _) => throw new Exception("Local readiness unexpectedly made a network request."));
+                var readiness = readinessLink.CheckTakeoverReadiness(profile.Id,
+                    new(fixture, version.PortableSetup.GameVersion, [], true, 5132, profile.GamePort));
+                Require(readiness.VersionHash == version.VersionHash,
+                    "resolved readiness lost the verified copy: " + string.Join("; ", readiness.Reasons));
+                Require(!readiness.Reasons.Contains("The owner has not granted this PC takeover permission."),
+                    "a resolved candidate was incorrectly denied takeover permission");
+            }
+            CheckResolvedCandidateReadiness(resolutionData);
             using (var oldHostData = Data("resolved-old-host-status"))
             {
                 oldHostData.SaveSettings(Settings(profile));
@@ -6119,6 +6169,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     ownerInbox.AcceptOwnerApproval(profile.Id, approval).Decision?.RecordHash ==
                     ownerResult.Decision.RecordHash,
                     "owner override was not durable and retryable");
+                CheckResolvedCandidateReadiness(ownerData);
             }
             using (var oldHostData = Data("returned-resolution-host"))
             {

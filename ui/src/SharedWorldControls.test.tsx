@@ -207,6 +207,34 @@ describe('Shared saves controls', () => {
     expect(await screen.findByText('Up to date when last checked')).toBeInTheDocument()
   })
 
+  it('waits for a slow save-status poll and ignores its response after changing worlds', async () => {
+    let reads = 0
+    let release: ((response: Response) => void) | undefined
+    const nextProfile = '33333333-3333-4333-8333-333333333333'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/handoff/restore')) return reply({ staged: false })
+      if (url.includes(nextProfile)) return reply({ consented: true, hostVersion: 6,
+        thisPcVersion: 5, state: 'Ready to pull', error: null })
+      reads++
+      if (reads > 1) return new Promise<Response>(resolve => { release = resolve })
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3,
+        state: 'Up to date when last checked', error: null })
+    }))
+    const view = render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    await waitFor(() => expect(reads).toBe(2), { timeout: 3500 })
+    await new Promise(resolve => setTimeout(resolve, 2200))
+    expect(reads).toBe(2)
+    view.rerender(<FriendSharedWorlds profileId={nextProfile} available />)
+    expect(await screen.findByText('This PC is one save behind')).toBeInTheDocument()
+    release!(reply({ consented: true, hostVersion: 3, thisPcVersion: 3,
+      state: 'Stalled', error: 'Stale poll from the previous world.' }))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(screen.getByText('This PC is one save behind')).toBeInTheDocument()
+    expect(screen.queryByText('Stale poll from the previous world.')).not.toBeInTheDocument()
+  }, 10000)
+
   it('shows a manual low-space failure in the closed summary and clears it after a verified pull', async () => {
     let current = { consented: true, hostVersion: 3, thisPcVersion: 2,
       state: 'Ready to pull', error: null as string | null }

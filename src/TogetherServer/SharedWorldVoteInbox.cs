@@ -25,8 +25,7 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
     private sealed record InboxState(int Schema, WorldAuthorityOffer Offer,
         IReadOnlyList<WorldAuthorityVote> Votes, bool Retired = false, bool Completed = false);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private static readonly ConcurrentDictionary<string, object> Locks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object sync = Locks.GetOrAdd(data.RootPath, _ => new object());
+    private readonly object sync = SharedWorldMutationGate.For(data.RootPath);
     private readonly ConcurrentDictionary<(Guid Profile, Guid Device), (string Nonce, DateTimeOffset Expires)>
         challenges = new();
     private readonly WorldAuthorityStore authority = new(data);
@@ -257,6 +256,7 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
                 RecordHash = WorldAuthorityTrust.Hash(
                 WorldAuthorityTrust.RecordBasis(draft))
             };
+            record = authority.PrepareLocalDecision(record);
             if (!WorldAuthorityTrust.Verify(record)) return new(false, "OwnerApprovalRejected");
             authority.Append(record);
             authority.BindLocalSuccessor(profileId, record.RecordHash,

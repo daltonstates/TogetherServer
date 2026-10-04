@@ -18,7 +18,7 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         string OwnerPublicKey, string Hash, long Position);
     private sealed record Pending(int Schema, string OldFloorHash, string RosterHash, SharedWorldRoster Roster);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly object sync = new();
+    private readonly object sync = SharedWorldMutationGate.For(data.RootPath);
     private static string FloorName(Guid id) => $"shared-roster-chain-{id:N}.protected";
     private static string PendingName(Guid id) => $"shared-roster-pending-{id:N}.protected";
     private static string IndexName(Guid id, long page) => $"shared-roster-index-{id:N}-{page:D12}.protected";
