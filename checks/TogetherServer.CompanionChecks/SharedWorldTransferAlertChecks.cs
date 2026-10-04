@@ -83,14 +83,10 @@ internal static class SharedWorldTransferAlertChecks
         health.Complete(world, lowSpace, Failure("InsufficientSpace"));
         Require(health.Issue(world)?.State == "Low space" &&
             health.Issue(world)?.ReceivedBytes == 32, "low space was not reported immediately");
-        var historyFull = health.Begin(world);
-        health.Complete(world, historyFull, Failure("SignedHistoryFull"));
-        Require(health.Issue(world)?.State == "Signed history full",
-            "signed-history capacity was hidden as a generic transfer failure");
-        health.Report(otherWorld, "Signed history full", "Another PC is needed.");
-        Require(health.Issue(otherWorld)?.State == "Signed history full" &&
-            health.Issue(otherWorld)?.Message == "Another PC is needed.",
-            "a pre-transfer history check did not surface its capacity alert");
+        health.Report(otherWorld, "Low space", "Keep at least 1 GiB free.");
+        Require(health.Issue(otherWorld)?.State == "Low space" &&
+            health.Issue(otherWorld)?.Message == "Keep at least 1 GiB free.",
+            "a pre-transfer space check did not surface its reserve alert");
         health.Complete(world, health.Begin(world), new(true, "AlreadyReceived", "Verified."));
         Require(health.Issue(world) is null, "verified receipt left an old alert");
 
@@ -100,8 +96,51 @@ internal static class SharedWorldTransferAlertChecks
         health.Complete(world, inFlight, Failure("InsufficientSpace"));
         Require(health.Issue(world) is null, "an old transfer restored an alert after consent changed");
 
+        CheckFixtureSpaceCeiling();
         CheckInterruptedSignedHistoryWrite();
         Console.WriteLine("PASS shared-world transfer alert transitions");
+    }
+
+    private static void CheckFixtureSpaceCeiling()
+    {
+        var journeyRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
+            "TogetherServer-space-checks", "shared-world-journey", Guid.NewGuid().ToString("N")));
+        var dataRoot = Path.Combine(journeyRoot, "friend-test");
+        var vault = Path.Combine(dataRoot, "received-shared-worlds",
+            Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(vault);
+        var names = new[] { GameServerRegistry.FixtureOptInEnvironmentVariable,
+            "TOGETHERSERVER_FIXTURE_ROOT", "TOGETHERSERVER_DATA_DIR",
+            SharedWorldFixtureSpace.CeilingEnvironmentVariable };
+        var previous = names.Select(Environment.GetEnvironmentVariable).ToArray();
+        try
+        {
+            Environment.SetEnvironmentVariable(names[0], "1");
+            Environment.SetEnvironmentVariable(names[1], dataRoot);
+            Environment.SetEnvironmentVariable(names[2], dataRoot);
+            Environment.SetEnvironmentVariable(names[3], "0");
+            Require(SharedWorldFixtureSpace.AvailableBytes(vault) == 0,
+                "the disposable Friend ceiling did not lower available space");
+            Environment.SetEnvironmentVariable(names[3], long.MaxValue.ToString());
+            Require(SharedWorldFixtureSpace.AvailableBytes(vault) <=
+                    new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace,
+                "the fixture ceiling raised real available space");
+            Environment.SetEnvironmentVariable(names[3], "0");
+            Environment.SetEnvironmentVariable(names[2], Path.Combine(journeyRoot, "other"));
+            Require(SharedWorldFixtureSpace.AvailableBytes(vault) ==
+                    new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace,
+                "a ceiling escaped its exact disposable data root");
+        }
+        finally
+        {
+            for (var index = 0; index < names.Length; index++)
+                Environment.SetEnvironmentVariable(names[index], previous[index]);
+            var expectedParent = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
+                "TogetherServer-space-checks", "shared-world-journey")) + Path.DirectorySeparatorChar;
+            if (!journeyRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The disposable space check directory changed unexpectedly.");
+            Directory.Delete(journeyRoot, recursive: true);
+        }
     }
 
     private static void CheckInterruptedSignedHistoryWrite()
@@ -112,11 +151,6 @@ internal static class SharedWorldTransferAlertChecks
         Directory.CreateDirectory(history);
         try
         {
-            File.WriteAllBytes(Path.Combine(history, "interrupted.new"), [1, 2, 3]);
-            var usage = FriendLink.SignedHistoryUsage(root);
-            Require(usage == (1, 3),
-                "an interrupted signed-history write was omitted from the storage budget");
-
             using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var draft = new SharedWorldVersion(4, Guid.NewGuid(), 1, null,
                 Guid.NewGuid(), GameKinds.Valheim, "fixture-world", DateTimeOffset.UtcNow,
@@ -126,23 +160,25 @@ internal static class SharedWorldTransferAlertChecks
                     Convert.ToHexString(SHA256.HashData([1])))], "", "", "");
             var first = SharedWorldService.SignVersion(draft, signer);
             FriendLink.KeepSignedManifest(root, first);
-            usage = FriendLink.SignedHistoryUsage(root);
-            Require(usage.Count == 2 && usage.Bytes > 3,
-                "a verified manifest and interrupted write were not both counted");
+            var usage = FriendLink.SignedHistoryUsage(root);
+            Require(usage.Count == 1 && usage.Bytes > 0,
+                "a verified signed manifest was not audited");
+            var orphan = Path.Combine(history, "0000000000000000",
+                "1-" + first.VersionHash + ".json.new");
+            File.WriteAllBytes(orphan, [1, 2, 3]);
+            RequireThrows<InvalidDataException>(() => FriendLink.SignedHistoryUsage(root),
+                "an interrupted signed-history write was omitted from the archive audit");
+            File.Delete(orphan);
 
-            for (var number = usage.Count; number < 4096; number++)
-                File.WriteAllBytes(Path.Combine(history, $"interrupted-{number}.new"), []);
             var next = SharedWorldService.SignVersion(draft with
             {
                 Number = 2,
                 ParentHash = first.VersionHash
             }, signer);
-            var blocked = false;
-            try { FriendLink.KeepSignedManifest(root, next); }
-            catch (IOException ex) { blocked = ex.Message.Contains("full", StringComparison.OrdinalIgnoreCase); }
-            Require(blocked && FriendLink.SignedHistoryUsage(root).Count == 4096 &&
-                File.Exists(Path.Combine(history, first.VersionHash + ".json")),
-                "the archive accepted an entry beyond its count cap or removed its verified manifest");
+            FriendLink.KeepSignedManifest(root, next);
+            Require(FriendLink.SignedHistoryUsage(root).Count == 2 &&
+                File.Exists(Path.Combine(history, "0000000000000000", "1-" + first.VersionHash + ".json")),
+                "a signed manifest was lost while another version was archived");
         }
         finally
         {
@@ -160,5 +196,12 @@ internal static class SharedWorldTransferAlertChecks
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new Exception(message);
+    }
+
+    private static void RequireThrows<T>(Action action, string message) where T : Exception
+    {
+        try { action(); }
+        catch (T) { return; }
+        throw new Exception(message);
     }
 }

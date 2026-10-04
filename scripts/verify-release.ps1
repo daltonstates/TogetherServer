@@ -90,6 +90,7 @@ try {
         'checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj',
         'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
         'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',
+        'checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj',
         'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj'
     )
     foreach ($checkProject in $checkProjects) {
