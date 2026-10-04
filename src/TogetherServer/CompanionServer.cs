@@ -553,7 +553,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId)) return Results.StatusCode(403);
+            if (!pairing.CanAccess(device!, profileId) || pairing.SharedRosterDirty(profileId))
+                return Results.StatusCode(403);
             return Results.Json(new SharedWorldEnrollmentChallenge(sharedEnrollment.Issue(device!.Id, profileId)));
         });
         companion.MapPost("/servers/{profileId:guid}/shared-world/enrollment",
@@ -561,7 +562,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId) ||
+            if (!pairing.CanAccess(device!, profileId) || pairing.SharedRosterDirty(profileId) ||
                 !sharedEnrollment.Consume(device!.Id, profileId, request.Nonce))
                 return Results.StatusCode(403);
             // Enrollment changes the signed membership. A successor can host

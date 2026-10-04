@@ -18,11 +18,15 @@ public sealed record WorldResolutionChoice(string RecordHash, long Version, bool
 public sealed record WorldResolutionInvitationResult(bool Ok, string Code, string Message,
     string? ProposalHash = null);
 public sealed record WorldHistoryReviewResult(bool Ok, string Code, string Message,
-    int RecordCount = 0, int CompetingHeads = 0);
+    int RecordCount = 0, int CompetingHeads = 0,
+    Guid? GroupId = null, string? OwnerPublicKey = null);
+public sealed record WorldHistoryReviewRequest(Guid? ConfirmGroupId = null,
+    string? ConfirmOwnerPublicKey = null);
 
 internal sealed partial class FriendLink
 {
     public async Task<WorldHistoryReviewResult> ReviewSharedHistoryAsync(Guid profileId,
+        WorldHistoryReviewRequest? request = null,
         CancellationToken cancellationToken = default)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
@@ -33,34 +37,69 @@ internal sealed partial class FriendLink
             var group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
             var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
             var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
-            if (group is null || owner is null || floor is null || floor.GroupId != group)
-                return new(false, "TrustRequired", "Review this world's signed membership on this PC first.");
+            if (floor is not null && group is not null && floor.GroupId != group)
+                return new(false, "TrustRequired", "This PC's saved group review needs repair.");
             using var client = MakeClient(config.Endpoint, AcceptedPins());
             client.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Credential);
             client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
             client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
+            using var key = LoadPcSigningKey(config.DeviceId);
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            using var firstRosterResponse = await client.GetAsync(
+                $"api/companion/servers/{profileId}/shared-world/roster", cancellationToken);
+            if (firstRosterResponse.StatusCode == System.Net.HttpStatusCode.Forbidden &&
+                (group is null || owner is null || floor is null))
+            {
+                using var challengeResponse = await client.GetAsync(
+                    $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
+                var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
+                    cancellationToken);
+                var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
+                    JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json) : null;
+                if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+                    return new(false, "EnrollmentDenied", "The Host did not allow this PC to enroll for voting.");
+                var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+                    Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                        config.DeviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+                using var enrollment = await client.PostAsJsonAsync(
+                    $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json,
+                    cancellationToken);
+                if (!enrollment.IsSuccessStatusCode)
+                    return new(false, "EnrollmentDenied", "The Host did not accept this PC's voting identity.");
+            }
+            else if (!firstRosterResponse.IsSuccessStatusCode)
+                return new(false, "RosterUnavailable", "Current signed membership is unavailable.");
             using var rosterResponse = await client.GetAsync(
                 $"api/companion/servers/{profileId}/shared-world/roster", cancellationToken);
             var rosterBytes = await ReadBoundedSharedAsync(rosterResponse.Content,
                 SharedWorldService.MaximumManifestBytes, cancellationToken);
             var roster = rosterResponse.IsSuccessStatusCode && rosterBytes is not null
                 ? JsonSerializer.Deserialize<SharedWorldRoster>(rosterBytes, Json) : null;
-            using var key = LoadPcSigningKey(config.DeviceId);
-            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
             var member = roster?.Members.SingleOrDefault(item => item.DeviceId == config.DeviceId);
             if (!SharedWorldRosterTrust.Verify(roster) || roster!.ProfileId != profileId ||
-                roster.GroupId != group || roster.OwnerPublicKey != owner ||
-                roster.Epoch < floor.Epoch ||
-                roster.Epoch == floor.Epoch && roster.Revision < floor.Revision ||
-                roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
-                    roster.Signature != floor.Signature ||
+                owner is not null && roster.OwnerPublicKey != owner ||
+                floor is not null && floor.GroupId == roster.GroupId &&
+                    (roster.Epoch < floor.Epoch ||
+                     roster.Epoch == floor.Epoch && roster.Revision < floor.Revision ||
+                     roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
+                         roster.Signature != floor.Signature) ||
                 member is null || member.Revoked || member.PublicKey != publicKey ||
                 !(member.Grants.Receive || member.Grants.RecoveryVoter) ||
                 member.AccessExpiresUtc is { } expires && expires <= DateTimeOffset.UtcNow)
                 return new(false, "RosterRejected", "Current signed membership does not allow history review.");
+            var changingGroup = group != roster.GroupId || floor is null ||
+                floor.GroupId != roster.GroupId;
+            if (changingGroup && (request?.ConfirmGroupId != roster.GroupId ||
+                request?.ConfirmOwnerPublicKey != roster.OwnerPublicKey))
+                return new(false, "GroupReviewRequired",
+                    "Review this signed world group and owner identity, then confirm to read its hosting history.",
+                    GroupId: roster.GroupId, OwnerPublicKey: roster.OwnerPublicKey);
             var store = new WorldAuthorityStore(data);
             var accepted = store.Read(profileId);
+            if (changingGroup && accepted.Count > 0 && group != roster.GroupId)
+                return new(false, "HistoryConflict",
+                    "This PC already keeps authority for another group. Preserve it for owner review.");
             var offset = Math.Max(0, accepted.Count - 1);
             using var historyResponse = await client.GetAsync(
                 $"api/companion/servers/{profileId}/shared-world/authority?offset={offset}",
@@ -72,8 +111,13 @@ internal sealed partial class FriendLink
             if (page is null) return new(false, "HistoryUnavailable", "Signed history is unavailable.");
             var additions = NewAuthorityPage(accepted, page);
             foreach (var record in additions)
-                store.AppendReceived(record, profileId, group.Value, owner);
+                store.AppendReceived(record, profileId, roster.GroupId, roster.OwnerPublicKey);
             accepted = store.Read(profileId);
+            config.ApprovedSharedWorldGroups ??= [];
+            config.SharedWorldSigningKeys ??= [];
+            config.SharedRosterFloors ??= [];
+            config.ApprovedSharedWorldGroups[profileId] = roster.GroupId;
+            config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
             config.SharedRosterFloors![profileId] = new(roster.GroupId, roster.Epoch,
                 roster.Revision, roster.Signature);
             SaveConfig();

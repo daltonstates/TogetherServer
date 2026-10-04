@@ -25,6 +25,8 @@ type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'Major
   & { proposalHash: string | null; authorityHeadHash: string | null }
 type ResolutionChoice = { recordHash: string; version: number; availableHere: boolean }
 type PendingResolution = { proposalHash: string; selectedVersion: number; competingBranches: number }
+type HistoryReviewResult = BasicResult & { groupId: string | null; ownerPublicKey: string | null;
+  recordCount: number; competingHeads: number }
 
 function record(value: unknown, where: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${where} is invalid.`)
@@ -256,6 +258,16 @@ function parseSignedOffer(value: unknown): { offer: unknown; selectedVersion: nu
 function parseReviewedInvitation(value: unknown): BasicResult & { proposalHash: string | null } {
   const source = record(value, 'Reviewed invitation')
   return { ...parseBasicResult(value), proposalHash: source.proposalHash === null ? null : resolutionHash(source.proposalHash) }
+}
+function parseHistoryReviewResult(value: unknown): HistoryReviewResult {
+  const source = record(value, 'Signed history review')
+  const recordCount = numberOrNull(source.recordCount, 'Decision count')
+  const competingHeads = numberOrNull(source.competingHeads, 'History count')
+  if (recordCount === null || competingHeads === null || competingHeads > 128)
+    throw new Error('Signed history review is invalid.')
+  return { ...parseBasicResult(value), recordCount, competingHeads,
+    groupId: source.groupId == null ? null : guid(source.groupId, 'Signed group'),
+    ownerPublicKey: source.ownerPublicKey == null ? null : shortText(source.ownerPublicKey, 'Owner identity', 256) }
 }
 
 export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged }:
@@ -579,6 +591,9 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   const [offerText, setOfferText] = useState('')
   const [invitation, setInvitation] = useState('')
   const [reviewed, setReviewed] = useState<(ReturnType<typeof parseSignedOffer> & { proposalHash: string }) | null>(null)
+  const [historyMessage, setHistoryMessage] = useState('')
+  const [pendingHistoryGroup, setPendingHistoryGroup] = useState<{ groupId: string; ownerPublicKey: string } | null>(null)
+  useEffect(() => { setHistoryMessage(''); setPendingHistoryGroup(null) }, [profileId])
   useEffect(() => {
     if (!open) return
     const timer = window.setInterval(() => {
@@ -664,6 +679,21 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       `/api/local/friend/${profileId}/shared-world/resolution/heads`, parseResolutionChoices)) }
     catch (error) { setResolutionMessage(errorMessage(error)) }
   }
+  const reviewHistory = async (confirm = false) => {
+    setBusy(true); setHistoryMessage('')
+    try {
+      const result = await changeJson(`/api/local/friend/${profileId}/shared-world/history/review`,
+        'POST', parseHistoryReviewResult, confirm && pendingHistoryGroup ?
+          { confirmGroupId: pendingHistoryGroup.groupId,
+            confirmOwnerPublicKey: pendingHistoryGroup.ownerPublicKey } : {})
+      setHistoryMessage(result.message)
+      if (result.code === 'GroupReviewRequired' && result.groupId && result.ownerPublicKey)
+        setPendingHistoryGroup({ groupId: result.groupId, ownerPublicKey: result.ownerPublicKey })
+      else setPendingHistoryGroup(null)
+      if (result.ok) await loadChoices()
+    } catch (error) { setPendingHistoryGroup(null); setHistoryMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
   const offerResolution = async (choice: ResolutionChoice, owner: boolean) => {
     setBusy(true); setResolutionMessage('')
     try {
@@ -724,6 +754,16 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     <Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('pull')}>{busy ? 'Working…' : 'Receive latest save'}</Button></div>
     {message && <p role="status">{message}</p>}
+    {available && <section aria-label="Signed hosting history"><h4>Signed hosting history</h4>
+      <p>If this PC can vote, review the group and its hosting decisions here. Receiving saves is a separate choice.</p>
+      <Button className="secondary" disabled={busy} onClick={() => void reviewHistory()}>Review signed history</Button>
+      {pendingHistoryGroup && <div><p role="alert">Confirm this signed group with the owner before trusting its hosting history.</p>
+        <p>Group {pendingHistoryGroup.groupId} · owner identity {pendingHistoryGroup.ownerPublicKey.slice(0, 16)}…</p>
+        <Button className="secondary" disabled={busy} onClick={() => void reviewHistory(true)}>Confirm group and owner</Button>
+        <details><summary>Technical details</summary><p>Full owner signing key: <code>{pendingHistoryGroup.ownerPublicKey}</code></p></details>
+      </div>}
+      {historyMessage && <p role="status">{historyMessage}</p>}
+    </section>}
     {status?.consented && status.thisPcVersion != null && <section aria-label="Planned handoff offer">
       <h4>Planned hosting handoff</h4>
       <p>If the current host signs an offer for this PC, hash-check and stage its exact post-Stop file copy here. Game load has not been checked.</p>
@@ -769,7 +809,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       </details>}
     </details>}
     {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId} />}
-    {status?.consented && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
+    {available && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
       <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override.</p>
       <Button className="secondary" disabled={busy} onClick={() => void loadChoices()}>Check signed branches</Button>
       {choices.map(choice => <div key={choice.recordHash}>
