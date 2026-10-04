@@ -17,6 +17,7 @@ public sealed record SharedWorldPortableSetup(int GamePort, bool Crossplay,
 public static class SharedWorldCaptureKinds
 {
     public const string PostStopBackup = "PostStopBackup";
+    public const string LiveSave = "LiveSave";
 }
 
 internal sealed record VerifiedSharedWorldCapture(int Schema, string Kind, Guid BackupId,
@@ -760,9 +761,10 @@ internal sealed partial class SharedWorldService
     {
         try
         {
-            if (value.Schema is not (1 or 2 or 3 or 4) || value.GroupId == Guid.Empty || value.ProfileId == Guid.Empty ||
+            if (value.Schema is not (1 or 2 or 3 or 4 or 5) || value.GroupId == Guid.Empty || value.ProfileId == Guid.Empty ||
                 value.Number < 1 || value.Files.Count is < 1 or > MaximumFiles ||
-                value.CaptureKind != SharedWorldCaptureKinds.PostStopBackup ||
+                value.CaptureKind is not (SharedWorldCaptureKinds.PostStopBackup or SharedWorldCaptureKinds.LiveSave) ||
+                (value.CaptureKind == SharedWorldCaptureKinds.LiveSave) != (value.Schema == 5) ||
                 value.PortableSetup is null || value.PortableSetup.GamePort is < 1 or > 65535 ||
                 value.Schema == 1 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 1) ||
                 value.Schema == 2 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 2) ||
@@ -998,9 +1000,26 @@ internal sealed partial class SharedWorldService
                         files,
                         publicKey
                     }, Json)
-                    : JsonSerializer.Serialize(new
+                    : schema == 4
+                    ? JsonSerializer.Serialize(new
                     {
                         schema = 4,
+                        group,
+                        number,
+                        parent,
+                        profile,
+                        game,
+                        world,
+                        createdUtc,
+                        captureKind,
+                        backup,
+                        portableSetup,
+                        files,
+                        publicKey
+                    }, Json)
+                    : JsonSerializer.Serialize(new
+                    {
+                        schema = 5,
                         group,
                         number,
                         parent,
@@ -1109,6 +1128,10 @@ internal sealed partial class SharedWorldService
         if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length > MaximumManifestBytes)
             throw new InvalidDataException("Unpublished shared version is incomplete.");
         var candidate = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(manifestPath), Json);
+        // A live capture needs fresh exact-run approval. An interrupted live
+        // publication must never be completed by a later post-Stop operation.
+        if (candidate?.CaptureKind == SharedWorldCaptureKinds.LiveSave)
+            throw new InvalidDataException("An interrupted live save publication needs review.");
         using var key = LoadPublishingKey(profile.Id);
         if (candidate is null || !VerifySignature(candidate) || candidate.ProfileId != profile.Id ||
             candidate.Game != profile.Kind || candidate.WorldId != profile.WorldId ||
@@ -1177,7 +1200,12 @@ internal sealed partial class SharedWorldService
                 catch (InvalidDataException) { /* Damaged payload cannot count as a verified fallback. */ }
             }
         }
-        foreach (var candidate in candidates.Where(item => !retained.Contains(item.VersionHash)))
+        // A live capture may be the only distributed verified copy while a
+        // Friend is still transferring it. Keep these payloads until a
+        // separate receipt-aware retention policy can prove safe deletion.
+        foreach (var candidate in candidates.Where(item =>
+                     item.CaptureKind != SharedWorldCaptureKinds.LiveSave &&
+                     !retained.Contains(item.VersionHash)))
             foreach (var file in candidate.Files)
             {
                 var path = SafeChild(Path.Combine(VersionRoot(candidate), PayloadDirectory), file.Path);

@@ -20,6 +20,11 @@ if (args.Skip(1).Contains("--shared-transfer-alerts", StringComparer.OrdinalIgno
     SharedWorldTransferAlertChecks.Run();
     return 0;
 }
+if (args.Skip(1).Contains("--shared-live-core", StringComparer.OrdinalIgnoreCase))
+{
+    SharedWorldLiveCaptureChecks.Run();
+    return 0;
+}
 if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
     throw new Exception("Run scripts/build.ps1 first.");
 if (args.Skip(1).Contains("--core-remote-journey", StringComparer.OrdinalIgnoreCase))

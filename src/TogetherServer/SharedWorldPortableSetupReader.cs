@@ -81,7 +81,7 @@ internal static class SharedWorldPortableSetupReader
         if (schema >= 3 && game == GameKinds.MinecraftBedrock &&
             setup.AddOns.Select(item => (item.Type, item.Id)).Distinct().Count() != setup.AddOns.Count)
             return false;
-        if (schema == 4 && (game == GameKinds.MinecraftJava &&
+        if (schema >= 4 && (game == GameKinds.MinecraftJava &&
                 !ServerSetupSnapshots.ValidJarIdentity(setup.JavaServerJarSha256) ||
             game != GameKinds.MinecraftJava && setup.JavaServerJarSha256 is not null)) return false;
         return true;
