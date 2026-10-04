@@ -237,6 +237,7 @@ describe('Shared saves controls', () => {
 
   it('shows manual Start readiness only after the restored setup checks confirm it', async () => {
     let ready = false
+    let conflict = false
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.endsWith('/handoff/finish')) {
         ready = true
@@ -248,8 +249,15 @@ describe('Shared saves controls', () => {
         preparedServerRoot: null, readyForManualStart: ready, requiredAddOns: [],
         controlRouteFingerprint: 'B'.repeat(64) })
       if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/check')) {
+        conflict = true
+        return reply({ ok: false, code: 'VersionConflict', message: 'Competing saves need review.',
+          status: { consented: true, hostVersion: 2, thisPcVersion: 2,
+            state: 'Competing save histories. Review before receiving another save.', error: null } })
+      }
       return reply({ consented: true, hostVersion: 2, thisPcVersion: 2,
-        state: 'Ready', error: null })
+        state: conflict ? 'Competing save histories. Review before receiving another save.' : 'Ready',
+        error: null })
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
     await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
@@ -260,6 +268,11 @@ describe('Shared saves controls', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Finish setup and checks' }))
     await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
       .toHaveTextContent('Ready for manual Start; game load untested'))
+    fireEvent.click(screen.getByRole('button', { name: 'Check latest' }))
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
+      .toHaveTextContent('Competing save histories. Review before receiving another save.'))
+    expect(screen.getByText('Shared worlds').closest('summary'))
+      .not.toHaveTextContent('Ready for manual Start')
     expect(screen.getByText(/Files are hash-verified; game load and playability have not been checked/))
       .toBeInTheDocument()
   })
