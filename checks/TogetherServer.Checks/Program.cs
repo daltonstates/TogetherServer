@@ -1348,6 +1348,205 @@ await Check("sharing manager can inspect grants without Receive access", () =>
     return Task.CompletedTask;
 });
 
+await Check("first-time voter reviews multi-version history through a fenced Host", async () =>
+{
+    using var hostData = Data("voter-history-owner");
+    using var voterData = Data("voter-history-friend");
+    var profile = Profile("voter-history", "voter-history-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.SharedSavesEnabled = true;
+    using var portReservation = new TcpListener(IPAddress.Loopback, 0);
+    portReservation.Start();
+    var companionPort = ((IPEndPoint)portReservation.LocalEndpoint).Port;
+    portReservation.Stop();
+    var address = $"https://127.0.0.1:{companionPort}";
+    var settings = Settings(profile);
+    settings.CompanionEndpoint = address;
+    settings.CompanionPort = companionPort;
+    settings.CompanionBindAddress = "127.0.0.1";
+    settings.CompanionListeningEnabled = true;
+    hostData.SaveSettings(settings);
+    using var certificate = new HostIdentity(hostData).Ensure(address);
+    var deviceId = Guid.NewGuid();
+    var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    var candidateId = Guid.NewGuid();
+    var otherVoterId = Guid.NewGuid();
+    var ineligibleId = Guid.NewGuid();
+    using var candidateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var otherVoterKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var ineligibleKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var ineligibleBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    hostData.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
+        {
+            Id = deviceId, AssignedProfileIds = [profile.Id],
+            CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) }
+        }, new PairedDevice
+        {
+            Id = candidateId, AssignedProfileIds = [profile.Id],
+            CredentialHash = new string('A', 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldGrants = new() { [profile.Id] = new(Receive: true, EligibleHost: true,
+                RecoveryVoter: true) },
+            SharedWorldPublicKey = Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo())
+        }, new PairedDevice
+        {
+            Id = otherVoterId, AssignedProfileIds = [profile.Id],
+            CredentialHash = new string('B', 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
+            SharedWorldPublicKey = Convert.ToBase64String(otherVoterKey.ExportSubjectPublicKeyInfo())
+        }, new PairedDevice
+        {
+            Id = ineligibleId, AssignedProfileIds = [profile.Id],
+            CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ineligibleBearer))),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldGrants = new() { [profile.Id] = new() },
+            SharedWorldPublicKey = Convert.ToBase64String(ineligibleKey.ExportSubjectPublicKeyInfo())
+        }]
+    });
+    var pairing = new PairingService(hostData);
+    var manager = new HostManager(hostData, Games(hostData));
+    if (pairing.SharedRosterDirty(profile.Id))
+    {
+        var initial = await manager.PublishSharedWorldRosterAsync(profile.Id,
+            pairing.SharedRosterMembers(profile.Id));
+        pairing.ConfirmSharedRosterPublished(profile.Id, initial);
+    }
+    voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+        new FriendConfiguration
+        {
+            Endpoint = address, Fingerprint = HostIdentity.Fingerprint(certificate),
+            DeviceId = deviceId, Credential = bearer,
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    using var voter = new FriendLink(voterData, "friend.protected");
+    using var modeGate = new SemaphoreSlim(1, 1);
+    var listener = new CompanionServer(hostData, manager, pairing, Games(hostData),
+        new ServerLogService(hostData, manager), modeGate, companionPort + 2);
+    try
+    {
+        await listener.SyncAsync();
+        Require(listener.ListenerState == CompanionListenerStates.Listening,
+            "voter enrollment fixture did not open its disposable HTTPS listener");
+        var pending = await voter.ReviewSharedHistoryAsync(profile.Id);
+        Require(pending.Code == "GroupReviewRequired" && pending.GroupId is not null &&
+            pending.OwnerPublicKey is not null &&
+            pairing.Views().Single(item => item.Id == deviceId).SharedWorldKeyEnrolled &&
+            voterData.LoadProtected("friend.protected") is not null,
+            "voter-only PC did not enroll and require signed group review");
+        var rejected = await voter.ReviewSharedHistoryAsync(profile.Id,
+            new WorldHistoryReviewRequest(Guid.NewGuid(), pending.OwnerPublicKey));
+        Require(rejected.Code == "GroupReviewRequired",
+            "voter-only PC accepted confirmation for another group");
+        var wrongOwner = await voter.ReviewSharedHistoryAsync(profile.Id,
+            new WorldHistoryReviewRequest(pending.GroupId, "another owner"));
+        Require(wrongOwner.Code == "GroupReviewRequired",
+            "voter-only PC accepted confirmation for another owner identity");
+        var confirmed = await voter.ReviewSharedHistoryAsync(profile.Id,
+            new WorldHistoryReviewRequest(pending.GroupId, pending.OwnerPublicKey));
+        var saved = JsonSerializer.Deserialize<FriendConfiguration>(
+            voterData.LoadProtected("friend.protected")!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Require(confirmed.Ok && confirmed.Code == "HistoryReviewed" &&
+            saved.ConsentedSharedWorldProfiles.Count == 0 &&
+            saved.ApprovedSharedWorldGroups[profile.Id] == pending.GroupId &&
+            saved.SharedWorldSigningKeys[profile.Id] == pending.OwnerPublicKey,
+            "voter-only review did not pin the signed owner/group separately from save consent");
+        var roster = await manager.SharedWorldReviewRosterAsync(profile.Id)
+            ?? throw new Exception("enrollment did not publish owner-signed membership");
+        var backups = new WorldBackupService(hostData, TimeProvider.System);
+        var shares = new SharedWorldService(hostData, backups);
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first signed version");
+        var firstBackup = backups.Create(profile, BackupKinds.Rolling);
+        Require(firstBackup.Ok && firstBackup.Backup is not null,
+            "first disposable owner backup was unavailable");
+        var firstVersion = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version
+            ?? throw new Exception("first disposable owner version was unavailable");
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second signed version");
+        var secondBackup = backups.Create(profile, BackupKinds.Rolling);
+        Require(secondBackup.Ok && secondBackup.Backup is not null,
+            "second disposable owner backup was unavailable");
+        var secondVersion = shares.PublishAfterStop(profile, secondBackup.Backup!.Id).Version
+            ?? throw new Exception("second disposable owner version was unavailable");
+        var candidatePublicKey = Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo());
+        var proposalDraft = new WorldAuthorityProposal(1, roster.GroupId, profile.Id, 1, null,
+            WorldAuthorityTrust.RosterHash(roster), secondVersion.VersionHash, candidatePublicKey,
+            "https://127.0.0.1:5132", "Quorum", candidateId, candidatePublicKey, "");
+        var proposal = proposalDraft with
+        {
+            Signature = Convert.ToBase64String(candidateKey.SignData(
+                WorldAuthorityTrust.ProposalBasis(proposalDraft), HashAlgorithmName.SHA256))
+        };
+        using var voterKey = ECDsa.Create();
+        voterKey.ImportPkcs8PrivateKey(voterData.LoadProtected(
+            $"shared-world-pc-signing-{deviceId:N}.protected")!, out _);
+        WorldAuthorityVote SignVote(Guid voterId, ECDsa key)
+        {
+            var draft = new WorldAuthorityVote(1, WorldAuthorityTrust.ProposalHash(proposal),
+                voterId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), "");
+            return draft with { Signature = Convert.ToBase64String(key.SignData(
+                WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+        }
+        var recordDraft = new WorldAuthorityRecord(1, proposal, roster, secondVersion,
+            [SignVote(deviceId, voterKey), SignVote(otherVoterId, otherVoterKey)], null, "",
+            VersionLineageDigest: WorldAuthorityTrust.LineageDigest([firstVersion, secondVersion]));
+        var record = recordDraft with
+        { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(recordDraft)) };
+        Require(WorldAuthorityTrust.Verify(record), "multi-version authority was not signed by a voter majority");
+        new WorldAuthorityStore(hostData).AppendReceived(record, profile.Id, roster.GroupId,
+            roster.OwnerPublicKey, [firstVersion, secondVersion]);
+        Require((await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
+            "fenced old Host accepted a normal Start");
+        WorldHistoryReviewResult reviewed = new(false, "Pending", "");
+        for (var attempt = 0; attempt < 3 && !reviewed.Ok; attempt++)
+            reviewed = await voter.ReviewSharedHistoryAsync(profile.Id);
+        Require(reviewed.Ok && reviewed.RecordCount == 1 &&
+            new WorldAuthorityStore(voterData).Read(profile.Id).Single().RecordHash == record.RecordHash &&
+            saved.ConsentedSharedWorldProfiles.Count == 0,
+            "first-time voter did not verify the fenced Host's two-version proof without save consent: " +
+            reviewed.Code);
+        using var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, seen, _, _) => seen is not null &&
+                HostIdentity.Fingerprint(seen) == HostIdentity.Fingerprint(certificate)
+        };
+        using var client = new HttpClient(handler) { BaseAddress = new Uri(address + "/") };
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+        client.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());
+        using var deniedSave = await client.GetAsync($"api/companion/servers/{profile.Id}/shared-world");
+        Require(deniedSave.StatusCode == HttpStatusCode.Forbidden,
+            "voter-only enrollment acquired save transfer permission");
+        using var ineligibleClient = new HttpClient(handler, disposeHandler: false)
+        { BaseAddress = new Uri(address + "/") };
+        ineligibleClient.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", ineligibleBearer);
+        ineligibleClient.DefaultRequestHeaders.Add("X-Device-Id", ineligibleId.ToString());
+        var dirtyPath = Path.Combine(hostData.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "roster-dirty");
+        File.WriteAllText(dirtyPath, "review required");
+        using var dirtyIneligible = await ineligibleClient.GetAsync(
+            $"api/companion/servers/{profile.Id}/shared-world/authority");
+        using var dirtyEligible = await client.GetAsync(
+            $"api/companion/servers/{profile.Id}/shared-world/authority");
+        Require(dirtyIneligible.StatusCode == HttpStatusCode.Forbidden &&
+            dirtyEligible.IsSuccessStatusCode,
+            "dirty membership admitted an ineligible peer or blocked a still-granted voter");
+        Require(pairing.Revoke(deviceId).Ok &&
+            !(await voter.ReviewSharedHistoryAsync(profile.Id)).Ok,
+            "revoked voter continued reading signed history");
+        using var revokedHistory = await client.GetAsync(
+            $"api/companion/servers/{profile.Id}/shared-world/authority");
+        Require(revokedHistory.StatusCode == HttpStatusCode.Forbidden &&
+            (await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
+            "revocation reopened history access or old-Host Start");
+    }
+    finally { await listener.StopAsync(); }
+});
+
 await Check("shared missing signed roster cannot reset a distributed revision before the first save", () =>
 {
     using var data = Data("shared-roster-missing-before-save");
@@ -4488,6 +4687,12 @@ await Check("shared world authority requires signed majority, fences old Host, a
             oldSettings.CompanionListeningEnabled = true;
             data.SaveSettings(oldSettings);
             var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var remainingBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var unsignedBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var mismatchedBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var unsignedId = Guid.NewGuid();
+            using var unsignedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var mismatchedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             data.SavePairingState(new PairingPersistentState
             {
                 Devices = [new PairedDevice
@@ -4495,8 +4700,29 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 Id = voters[1].Id, AssignedProfileIds = [profile.Id],
                 CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
-                SharedWorldGrants = new() { [profile.Id] = new(Receive: true) },
+                SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
                 SharedWorldPublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo())
+            }, new PairedDevice
+            {
+                Id = voters[2].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(remainingBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo())
+            }, new PairedDevice
+            {
+                Id = unsignedId, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(unsignedBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(unsignedKey.ExportSubjectPublicKeyInfo())
+            }, new PairedDevice
+            {
+                Id = voters[0].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(mismatchedBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(mismatchedKey.ExportSubjectPublicKeyInfo())
             }]
             });
             var manager = new HostManager(data, Games(data));
@@ -4544,6 +4770,18 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 client.DefaultRequestHeaders.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
                 client.DefaultRequestHeaders.Add("X-Device-Id", voters[1].Id.ToString());
+                HttpClient ReviewClient(Guid id, string credential)
+                {
+                    var peer = new HttpClient(handler, disposeHandler: false)
+                    { BaseAddress = new Uri(oldAddress + "/") };
+                    peer.DefaultRequestHeaders.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential);
+                    peer.DefaultRequestHeaders.Add("X-Device-Id", id.ToString());
+                    return peer;
+                }
+                using var remainingClient = ReviewClient(voters[2].Id, remainingBearer);
+                using var unsignedClient = ReviewClient(unsignedId, unsignedBearer);
+                using var mismatchedClient = ReviewClient(voters[0].Id, mismatchedBearer);
                 var route = $"api/companion/servers/{profile.Id}/shared-world/authority";
                 using var invalid = await client.PostAsJsonAsync(route,
                     newer with { RecordHash = new string('0', 64) });
@@ -4553,23 +4791,103 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 Require(valid.IsSuccessStatusCode,
                     "old Host did not ingest the signed newer authority over authenticated HTTPS: " +
                     valid.StatusCode + " " + await valid.Content.ReadAsStringAsync());
+                using var reviewRoster = await client.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world/roster");
+                using var reviewHistory = await client.GetAsync(route);
+                var reviewed = await reviewHistory.Content.ReadFromJsonAsync<List<WorldAuthorityRecord>>();
+                Require(reviewRoster.IsSuccessStatusCode && reviewHistory.IsSuccessStatusCode &&
+                    reviewed?.Count == 2 &&
+                    reviewed.Select(item => item.RecordHash).ToHashSet().SetEquals(
+                        [accepted.RecordHash, newer.RecordHash]),
+                    "voter-only PC could not review competing signed histories on the fenced Host");
+                using (var voterData = Data("authority-review-voter"))
+                {
+                    voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+                        new FriendConfiguration
+                        {
+                            Endpoint = oldAddress,
+                            Fingerprint = HostIdentity.Fingerprint(oldCertificate),
+                            DeviceId = voters[1].Id,
+                            Credential = bearer,
+                            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
+                        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    voterData.SaveProtected($"shared-world-pc-signing-{voters[1].Id:N}.protected",
+                        voters[1].Key.ExportPkcs8PrivateKey());
+                    using var voterLink = new FriendLink(voterData, "friend.protected");
+                    var pendingReview = await voterLink.ReviewSharedHistoryAsync(profile.Id);
+                    Require(pendingReview.Code == "GroupReviewRequired" &&
+                        pendingReview.GroupId == roster.GroupId &&
+                        pendingReview.OwnerPublicKey == roster.OwnerPublicKey,
+                        "voter-only Friend did not require explicit signed group and owner review");
+                    var voterReview = await voterLink.ReviewSharedHistoryAsync(profile.Id,
+                        new WorldHistoryReviewRequest(roster.GroupId, roster.OwnerPublicKey));
+                    Require(voterReview.Ok && voterReview.RecordCount == 2 &&
+                        voterReview.CompetingHeads == 2,
+                        "voter-only Friend could not fetch signed conflict history without save consent: " +
+                        voterReview.Code);
+                }
+                using var deniedVersion = await client.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world");
+                Require(deniedVersion.StatusCode == HttpStatusCode.Forbidden,
+                    "voter-only PC gained save transfer access from review permission");
+                File.WriteAllText(fixtureRosterDirty, "review pending");
+                using var dirtyHistory = await client.GetAsync(route);
+                Require(dirtyHistory.IsSuccessStatusCode,
+                    "a fenced Host withheld signed history from a still-granted reviewer");
                 Require(fixturePairing.Revoke(voters[1].Id).Ok,
                     "fixture could not revoke the authority sender");
+                using var revokedHistory = await client.GetAsync(route);
+                using var remainingHistory = await remainingClient.GetAsync(route);
+                using var remainingTransfer = await remainingClient.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world");
+                using var unsignedHistory = await unsignedClient.GetAsync(route);
+                using var mismatchedHistory = await mismatchedClient.GetAsync(route);
                 using var afterRevoke = await client.PostAsJsonAsync(route, newer);
-                Require(afterRevoke.StatusCode == HttpStatusCode.Forbidden &&
+                Require(revokedHistory.StatusCode == HttpStatusCode.Forbidden &&
+                    remainingHistory.IsSuccessStatusCode &&
+                    remainingTransfer.StatusCode == HttpStatusCode.Forbidden &&
+                    unsignedHistory.StatusCode == HttpStatusCode.Forbidden &&
+                    mismatchedHistory.StatusCode == HttpStatusCode.Forbidden &&
+                    afterRevoke.StatusCode == HttpStatusCode.Forbidden &&
                     !fixturePairing.CommitSharedWorldAuthority(voters[1].Id, profile.Id,
                         Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()),
                         () => throw new Exception("revoked sender reached authority append")),
-                    "a revoked Friend PC could still append authority");
+                    "fenced revocation reopened access or blocked a still-granted reviewer");
             }
             finally { await oldListener.StopAsync(); }
+            var restartedReview = new HostManager(data, Games(data));
+            var restartedPairing = new PairingService(data);
+            Require(await restartedReview.SharedWorldReviewRosterAsync(profile.Id) is not null &&
+                restartedPairing.AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[2].Id }, profile.Id, out _).Ok &&
+                !restartedPairing.AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[1].Id }, profile.Id, out _).Ok,
+                "restart lost current-grant review access or revived a revoked PC");
+            var retainedPairing = data.LoadPairingState();
+            try
+            {
+                var alteredPairing = data.LoadPairingState();
+                var remainingDevice = alteredPairing.Devices.Single(item => item.Id == voters[2].Id);
+                remainingDevice.AssignedProfileIds = [];
+                data.SavePairingState(alteredPairing);
+                Require(!new PairingService(data).AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[2].Id }, profile.Id, out _).Ok,
+                    "a removed PC retained fenced history review access");
+                remainingDevice.AssignedProfileIds = [profile.Id];
+                remainingDevice.AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+                data.SavePairingState(alteredPairing);
+                Require(!new PairingService(data).AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[2].Id }, profile.Id, out _).Ok,
+                    "an expired PC retained fenced history review access");
+            }
+            finally { data.SavePairingState(retainedPairing); }
             Require(store.Read(profile.Id).Count == 2, "newer signed roster authority was not applied");
             Require((await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
                 "local or remote Start path bypassed authority");
             Require((await manager.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
                 "old Host still served the shared head");
             Require(await manager.SharedWorldRosterAsync(profile.Id) is null,
-                "old Host still served the signed roster");
+                "old Host still served the signed roster through its sharing path");
             Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, voters[0].Id,
                 new SharedWorldReceipt(1, version.GroupId, profile.Id, version.VersionHash,
                     voters[0].Id, roster.Epoch, roster.Revision, Guid.NewGuid(), ""))).Code ==
@@ -5155,7 +5473,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
             "local status silently chose one competing authority head");
         var longLineage = new List<SharedWorldVersion>();
         var predecessor = successorVersion;
-        for (var index = 0; index < 70; index++)
+        for (var index = 0; index < 71; index++)
         {
             predecessor = SharedWorldService.SignVersion(predecessor with
             {
@@ -5258,13 +5576,124 @@ await Check("shared world authority requires signed majority, fences old Host, a
             "a disconnected proof piece was written before ancestry verification");
         var resumedProofBatch = await FriendLink.StageAuthorityProofBatchAsync(store, third,
             nextAuthority, 128, FetchProof, CancellationToken.None);
-        Require(resumedProofBatch == (true, 60),
+        Require(resumedProofBatch == (true, 61),
             "authority proof did not resume from checked pieces after 64 saves");
         store.AppendReceived(third, profile.Id, version.GroupId,
             noOverrideRoster.OwnerPublicKey, store.ReadStagedProof(third, nextAuthority));
         store.ClearStagedProof(third, nextAuthority);
         Require(new WorldAuthorityStore(data).Read(profile.Id).Any(item => item.RecordHash == third.RecordHash),
             "resumed proof was not verified and durable after restart");
+        var reviewManager = new HostManager(data, Games(data));
+        Require((await reviewManager.SharedWorldStatusAsync(profile.Id)).Authority?.State ==
+            "CompetingHistories" &&
+            (await reviewManager.SharedWorldReviewProofAsync(profile.Id, third.RecordHash,
+                longLineage[35].Number))?.VersionHash == longLineage[35].VersionHash &&
+            await reviewManager.SharedWorldReviewProofAsync(profile.Id, third.RecordHash,
+                nextAuthority.Version.Number) is null &&
+            (await reviewManager.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
+            "fenced Host did not isolate signed proof review from ordinary save sharing");
+        var indexedReview = new WorldAuthorityStore(data);
+        foreach (var piece in longLineage)
+        {
+            var indexed = indexedReview.ReadReviewProofIndex(profile.Id, third.RecordHash,
+                piece.Number);
+            Require(indexed is { } expected && expected.ExpectedHash == piece.VersionHash &&
+                indexedReview.ReadReviewProofVersion(expected.Record, piece.Number)?.VersionHash ==
+                    piece.VersionHash,
+                "a long signed review proof index returned the wrong piece");
+        }
+        Require(indexedReview.ReviewFullValidationCount == 1 &&
+            indexedReview.ReviewProofIndexBuildCount == 1,
+            "reviewing more than 70 proof pieces repeated the full lineage scan");
+        var reviewProofPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "authority", "proof-" + third.RecordHash, longLineage[35].Number + ".json");
+        var originalReviewProof = File.ReadAllBytes(reviewProofPath);
+        try
+        {
+            File.WriteAllBytes(reviewProofPath, new byte[SharedWorldService.MaximumManifestBytes + 1]);
+            RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(data)
+                .ReadReviewProofVersion(third, longLineage[35].Number),
+                "oversized review proof was served");
+            File.WriteAllText(reviewProofPath, "{tampered");
+            RequireThrows<JsonException>(() => new WorldAuthorityStore(data)
+                .ReadReviewProofVersion(third, longLineage[35].Number),
+                "tampered review proof was served");
+        }
+        finally { File.WriteAllBytes(reviewProofPath, originalReviewProof); }
+        try
+        {
+            var replaced = SharedWorldService.SignVersion(longLineage[35] with
+            { BackupId = Guid.NewGuid() }, voters[1].Key);
+            File.WriteAllBytes(reviewProofPath, JsonSerializer.SerializeToUtf8Bytes(replaced,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            RequireThrows<InvalidDataException>(() => reviewManager.SharedWorldReviewProofAsync(
+                    profile.Id, third.RecordHash, replaced.Number).GetAwaiter().GetResult(),
+                "a signed replacement proof piece bypassed the verified review index");
+        }
+        finally { File.WriteAllBytes(reviewProofPath, originalReviewProof); }
+        using (var reviewPortReservation = new TcpListener(IPAddress.Loopback, 0))
+        {
+            reviewPortReservation.Start();
+            var reviewPort = ((IPEndPoint)reviewPortReservation.LocalEndpoint).Port;
+            reviewPortReservation.Stop();
+            var reviewAddress = $"https://127.0.0.1:{reviewPort}";
+            using var reviewCertificate = new HostIdentity(data).Ensure(reviewAddress);
+            var reviewSettings = data.LoadSettings();
+            reviewSettings.CompanionBindAddress = "127.0.0.1";
+            reviewSettings.CompanionEndpoint = reviewAddress;
+            reviewSettings.CompanionPort = reviewPort;
+            reviewSettings.CompanionListeningEnabled = true;
+            data.SaveSettings(reviewSettings);
+            var reviewBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+            {
+                Id = voters[2].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(reviewBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo())
+            }] });
+            var dirtyPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+                "roster-dirty");
+            if (File.Exists(dirtyPath)) File.Delete(dirtyPath);
+            using var reviewGate = new SemaphoreSlim(1, 1);
+            var liveReviewManager = new HostManager(data, Games(data));
+            var reviewListener = new CompanionServer(data, liveReviewManager, new PairingService(data),
+                Games(data), new ServerLogService(data, liveReviewManager), reviewGate, reviewPort + 2);
+            try
+            {
+                await reviewListener.SyncAsync();
+                Require(reviewListener.ListenerState == CompanionListenerStates.Listening,
+                    "fenced review fixture listener did not open");
+                using var voterData = Data("digest-review-voter");
+                voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+                    new FriendConfiguration
+                    {
+                        Endpoint = reviewAddress,
+                        Fingerprint = HostIdentity.Fingerprint(reviewCertificate),
+                        DeviceId = voters[2].Id,
+                        Credential = reviewBearer,
+                        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                        ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId },
+                        SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+                        SharedRosterFloors = new() { [profile.Id] = new(roster.GroupId,
+                            noOverrideRoster.Epoch, noOverrideRoster.Revision,
+                            noOverrideRoster.Signature) }
+                    }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                voterData.SaveProtected($"shared-world-pc-signing-{voters[2].Id:N}.protected",
+                    voters[2].Key.ExportPkcs8PrivateKey());
+                using var voterLink = new FriendLink(voterData, "friend.protected");
+                WorldHistoryReviewResult reviewResult = new(false, "Pending", "");
+                for (var attempt = 0; attempt < 4 && !reviewResult.Ok; attempt++)
+                    reviewResult = await voterLink.ReviewSharedHistoryAsync(profile.Id);
+                Require(reviewResult.Ok && reviewResult.CompetingHeads >= 2 &&
+                    new WorldAuthorityStore(voterData).Read(profile.Id)
+                        .Any(item => item.RecordHash == third.RecordHash),
+                    "voter-only Friend did not verify the digest-backed lineage under fencing: " +
+                    reviewResult.Code);
+            }
+            finally { await reviewListener.StopAsync(); }
+        }
         using (var longProofData = Data("authority-proof-over-4096"))
         {
             var longStore = new WorldAuthorityStore(longProofData);

@@ -58,9 +58,162 @@ internal static class SharedWorldSharingFloor
                 item.Revision == floor.Revision && item.Signature == floor.Signature);
     }
 }
+public sealed record WorldHistoryReviewResult(bool Ok, string Code, string Message,
+    int RecordCount = 0, int CompetingHeads = 0,
+    Guid? GroupId = null, string? OwnerPublicKey = null);
+public sealed record WorldHistoryReviewRequest(Guid? ConfirmGroupId = null,
+    string? ConfirmOwnerPublicKey = null);
 
 internal sealed partial class FriendLink
 {
+    public async Task<WorldHistoryReviewResult> ReviewSharedHistoryAsync(Guid profileId,
+        WorldHistoryReviewRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (config is null) return new(false, "NotPaired", "Choose a saved Host connection.");
+            var group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+            var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
+            var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
+            if (floor is not null && group is not null && floor.GroupId != group)
+                return new(false, "TrustRequired", "This PC's saved group review needs repair.");
+            using var client = MakeClient(config.Endpoint, AcceptedPins());
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Credential);
+            client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
+            client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
+            using var key = LoadPcSigningKey(config.DeviceId);
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            using var firstRosterResponse = await client.GetAsync(
+                $"api/companion/servers/{profileId}/shared-world/roster", cancellationToken);
+            if (firstRosterResponse.StatusCode == System.Net.HttpStatusCode.Forbidden &&
+                (group is null || owner is null || floor is null))
+            {
+                using var challengeResponse = await client.GetAsync(
+                    $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
+                var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
+                    cancellationToken);
+                var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
+                    JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json) : null;
+                if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+                    return new(false, "EnrollmentDenied", "The Host did not allow this PC to enroll for voting.");
+                var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+                    Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                        config.DeviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+                using var enrollment = await client.PostAsJsonAsync(
+                    $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json,
+                    cancellationToken);
+                if (!enrollment.IsSuccessStatusCode)
+                    return new(false, "EnrollmentDenied", "The Host did not accept this PC's voting identity.");
+            }
+            else if (!firstRosterResponse.IsSuccessStatusCode)
+                return new(false, "RosterUnavailable", "Current signed membership is unavailable.");
+            using var rosterResponse = await client.GetAsync(
+                $"api/companion/servers/{profileId}/shared-world/roster", cancellationToken);
+            var rosterBytes = await ReadBoundedSharedAsync(rosterResponse.Content,
+                SharedWorldService.MaximumManifestBytes, cancellationToken);
+            var roster = rosterResponse.IsSuccessStatusCode && rosterBytes is not null
+                ? JsonSerializer.Deserialize<SharedWorldRoster>(rosterBytes, Json) : null;
+            var member = roster?.Members.SingleOrDefault(item => item.DeviceId == config.DeviceId);
+            if (!SharedWorldRosterTrust.Verify(roster) || roster!.ProfileId != profileId ||
+                owner is not null && roster.OwnerPublicKey != owner ||
+                floor is not null && floor.GroupId == roster.GroupId &&
+                    (roster.Epoch < floor.Epoch ||
+                     roster.Epoch == floor.Epoch && roster.Revision < floor.Revision ||
+                     roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
+                         roster.Signature != floor.Signature) ||
+                member is null || member.Revoked || member.PublicKey != publicKey ||
+                !(member.Grants.Receive || member.Grants.RecoveryVoter) ||
+                member.AccessExpiresUtc is { } expires && expires <= DateTimeOffset.UtcNow)
+                return new(false, "RosterRejected", "Current signed membership does not allow history review.");
+            var changingGroup = group != roster.GroupId || floor is null ||
+                floor.GroupId != roster.GroupId;
+            if (changingGroup && (request?.ConfirmGroupId != roster.GroupId ||
+                request?.ConfirmOwnerPublicKey != roster.OwnerPublicKey))
+                return new(false, "GroupReviewRequired",
+                    "Review this signed world group and owner identity, then confirm to read its hosting history.",
+                    GroupId: roster.GroupId, OwnerPublicKey: roster.OwnerPublicKey);
+            var store = new WorldAuthorityStore(data);
+            var accepted = store.Read(profileId);
+            if (changingGroup && accepted.Count > 0 && group != roster.GroupId)
+                return new(false, "HistoryConflict",
+                    "This PC already keeps authority for another group. Preserve it for owner review.");
+            var offset = Math.Max(0, accepted.Count - 1);
+            using var historyResponse = await client.GetAsync(
+                $"api/companion/servers/{profileId}/shared-world/authority?offset={offset}",
+                cancellationToken);
+            var historyBytes = await ReadBoundedSharedAsync(historyResponse.Content,
+                4 * 1024 * 1024, cancellationToken);
+            var page = historyResponse.IsSuccessStatusCode && historyBytes is not null
+                ? JsonSerializer.Deserialize<List<WorldAuthorityRecord>>(historyBytes, Json) : null;
+            if (page is null) return new(false, "HistoryUnavailable", "Signed history is unavailable.");
+            var additions = NewAuthorityPage(accepted, page);
+            var staged = new HashSet<string>(StringComparer.Ordinal);
+            var remaining = WorldAuthorityTrust.ProofVersionsPerCheck;
+            foreach (var record in additions.Where(item => item.VersionLineageDigest is not null))
+            {
+                var parent = additions.Concat(accepted).SingleOrDefault(item =>
+                    item.RecordHash == record.Proposal.ParentAuthorityHash);
+                var batch = await StageAuthorityProofBatchAsync(store, record, parent,
+                    remaining, async (number, token) =>
+                    {
+                        using var response = await client.GetAsync(
+                            $"api/companion/servers/{profileId}/shared-world/authority/" +
+                            $"{record.RecordHash}/proof/{number}",
+                            HttpCompletionOption.ResponseHeadersRead, token);
+                        var bytes = await ReadBoundedSharedAsync(response.Content,
+                            SharedWorldService.MaximumManifestBytes, token);
+                        return response.IsSuccessStatusCode && bytes is not null
+                            ? JsonSerializer.Deserialize<SharedWorldVersion>(bytes, Json) : null;
+                    }, cancellationToken);
+                remaining -= batch.Used;
+                if (!batch.Complete) return new(false, "HistoryCatchUpPending",
+                    "Check again to finish verifying signed history.");
+                var seal = VerifyStagedAuthorityProofBatch(store, record, parent,
+                    remaining, cancellationToken);
+                remaining -= seal.Used;
+                if (!seal.Complete) return new(false, "HistoryCatchUpPending",
+                    "Check again to finish verifying signed history.");
+                staged.Add(record.RecordHash);
+            }
+            foreach (var record in additions)
+            {
+                if (staged.Contains(record.RecordHash))
+                {
+                    var parent = store.Read(profileId).SingleOrDefault(item =>
+                        item.RecordHash == record.Proposal.ParentAuthorityHash);
+                    store.AppendReceivedStaged(record, parent, profileId,
+                        roster.GroupId, roster.OwnerPublicKey);
+                    store.ClearStagedProof(record, parent);
+                }
+                else store.AppendReceived(record, profileId,
+                    roster.GroupId, roster.OwnerPublicKey);
+            }
+            accepted = store.Read(profileId);
+            config.ApprovedSharedWorldGroups ??= [];
+            config.SharedWorldSigningKeys ??= [];
+            config.SharedRosterFloors ??= [];
+            config.ApprovedSharedWorldGroups[profileId] = roster.GroupId;
+            config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
+            config.SharedRosterFloors![profileId] = new(roster.GroupId, roster.Epoch,
+                roster.Revision, roster.Signature);
+            SaveConfig();
+            data.SaveProtected($"shared-world-roster-{config.DeviceId:N}-{profileId:N}.protected", rosterBytes!);
+            return new(page.Count == WorldAuthorityTrust.PageSize ? false : true,
+                page.Count == WorldAuthorityTrust.PageSize ? "HistoryCatchUpPending" : "HistoryReviewed",
+                page.Count == WorldAuthorityTrust.PageSize ? "Check again to finish reviewing signed history." :
+                    "Signed hosting history was reviewed.", accepted.Count,
+                WorldAuthorityTrust.EffectiveHeads(accepted).Length);
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
+                                   InvalidDataException or CryptographicException or TaskCanceledException)
+        { return new(false, "HistoryRejected", "Signed history could not be verified."); }
+        finally { gate.Release(); ReleaseRetained(); }
+    }
+
     public IReadOnlyList<WorldResolutionChoice> ResolutionChoices(Guid profileId)
     {
         gate.Wait();
