@@ -4529,7 +4529,38 @@ await Check("shared save consent withdrawal prevents final receipt pointer", () 
     Require(!link.CommitSharedReceipt(another, stage, Path.Combine(root, "received"), root, [1], shutdown.Token) &&
         !File.Exists(Path.Combine(root, "latest.json")) && Directory.Exists(stage),
         "shutdown allowed a completed receipt to be recorded");
+    var retained = Path.Combine(root, "retained");
+    Directory.CreateDirectory(retained);
+    Require(!link.CommitSharedReceipt(profileId, stage, retained, root, [1], retainedCopy: true) &&
+        !link.CommitSharedReceipt(another, stage, retained, root, [1], shutdown.Token, retainedCopy: true) &&
+        !File.Exists(Path.Combine(root, "latest.json")),
+        "a retained-copy retry bypassed consent withdrawal or cancellation");
     return Task.CompletedTask;
+});
+
+await Check("shared retained receipt retry repairs interrupted pointer and confirms exact copy", () =>
+    SharedSaveReceiptRetryChecks.RunAsync(Path.Combine(root, "shared-retained-retry"), fixture));
+
+await Check("planned handoff validates the complete successor address before Stop", async () =>
+{
+    using var data = Data("planned-route-validation");
+    var profile = Profile("route-validation", "route-world", FreePort());
+    profile.Kind = GameKinds.Fixture;
+    profile.SharedSavesEnabled = true;
+    profile.Backups = new() { Enabled = true, MinimumFreeSpaceMb = 0 };
+    data.SaveSettings(Settings(profile));
+    var manager = Manager(data);
+    foreach (var address in new[]
+    {
+        "https://192.0.2.10:5131/page", "https://192.0.2.10:5131?target=world",
+        "https://192.0.2.10:5131#world", "https://user@192.0.2.10:5131",
+        "http://192.0.2.10:5131", "https://host.example:5131"
+    })
+        Require((await manager.PreparePlannedHandoffAsync(profile.Id, Guid.NewGuid(), address)).Code ==
+            "InvalidSuccessorAddress", "an invalid successor route passed the pre-Stop check");
+    Require(!data.HasProtected($"planned-handoff-{profile.Id:N}.protected") &&
+        new WorldBackupService(data, TimeProvider.System).List(profile.Id).Count == 0,
+        "invalid route validation changed the save or handoff state");
 });
 
 await Check("shared save chunks detect later tampering without rescanning earlier chunks", () =>
@@ -6943,8 +6974,11 @@ await Check("Host-loss eligibility uses two minutes of monotonic transport failu
     var loss = new SharedWorldHostLoss(() => tick, TimeSpan.TicksPerSecond);
     Require(!loss.MayPropose, "a new PC was eligible to propose takeover");
     loss.Observe(HostReachabilityObservation.TransportFailure);
-    tick += TimeSpan.FromSeconds(119).Ticks;
-    loss.Observe(HostReachabilityObservation.TransportFailure);
+    foreach (var seconds in new[] { 30, 30, 30, 29 })
+    {
+        tick += TimeSpan.FromSeconds(seconds).Ticks;
+        loss.Observe(HostReachabilityObservation.TransportFailure);
+    }
     Require(!loss.MayPropose, "a failed retry shortened the two-minute wait");
     tick += TimeSpan.FromSeconds(1).Ticks;
     Require(loss.MayPropose, "two full monotonic minutes did not allow a proposal");
@@ -6955,8 +6989,22 @@ await Check("Host-loss eligibility uses two minutes of monotonic transport failu
     tick += TimeSpan.FromSeconds(119).Ticks;
     Require(!loss.MayPropose, "one stale failure was treated as current Host loss");
     loss.Observe(HostReachabilityObservation.TransportFailure);
-    tick += TimeSpan.FromSeconds(1).Ticks;
-    Require(loss.MayPropose, "a second complete loss was ignored");
+    Require(!loss.MayPropose && loss.UnreachableFor == TimeSpan.Zero,
+        "a stale polling gap counted as confirmed Host loss");
+    for (var retry = 0; retry < 12; retry++)
+    {
+        tick += TimeSpan.FromSeconds(10).Ticks;
+        loss.Observe(HostReachabilityObservation.TransportFailure);
+    }
+    Require(loss.MayPropose, "a new complete loss window was ignored");
+    tick += TimeSpan.FromHours(1).Ticks;
+    loss.Observe(HostReachabilityObservation.TransportFailure);
+    Require(!loss.MayPropose && loss.UnreachableFor == TimeSpan.Zero,
+        "sleep or paused polling allowed immediate takeover on resume");
+    tick -= TimeSpan.FromSeconds(10).Ticks;
+    loss.Observe(HostReachabilityObservation.TransportFailure);
+    Require(!loss.MayPropose && loss.UnreachableFor == TimeSpan.Zero,
+        "a monotonic clock reset reused an earlier failure window");
     loss.Observe(HostReachabilityObservation.Authenticated);
     Require(!loss.MayPropose, "authenticated Host return did not reset eligibility");
     return Task.CompletedTask;
@@ -7013,8 +7061,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             roster, floor, ids[0], keys[0], candidateAddress, candidatePin,
             new WorldAuthorityStore(pcs[0])),
             "candidate proposed before the two-minute loss check");
-        ticks += TimeSpan.FromSeconds(119).Ticks;
-        foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
+        foreach (var seconds in new[] { 30, 30, 30, 29 })
+        {
+            ticks += TimeSpan.FromSeconds(seconds).Ticks;
+            foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
+        }
         ticks += TimeSpan.FromSeconds(1).Ticks;
         var offer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
             ids[0], keys[0], candidateAddress, candidatePin,
@@ -7702,8 +7753,11 @@ await Check("quorum successor restores and approved PC pulls its next save", asy
         var losses = Enumerable.Range(0, 3).Select(_ =>
             new SharedWorldHostLoss(() => ticks, TimeSpan.TicksPerSecond)).ToArray();
         foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
-        ticks += TimeSpan.FromMinutes(2).Ticks;
-        foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
+        for (var retry = 0; retry < 12; retry++)
+        {
+            ticks += TimeSpan.FromSeconds(10).Ticks;
+            foreach (var loss in losses) loss.Observe(HostReachabilityObservation.TransportFailure);
+        }
         var offer = SharedWorldElection.PrepareOffer(losses[0], vaults[0], roster, floor,
             ids[0], keys[0], candidateAddress, candidatePin, new WorldAuthorityStore(pcs[0]));
         var vote0 = SharedWorldElection.Vote(losses[0], vaults[0], floor, roster.OwnerPublicKey,

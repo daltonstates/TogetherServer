@@ -1957,21 +1957,12 @@ internal sealed partial class FriendLink
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             File.WriteAllBytes(Path.Combine(stage, "version.json"), manifestBytes);
             var destination = Path.Combine(root, version.VersionHash);
-            if (Directory.Exists(destination))
+            var retainedCopy = Directory.Exists(destination);
+            if (retainedCopy)
             {
                 var retained = ReadVersionForRetention(destination);
                 if (retained?.VersionHash != version.VersionHash)
                     throw new InvalidDataException("Existing received payload failed verification.");
-                lock (sharedReceiptSync)
-                {
-                    if (withdrawnSharedConsent.ContainsKey(profileId) || transferToken.IsCancellationRequested)
-                        return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
-                    var latestStage = Path.Combine(root, "latest.json.new");
-                    File.WriteAllBytes(latestStage, manifestBytes);
-                    File.Move(latestStage, Path.Combine(root, "latest.json"), true);
-                }
-                return new(true, "SaveReceived", "The selected verified copy is now current. Earlier copies remain intact.",
-                    LocalSharedWorldStatus(profileId));
             }
             await gate.WaitAsync(transferToken);
             entered = true;
@@ -1985,7 +1976,8 @@ internal sealed partial class FriendLink
             if (!CanCommitReceivedVersion(config, profileId, version))
                 return SharedFailure("NewerVersionAvailable", "The checked Host save changed during transfer. Receive the latest version next.");
             transferToken.ThrowIfCancellationRequested();
-            if (!CommitSharedReceipt(profileId, stage, destination, root, manifestBytes, transferToken))
+            if (!CommitSharedReceipt(profileId, stage, destination, root, manifestBytes, transferToken,
+                    retainedCopy))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             if (resolvedAnchor is null)
                 config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
@@ -1996,6 +1988,7 @@ internal sealed partial class FriendLink
                 transferClient, transferToken, verifiedInThisTransfer: true);
             try
             {
+                if (retainedCopy && !ContainsReparsePoint(stage)) Directory.Delete(stage, true);
                 PruneReceivedAfterTransfer(root, version.VersionHash, old?.VersionHash,
                     new WorldAuthorityStore(data).Read(profileId),
                     new SharedWorldSeparateCopyStore(data).Read(profileId)
@@ -2041,12 +2034,16 @@ internal sealed partial class FriendLink
     }
 
     internal bool CommitSharedReceipt(Guid profileId, string stage, string destination,
-        string root, byte[] manifestBytes, CancellationToken cancellationToken = default)
+        string root, byte[] manifestBytes, CancellationToken cancellationToken = default,
+        bool retainedCopy = false)
     {
         lock (sharedReceiptSync)
         {
             if (cancellationToken.IsCancellationRequested || withdrawnSharedConsent.ContainsKey(profileId)) return false;
-            Directory.Move(stage, destination);
+            // A prior receipt may have moved its verified payload before the
+            // latest pointer was written. Its retry uses the same final gate
+            // and Host confirmation as a newly received payload.
+            if (!retainedCopy) Directory.Move(stage, destination);
             var latestStage = Path.Combine(root, "latest.json.new");
             File.WriteAllBytes(latestStage, manifestBytes);
             File.Move(latestStage, Path.Combine(root, "latest.json"), true);

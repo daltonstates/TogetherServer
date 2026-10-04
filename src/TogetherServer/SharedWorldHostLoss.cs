@@ -26,6 +26,11 @@ internal sealed class SharedWorldHostLoss(
             if (observation == HostReachabilityObservation.TransportFailure)
             {
                 var stamp = now();
+                // Sleep or a paused polling loop is unobserved time. Require a
+                // new continuous loss window after a gap or clock reset.
+                if (lastFailure is { } last && (stamp < last || frequency <= 0 ||
+                    (double)(stamp - last) / frequency > FreshFailureWindow.TotalSeconds))
+                    firstFailure = null;
                 firstFailure ??= stamp;
                 lastFailure = stamp;
             }

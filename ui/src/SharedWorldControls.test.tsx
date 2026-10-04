@@ -25,6 +25,41 @@ const offer = { proposal: { profileId: profile, candidateAddress: 'https://192.0
   candidateReceipt: { deviceId: device.id }, signed: 'signed-by-candidate' }
 
 describe('Shared saves controls', () => {
+  it('keeps guarded recovery usable from a verified copy when Host support is unknown after restart', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/recovery/offer')) {
+        calls.push(url)
+        return reply({ ok: false, code: 'HostLossNotConfirmed', message: 'Wait for verified Host loss.' })
+      }
+      if (url.endsWith('/recovery/vote')) {
+        calls.push(url)
+        return reply({ ok: false, code: 'PermissionDenied', message: 'This PC cannot vote.', votes: 0, required: 0 })
+      }
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/handoff/restore')) return reply({ staged: false })
+      if (init?.method) throw new Error(`Unexpected mutation ${url}`)
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available={false} />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(await screen.findByText(/Your verified copy remains available for guarded recovery below/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeDisabled()
+    fireEvent.click(screen.getByText('Recover after Host loss'))
+    const prepare = screen.getByRole('button', { name: 'Prepare signed offer' })
+    expect(prepare).toBeEnabled()
+    fireEvent.click(prepare)
+    expect(await screen.findByText('Wait for verified Host loss.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Offer code from candidate PC'), { target: { value: JSON.stringify(offer) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Review offer code' }))
+    const vote = screen.getByRole('button', { name: 'Check and vote for this offer' })
+    expect(vote).toBeEnabled()
+    fireEvent.click(vote)
+    await waitFor(() => expect(calls).toContain(`/api/local/friend/${profile}/shared-world/recovery/vote`))
+    expect(screen.getByText(/Changes since the Host's last completed copy may be missing/)).toBeInTheDocument()
+    expect(calls).toHaveLength(2)
+  })
+
   it('requires explicit Host enablement and a separate per-PC grant', async () => {
     const calls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -538,7 +573,12 @@ describe('Shared saves controls', () => {
     fireEvent.change(screen.getByLabelText('Next host PC'), { target: { value: device.id } })
     fireEvent.click(screen.getAllByText('Technical details')[0])
     fireEvent.change(screen.getByLabelText('Next PC direct HTTPS IP address and port'),
-      { target: { value: 'https://192.0.2.10:5131' } })
+      { target: { value: 'https://192.0.2.10:5131/page' } })
+    expect(prepare).toBeDisabled()
+    expect(screen.getByText(/without a page path or sign-in details/)).toBeInTheDocument()
+    expect(requests).toHaveLength(0)
+    fireEvent.change(screen.getByLabelText('Next PC direct HTTPS IP address and port'),
+      { target: { value: 'https://192.0.2.10:5131/' } })
     fireEvent.click(prepare)
     await waitFor(() => expect(requests[0]).toEqual({ url: `/api/local/profiles/${profile}/shared-world/handoff/prepare`,
       body: { successorDeviceId: device.id, successorAddress: 'https://192.0.2.10:5131' } }))

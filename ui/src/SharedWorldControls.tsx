@@ -364,6 +364,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const [successorAddress, setSuccessorAddress] = useState('')
   const [handoffMessage, setHandoffMessage] = useState('')
   const shareAddress = normalizedDirectIpHttpsEndpoint(currentAddress ?? '')
+  const reviewedSuccessorAddress = normalizedDirectIpHttpsEndpoint(successorAddress.trim())
   const copyAddress = async () => {
     if (!shareAddress) return
     try {
@@ -499,7 +500,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     try {
       const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/handoff/${action}`,
         'POST', parseBasicResult, action === 'prepare' ?
-          { successorDeviceId: successorId, successorAddress: successorAddress.trim() } : undefined)
+          { successorDeviceId: successorId, successorAddress: reviewedSuccessorAddress } : undefined)
       setHandoffMessage(result.message)
       if (result.ok) await refreshHost()
       else await refreshHandoff()
@@ -590,8 +591,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
             disabled={busy || handoff === null} onChange={event => setSuccessorAddress(event.target.value)}
             placeholder="https://192.0.2.10:5131" /></label>
           <p>This address is recorded in the signed offer. Confirm the next PC's direct route with its owner.</p>
+          {successorAddress.trim() && !reviewedSuccessorAddress && <p className="helper-text" role="alert">Enter an HTTPS IP address and port, without a page path or sign-in details.</p>}
         </details>
-        <div className="actions"><Button className="secondary" disabled={busy || handoff === null || !successorId || !successorAddress.trim()}
+        <div className="actions"><Button className="secondary" disabled={busy || handoff === null || !successorId || !reviewedSuccessorAddress}
           onClick={() => void runHandoff('prepare')}>Stop and prepare file copy</Button></div></>}
       {handoff?.pending && <><p className="helper-text">After the chosen PC confirms this exact copy, complete the handoff. The app checks its signed receipt before changing who may host. These actions remain available after reopening the app.</p>
         <div className="actions"><Button className="secondary" disabled={busy || !handoff.canComplete} onClick={() => void runHandoff('complete')}>Complete pending handoff</Button>
@@ -893,9 +895,12 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     {capacityAlert && <span className="warning-text" role="alert"> · {capacityAlert}</span>}</summary>
     <p role="status">{status?.thisPcVersion != null && status.consented ?
       `Verified save copy ${status.thisPcVersion} on this PC. ${headline}.` : `${headline}.`}</p>
-    <p>Receive approved, hash-verified saves into this PC's private vault. A post-Stop backup is copied after a graceful Stop; a live save is a snapshot captured while the game is running. Current production sharing creates post-Stop copies only. Hash verification does not prove game load or playability. Automatic takeover is unavailable.</p>
+    <p>Saves are copied here after the Host stops its game server. Keep this app open to receive them. To host on this PC, use a planned handoff or recover after Host loss below.</p>
+    <p className="helper-text">Changes since the Host's last completed copy may be missing. Automatic takeover is unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
-    {!available && <p>Update the Host app before receiving shared saves.</p>}
+    {!available && <p>{status?.thisPcVersion != null ?
+      'Shared-save support has not been confirmed for the current Host connection. Your verified copy remains available for guarded recovery below.' :
+      'Connect to a Host with shared-save support before receiving saves.'}</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
     {status?.capacityNotice && <p role="alert">{status.capacityNotice}</p>}
@@ -935,8 +940,14 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     </section>}
     {status?.consented && status.thisPcVersion != null && <details aria-label="Shared world recovery">
       <summary>Recover after Host loss</summary>
-      <p>A candidate can offer this PC's completed save after two minutes without the Host. Each approved PC checks the signed offer before voting. No game starts here.</p>
-      <Button className="secondary" disabled={busy || !available} onClick={() => void prepareOffer()}>Prepare signed offer</Button>
+      <p>Use this PC's last verified copy after at least two minutes of failed Host checks. A stopped game server alone does not mean the Host PC is lost.</p>
+      <ol>
+        <li>In Host settings, set this PC's direct HTTPS address and Friend control port.</li>
+        <li>Prepare an offer and share its code with the approved recovery voters.</li>
+        <li>After a majority agrees, open Check this PC for future hosting below to restore the copy and finish setup.</li>
+      </ol>
+      <p className="helper-text">A network outage can leave the original Host running. Confirm with the group before continuing. Preparing or voting does not start a game server.</p>
+      <Button className="secondary" disabled={busy} onClick={() => void prepareOffer()}>Prepare signed offer</Button>
       {recovery?.candidateAddress && <p>{recovery.state === 'HistoricalRecovery' || recovery.state === 'OfferClosed' ?
         'Earlier candidate PC' : 'Current candidate PC'} {recovery.candidateDeviceId} · save version {recovery.version} · {recovery.candidateAddress}</p>}
       {recovery?.required ? <p role="status">Votes {recovery.votes}/{recovery.required}. {recovery.state === 'MajorityRecorded' ?
@@ -954,7 +965,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       <Button className="secondary" disabled={busy || !offerCode.trim()} onClick={reviewOffer}>Review offer code</Button>
       {reviewedOffer && <div><p>Candidate PC {reviewedOffer.candidateReceipt.deviceId} · save version {reviewedOffer.version.number} ({reviewedOffer.version.captureKind === 'LiveSave' ? 'live save snapshot' : 'post-Stop backup'}) · {reviewedOffer.proposal.candidateAddress}</p>
         <p role="alert">Another Host may still be running. Voting for a different save history could split this world. Check the candidate PC, address, and save version with the group.</p>
-        <Button className="secondary" disabled={busy || !available} onClick={() => void vote()}>Check and vote for this offer</Button></div>}
+        <Button className="secondary" disabled={busy} onClick={() => void vote()}>Check and vote for this offer</Button></div>}
       {voteCount && !recovery?.required && <p role="status">Votes {voteCount.votes}/{voteCount.required}. {voteCount.majorityReached ?
         'Majority decision recorded.' : 'Majority decision pending.'}</p>}
       {recovery?.state === 'OfferArmed' && <div><p role="alert">Separate copy: another game server may still be running. This creates a separate history that will need group review. It does not start a game server.</p>
@@ -1003,6 +1014,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     </section>}
     <details><summary>Technical details</summary><p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
       {status?.error && <p role="alert">{status.error}</p>}
+      <p>Receive approved, hash-verified saves into this PC's private vault. A post-Stop backup is copied after a graceful Stop; a live save is a snapshot captured while the game is running. Current production sharing creates post-Stop copies only. Hash verification does not prove game load or playability.</p>
       <p>Transfers resume in bounded chunks. Each file is checked before an atomic vault receipt. This never replaces a live game save.</p></details>
   </details>
 }

@@ -91,11 +91,10 @@ public sealed partial class HostManager
             if (data.HasProtected(PlannedHandoffName(profileId)) || authority.HasState(profileId) ||
                 SharedAuthorityBlocked(profileId, out _))
                 return new(false, "HandoffAlreadyPending", "Review the current handoff or authority history first.");
-            if (!Uri.TryCreate(successorAddress, UriKind.Absolute, out var address) ||
-                address.Scheme != Uri.UriSchemeHttps || address.UserInfo.Length != 0 ||
-                successorAddress.Length is < 3 or > 255 ||
-                !System.Net.IPAddress.TryParse(address.Host, out _))
+            if (successorAddress is null || successorAddress.Length is < 3 or > 255 ||
+                !HostIdentity.TryEndpoint(successorAddress, out var address))
                 return new(false, "InvalidSuccessorAddress", "Enter the successor's direct HTTPS IP address and port.");
+            successorAddress = address.GetLeftPart(UriPartial.Authority);
             var roster = sharedWorlds.ReadRoster(profile);
             var member = roster?.Members.SingleOrDefault(item => item.DeviceId == successorDeviceId);
             if (roster is null || member is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
