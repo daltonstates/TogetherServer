@@ -2074,8 +2074,6 @@ internal sealed partial class FriendLink
             ReadSignedManifest(root, saved.Last.Number, saved.Last.VersionHash)?.VersionHash ==
                 saved.Last.VersionHash)
             prior = saved.Last;
-        var activeBucket = SignedHistoryBucket(root, prior.Number);
-        if (Directory.Exists(activeBucket)) CheckHistoryBucket(activeBucket);
         if (prior.Number > latest.Number) return new(false, true);
         var used = 0;
         var verified = new List<SharedWorldVersion> { anchor };
@@ -2097,6 +2095,12 @@ internal sealed partial class FriendLink
             used++;
         }
         cancellationToken.ThrowIfCancellationRequested();
+        // A crash may leave the one manifest this batch was writing in its
+        // deterministic temporary file. Replay that exact signed item before
+        // ordinary entries in the same bucket inspect it as an orphan.
+        foreach (var item in verified.Where(item => File.Exists(
+                     SignedManifestPath(root, item.Number, item.VersionHash) + ".new")))
+            KeepSignedManifest(root, item);
         foreach (var item in verified) KeepSignedManifest(root, item);
         if (used > 0)
             data.SaveProtected(progressName, JsonSerializer.SerializeToUtf8Bytes(
@@ -2373,21 +2377,47 @@ internal sealed partial class FriendLink
         CheckHistoryRootOnce(root);
         Directory.CreateDirectory(history);
         SharedWorldService.EnsureUnlinkedRoot(root, history);
-        if (!CheckedHistoryBuckets.ContainsKey(history))
-        {
-            CheckHistoryBucket(history);
-            CheckedHistoryBuckets.TryAdd(history, 0);
-        }
         var destination = SignedManifestPath(root, version.Number, version.VersionHash);
         var temporary = destination + ".new";
+        if (!CheckedHistoryBuckets.ContainsKey(history))
+        {
+            CheckHistoryBucket(history, temporary);
+            CheckedHistoryBuckets.TryAdd(history, 0);
+        }
         if (File.Exists(temporary))
-            throw new InvalidDataException("An interrupted signed save history write needs review.");
+        {
+            if ((File.GetAttributes(temporary) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("An interrupted signed save history write is linked or oversized.");
+            byte[] pendingBytes;
+            using (var pendingFile = new FileStream(temporary, FileMode.Open, FileAccess.Read,
+                FileShare.None))
+            {
+                if (pendingFile.Length > SharedWorldService.MaximumManifestBytes)
+                    throw new InvalidDataException("An interrupted signed save history write is linked or oversized.");
+                pendingBytes = new byte[checked((int)pendingFile.Length)];
+                pendingFile.ReadExactly(pendingBytes);
+            }
+            SharedWorldVersion? pending;
+            try { pending = JsonSerializer.Deserialize<SharedWorldVersion>(pendingBytes, Json); }
+            catch (JsonException)
+            { throw new InvalidDataException("An interrupted signed save history write needs review."); }
+            if (pending is null || !SharedWorldService.VerifySignature(pending) ||
+                pending.Number != version.Number || pending.VersionHash != version.VersionHash ||
+                !pendingBytes.AsSpan().SequenceEqual(bytes))
+                throw new InvalidDataException("An interrupted signed save history write needs review.");
+            if (File.Exists(destination))
+            {
+                VerifyExistingManifest();
+                File.Delete(temporary);
+                return;
+            }
+            SharedWorldService.EnsureUnlinkedRoot(root, history);
+            File.Move(temporary, destination, false);
+            return;
+        }
         if (File.Exists(destination))
         {
-            var existing = ReadSignedManifest(root, version.Number, version.VersionHash);
-            if (existing?.VersionHash != version.VersionHash ||
-                !JsonSerializer.SerializeToUtf8Bytes(existing, Json).AsSpan().SequenceEqual(bytes))
-                throw new InvalidDataException("A saved signed manifest changed.");
+            VerifyExistingManifest();
             return;
         }
         if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), bytes.Length))
@@ -2409,9 +2439,17 @@ internal sealed partial class FriendLink
             SharedWorldService.EnsureUnlinkedRoot(root, history);
             if (File.Exists(temporary)) File.Delete(temporary);
         }
+
+        void VerifyExistingManifest()
+        {
+            var existing = ReadSignedManifest(root, version.Number, version.VersionHash);
+            if (existing?.VersionHash != version.VersionHash ||
+                !JsonSerializer.SerializeToUtf8Bytes(existing, Json).AsSpan().SequenceEqual(bytes))
+                throw new InvalidDataException("A saved signed manifest changed.");
+        }
     }
 
-    private static void CheckHistoryBucket(string bucket)
+    private static void CheckHistoryBucket(string bucket, string? expectedTemporary = null)
     {
         var bucketName = Path.GetFileName(bucket);
         var entries = 0;
@@ -2420,9 +2458,9 @@ internal sealed partial class FriendLink
             if (++entries > 2048)
                 throw new InvalidDataException("A signed save history bucket contains too many competing entries.");
             var name = Path.GetFileName(entry);
+            var replayable = string.Equals(entry, expectedTemporary, StringComparison.OrdinalIgnoreCase);
             if (Directory.Exists(entry) || (File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0 ||
-                name.EndsWith(".new", StringComparison.Ordinal) ||
-                !ValidBucketEntry(bucketName, name) ||
+                !replayable && !ValidBucketEntry(bucketName, name) ||
                 new FileInfo(entry).Length > SharedWorldService.MaximumManifestBytes)
                 throw new InvalidDataException("The signed save history contains an unexpected, linked, or interrupted entry.");
         }
