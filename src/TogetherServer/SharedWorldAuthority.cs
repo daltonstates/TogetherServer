@@ -453,9 +453,15 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         long LastNumber, string LastVersionHash, string Digest);
     private sealed record ProofSealProgress(int Schema, string RecordHash, string? ParentHash,
         long LastNumber, string LastVersionHash, string Digest);
+    private sealed record ReviewCache(int Count, string LogHash,
+        IReadOnlyList<WorldAuthorityRecord> Records,
+        Dictionary<string, IReadOnlyDictionary<long, string>> ProofHashes);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object sync = new();
     private readonly HashSet<string> verifiedStagingRecords = new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, ReviewCache> reviewCaches = [];
+    internal int ReviewFullValidationCount { get; private set; }
+    internal int ReviewProofIndexBuildCount { get; private set; }
     private string Root(Guid profileId)
     {
         var root = Path.Combine(data.RootPath, "shared-worlds", profileId.ToString("N"), "authority");
@@ -1161,6 +1167,63 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             if (records.Count != floor.Count)
                 throw new InvalidDataException("Authority log count changed.");
             return records;
+        }
+    }
+    // A review request checks the protected authority-log hash every time, but
+    // verifies the entire signed lineage only once per exact log revision.
+    // Requested pieces are separately checked against that verified lineage.
+    internal IReadOnlyList<WorldAuthorityRecord> ReadReviewRecords(Guid profileId)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
+        {
+            RecoverPending(profileId);
+            var path = LogPath(profileId);
+            if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Authority log is linked.");
+            var floorBytes = data.LoadProtected(FloorName(profileId));
+            if (floorBytes is null || !File.Exists(path))
+                return Read(profileId);
+            var floor = JsonSerializer.Deserialize<Floor>(floorBytes, Json);
+            if (floor is null || floor.Schema != 1 || floor.Count < 0)
+                throw new InvalidDataException("Authority floor is invalid.");
+            var actualHash = DigestLogPrefix(path, new FileInfo(path).Length, []);
+            if (actualHash != floor.LogHash)
+                throw new InvalidDataException("Authority log changed or was rolled back.");
+            if (reviewCaches.TryGetValue(profileId, out var cached) &&
+                cached.Count == floor.Count && cached.LogHash == floor.LogHash)
+                return cached.Records;
+            var records = Read(profileId);
+            reviewCaches[profileId] = new ReviewCache(floor.Count, floor.LogHash, records,
+                new Dictionary<string, IReadOnlyDictionary<long, string>>(StringComparer.Ordinal));
+            ReviewFullValidationCount++;
+            return records;
+        }
+    }
+    internal (WorldAuthorityRecord Record, string ExpectedHash)? ReadReviewProofIndex(
+        Guid profileId, string recordHash, long number)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
+        {
+            var records = ReadReviewRecords(profileId);
+            var record = records.SingleOrDefault(item => item.RecordHash == recordHash);
+            if (record?.VersionLineageDigest is null) return null;
+            var parent = records.SingleOrDefault(item =>
+                item.RecordHash == record.Proposal.ParentAuthorityHash);
+            var first = FirstProofNumber(record, parent);
+            if (number < first || number > record.Version.Number) return null;
+            var cache = reviewCaches[profileId];
+            if (!cache.ProofHashes.TryGetValue(recordHash, out var hashes))
+            {
+                var proof = ReadProof(record, parent)?.ToArray();
+                if (!WorldAuthorityTrust.VerifyLineage(record, parent, proof))
+                    throw new InvalidDataException("Authority review lineage failed verification.");
+                hashes = proof!.ToDictionary(item => item.Number,
+                    item => item.VersionHash);
+                cache.ProofHashes.Add(recordHash, hashes);
+                ReviewProofIndexBuildCount++;
+            }
+            return hashes.TryGetValue(number, out var expectedHash)
+                ? (record, expectedHash) : null;
         }
     }
     internal WorldAuthorityRecord? ReadUniqueHead(Guid profileId)

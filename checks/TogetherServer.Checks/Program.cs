@@ -3654,6 +3654,12 @@ await Check("shared world authority requires signed majority, fences old Host, a
             oldSettings.CompanionListeningEnabled = true;
             data.SaveSettings(oldSettings);
             var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var remainingBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var unsignedBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var mismatchedBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            var unsignedId = Guid.NewGuid();
+            using var unsignedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var mismatchedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             data.SavePairingState(new PairingPersistentState
             {
                 Devices = [new PairedDevice
@@ -3663,6 +3669,27 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
                 SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
                 SharedWorldPublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo())
+            }, new PairedDevice
+            {
+                Id = voters[2].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(remainingBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo())
+            }, new PairedDevice
+            {
+                Id = unsignedId, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(unsignedBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(unsignedKey.ExportSubjectPublicKeyInfo())
+            }, new PairedDevice
+            {
+                Id = voters[0].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(mismatchedBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(mismatchedKey.ExportSubjectPublicKeyInfo())
             }]
             });
             var manager = new HostManager(data, Games(data));
@@ -3710,6 +3737,18 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 client.DefaultRequestHeaders.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
                 client.DefaultRequestHeaders.Add("X-Device-Id", voters[1].Id.ToString());
+                HttpClient ReviewClient(Guid id, string credential)
+                {
+                    var peer = new HttpClient(handler, disposeHandler: false)
+                    { BaseAddress = new Uri(oldAddress + "/") };
+                    peer.DefaultRequestHeaders.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential);
+                    peer.DefaultRequestHeaders.Add("X-Device-Id", id.ToString());
+                    return peer;
+                }
+                using var remainingClient = ReviewClient(voters[2].Id, remainingBearer);
+                using var unsignedClient = ReviewClient(unsignedId, unsignedBearer);
+                using var mismatchedClient = ReviewClient(voters[0].Id, mismatchedBearer);
                 var route = $"api/companion/servers/{profile.Id}/shared-world/authority";
                 using var invalid = await client.PostAsJsonAsync(route,
                     newer with { RecordHash = new string('0', 64) });
@@ -3759,21 +3798,55 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     "voter-only PC gained save transfer access from review permission");
                 File.WriteAllText(fixtureRosterDirty, "review pending");
                 using var dirtyHistory = await client.GetAsync(route);
-                Require(dirtyHistory.StatusCode == HttpStatusCode.Forbidden,
-                    "dirty signed membership exposed conflict history");
-                File.Delete(fixtureRosterDirty);
+                Require(dirtyHistory.IsSuccessStatusCode,
+                    "a fenced Host withheld signed history from a still-granted reviewer");
                 Require(fixturePairing.Revoke(voters[1].Id).Ok,
                     "fixture could not revoke the authority sender");
                 using var revokedHistory = await client.GetAsync(route);
+                using var remainingHistory = await remainingClient.GetAsync(route);
+                using var remainingTransfer = await remainingClient.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world");
+                using var unsignedHistory = await unsignedClient.GetAsync(route);
+                using var mismatchedHistory = await mismatchedClient.GetAsync(route);
                 using var afterRevoke = await client.PostAsJsonAsync(route, newer);
                 Require(revokedHistory.StatusCode == HttpStatusCode.Forbidden &&
+                    remainingHistory.IsSuccessStatusCode &&
+                    remainingTransfer.StatusCode == HttpStatusCode.Forbidden &&
+                    unsignedHistory.StatusCode == HttpStatusCode.Forbidden &&
+                    mismatchedHistory.StatusCode == HttpStatusCode.Forbidden &&
                     afterRevoke.StatusCode == HttpStatusCode.Forbidden &&
                     !fixturePairing.CommitSharedWorldAuthority(voters[1].Id, profile.Id,
                         Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()),
                         () => throw new Exception("revoked sender reached authority append")),
-                    "a revoked Friend PC could still append authority");
+                    "fenced revocation reopened access or blocked a still-granted reviewer");
             }
             finally { await oldListener.StopAsync(); }
+            var restartedReview = new HostManager(data, Games(data));
+            var restartedPairing = new PairingService(data);
+            Require(await restartedReview.SharedWorldReviewRosterAsync(profile.Id) is not null &&
+                restartedPairing.AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[2].Id }, profile.Id, out _).Ok &&
+                !restartedPairing.AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[1].Id }, profile.Id, out _).Ok,
+                "restart lost current-grant review access or revived a revoked PC");
+            var retainedPairing = data.LoadPairingState();
+            try
+            {
+                var alteredPairing = data.LoadPairingState();
+                var remainingDevice = alteredPairing.Devices.Single(item => item.Id == voters[2].Id);
+                remainingDevice.AssignedProfileIds = [];
+                data.SavePairingState(alteredPairing);
+                Require(!new PairingService(data).AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[2].Id }, profile.Id, out _).Ok,
+                    "a removed PC retained fenced history review access");
+                remainingDevice.AssignedProfileIds = [profile.Id];
+                remainingDevice.AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+                data.SavePairingState(alteredPairing);
+                Require(!new PairingService(data).AuthorizeSharedHistory(
+                    new PairedDevice { Id = voters[2].Id }, profile.Id, out _).Ok,
+                    "an expired PC retained fenced history review access");
+            }
+            finally { data.SavePairingState(retainedPairing); }
             Require(store.Read(profile.Id).Count == 2, "newer signed roster authority was not applied");
             Require((await manager.StartAsync(profile.Id)).Code == "SharedWorldAuthorityBlocked",
                 "local or remote Start path bypassed authority");
@@ -4366,7 +4439,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
             "local status silently chose one competing authority head");
         var longLineage = new List<SharedWorldVersion>();
         var predecessor = successorVersion;
-        for (var index = 0; index < 70; index++)
+        for (var index = 0; index < 71; index++)
         {
             predecessor = SharedWorldService.SignVersion(predecessor with
             {
@@ -4469,7 +4542,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
             "a disconnected proof piece was written before ancestry verification");
         var resumedProofBatch = await FriendLink.StageAuthorityProofBatchAsync(store, third,
             nextAuthority, 128, FetchProof, CancellationToken.None);
-        Require(resumedProofBatch == (true, 60),
+        Require(resumedProofBatch == (true, 61),
             "authority proof did not resume from checked pieces after 64 saves");
         store.AppendReceived(third, profile.Id, version.GroupId,
             noOverrideRoster.OwnerPublicKey, store.ReadStagedProof(third, nextAuthority));
@@ -4485,6 +4558,19 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 nextAuthority.Version.Number) is null &&
             (await reviewManager.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
             "fenced Host did not isolate signed proof review from ordinary save sharing");
+        var indexedReview = new WorldAuthorityStore(data);
+        foreach (var piece in longLineage)
+        {
+            var indexed = indexedReview.ReadReviewProofIndex(profile.Id, third.RecordHash,
+                piece.Number);
+            Require(indexed is { } expected && expected.ExpectedHash == piece.VersionHash &&
+                indexedReview.ReadReviewProofVersion(expected.Record, piece.Number)?.VersionHash ==
+                    piece.VersionHash,
+                "a long signed review proof index returned the wrong piece");
+        }
+        Require(indexedReview.ReviewFullValidationCount == 1 &&
+            indexedReview.ReviewProofIndexBuildCount == 1,
+            "reviewing more than 70 proof pieces repeated the full lineage scan");
         var reviewProofPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
             "authority", "proof-" + third.RecordHash, longLineage[35].Number + ".json");
         var originalReviewProof = File.ReadAllBytes(reviewProofPath);
@@ -4498,6 +4584,17 @@ await Check("shared world authority requires signed majority, fences old Host, a
             RequireThrows<JsonException>(() => new WorldAuthorityStore(data)
                 .ReadReviewProofVersion(third, longLineage[35].Number),
                 "tampered review proof was served");
+        }
+        finally { File.WriteAllBytes(reviewProofPath, originalReviewProof); }
+        try
+        {
+            var replaced = SharedWorldService.SignVersion(longLineage[35] with
+            { BackupId = Guid.NewGuid() }, voters[1].Key);
+            File.WriteAllBytes(reviewProofPath, JsonSerializer.SerializeToUtf8Bytes(replaced,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            RequireThrows<InvalidDataException>(() => reviewManager.SharedWorldReviewProofAsync(
+                    profile.Id, third.RecordHash, replaced.Number).GetAwaiter().GetResult(),
+                "a signed replacement proof piece bypassed the verified review index");
         }
         finally { File.WriteAllBytes(reviewProofPath, originalReviewProof); }
         using (var reviewPortReservation = new TcpListener(IPAddress.Loopback, 0))

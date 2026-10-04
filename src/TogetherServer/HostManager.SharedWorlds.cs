@@ -473,9 +473,14 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return null;
+            // Before the first authority record, an unpublished membership change
+            // cannot be used for review. Once fenced, the signed roster and current
+            // device grants are intersected by CompanionServer for read-only access.
+            if (pairing.SharedRosterDirty(profileId) && !authority.HasState(profileId))
+                return null;
             var local = sharedWorlds.ReadRoster(profile);
             if (local is null) return null;
-            var heads = WorldAuthorityTrust.EffectiveHeads(authority.Read(profileId));
+            var heads = WorldAuthorityTrust.EffectiveHeads(authority.ReadReviewRecords(profileId));
             if (heads.Length == 0) return local;
             var rosters = heads.Select(item => item.Roster).Append(local).ToArray();
             if (rosters.Any(item => item.GroupId != local.GroupId ||
@@ -510,15 +515,14 @@ public sealed partial class HostManager
         {
             if (settings.Profiles.All(item => item.Id != profileId) ||
                 recordHash.Length != 64 || !recordHash.All(Uri.IsHexDigit)) return null;
-            var records = authority.Read(profileId);
-            var record = records.SingleOrDefault(item => item.RecordHash == recordHash);
-            if (record?.VersionLineageDigest is null) return null;
-            var parent = records.SingleOrDefault(item =>
-                item.RecordHash == record.Proposal.ParentAuthorityHash);
-            var first = WorldAuthorityStore.FirstProofNumber(record, parent);
-            if (number < first || number > record.Version.Number) return null;
-            return authority.ReadReviewProofVersion(record, number) ??
+            var indexed = authority.ReadReviewProofIndex(profileId, recordHash, number);
+            if (indexed is null) return null;
+            var (record, expectedHash) = indexed.Value;
+            var proof = authority.ReadReviewProofVersion(record, number) ??
                 sharedWorlds.ReadReviewProofVersion(record, number);
+            if (proof.VersionHash != expectedHash)
+                throw new InvalidDataException("Authority review proof changed after verification.");
+            return proof;
         }
         finally { gate.Release(); }
     }
