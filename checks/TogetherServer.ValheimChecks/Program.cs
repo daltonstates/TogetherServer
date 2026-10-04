@@ -278,6 +278,72 @@ try
             "managed process/world identity was not recorded");
         await WaitForReady(host, profile.Id);
         Require((await host.HealthAsync(profile.Id)).Code == "ValheimLogReady", "server-connected log was not recognized");
+        var observer = new ValheimAutosaveObservationCandidate(data);
+        const string completedSave = "09/20/2026 17:18:51: World save (5/5) done. Total time [46ms]";
+        File.AppendAllText(recorded.LogPath, completedSave + "\n");
+        using (var cursor = observer.Begin(recorded))
+        {
+            Require(!observer.Observe(recorded, cursor), "pre-cursor save was observed");
+            File.AppendAllText(recorded.LogPath, completedSave);
+            Require(!observer.Observe(recorded, cursor), "partial save line was observed");
+            File.AppendAllText(recorded.LogPath, "\n");
+            Require(observer.Observe(recorded, cursor), "post-cursor complete save was missed");
+            Require(!observer.Observe(recorded, cursor), "save line was observed twice");
+            File.AppendAllText(recorded.LogPath, "prefix " + completedSave + "\n");
+            Require(!observer.Observe(recorded, cursor), "non-exact save line was accepted");
+            File.AppendAllText(recorded.LogPath,
+                "99/99/2026 17:18:51: World save (5/5) done. Total time [46ms]\n");
+            Require(!observer.Observe(recorded, cursor), "invalid timestamp was accepted");
+        }
+        using (var cursor = observer.Begin(recorded))
+        {
+            var stale = new ManagedRun
+            {
+                ProfileId = recorded.ProfileId, OperationId = recorded.OperationId,
+                Kind = recorded.Kind, ProcessId = recorded.ProcessId,
+                StartTimeUtcTicks = recorded.StartTimeUtcTicks + 1,
+                ExecutablePath = recorded.ExecutablePath, LogPath = recorded.LogPath,
+                WorldId = recorded.WorldId, WorldDirectory = recorded.WorldDirectory,
+                GamePort = recorded.GamePort
+            };
+            Reject(() => observer.Observe(stale, cursor), "stale identity was accepted");
+        }
+        using (var cursor = observer.Begin(recorded))
+        {
+            var otherRun = data.LoadRuns().Single();
+            otherRun.OperationId = Guid.NewGuid();
+            Reject(() => observer.Observe(otherRun, cursor), "other-run cursor was accepted");
+        }
+        var originalLog = File.ReadAllBytes(recorded.LogPath);
+        using (var cursor = observer.Begin(recorded))
+        {
+            File.WriteAllText(recorded.LogPath, "short\n");
+            Reject(() => observer.Observe(recorded, cursor), "truncated log was accepted");
+        }
+        File.WriteAllBytes(recorded.LogPath, originalLog);
+        using (var cursor = observer.Begin(recorded))
+        {
+            File.WriteAllText(recorded.LogPath, new string('z', originalLog.Length));
+            Reject(() => observer.Observe(recorded, cursor),
+                "same-length truncated and regrown log was accepted");
+        }
+        File.WriteAllBytes(recorded.LogPath, originalLog);
+        using (var cursor = observer.Begin(recorded))
+        {
+            var previous = recorded.LogPath + ".previous";
+            File.Move(recorded.LogPath, previous);
+            File.WriteAllText(recorded.LogPath, completedSave + "\n");
+            Reject(() => observer.Observe(recorded, cursor), "replacement log was accepted");
+        }
+        File.Delete(recorded.LogPath);
+        File.Move(recorded.LogPath + ".previous", recorded.LogPath);
+        using (var cursor = observer.Begin(recorded))
+        {
+            File.AppendAllText(recorded.LogPath, new string('x', 4097) + "\n" + completedSave + "\n");
+            Reject(() => observer.Observe(recorded, cursor), "oversized line was accepted");
+        }
+        File.WriteAllBytes(recorded.LogPath, originalLog);
+        Console.WriteLine("PASS exact live-run Valheim autosave cursor, completed line, stale identity, truncation and replacement (synthetic)"); passes++;
         Require((await host.StartAsync(profile.Id)).Code == "AlreadyManaged", "duplicate Valheim start was accepted");
         Require((await host.StartAsync(second.Id)).Code == "WorldConflict", "second writer to same world was accepted");
         Require(!File.Exists(Path.Combine(world, "synthetic-stop.marker")), "fixture wrote a stop marker before Ctrl+C");
@@ -692,6 +758,13 @@ finally
         catch (ArgumentException) { }
         catch (InvalidOperationException) { }
     }
+}
+
+static void Reject(Action action, string message)
+{
+    try { action(); }
+    catch (InvalidOperationException) { return; }
+    throw new Exception(message);
 }
 
 static async Task<HostSnapshot> ZeroCountSnapshot(HostManager host, Guid profileId, string countPath)
