@@ -98,6 +98,10 @@ internal static class SharedWorldJourney
             Require(!(await PostAsync<object, ReceivedSharedWorldResult>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/pull", new { })).Ok,
                 "a save was received before a confirmed graceful Stop");
+            var beforeSave = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(beforeSave.State == "Transfer unavailable" && beforeSave.Error is not null,
+                "a missing Host save was misreported as a stalled transfer");
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "first verified fixture change");
             await StartAndStopAsync(owner, profile.Id);
@@ -110,6 +114,11 @@ internal static class SharedWorldJourney
             await WaitVersionAsync(aLocal, profile.Id, 1);
             await WaitVersionAsync(bLocal, profile.Id, 1);
             await WaitCopiesAsync(owner, profile.Id, 2);
+            var verifiedStatus = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(verifiedStatus.ThisPcVersion == 1 && verifiedStatus.Error is null &&
+                verifiedStatus.State != "Stalled" && verifiedStatus.State != "Low space",
+                "verified catch-up left a stale transfer alert");
             var aRoot = ReceiverRoot(friendAData, deviceA, profile.Id);
             var bRoot = ReceiverRoot(friendBData, deviceB, profile.Id);
             Require(File.ReadAllText(Path.Combine(aRoot, firstVersion.VersionHash,

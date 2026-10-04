@@ -405,6 +405,7 @@ internal sealed partial class FriendLink
 
     private const long ReceiverReserveBytes = 1024L * 1024 * 1024;
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedTransfers = new();
+    private readonly SharedWorldTransferHealth sharedTransferHealth = new();
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();
     private readonly object sharedReceiptSync = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> sharedProfileGates = new();
@@ -453,10 +454,6 @@ internal sealed partial class FriendLink
                 sharedFailures[profileId] = failures;
                 sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(reviewRequired ? 300 : failures == 0 ? 30 :
                     Math.Min(300, 5 * (1 << failures)));
-                if (!result.Ok && result.Code == "InsufficientSpace")
-                    sharedTransfers[profileId] = SharedWorldStatus(profileId) with { State = "Low space", Error = result.Message };
-                else if (!result.Ok && failures > 0)
-                    sharedTransfers[profileId] = SharedWorldStatus(profileId) with { State = "Stalled", Error = result.Message };
             }
         }
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
@@ -804,6 +801,7 @@ internal sealed partial class FriendLink
                 sharedFailures.Remove(profileId);
                 sharedTransfers.TryRemove(profileId, out _);
             }
+            sharedTransferHealth.Reset(profileId);
             return new(true, "ConsentSaved", enabled ? "This PC may pull approved completed saves." :
                 "This PC will no longer pull shared saves.");
         }
@@ -823,7 +821,13 @@ internal sealed partial class FriendLink
                     config.ConsentedSharedWorldProfiles?.Contains(profileId) == true) return active;
             }
             finally { gate.Release(); }
-            return LocalSharedWorldStatus(profileId);
+            var local = LocalSharedWorldStatus(profileId);
+            var issue = sharedTransferHealth.Issue(profileId);
+            return issue is null || !local.Consented || local.Error is not null ||
+                local.State.StartsWith("Host save source changed", StringComparison.Ordinal) ||
+                local.State.StartsWith("Competing save histories", StringComparison.Ordinal)
+                ? local : local with { State = issue.State, Error = issue.Message,
+                    ReceivedBytes = issue.ReceivedBytes, TotalBytes = issue.TotalBytes };
         }
         finally { ReleaseRetained(); }
     }
@@ -1134,11 +1138,24 @@ internal sealed partial class FriendLink
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
         var profileGate = sharedProfileGates.GetOrAdd(profileId, _ => new SemaphoreSlim(1, 1));
         var profileEntered = false;
-        var entered = false;
         try
         {
             await profileGate.WaitAsync(cancellationToken);
             profileEntered = true;
+            var attempt = sharedTransferHealth.Begin(profileId);
+            var result = await PullSharedWorldCoreAsync(profileId, attempt, cancellationToken);
+            sharedTransferHealth.Complete(profileId, attempt, result);
+            return result;
+        }
+        finally { if (profileEntered) profileGate.Release(); ReleaseRetained(); }
+    }
+
+    private async Task<ReceivedSharedWorldResult> PullSharedWorldCoreAsync(Guid profileId,
+        SharedWorldTransferHealth.Attempt attempt, CancellationToken cancellationToken)
+    {
+        var entered = false;
+        try
+        {
             await gate.WaitAsync(cancellationToken);
             entered = true;
             if (config is null) return SharedFailure("NotPaired", "Connect to a Host first.");
@@ -1268,6 +1285,7 @@ internal sealed partial class FriendLink
                 version.Files.Sum(file => ExistingPartialBytes(payloadStage, file));
             var totalBytes = SharedWorldService.BoundedTotalBytes(version.Files);
             var receivedBytes = totalBytes - remaining;
+            attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
             sharedTransfers[profileId] = new(true, version.Number, old?.Number,
                 "Receiving", null, receivedBytes, totalBytes,
                 config.SharedRosterFloors[profileId].Revision,
@@ -1318,6 +1336,7 @@ internal sealed partial class FriendLink
                     await output.WriteAsync(chunk, transferToken);
                     offset += chunk.Length;
                     receivedBytes += chunk.Length;
+                    attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
                     sharedTransfers[profileId] = new(true, version.Number, old?.Number,
                         "Receiving", null, receivedBytes, totalBytes,
                         config.SharedRosterFloors[profileId].Revision,
@@ -1417,11 +1436,14 @@ internal sealed partial class FriendLink
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException) { return SharedFailure("TransferInterrupted", "The transfer stopped; progress was kept for retry."); }
-        catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
+        catch (TaskCanceledException) { return SharedFailure("NetworkUnavailable", "The Host did not answer before the transfer timed out. Progress was kept for retry."); }
+        catch (OperationCanceledException) { return SharedFailure("TransferCanceled", "The transfer stopped; progress was kept for retry."); }
+        catch (HttpRequestException ex)
+        { return SharedFailure("NetworkUnavailable", "The Host connection failed; progress was kept for retry. " + ex.Message); }
+        catch (Exception ex) when (ex is IOException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException or OverflowException)
         { return SharedFailure("TransferFailed", "The transfer stopped; verified copies were kept. " + ex.Message); }
-        finally { sharedTransfers.TryRemove(profileId, out _); if (entered) gate.Release(); if (profileEntered) profileGate.Release(); ReleaseRetained(); }
+        finally { sharedTransfers.TryRemove(profileId, out _); if (entered) gate.Release(); }
     }
 
     internal static bool HasReceiverReserve(long freeBytes, long remainingBytes) =>
