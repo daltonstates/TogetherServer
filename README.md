@@ -175,6 +175,8 @@ The selected Host server has a **Logs** workspace tab. It tails a bounded recent
 
 ## Developer checks
 
+Historical check-runner Windows Firewall rules have a separate [owner-reviewed cleanup tool](docs/11-FIREWALL-CHECK-RULE-CLEANUP.md). Its pure mock check does not query the desktop firewall; the tool's normal dry-run does.
+
 The build includes disposable generic, Valheim, Minecraft, and Factorio process fixtures. Isolated checks keep their data under ignored `local-data/` and do not use a real game binary or world. The preferred command builds one candidate and then runs the source checks plus packaged companion, served, and hidden desktop checks serially against that exact EXE:
 
 ```powershell
