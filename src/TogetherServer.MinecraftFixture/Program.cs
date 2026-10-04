@@ -26,7 +26,15 @@ var consoleOutput = EmitConsoleOutput(loggingDone.Token);
 while (true)
 {
     var line = Console.ReadLine();
+    if (line is not null)
+        File.AppendAllText(Path.Combine(root, "synthetic-console-lines.txt"), line + Environment.NewLine);
     if (line?.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase) == true) break;
+    if (line?.Trim().Equals("save-all flush", StringComparison.OrdinalIgnoreCase) == true)
+    {
+        File.WriteAllText(Path.Combine(root, "synthetic-save-flush.marker"),
+            "fixture command received");
+        Console.WriteLine("[Server thread/INFO]: synthetic world flush complete");
+    }
     if (line is null) await Task.Delay(50);
 }
 loggingDone.Cancel();

@@ -237,9 +237,15 @@ internal static class WindowsConsoleProcess
     public static void RequestTerrariaExit(Process process, ManagedRun run)
         => RequestFixedCommand(process, run, "exit");
 
+    // Candidate live-save work uses the same exact console-membership check as Stop.
+    // Dispatch does not confirm a flush, a consistent copy, or a loadable world.
+    internal static void RequestJavaSaveFlush(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "save-all flush");
+
     private static void RequestFixedCommand(Process process, ManagedRun run, string command)
     {
-        if (command is not ("stop" or "exit")) throw new InvalidOperationException("Unsupported fixed server action.");
+        if (command is not ("stop" or "exit" or "save-all flush"))
+            throw new InvalidOperationException("Unsupported fixed server action.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console stop is required.");
         var previous = ConsoleMembers().FirstOrDefault(id => id != Environment.ProcessId);
         FreeConsole();
@@ -261,15 +267,20 @@ internal static class WindowsConsoleProcess
                     var keys = (command + "\r").SelectMany(character => new[]
                     {
                         new ConsoleInputRecord { EventType = 1, Key = new ConsoleKeyEvent
-                            { KeyDown = true, RepeatCount = 1, VirtualKeyCode = character == '\r' ? (ushort)13 : (ushort)char.ToUpperInvariant(character), UnicodeChar = character } },
+                            { KeyDown = true, RepeatCount = 1, VirtualKeyCode = FixedCommandVirtualKey(character), UnicodeChar = character } },
                         new ConsoleInputRecord { EventType = 1, Key = new ConsoleKeyEvent
-                            { KeyDown = false, RepeatCount = 1, VirtualKeyCode = character == '\r' ? (ushort)13 : (ushort)char.ToUpperInvariant(character), UnicodeChar = character } }
+                            { KeyDown = false, RepeatCount = 1, VirtualKeyCode = FixedCommandVirtualKey(character), UnicodeChar = character } }
                     }).ToArray();
                     if (!WriteConsoleInputW(input, keys, (uint)keys.Length, out var written) || written != keys.Length)
                         throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not send the managed server stop command.");
-                    if (!process.WaitForExit(90000))
-                        throw new TimeoutException("Server did not exit after its stop command; no force stop was sent.");
-                    Thread.Sleep(250);
+                    if (command is "stop" or "exit")
+                    {
+                        if (!process.WaitForExit(90000))
+                            throw new TimeoutException("Server did not exit after its stop command; no force stop was sent.");
+                        Thread.Sleep(250);
+                    }
+                    else
+                        Thread.Sleep(250);
                 }
                 finally { CloseHandle(input); }
             }
@@ -277,6 +288,13 @@ internal static class WindowsConsoleProcess
         }
         finally { if (previous != 0) AttachConsole((uint)previous); }
     }
+
+    private static ushort FixedCommandVirtualKey(char character) => character switch
+    {
+        '\r' => 13,
+        '-' => 0xBD, // VK_OEM_MINUS; code point 45 is VK_INSERT on Windows.
+        _ => (ushort)char.ToUpperInvariant(character)
+    };
 
     private static bool CaptureIdentityMatches(ManagedRun run)
     {

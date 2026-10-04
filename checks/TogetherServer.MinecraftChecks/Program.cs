@@ -20,11 +20,18 @@ var passed = 0;
 var failed = 0;
 
 void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
+void Report(string message)
+{
+    File.AppendAllText(Path.Combine(root, "results.txt"), message + Environment.NewLine);
+    try { Console.WriteLine(message); }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    { /* A console command may detach this check process from its own console. */ }
+}
 
 async Task Check(string name, Func<Task> test)
 {
-    try { await test(); Console.WriteLine("PASS " + name); passed++; }
-    catch (Exception ex) { Console.WriteLine("FAIL " + name + ": " + ex); failed++; }
+    try { await test(); Report("PASS " + name); passed++; }
+    catch (Exception ex) { Report("FAIL " + name + ": " + ex); failed++; }
 }
 
 int FreePort()
@@ -155,6 +162,62 @@ async Task WaitForExit(int? processId, long? startedUtcTicks)
     }
     throw new Exception("Minecraft console capture host did not exit after its exact game process.");
 }
+
+await Check("Java live-save candidate sends only to its exact fixture run", async () =>
+{
+    var profile = Profile(GameKinds.MinecraftJava, "java-live-save-candidate", "world", FreePort());
+    using var data = new LocalData(Path.Combine(root, "java-live-save-candidate-data"));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "Java candidate profile was rejected");
+    var started = await manager.StartAsync(profile.Id);
+    Require(started.Ok, $"Java candidate fixture did not start: {started.Code} {started.Message}");
+    try
+    {
+        await Ready(manager, profile.Id);
+        var run = data.LoadRuns().Single();
+        var port = new ExactManagedConsoleLiveSaveCommandPort();
+        run.StartTimeUtcTicks++;
+        try
+        {
+            port.RequestJavaFlush(run);
+            throw new Exception("a mismatched process start time received a live-save command");
+        }
+        catch (InvalidOperationException) { }
+        run.StartTimeUtcTicks--;
+        Require(!File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-flush.marker")),
+            "the mismatched run reached the fixture console");
+
+        var sent = port.RequestJavaFlush(run);
+        Require(sent.OperationId == run.OperationId && sent.FixedCommand == "save-all flush" &&
+            !sent.CompletionConfirmed, "candidate dispatch claimed a completed live save");
+        var marker = Path.Combine(profile.WorldDirectory, "synthetic-save-flush.marker");
+        for (var attempt = 0; attempt < 40 && !File.Exists(marker); attempt++)
+            await Task.Delay(100);
+        Require(File.Exists(marker), "the fixed flush did not reach the exact fixture console");
+        using (var process = Process.GetProcessById(run.ProcessId!.Value))
+            Require(!process.HasExited, "a live-save candidate command stopped the game");
+        Require(!SharedWorldLiveSaveAdapters.ForGame(GameKinds.MinecraftJava)!.LiveCaptureAccepted,
+            "fixture command dispatch enabled live sharing");
+        await Stop(manager, profile);
+        await WaitForExit(run.ConsoleCaptureProcessId, run.ConsoleCaptureStartTimeUtcTicks);
+    }
+    finally
+    {
+        foreach (var run in data.LoadRuns())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(run.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
+                        StringComparison.OrdinalIgnoreCase))
+                    process.Kill();
+            }
+            catch (Exception) { }
+        }
+    }
+});
 
 await Check("Java and Bedrock settings fail closed without prepared files", async () =>
 {
@@ -610,5 +673,5 @@ await Check("older run records recover port ownership from their saved profile",
     }
 });
 
-Console.WriteLine($"Minecraft checks: {passed} passed, {failed} failed. Disposable data: {root}");
+Report($"Minecraft checks: {passed} passed, {failed} failed. Disposable data: {root}");
 return failed == 0 ? 0 : 1;
