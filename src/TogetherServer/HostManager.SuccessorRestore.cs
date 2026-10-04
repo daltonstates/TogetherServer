@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace TogetherServer;
@@ -169,9 +170,11 @@ public sealed partial class HostManager
             }
             var restored = settings.Profiles.Any(item => item.Id == profileId) &&
                 state is not null;
+            var issue = state?.Ready == true && state.RecordHash == record.RecordHash &&
+                settings.Profiles.SingleOrDefault(item => item.Id == profileId) is { } profile
+                ? SuccessorStartIssue(profileId, profile) : null;
             var ready = state?.Ready == true && state.RecordHash == record.RecordHash &&
-                settings.Profiles.SingleOrDefault(item => item.Id == profileId) is { } profile &&
-                SuccessorStartIssue(profileId, profile) is null;
+                settings.Profiles.Any(item => item.Id == profileId) && issue is null;
             string? routeFingerprint = null;
             if (settings.CompanionEndpoint == record.Proposal.CandidateAddress &&
                 SharedWorldRouteTrust.DirectIpAddress(settings.CompanionEndpoint))
@@ -183,7 +186,7 @@ public sealed partial class HostManager
                 ready ? "Pre-Start checks passed. Switch to Host and start manually." :
                 restored ? "The verified copy is in local managed storage. Finish setup and checks." :
                     "The signed save is verified. Review local setup before restoring it.",
-                ready ? [] :
+                issue is not null ? [issue] : ready ? [] :
                 ["Check the direct-IP Friend control route from another PC.",
                  "Check local game ports before Start; test a real game join after Start."],
                 record.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock
@@ -539,8 +542,8 @@ public sealed partial class HostManager
             return "The game files or local game ports are not ready for Start.";
         if (record.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock &&
             MinecraftPreparedRoot.Check(data.RootPath, state.WorldDirectory,
-                state.WorldDirectory, record.Version, setup, profile.ExecutablePath) is not null)
-            return "The prepared Minecraft server files changed.";
+                state.WorldDirectory, record.Version, setup, profile.ExecutablePath) is { } minecraftIssue)
+            return minecraftIssue;
         if (requireRoute)
         {
             var bytes = data.LoadProtected(SuccessorRouteName(profileId));
@@ -660,6 +663,8 @@ public sealed partial class HostManager
 
 internal static class MinecraftPreparedRoot
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     internal static string? Check(string dataRoot, string expectedRoot, string? selectedRoot,
         SharedWorldVersion version, TakeoverLocalSetup setup, string executable)
     {
@@ -686,15 +691,90 @@ internal static class MinecraftPreparedRoot
                      "bedrock_server.exe"), StringComparison.OrdinalIgnoreCase) ||
                  !PlainFile(executable))
             return "Install and select bedrock_server.exe inside this prepared folder.";
-        if (Property(expectedRoot, "server.properties", "level-name") != version.WorldId ||
-            !int.TryParse(Property(expectedRoot, "server.properties", "server-port"), out var port) ||
-            port != setup.GamePort)
+        Dictionary<string, string> properties;
+        SharedWorldPortableSetupReader.PortableSettings prepared;
+        try
+        {
+            properties = SharedWorldPortableSetupReader.ParseProperties(
+                ReadPlainText(expectedRoot, "server.properties"));
+            prepared = SharedWorldPortableSetupReader.ReadMinecraftSettings(version.Game, properties);
+        }
+        catch (InvalidDataException ex)
+        {
+            return $"Review the prepared server.properties file: {ex.Message}";
+        }
+        catch (IOException)
+        {
+            return "The prepared server.properties file could not be read. Check this local server folder.";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return "The prepared server.properties file could not be read. Check this local server folder.";
+        }
+        if (!properties.TryGetValue("level-name", out var world) || world != version.WorldId ||
+            !properties.TryGetValue("server-port", out var portText) ||
+            !int.TryParse(portText, out var port) || port != setup.GamePort)
             return "Set this world's name and selected game port in the prepared server.properties file.";
+        var signed = version.PortableSetup;
+        if (signed.AllowlistEnabled is null)
+            return "This signed save has no reviewed player allowlist setting. Receive a newer save before restoring this Minecraft world.";
+        if (signed.MaxPlayers is { } maxPlayers && prepared.MaxPlayers != maxPlayers)
+            return $"Set max-players={maxPlayers} in the prepared server.properties file to match the signed save.";
+        if (signed.GameMode is { } gameMode && prepared.GameMode != gameMode)
+            return $"Set gamemode={gameMode} in the prepared server.properties file to match the signed save.";
+        if (signed.Difficulty is { } difficulty && prepared.Difficulty != difficulty)
+            return $"Set difficulty={difficulty} in the prepared server.properties file to match the signed save.";
+        var allowlistSetting = version.Game == GameKinds.MinecraftJava ? "white-list" : "allow-list";
+        if (signed.AllowlistEnabled is { } allowlistEnabled &&
+            prepared.AllowlistEnabled != allowlistEnabled)
+            return $"Set {allowlistSetting}={allowlistEnabled.ToString().ToLowerInvariant()} in the prepared server.properties file to match the signed save.";
+        if (signed.Allowlist is not null)
+        {
+            var allowlistFile = version.Game == GameKinds.MinecraftJava ? "whitelist.json" : "allowlist.json";
+            IReadOnlyList<SharedWorldPortableAllowEntry> actual;
+            try
+            {
+                var path = Path.Combine(expectedRoot, allowlistFile);
+                actual = File.Exists(path) ?
+                    SharedWorldPortableSetupReader.ParseMinecraftAllowlist(version.Game,
+                        ReadPlainText(expectedRoot, allowlistFile)) : [];
+            }
+            catch (InvalidDataException ex)
+            {
+                return $"Review the prepared {allowlistFile} file: {ex.Message}";
+            }
+            catch (IOException)
+            {
+                return $"The prepared {allowlistFile} file could not be read. Check this local server folder.";
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return $"The prepared {allowlistFile} file could not be read. Check this local server folder.";
+            }
+            if (signed.Allowlist.Count != actual.Count || signed.Allowlist.Any(required =>
+                    !actual.Any(entry =>
+                        string.Equals(entry.Name, required.Name, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(entry.Id, required.Id, StringComparison.OrdinalIgnoreCase))))
+                return $"Match {allowlistFile} to the signed player allowlist before restoring or starting this world.";
+        }
         return null;
     }
 
     private static bool PlainFile(string path) => File.Exists(path) &&
         (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0;
+
+    private static string ReadPlainText(string root, string filename)
+    {
+        var path = Path.Combine(root, filename);
+        if (!PlainFile(path) || new FileInfo(path).Length > 32 * 1024)
+            throw new InvalidDataException($"{filename} is missing, linked, or too large.");
+        var bytes = File.ReadAllBytes(path);
+        if (bytes.Length > 32 * 1024 || !PlainFile(path))
+            throw new InvalidDataException($"{filename} changed while being checked.");
+        try { return StrictUtf8.GetString(bytes).TrimStart('\uFEFF'); }
+        catch (DecoderFallbackException ex)
+        { throw new InvalidDataException($"{filename} is not plain text.", ex); }
+    }
 
     private static string? Property(string root, string filename, string key)
     {

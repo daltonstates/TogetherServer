@@ -98,6 +98,14 @@ internal static class SharedWorldPortableSetupReader
             return content.Split('\n').Select(line => line.Trim())
                 .Where(line => line.Length > 0 && !line.StartsWith('#'))
                 .Select(line => new SharedWorldPortableAllowEntry(line, null)).ToArray();
+        return ParseMinecraftAllowlist(snapshot.Kind, content);
+    }
+
+    internal static IReadOnlyList<SharedWorldPortableAllowEntry> ParseMinecraftAllowlist(
+        string game, string content)
+    {
+        if (game is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock))
+            throw new InvalidDataException("The player allowlist has an unsupported game.");
         try
         {
             using var document = JsonDocument.Parse(content);
@@ -111,22 +119,56 @@ internal static class SharedWorldPortableSetupReader
                     !item.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String)
                     throw new InvalidDataException("The player allowlist has an invalid entry.");
                 string? id = null;
-                if (snapshot.Kind == GameKinds.MinecraftJava && item.TryGetProperty("uuid", out var uuid))
+                if (game == GameKinds.MinecraftJava && item.TryGetProperty("uuid", out var uuid))
                 {
                     if (uuid.ValueKind != JsonValueKind.String ||
                         !Guid.TryParse(uuid.GetString(), out var parsed))
                         throw new InvalidDataException("The Java player ID is invalid.");
                     id = parsed.ToString("D");
                 }
+                if (game == GameKinds.MinecraftBedrock && item.TryGetProperty("xuid", out var xuid))
+                {
+                    if (xuid.ValueKind != JsonValueKind.String ||
+                        !ulong.TryParse(xuid.GetString(), out var parsed) || parsed == 0)
+                        throw new InvalidDataException("The Bedrock player ID is invalid.");
+                    id = parsed.ToString();
+                }
                 result.Add(new(name.GetString() ?? "", id));
             }
+            if (result.Any(item => !Name(item.Name, 128) ||
+                    item.Id is not null && !Identifier(item.Id)) ||
+                result.Select(item => item.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != result.Count)
+                throw new InvalidDataException("The player allowlist has an invalid or repeated entry.");
             return result;
         }
         catch (JsonException ex) { throw new InvalidDataException("The player allowlist is malformed.", ex); }
     }
 
-    private sealed record PortableSettings(int? MaxPlayers, string? GameMode,
+    internal sealed record PortableSettings(int? MaxPlayers, string? GameMode,
         string? Difficulty, bool? AllowlistEnabled);
+
+    internal static PortableSettings ReadMinecraftSettings(string game,
+        Dictionary<string, string> values)
+    {
+        if (game is not (GameKinds.MinecraftJava or GameKinds.MinecraftBedrock))
+            throw new InvalidDataException("The Minecraft settings have an unsupported game.");
+        return ReadPropertySettings(game, values);
+    }
+
+    internal static Dictionary<string, string> ParseProperties(string content)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in content.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+            var separator = trimmed.IndexOf('=');
+            if (separator < 1) continue;
+            if (!values.TryAdd(trimmed[..separator].Trim(), trimmed[(separator + 1)..].Trim()))
+                throw new InvalidDataException("A reviewed setup setting is repeated.");
+        }
+        return values;
+    }
 
     private static PortableSettings ReadSettings(ServerSetupSnapshot snapshot)
     {
@@ -152,17 +194,13 @@ internal static class SharedWorldPortableSetupReader
             }
             catch (JsonException ex) { throw new InvalidDataException("The Factorio settings checkpoint is invalid.", ex); }
         }
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var line in content.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
-            var separator = trimmed.IndexOf('=');
-            if (separator < 1) continue;
-            if (!values.TryAdd(trimmed[..separator].Trim(), trimmed[(separator + 1)..].Trim()))
-                throw new InvalidDataException("A reviewed setup setting is repeated.");
-        }
-        var maxKey = snapshot.Kind == GameKinds.Terraria ? "maxplayers" : "max-players";
+        return ReadPropertySettings(snapshot.Kind, ParseProperties(content));
+    }
+
+    private static PortableSettings ReadPropertySettings(string game,
+        Dictionary<string, string> values)
+    {
+        var maxKey = game == GameKinds.Terraria ? "maxplayers" : "max-players";
         int? max = null;
         if (values.TryGetValue(maxKey, out var maxText))
         {
@@ -170,10 +208,10 @@ internal static class SharedWorldPortableSetupReader
                 throw new InvalidDataException("The reviewed player limit is invalid.");
             max = parsed;
         }
-        if (snapshot.Kind == GameKinds.Terraria) return new(max, null, null, null);
+        if (game == GameKinds.Terraria) return new(max, null, null, null);
         return new(max, EnumValue(values, "gamemode", "survival", "creative", "adventure", "spectator"),
             EnumValue(values, "difficulty", "peaceful", "easy", "normal", "hard"),
-            BoolValue(values, snapshot.Kind == GameKinds.MinecraftJava ? "white-list" : "allow-list"));
+            BoolValue(values, game == GameKinds.MinecraftJava ? "white-list" : "allow-list"));
     }
 
     private static int ReadCount(JsonElement value) =>
