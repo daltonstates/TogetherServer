@@ -12,7 +12,7 @@ type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versi
 type AuthorityStatus = { state: 'NoTakeover' | 'OldHostFenced' | 'ThisPcHost' | 'CompetingHistories' | 'ReviewRequired';
   message: string; head: AuthorityHead | null; competingHeads: AuthorityHead[]; exactManagedProcessRunning: boolean }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null;
-  capacityNotice: string | null; capacityState: 'Signed history full' | 'Signed history nearly full' | null }
+  capacityNotice: string | null; capacityState: 'Low space' | 'Signed history full' | 'Signed history nearly full' | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
 type RosterMember = { deviceId: string; grants: Grants; revoked: boolean; accessExpiresUtc: string | null }
@@ -217,7 +217,8 @@ export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
     thisPcVersion: numberOrNull(source.thisPcVersion, 'This PC version'),
     state: source.state, error: textOrNull(source.error, 'Received save error'),
     capacityNotice: textOrNull(source.capacityNotice ?? null, 'Signed history notice'),
-    capacityState: source.capacityState === 'Signed history full' ||
+    capacityState: source.capacityState === 'Low space' ||
+      source.capacityState === 'Signed history full' ||
       source.capacityState === 'Signed history nearly full' ? source.capacityState : null,
     receivedBytes: numberOrNull(source.receivedBytes ?? 0, 'Received bytes') ?? 0,
     totalBytes: numberOrNull(source.totalBytes ?? 0, 'Total bytes') ?? 0,
@@ -810,7 +811,8 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     status?.state === 'Signed history full'
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds
     {transferAlert && <span className="warning-text" role="alert"> · {headline}</span>}
-    {!transferAlert && status?.capacityState && <span className="warning-text" role="alert"> · {status.capacityState === 'Signed history full' ? 'Save history full' : 'Save history near limit'}</span>}</summary>
+    {!transferAlert && status?.capacityState && <span className="warning-text" role="alert"> · {status.capacityState === 'Low space' ? 'Low space — receiving paused' :
+      status.capacityState === 'Signed history full' ? 'Save history full' : 'Save history near limit'}</span>}</summary>
     <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>Update the Host app before receiving shared saves.</p>}

@@ -25,6 +25,7 @@
     <InternalsVisibleTo Include="TogetherServer.FactorioChecks" />
     <InternalsVisibleTo Include="TogetherServer.ValheimChecks" />
     <InternalsVisibleTo Include="TogetherServer.CustomChecks" />
+    <InternalsVisibleTo Include="TogetherServer.SharedHistoryChecks" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" PrivateAssets="all" GeneratePathProperty="true" />

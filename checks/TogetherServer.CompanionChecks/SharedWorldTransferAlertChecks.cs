@@ -112,11 +112,6 @@ internal static class SharedWorldTransferAlertChecks
         Directory.CreateDirectory(history);
         try
         {
-            File.WriteAllBytes(Path.Combine(history, "interrupted.new"), [1, 2, 3]);
-            var usage = FriendLink.SignedHistoryUsage(root);
-            Require(usage == (1, 3),
-                "an interrupted signed-history write was omitted from the storage budget");
-
             using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var draft = new SharedWorldVersion(4, Guid.NewGuid(), 1, null,
                 Guid.NewGuid(), GameKinds.Valheim, "fixture-world", DateTimeOffset.UtcNow,
@@ -126,23 +121,25 @@ internal static class SharedWorldTransferAlertChecks
                     Convert.ToHexString(SHA256.HashData([1])))], "", "", "");
             var first = SharedWorldService.SignVersion(draft, signer);
             FriendLink.KeepSignedManifest(root, first);
-            usage = FriendLink.SignedHistoryUsage(root);
-            Require(usage.Count == 2 && usage.Bytes > 3,
-                "a verified manifest and interrupted write were not both counted");
+            var usage = FriendLink.SignedHistoryUsage(root);
+            Require(usage.Count == 1 && usage.Bytes > 0,
+                "a verified signed manifest was not audited");
+            var orphan = Path.Combine(history, "0000000000000000",
+                "1-" + first.VersionHash + ".json.new");
+            File.WriteAllBytes(orphan, [1, 2, 3]);
+            RequireThrows<InvalidDataException>(() => FriendLink.SignedHistoryUsage(root),
+                "an interrupted signed-history write was omitted from the archive audit");
+            File.Delete(orphan);
 
-            for (var number = usage.Count; number < 4096; number++)
-                File.WriteAllBytes(Path.Combine(history, $"interrupted-{number}.new"), []);
             var next = SharedWorldService.SignVersion(draft with
             {
                 Number = 2,
                 ParentHash = first.VersionHash
             }, signer);
-            var blocked = false;
-            try { FriendLink.KeepSignedManifest(root, next); }
-            catch (IOException ex) { blocked = ex.Message.Contains("full", StringComparison.OrdinalIgnoreCase); }
-            Require(blocked && FriendLink.SignedHistoryUsage(root).Count == 4096 &&
-                File.Exists(Path.Combine(history, first.VersionHash + ".json")),
-                "the archive accepted an entry beyond its count cap or removed its verified manifest");
+            FriendLink.KeepSignedManifest(root, next);
+            Require(FriendLink.SignedHistoryUsage(root).Count == 2 &&
+                File.Exists(Path.Combine(history, "0000000000000000", "1-" + first.VersionHash + ".json")),
+                "a signed manifest was lost while another version was archived");
         }
         finally
         {
@@ -160,5 +157,12 @@ internal static class SharedWorldTransferAlertChecks
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new Exception(message);
+    }
+
+    private static void RequireThrows<T>(Action action, string message) where T : Exception
+    {
+        try { action(); }
+        catch (T) { return; }
+        throw new Exception(message);
     }
 }

@@ -176,18 +176,18 @@ describe('Shared saves controls', () => {
     expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
   }, 10000)
 
-  it('warns about signed-history capacity without hiding a save behind', async () => {
+  it('warns about the free-space reserve without hiding a save behind', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ consented: true, hostVersion: 6,
       thisPcVersion: 5, state: 'Ready to pull', error: null,
-      capacityState: 'Signed history nearly full',
-      capacityNotice: 'This PC is nearing its signed save history limit.' })))
+      capacityState: 'Low space',
+      capacityNotice: 'Keep at least 1 GiB free to receive another signed save.' })))
     render(<FriendSharedWorlds profileId={profile} available />)
     const summary = await screen.findByText(/Shared worlds/, { selector: 'summary' })
     await waitFor(() => expect(summary.querySelector('[role="alert"]'))
-      .toHaveTextContent('Save history near limit'))
+      .toHaveTextContent('Low space — receiving paused'))
     fireEvent.click(summary)
     expect(screen.getByText('1 version(s) behind')).toBeInTheDocument()
-    expect(screen.getByText('This PC is nearing its signed save history limit.'))
+    expect(screen.getByText('Keep at least 1 GiB free to receive another signed save.'))
       .toHaveAttribute('role', 'alert')
   })
 

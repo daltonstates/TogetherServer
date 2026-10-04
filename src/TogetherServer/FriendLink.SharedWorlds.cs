@@ -1416,11 +1416,6 @@ internal sealed partial class FriendLink
             return new(true, "SharedWorldChecked", "Latest Host version checked securely.",
                 LocalSharedWorldStatus(profileId));
         }
-        catch (SignedHistoryCapacityException ex)
-        {
-            sharedTransferHealth.Report(profileId, "Signed history full", ex.Message);
-            return SharedFailure("SignedHistoryFull", ex.Message);
-        }
         catch (SignedHistorySpaceException ex)
         {
             sharedTransferHealth.Report(profileId, "Low space", ex.Message);
@@ -1954,8 +1949,6 @@ internal sealed partial class FriendLink
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (SignedHistoryCapacityException ex)
-        { return SharedFailure("SignedHistoryFull", ex.Message); }
         catch (SignedHistorySpaceException ex)
         { return SharedFailure("InsufficientSpace", ex.Message); }
         catch (TaskCanceledException) { return SharedFailure("NetworkUnavailable", "The Host did not answer before the transfer timed out. Progress was kept for retry."); }
@@ -2002,8 +1995,9 @@ internal sealed partial class FriendLink
     }
 
     internal sealed record SharedChainCheck(bool Valid, bool Conflict, bool Pending = false);
-    private sealed record SharedChainProgress(int Schema, Guid GroupId, string AnchorHash,
-        string? AuthorityHeadHash, SharedWorldVersion Last);
+    private sealed record SharedChainProgress(int Schema, Guid GroupId, Guid ProfileId,
+        string Game, string WorldId, string AnchorHash, string? AuthorityHeadHash,
+        SharedWorldVersion Last);
     private static string ChainProgressName(Guid deviceId, Guid profileId) =>
         $"shared-chain-{deviceId:N}-{profileId:N}.protected";
 
@@ -2068,15 +2062,21 @@ internal sealed partial class FriendLink
         var root = Path.Combine(data.RootPath, "received-shared-worlds",
             deviceId.ToString("N"), profileId.ToString("N"));
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
-        if (saved is { Schema: 1 } && saved.GroupId == anchor.GroupId &&
+        CheckHistoryRootOnce(root);
+        if (saved is { Schema: 2 } && saved.GroupId == anchor.GroupId &&
+            saved.ProfileId == profileId && saved.Game == anchor.Game &&
+            saved.WorldId == anchor.WorldId &&
             saved.AnchorHash == anchor.VersionHash && saved.AuthorityHeadHash == authorityHeadHash &&
             saved.Last.Number >= anchor.Number &&
             saved.Last.GroupId == anchor.GroupId && saved.Last.ProfileId == anchor.ProfileId &&
             saved.Last.Game == anchor.Game && saved.Last.WorldId == anchor.WorldId &&
             SharedWorldService.VerifySignature(saved.Last) &&
             ValidAtAuthorityBoundary(saved.Last, records) &&
-            HasArchivedChain(root, anchor, saved.Last))
+            ReadSignedManifest(root, saved.Last.Number, saved.Last.VersionHash)?.VersionHash ==
+                saved.Last.VersionHash)
             prior = saved.Last;
+        var activeBucket = SignedHistoryBucket(root, prior.Number);
+        if (Directory.Exists(activeBucket)) CheckHistoryBucket(activeBucket);
         if (prior.Number > latest.Number) return new(false, true);
         var used = 0;
         var verified = new List<SharedWorldVersion> { anchor };
@@ -2101,7 +2101,8 @@ internal sealed partial class FriendLink
         foreach (var item in verified) KeepSignedManifest(root, item);
         if (used > 0)
             data.SaveProtected(progressName, JsonSerializer.SerializeToUtf8Bytes(
-                new SharedChainProgress(1, anchor.GroupId, anchor.VersionHash, authorityHeadHash, prior), Json));
+                new SharedChainProgress(2, anchor.GroupId, profileId, anchor.Game, anchor.WorldId,
+                    anchor.VersionHash, authorityHeadHash, prior), Json));
         if (prior.Number < latest.Number) return new(false, false, true);
         return new(prior.VersionHash == latest.VersionHash,
             prior.VersionHash != latest.VersionHash);
@@ -2281,41 +2282,82 @@ internal sealed partial class FriendLink
         return version;
     }
 
-    private const int MaximumLocalLineageVersions = 4096;
-    private const long MaximumSignedHistoryBytes = 256L * 1024 * 1024;
-    private sealed class SignedHistoryCapacityException(string message) : IOException(message);
     private sealed class SignedHistorySpaceException(string message) : IOException(message);
     private static string SignedHistoryRoot(string root) => Path.Combine(root, "signed-history");
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte>
+        CheckedHistoryRoots = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte>
+        CheckedHistoryBuckets = new(StringComparer.OrdinalIgnoreCase);
+    private static string SignedHistoryBucket(string root, long number) =>
+        Path.Combine(SignedHistoryRoot(root), (number / 1024).ToString("x16"));
+    private static string SignedManifestPath(string root, long number, string hash) =>
+        SharedWorldService.SafeChild(SignedHistoryBucket(root, number),
+            number.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" + hash + ".json");
 
-    internal static (int Count, long Bytes) SignedHistoryUsage(string root)
+    private static void CheckHistoryRootOnce(string root)
+    {
+        var history = SignedHistoryRoot(root);
+        SharedWorldService.EnsureUnlinkedRoot(root, history);
+        if (!Directory.Exists(history) || CheckedHistoryRoots.ContainsKey(history)) return;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(history))
+        {
+            var name = Path.GetFileName(entry);
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0 ||
+                Directory.Exists(entry) && (name.Length != 16 || !name.All(Uri.IsHexDigit)) ||
+                !Directory.Exists(entry) && (name.Length != 69 ||
+                    !name.EndsWith(".json", StringComparison.Ordinal) ||
+                    !name[..64].All(Uri.IsHexDigit)))
+                throw new InvalidDataException("The signed save history contains an unexpected or linked entry.");
+        }
+        CheckedHistoryRoots.TryAdd(history, 0);
+    }
+
+    internal static (long Count, long Bytes) SignedHistoryUsage(string root)
     {
         var history = SignedHistoryRoot(root);
         SharedWorldService.EnsureUnlinkedRoot(root, history);
         if (!Directory.Exists(history)) return (0, 0);
-        // Count interrupted .new writes too. Leaving them out would let repeated
-        // crashes consume disk outside the archive's fixed budget.
-        var entries = Directory.EnumerateFileSystemEntries(history)
-            .Take(MaximumLocalLineageVersions + 1).ToArray();
-        if (entries.Any(Directory.Exists))
-            throw new InvalidDataException("The signed save history contains an unexpected directory.");
-        var files = entries.Select(path => new FileInfo(path)).ToArray();
-        if (files.Any(file => file.Length > SharedWorldService.MaximumManifestBytes ||
-            (file.Attributes & FileAttributes.ReparsePoint) != 0))
-            throw new InvalidDataException("The signed save history contains an invalid file.");
-        return (files.Length, files.Sum(file => file.Length));
+        // Explicit audit only. The normal receipt path checks its current bucket
+        // and never walks all older manifests.
+        long count = 0, bytes = 0;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(history))
+        {
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("The signed save history contains a link.");
+            if (Directory.Exists(entry))
+            {
+                if (Path.GetFileName(entry).Length != 16 ||
+                    !Path.GetFileName(entry).All(Uri.IsHexDigit))
+                    throw new InvalidDataException("The signed save history contains an unexpected directory.");
+                SharedWorldService.EnsureUnlinkedRoot(root, entry);
+                foreach (var file in Directory.EnumerateFileSystemEntries(entry))
+                    CountHistoryFile(file, ref count, ref bytes);
+            }
+            else CountHistoryFile(entry, ref count, ref bytes);
+        }
+        return (count, bytes);
+    }
+
+    private static void CountHistoryFile(string path, ref long count, ref long bytes)
+    {
+        var name = Path.GetFileName(path);
+        var parent = Path.GetFileName(Path.GetDirectoryName(path)!);
+        var bucketed = parent.Length == 16 && parent.All(Uri.IsHexDigit);
+        if (Directory.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
+            !(bucketed ? ValidBucketEntry(parent, name) :
+                name.Length == 69 && name.EndsWith(".json", StringComparison.Ordinal) &&
+                name[..64].All(Uri.IsHexDigit)) ||
+            new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes)
+            throw new InvalidDataException("The signed save history contains an unexpected or invalid file.");
+        count++;
+        bytes += new FileInfo(path).Length;
     }
 
     private static (string State, string Message)? SignedHistoryNotice(string root)
     {
-        var usage = SignedHistoryUsage(root);
-        if (usage.Count >= MaximumLocalLineageVersions ||
-            usage.Bytes >= MaximumSignedHistoryBytes)
-            return ("Signed history full",
-                "This PC cannot store another signed save history entry. Earlier verified copies are safe; use another receiving PC.");
-        if (usage.Count >= MaximumLocalLineageVersions * 9 / 10 ||
-            usage.Bytes >= MaximumSignedHistoryBytes * 9 / 10)
-            return ("Signed history nearly full",
-                "This PC is nearing its signed save history limit. New saves will pause at the limit; use another receiving PC.");
+        var free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace;
+        if (!HasReceiverReserve(free, SharedWorldService.MaximumManifestBytes))
+            return ("Low space", "Keep at least 1 GiB free to receive another signed save.");
         return null;
     }
 
@@ -2327,30 +2369,32 @@ internal sealed partial class FriendLink
         var bytes = JsonSerializer.SerializeToUtf8Bytes(version, Json);
         if (bytes.Length > SharedWorldService.MaximumManifestBytes)
             throw new InvalidDataException("A signed save manifest is oversized.");
-        var history = SignedHistoryRoot(root);
+        var history = SignedHistoryBucket(root, version.Number);
         SharedWorldService.EnsureUnlinkedRoot(root, history);
+        CheckHistoryRootOnce(root);
         Directory.CreateDirectory(history);
         SharedWorldService.EnsureUnlinkedRoot(root, history);
-        var destination = SharedWorldService.SafeChild(history, version.VersionHash + ".json");
+        if (!CheckedHistoryBuckets.ContainsKey(history))
+        {
+            CheckHistoryBucket(history);
+            CheckedHistoryBuckets.TryAdd(history, 0);
+        }
+        var destination = SignedManifestPath(root, version.Number, version.VersionHash);
+        var temporary = destination + ".new";
+        if (File.Exists(temporary))
+            throw new InvalidDataException("An interrupted signed save history write needs review.");
         if (File.Exists(destination))
         {
-            var existing = ReadSignedManifest(root, version.VersionHash);
+            var existing = ReadSignedManifest(root, version.Number, version.VersionHash);
             if (existing?.VersionHash != version.VersionHash ||
                 !JsonSerializer.SerializeToUtf8Bytes(existing, Json).AsSpan().SequenceEqual(bytes))
                 throw new InvalidDataException("A saved signed manifest changed.");
             return;
         }
-        var usage = SignedHistoryUsage(root);
-        if (usage.Count >= MaximumLocalLineageVersions ||
-            usage.Bytes + bytes.Length > MaximumSignedHistoryBytes)
-            throw new SignedHistoryCapacityException(
-                "This PC's signed save history is full. New saves are paused; older verified copies were kept. Choose another receiving PC.");
         if (!HasReceiverReserve(new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!)
                 .AvailableFreeSpace, bytes.Length))
             throw new SignedHistorySpaceException(
                 "Keep at least 1 GiB free before receiving another signed save. Verified copies were kept.");
-        var temporary = SharedWorldService.SafeChild(history,
-            Guid.NewGuid().ToString("N") + ".new");
         try
         {
             using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
@@ -2369,39 +2413,56 @@ internal sealed partial class FriendLink
         }
     }
 
-    private static SharedWorldVersion? ReadSignedManifest(string root, string hash)
+    private static void CheckHistoryBucket(string bucket)
+    {
+        var bucketName = Path.GetFileName(bucket);
+        var entries = 0;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(bucket))
+        {
+            if (++entries > 2048)
+                throw new InvalidDataException("A signed save history bucket contains too many competing entries.");
+            var name = Path.GetFileName(entry);
+            if (Directory.Exists(entry) || (File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0 ||
+                name.EndsWith(".new", StringComparison.Ordinal) ||
+                !ValidBucketEntry(bucketName, name) ||
+                new FileInfo(entry).Length > SharedWorldService.MaximumManifestBytes)
+                throw new InvalidDataException("The signed save history contains an unexpected, linked, or interrupted entry.");
+        }
+    }
+
+    private static bool ValidBucketEntry(string bucket, string name)
+    {
+        var separator = name.IndexOf('-');
+        return separator > 0 && name.Length == separator + 70 &&
+            name.EndsWith(".json", StringComparison.Ordinal) &&
+            name.AsSpan(separator + 1, 64).ToArray().All(Uri.IsHexDigit) &&
+            long.TryParse(name.AsSpan(0, separator),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var number) &&
+            number > 0 && (number / 1024).ToString("x16") == bucket;
+    }
+
+    private static SharedWorldVersion? ReadSignedManifest(string root, long number, string hash)
     {
         if (hash.Length != 64 || !hash.All(Uri.IsHexDigit)) return null;
-        var history = SignedHistoryRoot(root);
+        var history = SignedHistoryBucket(root, number);
         SharedWorldService.EnsureUnlinkedRoot(root, history);
-        var path = SharedWorldService.SafeChild(history, hash + ".json");
+        var path = SignedManifestPath(root, number, hash);
+        if (!File.Exists(path))
+        {
+            // Versions archived before the bucketed layout remain readable.
+            history = SignedHistoryRoot(root);
+            path = SharedWorldService.SafeChild(history, hash + ".json");
+        }
         if (!File.Exists(path)) return null;
         if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
             (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("A saved signed manifest is oversized or linked.");
         var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
-        if (version?.VersionHash != hash || !SharedWorldService.VerifySignature(version))
+        if (version?.VersionHash != hash || version.Number != number ||
+            !SharedWorldService.VerifySignature(version))
             throw new InvalidDataException("A saved signed manifest failed verification.");
         return version;
-    }
-
-    private static bool HasArchivedChain(string root, SharedWorldVersion anchor,
-        SharedWorldVersion head)
-    {
-        if (head.Number < anchor.Number ||
-            head.Number - anchor.Number >= MaximumLocalLineageVersions) return false;
-        var current = head;
-        for (var number = head.Number; number > anchor.Number; number--)
-        {
-            if (ReadSignedManifest(root, current.VersionHash) is null ||
-                current.ParentHash is not { Length: 64 } hash || !hash.All(Uri.IsHexDigit))
-                return false;
-            var prior = ReadSignedManifest(root, hash);
-            if (prior is null || prior.Number != number - 1 ||
-                prior.VersionHash != current.ParentHash) return false;
-            current = prior;
-        }
-        return current.VersionHash == anchor.VersionHash;
     }
 
     // Retain signed metadata independently of the three most recent payloads.
@@ -2409,6 +2470,7 @@ internal sealed partial class FriendLink
     internal static IEnumerable<SharedWorldVersion> ReadVerifiedReceivedLineage(
         string root, SharedWorldVersion latest, SharedWorldVersion? parent)
     {
+        SignedHistoryUsage(root); // Takeover audits every archive entry once.
         var current = ReadReceivedLatest(root);
         if (current?.VersionHash != latest.VersionHash ||
             parent is not null && (parent.GroupId != latest.GroupId ||
@@ -2416,29 +2478,49 @@ internal sealed partial class FriendLink
                 parent.WorldId != latest.WorldId || parent.Number >= latest.Number))
             throw new InvalidDataException("The candidate's verified save head changed.");
         var first = parent?.Number + 1 ?? 1;
-        if (latest.Number < first || latest.Number - first + 1 > MaximumLocalLineageVersions)
+        if (latest.Number < first)
             throw new InvalidDataException("The complete signed save lineage is not available on this PC.");
-        var reversed = new List<string>();
+        var spoolBytes = checked((latest.Number - first + 1) * 64);
+        if (!HasReceiverReserve(new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!)
+                .AvailableFreeSpace, spoolBytes))
+            throw new InvalidDataException("The signed save lineage needs more free space for verification.");
+        SharedWorldService.EnsureUnlinkedRoot(Path.GetDirectoryName(root)!, root);
+        var spoolPath = SharedWorldService.SafeChild(root,
+            "lineage-" + Guid.NewGuid().ToString("N") + ".tmp");
+        using var spool = new FileStream(spoolPath, FileMode.CreateNew, FileAccess.ReadWrite,
+            FileShare.None, 4096, FileOptions.DeleteOnClose | FileOptions.WriteThrough);
         for (var number = latest.Number; number >= first; number--)
         {
             if (current is null || current.Number != number ||
                 current.GroupId != latest.GroupId || current.ProfileId != latest.ProfileId ||
-                current.Game != latest.Game || current.WorldId != latest.WorldId)
+                current.Game != latest.Game || current.WorldId != latest.WorldId ||
+                !SharedWorldService.VerifySignature(current))
                 throw new InvalidDataException("An earlier verified save is missing from this PC.");
-            reversed.Add(current.VersionHash);
+            spool.Write(System.Text.Encoding.ASCII.GetBytes(current.VersionHash));
             if (number == first) break;
             if (current.ParentHash is not { Length: 64 } hash || !hash.All(Uri.IsHexDigit))
                 throw new InvalidDataException("The signed save parent is invalid.");
-            current = ReadSignedManifest(root, hash) ??
+            current = ReadSignedManifest(root, number - 1, hash) ??
                 ReadVersionForRetention(SharedWorldService.SafeChild(root, hash));
         }
-        reversed.Reverse();
         if (current is null || parent is null && current.ParentHash is not null ||
             parent is not null && current.ParentHash != parent.VersionHash)
             throw new InvalidDataException("The signed save lineage does not extend the authority head.");
-        return reversed.Select(hash => ReadSignedManifest(root, hash) ??
-            ReadVersionForRetention(SharedWorldService.SafeChild(root, hash)) ??
-            throw new InvalidDataException("An earlier verified save manifest is missing."));
+        var hashBytes = new byte[64];
+        for (var number = first; number <= latest.Number; number++)
+        {
+            spool.Position = checked((latest.Number - number) * 64);
+            spool.ReadExactly(hashBytes);
+            var hash = System.Text.Encoding.ASCII.GetString(hashBytes);
+            var version = ReadSignedManifest(root, number, hash) ??
+                ReadVersionForRetention(SharedWorldService.SafeChild(root, hash)) ??
+                throw new InvalidDataException("An earlier verified save manifest is missing.");
+            if (version.Number != number || version.VersionHash != hash ||
+                version.GroupId != latest.GroupId || version.ProfileId != latest.ProfileId ||
+                version.Game != latest.Game || version.WorldId != latest.WorldId)
+                throw new InvalidDataException("An earlier verified save manifest changed.");
+            yield return version;
+        }
     }
 
     internal static void PruneReceived(string root, string newest,
