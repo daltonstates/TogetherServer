@@ -90,6 +90,7 @@ internal sealed partial class FriendLink : IDisposable
     private Guid instanceId = Guid.NewGuid();
     private long sequence;
     private HttpClient? client;
+    private readonly Func<string, IEnumerable<string>, HttpClient> makeClient;
     private readonly SharedWorldHostLoss sharedHostLoss = new();
     internal bool CurrentRecoveryHostLoss(Guid profileId) =>
         config?.ApprovedSharedWorldGroups?.ContainsKey(profileId) == true &&
@@ -142,11 +143,12 @@ internal sealed partial class FriendLink : IDisposable
     private bool resourcesDisposed;
 
     public FriendLink(LocalData data, string configFile,
-        Func<string, IEnumerable<string>, HttpClient>? historyReviewClientFactory = null)
+        Func<string, IEnumerable<string>, HttpClient>? clientFactory = null)
     {
+        makeClient = clientFactory ?? MakeClient;
         this.data = data;
         this.configFile = configFile;
-        this.historyReviewClientFactory = historyReviewClientFactory;
+        historyReviewClientFactory = clientFactory;
         config = LoadConfig(data, configFile);
         if (config is not null)
         {
@@ -914,7 +916,7 @@ internal sealed partial class FriendLink : IDisposable
     {
         if (config is null) throw new InvalidOperationException("Connect to a Host first.");
         if (client is not null) return client;
-        client = MakeClient(config.Endpoint, AcceptedPins());
+        client = makeClient(config.Endpoint, AcceptedPins());
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
         client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
         client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());

@@ -111,6 +111,34 @@ describe('Shared saves controls', () => {
     expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeDisabled()
   })
 
+  it('joins a verified successor through an explicit action while retaining the old connection', async () => {
+    const calls: { url: string; body?: unknown }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/successor-enrollment')) return reply({ ok: true,
+        code: 'SuccessorEnrolled', message: 'This PC can now receive the new Host saves.' })
+      return reply({ consented: true, hostVersion: 2, thisPcVersion: 2,
+        state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByText('Join a new Host after takeover'))
+    const action = screen.getByText('Check and join new Host')
+    expect(action).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Signed takeover hash'),
+      { target: { value: 'A'.repeat(64) } })
+    fireEvent.change(screen.getByLabelText('New Host certificate fingerprint'),
+      { target: { value: 'B'.repeat(64) } })
+    fireEvent.click(action)
+    await waitFor(() => expect(calls).toContainEqual({
+      url: `/api/local/friend/${profile}/shared-world/successor-enrollment`,
+      body: { recordHash: 'A'.repeat(64), tlsFingerprint: 'B'.repeat(64) }
+    }))
+    expect(await screen.findByText('This PC can now receive the new Host saves.')).toBeInTheDocument()
+    expect(screen.getByText(/keeps the old Host connection and save history/)).toBeInTheDocument()
+  })
+
   it('rejects malformed status responses', () => {
     expect(() => parseHostSharedWorldStatus({ enabled: 'yes', latest: null, error: null })).toThrow()
     expect(() => parseFriendSharedWorldStatus({ consented: false, hostVersion: '3',

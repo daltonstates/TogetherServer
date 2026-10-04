@@ -55,7 +55,7 @@ internal sealed partial class FriendLink
                     nonce, config.DeviceId, observerKey);
                 if (!SharedWorldRouteTrust.VerifyChallenge(challenge, record, DateTimeOffset.UtcNow))
                     return Fail("HandoffProofInvalid", "This PC's signing identity does not match the current signed roster.");
-                using var client = MakeClient(record.Proposal.CandidateAddress, [tlsFingerprint]);
+                using var client = makeClient(record.Proposal.CandidateAddress, [tlsFingerprint]);
                 using var response = await client.PostAsJsonAsync(
                     $"api/companion/servers/{profileId}/shared-world/route-proof/{recordHash}",
                     challenge, Json, cancellationToken);

@@ -1279,7 +1279,7 @@ internal sealed partial class FriendLink
             var deviceId = config.DeviceId;
             var pins = AcceptedPins().ToArray();
             var root = ReceivedRoot(profileId);
-            using var checkClient = MakeClient(endpoint, pins);
+            using var checkClient = makeClient(endpoint, pins);
             checkClient.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Credential);
             checkClient.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());
@@ -1490,7 +1490,10 @@ internal sealed partial class FriendLink
         if (pinnedOwner is null || !SharedWorldService.VerifySignature(version)) return false;
         if (records.Count == 0) return version.SigningPublicKey == pinnedOwner;
         var heads = WorldAuthorityTrust.EffectiveHeads(records);
-        if (heads.Length != 1 || heads[0].Proposal.Schema is not (2 or 3) ||
+        if (heads.Length != 1 ||
+            heads[0].Proposal.Schema is not (2 or 3) &&
+                !(heads[0].Proposal.Schema == 1 && heads[0].Proposal.Kind == "Planned" &&
+                  heads[0].SuccessorReceipt is not null) ||
             heads[0].Roster.OwnerPublicKey != pinnedOwner ||
             heads[0].Proposal.GroupId != version.GroupId) return false;
         var head = heads[0];
@@ -1523,14 +1526,23 @@ internal sealed partial class FriendLink
         if (!AuthorizedVersionSignerForRecords(pinnedOwner, version, records)) return null;
         var heads = WorldAuthorityTrust.EffectiveHeads(records);
         if (heads.Length != 1) return null;
+        SharedWorldVersion? takeoverAnchor = null;
         for (WorldAuthorityRecord? current = heads[0]; current is not null;
              current = records.SingleOrDefault(record =>
                  record.RecordHash == current.Proposal.ParentAuthorityHash))
         {
+            // A resolution chooses the history boundary even if later authority
+            // children exist. Without a resolution, anchor at the signed takeover.
             if (current.Schema == 2 && version.Number >= current.Version.Number)
                 return current.Version;
+            if (takeoverAnchor is null &&
+                (current.Proposal.Schema is 2 or 3 ||
+                 current.Proposal.Schema == 1 && current.Proposal.Kind == "Planned" &&
+                 current.SuccessorReceipt is not null) &&
+                version.Number >= current.Version.Number)
+                takeoverAnchor = current.Version;
         }
-        return null;
+        return takeoverAnchor;
     }
 
     private static void AcceptResolvedHistory(FriendConfiguration config, Guid profileId,
@@ -1606,7 +1618,7 @@ internal sealed partial class FriendLink
             var deviceId = config.DeviceId;
             var pins = AcceptedPins().ToArray();
             var root = ReceivedRoot(profileId);
-            using var transferClient = MakeClient(endpoint, pins);
+            using var transferClient = makeClient(endpoint, pins);
             transferClient.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Credential);
             transferClient.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());

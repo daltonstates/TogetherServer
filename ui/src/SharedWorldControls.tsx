@@ -579,6 +579,9 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   { profileId: string; available: boolean; onAddressChange?: () => void }) {
   const [status, setStatus] = useState<FriendStatus | null>(null)
   const [busy, setBusy] = useState(false)
+  const [successorHash, setSuccessorHash] = useState('')
+  const [successorPin, setSuccessorPin] = useState('')
+  const [successorMessage, setSuccessorMessage] = useState('')
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [stageMessage, setStageMessage] = useState('')
@@ -678,6 +681,15 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       setMessage(result.message)
       setStatus(result.status ?? await getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus))
     } catch (error) { setMessage(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+  const joinSuccessor = async () => {
+    setBusy(true); setSuccessorMessage('')
+    try {
+      const result = await changeJson(`/api/local/friend/${profileId}/shared-world/successor-enrollment`,
+        'POST', parseBasicResult, { recordHash: successorHash.trim(), tlsFingerprint: successorPin.trim() })
+      setSuccessorMessage(result.message)
+    } catch (error) { setSuccessorMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const stage = async () => {
@@ -827,6 +839,15 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       </div>}
       {historyMessage && <p role="status">{historyMessage}</p>}
     </section>}
+    {status?.consented && <details><summary>Join a new Host after takeover</summary>
+      <p>Use the signed takeover hash and certificate fingerprint shared by the new Host. This PC checks the takeover and pinned direct connection, then keeps the old Host connection and save history.</p>
+      <label>Signed takeover hash<Input value={successorHash} onChange={event => setSuccessorHash(event.target.value)} /></label>
+      <label>New Host certificate fingerprint<Input value={successorPin} onChange={event => setSuccessorPin(event.target.value)} /></label>
+      <Button className="secondary" disabled={busy || !/^[0-9A-Fa-f]{64}$/.test(successorHash.trim()) ||
+        !/^[0-9A-Fa-f]{64}$/.test(successorPin.trim())} onClick={() => void joinSuccessor()}>
+        Check and join new Host</Button>
+      {successorMessage && <p role="status">{successorMessage}</p>}
+    </details>}
     {status?.consented && status.thisPcVersion != null && <section aria-label="Planned handoff offer">
       <h4>Planned hosting handoff</h4>
       <p>If the current host signs an offer for this PC, hash-check and stage its exact post-Stop file copy here. Game load has not been checked.</p>
