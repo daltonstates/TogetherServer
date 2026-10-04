@@ -22,6 +22,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Minecraft console fixture build failed' }
     dotnet build src/TogetherServer.FactorioFixture/TogetherServer.FactorioFixture.csproj -c Release
     if ($LASTEXITCODE -ne 0) { throw 'Factorio RCON fixture build failed' }
+    dotnet build src/TogetherServer.TerrariaFixture/TogetherServer.TerrariaFixture.csproj -c Release
+    if ($LASTEXITCODE -ne 0) { throw 'Terraria console fixture build failed' }
     dotnet publish src/TogetherServer/TogetherServer.csproj -c Release --no-restore -o local-data/publish
     if ($LASTEXITCODE -ne 0) { throw 'Host publish failed' }
     $releaseDirectory = Join-Path $repository "local-data/$ReleaseName"

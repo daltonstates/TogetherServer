@@ -4,6 +4,7 @@
     <Project Path="src/TogetherServer.Fixture/TogetherServer.Fixture.csproj" />
     <Project Path="src/TogetherServer.FactorioFixture/TogetherServer.FactorioFixture.csproj" />
     <Project Path="src/TogetherServer.MinecraftFixture/TogetherServer.MinecraftFixture.csproj" />
+    <Project Path="src/TogetherServer.TerrariaFixture/TogetherServer.TerrariaFixture.csproj" />
     <Project Path="src/TogetherServer.ValheimFixture/TogetherServer.ValheimFixture.csproj" />
   </Folder>
   <Folder Name="/checks/">
@@ -14,6 +15,7 @@
     <Project Path="checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj" />
     <Project Path="checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj" />
     <Project Path="checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj" />
+    <Project Path="checks/TogetherServer.TerrariaChecks/TogetherServer.TerrariaChecks.csproj" />
     <Project Path="checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj" />
     <Project Path="checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj" />
   </Folder>

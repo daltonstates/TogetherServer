@@ -251,12 +251,16 @@ internal static class WindowsConsoleProcess
     internal static void RequestBedrockSaveResume(Process process, ManagedRun run)
         => RequestFixedCommand(process, run, "save resume");
 
+    // Candidate only. A sent Terraria command is not evidence that its world was saved.
+    internal static void RequestTerrariaSave(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "save");
+
     private static void RequestFixedCommand(Process process, ManagedRun run, string command)
     {
-        if (command is not ("stop" or "exit" or "save-all flush" or
+        if (command is not ("stop" or "exit" or "save-all flush" or "save" or
                             "save hold" or "save query" or "save resume"))
             throw new InvalidOperationException("Unsupported fixed server action.");
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console stop is required.");
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console command is required.");
         var previous = ConsoleMembers().FirstOrDefault(id => id != Environment.ProcessId);
         FreeConsole();
         try
@@ -268,7 +272,7 @@ internal static class WindowsConsoleProcess
                 var allowed = new HashSet<int> { process.Id, Environment.ProcessId };
                 if (CaptureIdentityMatches(run)) allowed.Add(run.ConsoleCaptureProcessId!.Value);
                 if (members.Length != allowed.Count || members.Any(member => !allowed.Contains(member)))
-                    throw new InvalidOperationException("Server console contains another process; no stop command was sent.");
+                    throw new InvalidOperationException("Server console contains another process; no command was sent.");
                 var input = CreateFileW("CONIN$", 0x40000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
                 if (input == new IntPtr(-1))
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not open the managed server console input.");
@@ -282,7 +286,7 @@ internal static class WindowsConsoleProcess
                             { KeyDown = false, RepeatCount = 1, VirtualKeyCode = FixedCommandVirtualKey(character), UnicodeChar = character } }
                     }).ToArray();
                     if (!WriteConsoleInputW(input, keys, (uint)keys.Length, out var written) || written != keys.Length)
-                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not send the managed server stop command.");
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not send the managed server command.");
                     if (command is "stop" or "exit")
                     {
                         if (!process.WaitForExit(90000))
