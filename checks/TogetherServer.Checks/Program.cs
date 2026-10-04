@@ -3661,7 +3661,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 Id = voters[1].Id, AssignedProfileIds = [profile.Id],
                 CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
-                SharedWorldGrants = new() { [profile.Id] = new(Receive: true) },
+                SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
                 SharedWorldPublicKey = Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo())
             }]
             });
@@ -3719,10 +3719,55 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 Require(valid.IsSuccessStatusCode,
                     "old Host did not ingest the signed newer authority over authenticated HTTPS: " +
                     valid.StatusCode + " " + await valid.Content.ReadAsStringAsync());
+                using var reviewRoster = await client.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world/roster");
+                using var reviewHistory = await client.GetAsync(route);
+                var reviewed = await reviewHistory.Content.ReadFromJsonAsync<List<WorldAuthorityRecord>>();
+                Require(reviewRoster.IsSuccessStatusCode && reviewHistory.IsSuccessStatusCode &&
+                    reviewed?.Count == 2 &&
+                    reviewed.Select(item => item.RecordHash).ToHashSet().SetEquals(
+                        [accepted.RecordHash, newer.RecordHash]),
+                    "voter-only PC could not review competing signed histories on the fenced Host");
+                using (var voterData = Data("authority-review-voter"))
+                {
+                    voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+                        new FriendConfiguration
+                        {
+                            Endpoint = oldAddress,
+                            Fingerprint = HostIdentity.Fingerprint(oldCertificate),
+                            DeviceId = voters[1].Id,
+                            Credential = bearer,
+                            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                            ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId },
+                            SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+                            SharedRosterFloors = new() { [profile.Id] = new(roster.GroupId,
+                                noOverrideRoster.Epoch, noOverrideRoster.Revision,
+                                noOverrideRoster.Signature) }
+                        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    voterData.SaveProtected($"shared-world-pc-signing-{voters[1].Id:N}.protected",
+                        voters[1].Key.ExportPkcs8PrivateKey());
+                    using var voterLink = new FriendLink(voterData, "friend.protected");
+                    var voterReview = await voterLink.ReviewSharedHistoryAsync(profile.Id);
+                    Require(voterReview.Ok && voterReview.RecordCount == 2 &&
+                        voterReview.CompetingHeads == 2,
+                        "voter-only Friend could not fetch signed conflict history without save consent: " +
+                        voterReview.Code);
+                }
+                using var deniedVersion = await client.GetAsync(
+                    $"api/companion/servers/{profile.Id}/shared-world");
+                Require(deniedVersion.StatusCode == HttpStatusCode.Forbidden,
+                    "voter-only PC gained save transfer access from review permission");
+                File.WriteAllText(fixtureRosterDirty, "review pending");
+                using var dirtyHistory = await client.GetAsync(route);
+                Require(dirtyHistory.StatusCode == HttpStatusCode.Forbidden,
+                    "dirty signed membership exposed conflict history");
+                File.Delete(fixtureRosterDirty);
                 Require(fixturePairing.Revoke(voters[1].Id).Ok,
                     "fixture could not revoke the authority sender");
+                using var revokedHistory = await client.GetAsync(route);
                 using var afterRevoke = await client.PostAsJsonAsync(route, newer);
-                Require(afterRevoke.StatusCode == HttpStatusCode.Forbidden &&
+                Require(revokedHistory.StatusCode == HttpStatusCode.Forbidden &&
+                    afterRevoke.StatusCode == HttpStatusCode.Forbidden &&
                     !fixturePairing.CommitSharedWorldAuthority(voters[1].Id, profile.Id,
                         Convert.ToBase64String(voters[1].Key.ExportSubjectPublicKeyInfo()),
                         () => throw new Exception("revoked sender reached authority append")),
@@ -3735,7 +3780,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
             Require((await manager.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
                 "old Host still served the shared head");
             Require(await manager.SharedWorldRosterAsync(profile.Id) is null,
-                "old Host still served the signed roster");
+                "old Host still served the signed roster through its sharing path");
             Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, voters[0].Id,
                 new SharedWorldReceipt(1, version.GroupId, profile.Id, version.VersionHash,
                     voters[0].Id, roster.Epoch, roster.Revision, Guid.NewGuid(), ""))).Code ==

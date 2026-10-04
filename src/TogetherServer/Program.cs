@@ -1558,6 +1558,9 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/restore",
 app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext context, Guid id) =>
     friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/shared-world/history/review", async (HttpContext context, Guid id) =>
+    friendMode ? Results.Json(await friend.ReviewSharedHistoryAsync(id, context.RequestAborted)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/offer", async (Guid id) =>
     friendMode ? Results.Json(await friend.PrepareRecoveryOfferAsync(id)) :
     Results.Conflict(new { code = "HostMode" }));

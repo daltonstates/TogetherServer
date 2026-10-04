@@ -260,6 +260,35 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             return (new(false, "RosterDenied", "The current signed roster does not allow this transfer."), null);
         }
 
+
+        async Task<(PairingDecision Decision, PairedDevice? Current)> AuthorizeHistoryReview(
+            PairedDevice loaded, Guid profileId)
+        {
+            if (pairing.SharedRosterDirty(profileId))
+                return (new(false, "RosterUnavailable", "The signed roster needs owner repair."), null);
+            var decision = pairing.AuthorizeSharedHistory(loaded, profileId, out var current);
+            if (!decision.Ok || current is null) return (decision, null);
+            try
+            {
+                var roster = await manager.SharedWorldReviewRosterAsync(profileId);
+                decision = pairing.AuthorizeSharedHistory(current, profileId, out var refreshed);
+                if (decision.Ok && refreshed?.SharedWorldPublicKey is not null && roster is not null &&
+                    roster.Members.SingleOrDefault(item => item.DeviceId == refreshed.Id) is
+                    { Revoked: false } member &&
+                    member.PublicKey == refreshed.SharedWorldPublicKey &&
+                    (member.Grants.Receive &&
+                        refreshed.SharedWorldGrants?.GetValueOrDefault(profileId)?.Receive == true ||
+                     member.Grants.RecoveryVoter &&
+                        refreshed.SharedWorldGrants?.GetValueOrDefault(profileId)?.RecoveryVoter == true) &&
+                    (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow) &&
+                    !pairing.SharedRosterDirty(profileId))
+                    return (decision, refreshed);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { /* Invalid review material denies access. */ }
+            return (new(false, "RosterDenied", "The current signed roster does not allow history review."), null);
+        }
+
         async Task<CompanionStatus> PublicStatus(Guid deviceId)
         {
             var snapshot = await manager.CompanionSnapshotAsync();
@@ -563,22 +592,22 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            var auth = await AuthorizeShared(device!, profileId);
+            var auth = await AuthorizeHistoryReview(device!, profileId);
             if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
-            var roster = await manager.SharedWorldRosterAsync(profileId);
-            var recheck = await AuthorizeShared(auth.Current!, profileId);
+            var roster = await manager.SharedWorldReviewRosterAsync(profileId);
+            var recheck = await AuthorizeHistoryReview(auth.Current!, profileId);
             return recheck.Decision.Ok ? Results.Json(roster) : Results.Json(recheck.Decision, statusCode: 403);
         });
         companion.MapGet("/servers/{profileId:guid}/shared-world/authority", async (HttpContext context, Guid profileId) =>
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            var auth = await AuthorizeShared(device!, profileId);
+            var auth = await AuthorizeHistoryReview(device!, profileId);
             if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
             var offset = int.TryParse(context.Request.Query["offset"], out var parsedOffset) &&
                 parsedOffset >= 0 ? parsedOffset : 0;
-            var records = await manager.SharedWorldAuthorityAsync(profileId, offset);
-            var recheck = await AuthorizeShared(auth.Current!, profileId);
+            var records = await manager.SharedWorldReviewHistoryAsync(profileId, offset);
+            var recheck = await AuthorizeHistoryReview(auth.Current!, profileId);
             return !recheck.Decision.Ok ? Results.Json(recheck.Decision, statusCode: 403) :
                 records is null ? Results.Conflict(new { code = "AuthorityUnavailable" }) :
                 Results.Json(records);
