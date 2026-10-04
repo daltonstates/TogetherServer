@@ -23,6 +23,7 @@
     <InternalsVisibleTo Include="TogetherServer.CompanionChecks" />
     <InternalsVisibleTo Include="TogetherServer.MinecraftChecks" />
     <InternalsVisibleTo Include="TogetherServer.FactorioChecks" />
+    <InternalsVisibleTo Include="TogetherServer.TerrariaChecks" />
     <InternalsVisibleTo Include="TogetherServer.ValheimChecks" />
     <InternalsVisibleTo Include="TogetherServer.CustomChecks" />
     <InternalsVisibleTo Include="TogetherServer.SharedHistoryChecks" />
