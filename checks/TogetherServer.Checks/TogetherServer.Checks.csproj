@@ -7,7 +7,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\TogetherServer\TogetherServer.csproj" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
+    <ProjectReference Include="..\..\src\TogetherServer\TogetherServer.csproj" />
   </ItemGroup>
 </Project>

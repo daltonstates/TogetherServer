@@ -1,9 +1,10 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
+using System.Net.NetworkInformation;
 using System.Text.Json;
 using TogetherServer;
+using TogetherServer.CompanionChecks;
 
 internal static class CoreRemoteJourney
 {
@@ -42,6 +43,14 @@ internal static class CoreRemoteJourney
             friend = StartApp(appPath, "--friend", friendPort, friendData);
             await WaitLocalAsync(hostPort);
             await WaitLocalAsync(friendPort);
+            WindowsListenerOwners.RequireTogetherServerOwner(hostPort, host);
+            WindowsListenerOwners.RequireTogetherServerOwner(friendPort, friend);
+            var appAssembly = typeof(CompanionServer).Assembly;
+            if (typeof(DesktopWindow).Assembly != appAssembly ||
+                appAssembly.GetName().Name != "TogetherServer" ||
+                appAssembly.GetType("TogetherServer.AppBackgroundTasks") is null ||
+                typeof(DesktopWindow).GetMethod(nameof(DesktopWindow.Notify)) is null)
+                throw new Exception("Tray notifications are not implemented in the packaged app assembly.");
             using var owner = LocalClient(hostPort);
             using var friendLocal = LocalClient(friendPort);
 
@@ -66,6 +75,9 @@ internal static class CoreRemoteJourney
                 invite.GetProperty("listenerActive").GetBoolean() &&
                 !string.IsNullOrWhiteSpace(password),
                 "Host did not create a usable server code and HTTPS listener");
+            WindowsListenerOwners.RequireTogetherServerOwner(companionPort, host);
+            Console.WriteLine("PASS GUI and Friend control listeners belong to TogetherServer.exe; tray notification code is in its app assembly");
+            passes++;
 
             var paired = await PostAsync<FriendPairRequest, FriendActionResult>(friendLocal,
                 "/api/local/friend/pair", new(password!));
@@ -335,40 +347,26 @@ internal static class CoreRemoteJourney
 
     private static int FreeTcpPort(params int[] excluded)
     {
+        var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners()
+            .Select(endpoint => endpoint.Port).Concat(excluded).ToHashSet();
         for (var attempt = 0; attempt < 200; attempt++)
         {
             var port = Random.Shared.Next(51000, 60000);
-            if (excluded.Contains(port)) continue;
-            try
-            {
-                var listener = new TcpListener(IPAddress.Loopback, port);
-                listener.Start();
-                listener.Stop();
-                return port;
-            }
-            catch (SocketException) { }
+            if (!active.Contains(port)) return port;
         }
-        throw new Exception("no free TCP port was available for the core remote journey");
+        throw new Exception("no unused TCP port was found for the core remote journey");
     }
 
     private static int FreeUdpPair()
     {
+        var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
+            .Select(endpoint => endpoint.Port).ToHashSet();
         for (var attempt = 0; attempt < 200; attempt++)
         {
             var port = Random.Shared.Next(36000, 50000);
-            try
-            {
-                using var game = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-                { ExclusiveAddressUse = true };
-                using var query = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-                { ExclusiveAddressUse = true };
-                game.Bind(new IPEndPoint(IPAddress.Loopback, port));
-                query.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
-                return port;
-            }
-            catch (SocketException) { }
+            if (!active.Contains(port) && !active.Contains(port + 1)) return port;
         }
-        throw new Exception("no free UDP port pair was available for the disposable Valheim fixture");
+        throw new Exception("no unused UDP pair was found for the disposable Valheim fixture");
     }
 
     private static void Require(bool condition, string message)

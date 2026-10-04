@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 
@@ -19,7 +20,7 @@ public static class GameKinds
 }
 
 public sealed record GamePort(string Protocol, int Port, string Label, string Family = "Any");
-internal enum PortProbeMode { AllInterfaces, LoopbackOnly }
+internal enum PortProbeMode { AllInterfaces, LoopbackOnly, ObserveOnly }
 public sealed record GameValidation(string Code, string Message);
 public sealed record GameLaunchResult(string Code, string Message, int ProcessId);
 public sealed record GamePlayerCount(int Online, int? Capacity = null);
@@ -55,13 +56,16 @@ public sealed class GameServerRegistry
     public const string FixtureOptInEnvironmentVariable = "TOGETHERSERVER_ENABLE_FIXTURE_DRIVER";
     private readonly Dictionary<string, IGameServerDriver> drivers;
     private readonly PortProbeMode portProbeMode;
+    private readonly Func<IEnumerable<GamePort>, bool>? portAvailabilityOverride;
 
     public GameServerRegistry(LocalData data, bool includeFixture = false)
         : this(data, includeFixture, PortProbeMode.AllInterfaces) { }
 
-    internal GameServerRegistry(LocalData data, bool includeFixture, PortProbeMode portProbeMode)
+    internal GameServerRegistry(LocalData data, bool includeFixture, PortProbeMode portProbeMode,
+        Func<IEnumerable<GamePort>, bool>? portAvailabilityOverride = null)
     {
         this.portProbeMode = portProbeMode;
+        this.portAvailabilityOverride = portAvailabilityOverride;
         var registered = new List<IGameServerDriver>
         {
             new ValheimServerDriver(data),
@@ -86,7 +90,8 @@ public sealed class GameServerRegistry
     public IReadOnlyList<IGameServerDriver> All => drivers.Values.OrderBy(driver => driver.DisplayName).ToList();
     public bool TryGet(string? kind, out IGameServerDriver driver) => drivers.TryGetValue(kind ?? "", out driver!);
 
-    internal bool PortsAvailableForStart(IEnumerable<GamePort> ports) => PortsAvailable(ports, portProbeMode);
+    internal bool PortsAvailableForStart(IEnumerable<GamePort> ports) =>
+        portAvailabilityOverride?.Invoke(ports) ?? PortsAvailable(ports, portProbeMode);
 
     internal static IPAddress ProbeAddress(string family, PortProbeMode mode) =>
         family == "IPv6"
@@ -95,6 +100,16 @@ public sealed class GameServerRegistry
 
     internal static bool PortsAvailable(IEnumerable<GamePort> ports, PortProbeMode mode)
     {
+        if (mode == PortProbeMode.ObserveOnly)
+        {
+            try
+            {
+                var properties = IPGlobalProperties.GetIPGlobalProperties();
+                return PortsAvailableInTables(ports, properties.GetActiveTcpListeners(),
+                    properties.GetActiveUdpListeners());
+            }
+            catch (NetworkInformationException) { return false; }
+        }
         var sockets = new List<Socket>();
         try
         {
@@ -114,6 +129,25 @@ public sealed class GameServerRegistry
         }
         catch (SocketException) { return false; }
         finally { foreach (var socket in sockets) socket.Dispose(); }
+    }
+
+    // Check runners inspect the OS tables instead of opening their own sockets.
+    // The packaged app still uses an exclusive bind in AllInterfaces mode before Start.
+    internal static bool PortsAvailableInTables(IEnumerable<GamePort> ports,
+        IReadOnlyList<IPEndPoint> tcp, IReadOnlyList<IPEndPoint> udp)
+    {
+        var seen = new HashSet<(string Protocol, int Port, string Family)>();
+        foreach (var port in ports)
+        {
+            var protocol = port.Protocol.ToUpperInvariant();
+            if (!seen.Add((protocol, port.Port, port.Family))) return false;
+            var listeners = protocol == "TCP" ? tcp : udp;
+            if (listeners.Any(endpoint => endpoint.Port == port.Port &&
+                (port.Family == "Any" || endpoint.Address.AddressFamily ==
+                    (port.Family == "IPv6" ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork))))
+                return false;
+        }
+        return true;
     }
 }
 

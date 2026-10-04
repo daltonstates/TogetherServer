@@ -3,11 +3,13 @@ using System.IO.Pipes;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using TogetherServer;
+using TogetherServer.CompanionChecks;
 
 var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
@@ -219,32 +221,30 @@ try
     using (var lifetimeData = new LocalData(Path.Combine(root, "friend-disposal-race")))
     {
         var lifetimeConnectionId = Guid.NewGuid();
-        var lifetimeListener = new TcpListener(IPAddress.Loopback, 0);
-        lifetimeListener.Start();
-        try
+        using var pendingResponse = new PendingResponseHandler();
         {
-            var lifetimePort = ((IPEndPoint)lifetimeListener.LocalEndpoint).Port;
             lifetimeData.SaveProtected("friend-connections.protected",
                 JsonSerializer.SerializeToUtf8Bytes(new[] { lifetimeConnectionId }, webJson));
             lifetimeData.SaveProtected($"friend-{lifetimeConnectionId:N}.protected",
                 JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
                 {
-                    Endpoint = $"https://127.0.0.1:{lifetimePort}",
+                    Endpoint = "https://127.0.0.1:5131",
                     Fingerprint = new string('A', 64),
                     DeviceId = Guid.NewGuid(),
                     Credential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
                     CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30)
                 }, webJson));
-            using var lifetimeService = new FriendService(lifetimeData);
+            using var lifetimeService = new FriendService(lifetimeData, (_, _) =>
+                new HttpClient(pendingResponse, disposeHandler: false)
+                { BaseAddress = new Uri("https://127.0.0.1:5131/") });
             var lifetimePoll = lifetimeService.PollAsync();
-            using var acceptedLifetimeClient = await lifetimeListener.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            await pendingResponse.Entered.WaitAsync(TimeSpan.FromSeconds(2));
             lifetimeService.Dispose();
-            acceptedLifetimeClient.Dispose();
+            pendingResponse.Release();
             await lifetimePoll.WaitAsync(TimeSpan.FromSeconds(2));
             Require((await lifetimeService.RequestAsync(Guid.NewGuid(), "start")).Code == "ConnectionClosed",
                 "a disposed Friend connection owner accepted more work");
         }
-        finally { lifetimeListener.Stop(); }
     }
     Console.WriteLine("PASS Friend disposal is safe while a poll owns the link"); passes++;
 
@@ -502,10 +502,14 @@ try
         idlePorts?.Control.State == "Idle" && idlePorts.Control.RemoteState == "Not needed",
         "an enabled listener with no invite or usable credential was reported as a failure");
     Console.WriteLine("PASS no active invite or paired PC is a normal idle Friend state"); passes++;
-    using (var occupiedCompanionPort = new TcpListener(IPAddress.Loopback, companionPort))
+    // A disposable packaged app owns the occupied socket, so Windows never
+    // attributes a firewall/access prompt to CompanionChecks.exe.
+    var portOccupant = StartApp(appPath, "--friend", companionPort,
+        Path.Combine(root, "occupied-companion-port"));
+    try
     {
-        occupiedCompanionPort.Server.ExclusiveAddressUse = true;
-        occupiedCompanionPort.Start();
+        await WaitLocal(companionPort);
+        WindowsListenerOwners.RequireTogetherServerOwner(companionPort, portOccupant);
         var blockedInvite = await OwnerPost<ServerInviteRequest, JsonElement>(owner,
             $"/api/local/servers/{profile.Id}/invite",
             new(false, true, true, DurationMinutes: 30, DeviceLimit: 4));
@@ -515,7 +519,10 @@ try
             "a listener bind failure with closed GUI diagnostic pipes returned HTTP 500 or lost its typed warning: " +
             blockedInvite);
     }
+    finally { StopApp(portOccupant); }
     var inviteA = await ServerInvite(owner, profile.Id, true, enableConnections: true);
+    WindowsListenerOwners.RequireTogetherServerOwner(hostPort, host!);
+    WindowsListenerOwners.RequireTogetherServerOwner(companionPort, host!);
     var inviteB = await ServerInvite(owner, joinProfile.Id, false);
     var passwordA = PairingPassword.Encode(inviteA);
     Require(passwordA.StartsWith("TS3-", StringComparison.Ordinal) &&
@@ -2207,19 +2214,14 @@ finally
 
 static int FreeTcpPort(params int[] exclude)
 {
+    var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners()
+        .Select(endpoint => endpoint.Port).Concat(exclude).ToHashSet();
     for (var i = 0; i < 200; i++)
     {
         var port = Random.Shared.Next(51000, 60000);
-        if (exclude.Contains(port)) continue;
-        try
-        {
-            var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, port);
-            listener.Start(); listener.Stop();
-            return port;
-        }
-        catch (System.Net.Sockets.SocketException) { }
+        if (!active.Contains(port)) return port;
     }
-    throw new Exception("No local TCP port available.");
+    throw new Exception("No unused TCP port found in the Windows port table.");
 }
 
 static Process StartApp(string path, string mode, int port, string data, int stopDelayMs = 0,
@@ -2443,6 +2445,23 @@ sealed class ProbeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken) => Task.FromResult(respond(request));
+}
+
+sealed class PendingResponseHandler : HttpMessageHandler
+{
+    private readonly TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<HttpResponseMessage> response =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task Entered => entered.Task;
+    public void Release() => response.TrySetResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        entered.TrySetResult();
+        return await response.Task.WaitAsync(cancellationToken);
+    }
 }
 
 sealed class ManualTimeProvider(DateTimeOffset initialUtcNow) : TimeProvider

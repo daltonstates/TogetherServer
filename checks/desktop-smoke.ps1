@@ -9,20 +9,24 @@ if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath
 # Routine runs stay in the tray so they do not interrupt the desktop. -Interactive exercises the visible
 # no-argument Explorer path, custom window controls, sizing, and native file pickers.
 if ($Port -eq 0) {
-    $freePortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-    $freePortProbe.Start()
-    $Port = ([Net.IPEndPoint]$freePortProbe.LocalEndpoint).Port
-    $freePortProbe.Stop()
+    $activeTcp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+        ForEach-Object { $_.Port }
+    for ($attempt = 0; $attempt -lt 100 -and $Port -eq 0; $attempt++) {
+        $candidate = Get-Random -Minimum 51000 -Maximum 60000
+        if ($activeTcp -notcontains $candidate) { $Port = $candidate }
+    }
+    if ($Port -eq 0) { throw 'No unused local app port found in the Windows port table.' }
 }
 $launchArguments = if (!$Interactive) {
     if ($Port -eq 5127) { @('--startup') } else { @('--startup', '--port', "$Port") }
 } elseif ($Port -eq 5127) { @() } else { @('--desktop', '--port', "$Port") }
 $launchLabel = if (!$Interactive) { 'background desktop EXE' }
     elseif ($launchArguments.Count -eq 0) { 'no-argument EXE' } else { 'isolated desktop EXE' }
-$probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
-try { $probe.Start() }
-catch { throw "Local GUI port $Port is in use; choose another port for this desktop smoke." }
-finally { $probe.Stop() }
+$activeTcp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+    ForEach-Object { $_.Port }
+if ($activeTcp -contains $Port) {
+    throw "Local GUI port $Port is in use; choose another port for this desktop smoke."
+}
 
 $caseRoot = Join-Path $repository ('local-data/desktop-smoke/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
@@ -124,23 +128,15 @@ function Invoke-ChromeButton($process, [string]$name) {
 }
 
 function Get-FreeUdpPair {
+    $activeUdp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveUdpListeners() |
+        ForEach-Object { $_.Port }
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         $candidate = Get-Random -Minimum 35000 -Maximum 45000
-        $one = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
-            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
-        $two = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
-            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
-        try {
-            $one.ExclusiveAddressUse = $true
-            $two.ExclusiveAddressUse = $true
-            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate))
-            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate + 1))
+        if ($activeUdp -notcontains $candidate -and $activeUdp -notcontains ($candidate + 1)) {
             return $candidate
         }
-        catch [Net.Sockets.SocketException] { }
-        finally { $one.Dispose(); $two.Dispose() }
     }
-    throw 'Could not reserve a free UDP port pair for the desktop smoke.'
+    throw 'No unused UDP port pair found in the Windows port table.'
 }
 
 function Start-Gui {

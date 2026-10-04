@@ -25,16 +25,13 @@ $install = Join-Path $root 'install'
 New-Item -ItemType Directory -Path $stage, $install -Force | Out-Null
 $port = 5127
 $targetFileName = 'TogetherServer-win-x64 (4).exe'
-$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
-try { $portProbe.Start() }
-catch [Net.Sockets.SocketException] {
+$activeTcp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+    ForEach-Object { $_.Port }
+if ($activeTcp -contains $port) {
     $port = 5128
     $targetFileName = 'TogetherServer DEVELOPMENT.exe'
-    $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
-    try { $portProbe.Start() }
-    catch [Net.Sockets.SocketException] { throw 'Update handoff needs production port 5127 or staging port 5128 to be free.' }
 }
-finally { $portProbe.Stop() }
+if ($activeTcp -contains $port) { throw 'Update handoff needs production port 5127 or staging port 5128 to be free.' }
 $target = Join-Path $install $targetFileName
 $targetProcessName = [IO.Path]::GetFileName($target)
 $payload = Join-Path $stage 'TogetherServer-win-x64.exe'

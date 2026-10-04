@@ -129,16 +129,20 @@ internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
             using var client = new TcpClient(AddressFamily.InterNetwork);
             using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
             client.ConnectAsync(IPAddress.Loopback, run.GamePort, timeout.Token).GetAwaiter().GetResult();
-            return new(true, "TerrariaTcpOpen", "Listening",
-                "A local TCP listener is open. Terraria readiness, player count, Friend join, and save integrity are unverified; remote Stop stays blocked.",
-                PlayerCountTrusted: false);
+            return LocalTcpObservation(true);
         }
         catch (Exception ex) when (ex is SocketException or OperationCanceledException or IOException)
         {
-            return new(false, "TerrariaStarting", "Starting",
-                "The exact managed process exists; waiting for a local TCP listener.", PlayerCountTrusted: false);
+            return LocalTcpObservation(false);
         }
     }
+
+    internal static GameHealthResult LocalTcpObservation(bool open) => open
+        ? new(true, "TerrariaTcpOpen", "Listening",
+            "A local TCP listener is open. Terraria readiness, player count, Friend join, and save integrity are unverified; remote Stop stays blocked.",
+            PlayerCountTrusted: false)
+        : new(false, "TerrariaStarting", "Starting",
+            "The exact managed process exists; waiting for a local TCP listener.", PlayerCountTrusted: false);
 
     public Task<GameStopResult> StopAsync(Process process, ManagedRun run)
     {

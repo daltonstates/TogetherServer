@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -45,20 +46,16 @@ void RequireThrows<T>(Action action, string message) where T : Exception
 }
 int FreePort()
 {
+    // This is a read-only candidate lookup. A check runner must not own a
+    // listener that Windows could present as a separate app firewall request.
+    var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
+        .Select(endpoint => endpoint.Port).ToHashSet();
     for (var i = 0; i < 100; i++)
     {
         var port = Random.Shared.Next(35000, 59000);
-        try
-        {
-            using var one = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            using var two = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            one.Bind(new IPEndPoint(IPAddress.Loopback, port));
-            two.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
-            return port;
-        }
-        catch (SocketException) { }
+        if (!active.Contains(port) && !active.Contains(port + 1)) return port;
     }
-    throw new Exception("No free UDP pair found.");
+    throw new Exception("No unused UDP pair found in the Windows port table.");
 }
 void CreateJunction(string link, string target)
 {
@@ -77,7 +74,7 @@ void CreateJunction(string link, string target)
         throw new Exception("junction creation failed: " + process.StandardError.ReadToEnd());
 }
 LocalData Data(string name) => new(Path.Combine(root, name));
-GameServerRegistry Games(LocalData data) => new(data, true, PortProbeMode.LoopbackOnly);
+GameServerRegistry Games(LocalData data) => new(data, true, PortProbeMode.ObserveOnly);
 HostManager Manager(LocalData data) => new(data, Games(data));
 
 await Check("live save candidates stay closed until a real load test", () =>
@@ -1102,7 +1099,8 @@ await Check("companion roster revisions use bounded TestServer pages", async () 
     }
     using var gate = new SemaphoreSlim(1, 1);
     var listener = new CompanionServer(data, manager, pairing, Games(data),
-        new ServerLogService(data, manager), gate, port + 2);
+        new ServerLogService(data, manager), gate, port + 2,
+        inMemoryTransport: builder => builder.UseTestServer());
     var builder = WebApplication.CreateBuilder(Array.Empty<string>());
     builder.WebHost.UseTestServer();
     await using var app = listener.BuildInMemoryApp(builder, settings, new Uri(address));
@@ -1273,7 +1271,7 @@ await Check("delegated publication serves current permissions and owner can revo
     profile.SharedSavesEnabled = true;
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     var manager = new HostManager(host,
-        new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
+        new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "Host fixture setup failed");
     using var delegateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     using var targetKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -1354,7 +1352,7 @@ await Check("owner edit preserves a delegated revoke across repair and restart",
     var profile = Profile("owner-delta", "owner-delta-world", FreePort());
     profile.SharedSavesEnabled = true;
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
-    var games = new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly);
+    var games = new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.ObserveOnly);
     var manager = new HostManager(data, games);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "Host setup failed");
     using var delegateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -1849,7 +1847,8 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     using var modeGate = new SemaphoreSlim(1, 1);
     var listener = new CompanionServer(hostData, manager, pairing, Games(hostData),
-        new ServerLogService(hostData, manager), modeGate, companionPort + 2);
+        new ServerLogService(hostData, manager), modeGate, companionPort + 2,
+        inMemoryTransport: builder => builder.UseTestServer());
     var builder = WebApplication.CreateBuilder(Array.Empty<string>());
     builder.WebHost.UseTestServer();
     await using var app = listener.BuildInMemoryApp(builder, settings, new Uri(address));
@@ -2182,7 +2181,7 @@ await Check("status stays responsive and expires trusted counts while lifecycle 
             OnlinePlayers: 0, PlayerCountTrusted: true)
     };
     using var power = new BlockingPowerGuard();
-    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock, power);
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly), clock, power);
     Require((await manager.UpdateSettingsAsync(settings)).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
     try
@@ -2293,16 +2292,23 @@ await Check("managed port overlap", async () =>
     finally { Require((await manager.StopAsync(a.Id)).Ok, "fixture cleanup failed"); }
 });
 
-await Check("occupied local UDP port", async () =>
+await Check("observed occupied UDP port blocks Start", async () =>
 {
     using var data = Data("bound-port");
-    var manager = Manager(data);
     var port = FreePort();
+    IReadOnlyList<GamePort>? observed = null;
+    var games = new GameServerRegistry(data, true, PortProbeMode.ObserveOnly, ports =>
+    {
+        observed = ports.ToArray();
+        return GameServerRegistry.PortsAvailableInTables(observed, [],
+            [new IPEndPoint(IPAddress.Loopback, port)]);
+    });
+    var manager = new HostManager(data, games);
     var profile = Profile("bound-port", "bound-port", port);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
-    using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    socket.Bind(new IPEndPoint(IPAddress.Loopback, port));
-    Require((await manager.StartAsync(profile.Id)).Code == "PortInUse", "occupied port was allowed");
+    Require((await manager.StartAsync(profile.Id)).Code == "PortInUse" &&
+        observed?.Any(item => item.Port == port && item.Protocol == "UDP") == true,
+        "Start ignored an occupied observed game port");
 });
 
 await Check("restart reattaches exact fixture identity", async () =>
@@ -2362,7 +2368,7 @@ await Check("identity mismatch blocks start and never stops an unrelated process
 await Check("game drivers are explicit and unknown games fail closed", async () =>
 {
     using var data = Data("drivers");
-    var productionRegistry = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly);
+    var productionRegistry = new GameServerRegistry(data, false, PortProbeMode.ObserveOnly);
     Require(!productionRegistry.TryGet(GameKinds.Fixture, out _),
         "the synthetic fixture driver was enabled without an explicit test opt-in");
     var registry = Games(data);
@@ -2377,18 +2383,19 @@ await Check("game drivers are explicit and unknown games fail closed", async () 
     Require(!result.Ok && result.Code == "InvalidSettings", "an unregistered game profile was accepted");
 });
 
-await Check("test port probes stay on loopback while app probes cover all interfaces", async () =>
+await Check("check port observations use tables while app probes cover all interfaces", async () =>
 {
     Require(GameServerRegistry.ProbeAddress("IPv4", PortProbeMode.LoopbackOnly).Equals(IPAddress.Loopback) &&
         GameServerRegistry.ProbeAddress("IPv6", PortProbeMode.LoopbackOnly).Equals(IPAddress.IPv6Loopback) &&
         GameServerRegistry.ProbeAddress("IPv4", PortProbeMode.AllInterfaces).Equals(IPAddress.Any) &&
         GameServerRegistry.ProbeAddress("IPv6", PortProbeMode.AllInterfaces).Equals(IPAddress.IPv6Any),
         "port probe mode selected the wrong bind address");
-    using var occupied = new TcpListener(IPAddress.Loopback, 0);
-    occupied.Start();
-    var port = ((IPEndPoint)occupied.LocalEndpoint).Port;
-    Require(!GameServerRegistry.PortsAvailable([new("TCP", port, "occupied fixture")],
-        PortProbeMode.LoopbackOnly), "loopback probe missed an occupied test port");
+    var port = FreePort();
+    Require(!GameServerRegistry.PortsAvailableInTables([new("TCP", port, "occupied fixture")],
+        [new IPEndPoint(IPAddress.Loopback, port)], []),
+        "read-only port observation missed an occupied test port");
+    Require(GameServerRegistry.PortsAvailableInTables([new("TCP", port, "candidate")], [], []),
+        "read-only port observation rejected an empty table");
     await Task.CompletedTask;
 });
 
@@ -2588,13 +2595,11 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
 {
     using var data = Data("port-diagnostics");
     var gamePort = FreePort();
-    using var game = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    using var query = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-    game.Bind(new IPEndPoint(IPAddress.Loopback, gamePort));
-    query.Bind(new IPEndPoint(IPAddress.Loopback, gamePort + 1));
-    using var control = new TcpListener(IPAddress.Loopback, 0);
-    control.Start();
-    var controlPort = ((IPEndPoint)control.LocalEndpoint).Port;
+    var controlPort = FreePort();
+    var observed = new PortDiagnosticsPortTable(
+        [new IPEndPoint(IPAddress.Loopback, controlPort)],
+        [new IPEndPoint(IPAddress.Loopback, gamePort),
+            new IPEndPoint(IPAddress.Loopback, gamePort + 1)]);
     var profile = new ServerProfile
     {
         Kind = GameKinds.Valheim,
@@ -2615,7 +2620,7 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         "fixture", "Host", new Dictionary<Guid, bool>(), root);
     var device = new DeviceView(Guid.NewGuid(), profile.Id, [profile.Id], "Friend PC", true, false, false, true,
         DateTimeOffset.UtcNow.AddDays(1), DateTimeOffset.UtcNow);
-    var diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
+    var diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), true, [device], observed);
     Require(diagnostics.Games.Single().State == "Loopback only" &&
         diagnostics.Games.Single().RouteKind == "Direct" && diagnostics.Games.Single().Kind == GameKinds.Valheim,
         "loopback-only fixture ports or their direct route were not reported");
@@ -2624,41 +2629,42 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
         diagnostics.Control.RemoteDetail.Contains("network location is unknown", StringComparison.Ordinal),
         "local TCP listener or authenticated Friend evidence overstated the outside-network route");
     profile.Crossplay = true;
-    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
+    diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), true, [device], observed);
     Require(diagnostics.Games.Single().RouteKind == "Relay" && diagnostics.Games.Single().State == "Relay ready",
         "Valheim Crossplay relay was presented as direct game-port forwarding");
     profile.Crossplay = false;
     settings.CompanionBindAddress = "0.0.0.0";
-    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [device]);
+    diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), true, [device], observed);
     Require(diagnostics.Control.State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
         "a listener on the wrong bind address was reported open");
     settings.CompanionBindAddress = "127.0.0.1";
     var staleDevice = device with { LastHeartbeatUtc = DateTimeOffset.UtcNow.AddSeconds(-46) };
-    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, [staleDevice]);
+    diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), true, [staleDevice], observed);
     Require(diagnostics.Control.RemoteState == "Not verified", "a stale heartbeat was reported as connected");
-    diagnostics = PortDiagnostics.Read(snapshot, Games(data), false, [], "TLS listener failed");
+    diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), false, [], observed, "TLS listener failed");
     Require(diagnostics.Control.State == "Not listening" && diagnostics.Control.Detail == "TLS listener failed",
         "an enabled but failed HTTPS listener was reported off");
-    diagnostics = PortDiagnostics.Read(snapshot, Games(data), false, [], null, CompanionListenerStates.Idle);
+    diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), false, [], observed,
+        null, CompanionListenerStates.Idle);
     Require(diagnostics.Control.State == "Idle" && diagnostics.Control.RemoteState == "Not needed" &&
         diagnostics.Control.Detail.Contains("Nothing is wrong", StringComparison.Ordinal),
         "an unused Friend listener was presented as a connection failure");
-    query.Dispose();
-    diagnostics = PortDiagnostics.Read(snapshot, Games(data), true, []);
+    diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), true, [],
+        observed with { Udp = [new IPEndPoint(IPAddress.Loopback, gamePort)] });
     Require(diagnostics.Games.Single().State == "Closed on PC" && diagnostics.Control.RemoteState == "Not verified",
         "a missing UDP port or absent Friend route was claimed as open");
-    using var loopbackGame = new TcpListener(IPAddress.Loopback, 0);
-    loopbackGame.Start();
+    var javaPort = FreePort();
     var javaProfile = new ServerProfile
     {
         Kind = GameKinds.MinecraftJava,
         Name = "Local game",
-        GamePort = ((IPEndPoint)loopbackGame.LocalEndpoint).Port
+        GamePort = javaPort
     };
     var javaSnapshot = new HostSnapshot(Settings(javaProfile),
         [new RunView(javaProfile.Id, "Ready", "fixture", 1)],
         "fixture", "Host", new Dictionary<Guid, bool>(), root);
-    var javaPorts = PortDiagnostics.Read(javaSnapshot, Games(data), false, []);
+    var javaPorts = PortDiagnostics.ReadObserved(javaSnapshot, Games(data), false, [],
+        new([new IPEndPoint(IPAddress.Loopback, javaPort)], []));
     Require(javaPorts.Games.Single().State == "Loopback only" &&
         javaPorts.Games.Single().Kind == GameKinds.MinecraftJava,
         "a loopback-only game socket was reported as available to other PCs");
@@ -2945,7 +2951,7 @@ await Check("exact-run session evidence accumulates trusted player observations 
         HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
             OnlinePlayers: 2, MaxPlayers: 10, PlayerCountTrusted: true)
     };
-    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock);
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly), clock);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
     await manager.RefreshObservationsAsync();
@@ -2961,7 +2967,7 @@ await Check("exact-run session evidence accumulates trusted player observations 
     Require(recorded.LastTrustedOnlinePlayers == 2 && recorded.MaximumTrustedOnlinePlayers == 2,
         "an Unknown or untrusted observation overwrote trusted evidence with zero");
 
-    var restarted = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock);
+    var restarted = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly), clock);
     driver.HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
         OnlinePlayers: 5, MaxPlayers: 10, PlayerCountTrusted: true);
     await restarted.RefreshObservationsAsync();
@@ -2995,7 +3001,7 @@ await Check("failed and unconfirmed Stop never archive a successful session", as
     using var data = Data("session-stop-failure");
     var profile = Profile("session-stop-failure", "session-stop-failure", FreePort());
     var driver = new ObservationFixtureDriver();
-    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
 
@@ -3019,7 +3025,7 @@ await Check("failed and unconfirmed Stop never archive a successful session", as
     interrupted.StopRequestedUtc = DateTimeOffset.UtcNow;
     data.SaveRuns([interrupted]);
     await KillFixture(interrupted);
-    var restarted = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
+    var restarted = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
     await restarted.RefreshObservationsAsync();
     var interruptedSummary = data.LoadRunArchive().Single(item => item.OperationId == interrupted.OperationId);
     Require(interruptedSummary.EndReason == ServerSessionEndReason.ProcessExited &&
@@ -3223,7 +3229,7 @@ await Check("hosting power request and resume revalidation stay scoped and fail 
             OnlinePlayers: 0, MaxPlayers: 10, PlayerCountTrusted: true)
     };
     using var power = new RecordingPowerGuard();
-    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly), clock, power);
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly), clock, power);
     Require((await manager.UpdateSettingsAsync(settings)).Ok && !power.IsActive,
         "the scoped power request activated while no managed server was running");
     Require((await manager.StartAsync(profile.Id)).Ok && power.IsActive,
@@ -3471,7 +3477,7 @@ await Check("shared Stop before first signed roster leaves setup recoverable", a
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first stop");
-    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok &&
         (await manager.StartAsync(profile.Id)).Ok &&
         (await manager.StopAsync(profile.Id)).Ok, "the first graceful Stop failed");
@@ -3499,7 +3505,7 @@ await Check("shared save publishes only after confirmed Stop and rejects changed
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "synthetic world one");
     var driver = new ObservationFixtureDriver();
-    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture settings were rejected");
     new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System))
         .PublishRoster(profile, []);
@@ -3591,7 +3597,7 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     profile.Backups = new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "rehearsal marker");
-    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
     await manager.PublishSharedWorldRosterAsync(profile.Id, []);
     Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
@@ -3733,10 +3739,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-    {
-        Name: "fixturemod", Version: "1.0.0",
-        RequiredGameVersion: "2.0", Type: "Factorio mod"
-    }],
+        {
+            Name: "fixturemod", Version: "1.0.0",
+            RequiredGameVersion: "2.0", Type: "Factorio mod"
+        }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -4576,7 +4582,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "handoff marker");
     var driver = new ObservationFixtureDriver();
-    var registry = new GameServerRegistry([driver], PortProbeMode.LoopbackOnly);
+    var registry = new GameServerRegistry([driver], PortProbeMode.ObserveOnly);
     using var successor = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     using var routeObserver = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     var successorId = Guid.NewGuid();
@@ -4814,7 +4820,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var receiverControlPort = FreePort();
     receivingData.SaveSettings(new HostSettings { CompanionPort = receiverControlPort });
     var receiver = new HostManager(receivingData,
-        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+        new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly));
     var setup = new TakeoverLocalSetup(fixture, version.PortableSetup.GameVersion,
         [], true, receiverControlPort, FreePort());
     var restoreRequest = new SuccessorRestoreRequest(completed.Authority!.RecordHash,
@@ -4884,7 +4890,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
             SharedWorldService.PayloadDirectory), file.Path), copied);
     }
     var restoreManager = new HostManager(receivingData,
-        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+        new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly))
     { SuccessorFreeBytesForChecks = _ => restoreFreeBytes };
     var spaceReads = 0;
     restoreManager.SuccessorFreeBytesForChecks = _ =>
@@ -4901,14 +4907,14 @@ await Check("planned handoff requires exact final save receipt before durable ol
         File.ReadAllText(Path.Combine(destination, "world.dat")) == "third final marker" &&
         receivingData.LoadSettings().Profiles.Single().WorldDirectory == destination &&
         (await new HostManager(receivingData,
-            new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+            new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly))
             .StartAsync(profile.Id)).Code == "SuccessorChecksPending" &&
         (await new HostManager(receivingData,
-            new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+            new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly))
             .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
         $"fresh restore was not verified, imported, or durably fenced: {restored.Code} {restored.Message}");
     var resumedStatus = await new HostManager(receivingData,
-        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+        new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly))
         .SuccessorRestoreStatusAsync(profile.Id);
     Require(resumedStatus.Staged && resumedStatus.Restored &&
         resumedStatus.RecordHash == completed.Authority.RecordHash,
@@ -4921,7 +4927,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     routeSettings.CompanionEndpoint = completed.Authority.Proposal.CandidateAddress;
     receivingData.SaveSettings(routeSettings);
     var routeManager = new HostManager(receivingData,
-        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+        new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly));
     using var receivingCertificate = new HostIdentity(receivingData).Ensure(routeSettings.CompanionEndpoint);
     var receivingPin = HostIdentity.Fingerprint(receivingCertificate);
     var observedProof = await routeManager.SignSuccessorRouteProofAsync(profile.Id,
@@ -4961,7 +4967,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     changedSetup.Profiles.Single().GamePort = FreePort();
     receivingData.SaveSettings(changedSetup);
     Require((await new HostManager(receivingData,
-        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+        new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly))
         .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
         "a changed local setup identity bypassed manual Start checks");
     receivingData.SaveSettings(savedSetup);
@@ -4977,7 +4983,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
         else changed.Profiles.Single().Backups.Enabled = false;
         receivingData.SaveSettings(changed);
         Require((await new HostManager(receivingData,
-            new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly))
+            new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly))
             .StartAsync(profile.Id)).Code == "SuccessorChecksPending",
             $"{changedFlag} changed after Finish but manual Start was allowed");
         receivingData.SaveSettings(savedSetup);
@@ -5002,7 +5008,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "successor could not stop the later manual fixture run");
     receivingData.SaveSettings(new HostSettings { CompanionPort = receiverControlPort });
     var interrupted = new HostManager(receivingData,
-        new GameServerRegistry(receivingData, true, PortProbeMode.LoopbackOnly));
+        new GameServerRegistry(receivingData, true, PortProbeMode.ObserveOnly));
     var oldJournal = await interrupted.RestoreSharedSuccessorAsync(profile.Id, restoreRequest);
     Require(oldJournal.Code ==
         "RestoreVerificationFailed" &&
@@ -5309,10 +5315,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
         Require(store.Fenced(profile.Id, shares.LocalAuthorityPublicKey(), out _),
             "old Host was unfenced without explicit successor binding");
         {
-            using var oldPortReservation = new TcpListener(IPAddress.Loopback, 0);
-            oldPortReservation.Start();
-            var oldPort = ((IPEndPoint)oldPortReservation.LocalEndpoint).Port;
-            oldPortReservation.Stop();
+            var oldPort = FreePort();
             var oldAddress = $"https://127.0.0.1:{oldPort}";
             using var oldCertificate = new HostIdentity(data).Ensure(oldAddress);
             var oldSettings = data.LoadSettings();
@@ -5389,26 +5392,22 @@ await Check("shared world authority requires signed majority, fences old Host, a
             newer = newer with { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(newer)) };
             using var oldModeGate = new SemaphoreSlim(1, 1);
             var oldListener = new CompanionServer(data, manager, fixturePairing,
-                Games(data), new ServerLogService(data, manager), oldModeGate, oldPort + 2);
+                Games(data), new ServerLogService(data, manager), oldModeGate, oldPort + 2,
+                inMemoryTransport: builder => builder.UseTestServer());
             try
             {
                 await oldListener.SyncAsync();
                 Require(oldListener.ListenerState == CompanionListenerStates.Listening,
                     "the old Host's owner-enabled HTTPS listener did not open");
-                using var handler = new HttpClientHandler
-                {
-                    ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
-                        certificate is not null && HostIdentity.Fingerprint(certificate) ==
-                        HostIdentity.Fingerprint(oldCertificate)
-                };
-                using var client = new HttpClient(handler) { BaseAddress = new Uri(oldAddress + "/") };
+                using var client = oldListener.InMemoryApp!.GetTestClient();
+                client.BaseAddress = new Uri(oldAddress + "/");
                 client.DefaultRequestHeaders.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
                 client.DefaultRequestHeaders.Add("X-Device-Id", voters[1].Id.ToString());
                 HttpClient ReviewClient(Guid id, string credential)
                 {
-                    var peer = new HttpClient(handler, disposeHandler: false)
-                    { BaseAddress = new Uri(oldAddress + "/") };
+                    var peer = oldListener.InMemoryApp!.GetTestClient();
+                    peer.BaseAddress = new Uri(oldAddress + "/");
                     peer.DefaultRequestHeaders.Authorization =
                         new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential);
                     peer.DefaultRequestHeaders.Add("X-Device-Id", id.ToString());
@@ -5424,7 +5423,7 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     "old Host accepted a tampered authority decision");
                 using var valid = await client.PostAsJsonAsync(route, newer);
                 Require(valid.IsSuccessStatusCode,
-                    "old Host did not ingest the signed newer authority over authenticated HTTPS: " +
+                    "old Host did not ingest the signed newer authority over the authenticated companion route: " +
                     valid.StatusCode + " " + await valid.Content.ReadAsStringAsync());
                 using var reviewRoster = await client.GetAsync(
                     $"api/companion/servers/{profile.Id}/shared-world/roster");
@@ -5451,7 +5450,12 @@ await Check("shared world authority requires signed majority, fences old Host, a
                         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     voterData.SaveProtected($"shared-world-pc-signing-{voters[1].Id:N}.protected",
                         voters[1].Key.ExportPkcs8PrivateKey());
-                    using var voterLink = new FriendLink(voterData, "friend.protected");
+                    using var voterLink = new FriendLink(voterData, "friend.protected", (_, _) =>
+                    {
+                        var peer = oldListener.InMemoryApp!.GetTestClient();
+                        peer.BaseAddress = new Uri(oldAddress + "/");
+                        return peer;
+                    });
                     var pendingReview = await voterLink.ReviewSharedHistoryAsync(profile.Id);
                     Require(pendingReview.Code == "GroupReviewRequired" &&
                         pendingReview.GroupId == roster.GroupId &&
@@ -6270,11 +6274,8 @@ await Check("shared world authority requires signed majority, fences old Host, a
                 "a signed replacement proof piece bypassed the verified review index");
         }
         finally { File.WriteAllBytes(reviewProofPath, originalReviewProof); }
-        using (var reviewPortReservation = new TcpListener(IPAddress.Loopback, 0))
         {
-            reviewPortReservation.Start();
-            var reviewPort = ((IPEndPoint)reviewPortReservation.LocalEndpoint).Port;
-            reviewPortReservation.Stop();
+            var reviewPort = FreePort();
             var reviewAddress = $"https://127.0.0.1:{reviewPort}";
             using var reviewCertificate = new HostIdentity(data).Ensure(reviewAddress);
             var reviewSettings = data.LoadSettings();
@@ -6301,7 +6302,8 @@ await Check("shared world authority requires signed majority, fences old Host, a
             using var reviewGate = new SemaphoreSlim(1, 1);
             var liveReviewManager = new HostManager(data, Games(data));
             var reviewListener = new CompanionServer(data, liveReviewManager, new PairingService(data),
-                Games(data), new ServerLogService(data, liveReviewManager), reviewGate, reviewPort + 2);
+                Games(data), new ServerLogService(data, liveReviewManager), reviewGate, reviewPort + 2,
+                inMemoryTransport: builder => builder.UseTestServer());
             try
             {
                 await reviewListener.SyncAsync();
@@ -6327,7 +6329,12 @@ await Check("shared world authority requires signed majority, fences old Host, a
                     }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                 voterData.SaveProtected($"shared-world-pc-signing-{voters[2].Id:N}.protected",
                     voters[2].Key.ExportPkcs8PrivateKey());
-                using var voterLink = new FriendLink(voterData, "friend.protected");
+                using var voterLink = new FriendLink(voterData, "friend.protected", (_, _) =>
+                {
+                    var peer = reviewListener.InMemoryApp!.GetTestClient();
+                    peer.BaseAddress = new Uri(reviewAddress + "/");
+                    return peer;
+                });
                 WorldHistoryReviewResult reviewResult = new(false, "Pending", "");
                 for (var attempt = 0; attempt < 4 && !reviewResult.Ok; attempt++)
                     reviewResult = await voterLink.ReviewSharedHistoryAsync(profile.Id);
@@ -6932,10 +6939,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         }
         for (var i = 0; i < 3; i++) pcs.Add(Data("quorum-pc-" + i));
         var vaults = pcs.Select((pc, index) => Vault(pc, index)).ToArray();
-        using var portReservation = new TcpListener(IPAddress.Loopback, 0);
-        portReservation.Start();
-        var candidatePort = ((IPEndPoint)portReservation.LocalEndpoint).Port;
-        portReservation.Stop();
+        var candidatePort = FreePort();
         var candidateAddress = $"https://127.0.0.1:{candidatePort}";
         using var candidateCertificate = new HostIdentity(pcs[0]).Ensure(candidateAddress);
         var candidatePin = HostIdentity.Fingerprint(candidateCertificate);
@@ -7014,7 +7018,7 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             var separateListener = new CompanionServer(separatePc, separateManager,
                 new PairingService(separatePc), Games(separatePc),
                 new ServerLogService(separatePc, separateManager), separateModeGate,
-                separatePort + 2);
+                separatePort + 2, inMemoryTransport: builder => builder.UseTestServer());
             separateManager.CompanionListenerOwnershipProbe = separateListener.OwnsListener;
             try
             {
@@ -7065,13 +7069,8 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                     $"shared-world-pc-signing-{ids[1]:N}.protected")!, out _);
                 var separateChallenge = SharedWorldSeparateRoute.SignChallenge(separateFork,
                     ids[1], observerKey);
-                using var separateHandler = new HttpClientHandler
-                {
-                    ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
-                        certificate is not null && HostIdentity.Fingerprint(certificate) == separatePin
-                };
-                using var separateClient = new HttpClient(separateHandler)
-                { BaseAddress = new Uri($"https://127.0.0.1:{separatePort}/") };
+                using var separateClient = separateListener.InMemoryApp!.GetTestClient();
+                separateClient.BaseAddress = new Uri($"https://127.0.0.1:{separatePort}/");
                 var separateRoute = $"api/companion/servers/{profile.Id}/shared-world/" +
                     $"separate-route/{separateFork.BranchHash}";
                 using var proofRequest = new HttpRequestMessage(HttpMethod.Post,
@@ -7240,7 +7239,8 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             new PairingService(pcs[0]), Games(pcs[0]),
             new ServerLogService(pcs[0], candidateManager), modeGate, candidatePort + 2,
             recoveryLossProbe: (_, _) => Task.FromResult(losses[0].MayPropose),
-            recoveryLossCurrent: _ => losses[0].MayPropose);
+            recoveryLossCurrent: _ => losses[0].MayPropose,
+            inMemoryTransport: builder => builder.UseTestServer());
         try
         {
             await candidateListener.SyncAsync();
@@ -7260,12 +7260,8 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 candidateListener.ListenerState == CompanionListenerStates.Listening &&
                 candidateListener.Active,
                 "a signed recovery offer did not open its owned candidate HTTPS listener");
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
-                    certificate is not null && HostIdentity.Fingerprint(certificate) == candidatePin
-            };
-            using var client = new HttpClient(handler) { BaseAddress = new Uri(candidateAddress + "/") };
+            using var client = candidateListener.InMemoryApp!.GetTestClient();
+            client.BaseAddress = new Uri(candidateAddress + "/");
             var route = $"api/companion/servers/{profile.Id}/shared-world/recovery/{proposalHash}";
             using var overWireChallenge = await client.GetAsync($"{route}/challenge/{ids[1]}");
             Require(overWireChallenge.IsSuccessStatusCode,
@@ -7510,18 +7506,15 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             new PairingService(pcs[0]), Games(pcs[0]),
             new ServerLogService(pcs[0], candidateManager), modeGate, candidatePort + 2,
             recoveryLossProbe: (_, _) => Task.FromResult(losses[0].MayPropose),
-            recoveryLossCurrent: _ => losses[0].MayPropose);
+            recoveryLossCurrent: _ => losses[0].MayPropose,
+            inMemoryTransport: builder => builder.UseTestServer());
         try
         {
             await staleListener.SyncAsync();
             Require(staleListener.ListenerState == CompanionListenerStates.Listening,
                 "child candidate listener did not open before authority advanced");
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
-                    certificate is not null && HostIdentity.Fingerprint(certificate) == candidatePin
-            };
-            using var client = new HttpClient(handler) { BaseAddress = new Uri(candidateAddress + "/") };
+            using var client = staleListener.InMemoryApp!.GetTestClient();
+            client.BaseAddress = new Uri(candidateAddress + "/");
             var route = $"api/companion/servers/{profile.Id}/shared-world/recovery/{staleHash}";
             var next = SharedWorldElection.ConfirmQuorum(otherChild, [otherVote1, otherVote2],
                 new WorldAuthorityStore(pcs[0]), vaults[0]);
@@ -7771,36 +7764,19 @@ await Check("quorum successor restores and approved PC pulls its next save", asy
             SharedRosterFloors = new() { [profile.Id] = floor }
         };
         pcs[1].SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(sourceConfig));
-        HttpClient RedirectedSuccessorClient(string endpoint, IEnumerable<string> fingerprints)
-        {
-            var pins = fingerprints.ToHashSet(StringComparer.Ordinal);
-            var handler = new SocketsHttpHandler
-            {
-                UseProxy = false,
-                ConnectCallback = async (_, token) =>
-                {
-                    var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                    try
-                    {
-                        await socket.ConnectAsync(IPAddress.Loopback, candidatePort, token);
-                        return new NetworkStream(socket, ownsSocket: true);
-                    }
-                    catch { socket.Dispose(); throw; }
-                }
-            };
-            handler.SslOptions.RemoteCertificateValidationCallback = (_, seen, _, _) =>
-                seen is not null && pins.Contains(Convert.ToHexString(SHA256.HashData(seen.GetRawCertData())));
-            return new HttpClient(handler)
-            {
-                BaseAddress = new Uri(endpoint + "/"),
-                Timeout = TimeSpan.FromSeconds(10)
-            };
-        }
         using var successorModeGate = new SemaphoreSlim(1, 1);
         var successorPairing = new PairingService(pcs[0]);
         var successorListener = new CompanionServer(pcs[0], successorManager, successorPairing,
             Games(pcs[0]), new ServerLogService(pcs[0], successorManager),
-            successorModeGate, candidatePort + 2);
+            successorModeGate, candidatePort + 2,
+            inMemoryTransport: builder => builder.UseTestServer());
+        HttpClient RedirectedSuccessorClient(string endpoint, IEnumerable<string> fingerprints)
+        {
+            var client = successorListener.InMemoryApp!.GetTestClient();
+            client.BaseAddress = new Uri(endpoint + "/");
+            client.Timeout = TimeSpan.FromSeconds(10);
+            return client;
+        }
         try
         {
             await successorListener.SyncAsync();
@@ -8609,13 +8585,9 @@ await Check("Terraria preview copies an isolated world and treats listener evide
     var health = driver.Health(new ManagedRun { GamePort = profile.GamePort });
     Require(!health.Ok && !health.PlayerCountTrusted && health.OnlinePlayers is null,
         "Terraria preview invented a trusted player count without a game response");
-    using (var listener = new TcpListener(IPAddress.Loopback, profile.GamePort))
-    {
-        listener.Start();
-        var listening = driver.Health(new ManagedRun { GamePort = profile.GamePort });
-        Require(listening is { Ok: true, State: "Listening", PlayerCountTrusted: false },
-            "a Terraria TCP listener was presented as verified game readiness");
-    }
+    var listening = TerrariaServerDriver.LocalTcpObservation(true);
+    Require(listening is { Ok: true, State: "Listening", PlayerCountTrusted: false },
+        "a Terraria TCP listener was presented as verified game readiness");
     await Task.CompletedTask;
 });
 
@@ -8954,7 +8926,7 @@ await Check("guided server changes pause Friend controls before a zero-player St
         HealthResult = new(true, "FixtureReady", "Ready", "Trusted fixture observation.",
             OnlinePlayers: 2, MaxPlayers: 10, PlayerCountTrusted: true)
     };
-    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "guided-change profile failed to save");
     Require((await manager.StartAsync(profile.Id)).Ok, "guided-change fixture failed to start");
     Require((await manager.PrepareServerChangeAsync(profile.Id)).Code == "PlayersOnlineOrUnknown" &&

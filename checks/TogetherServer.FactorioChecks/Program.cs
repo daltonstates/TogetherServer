@@ -27,7 +27,7 @@ async Task Check(string name, Func<Task> test)
         var rcon = Random.Shared.Next(50001, 59000);
         if (GameServerRegistry.PortsAvailable([
             new("UDP", game, "Factorio game"), new("TCP", rcon, "Factorio local RCON")],
-            PortProbeMode.LoopbackOnly))
+            PortProbeMode.ObserveOnly))
             return (game, rcon);
     }
     throw new Exception("No free synthetic Factorio ports were found.");
@@ -87,7 +87,7 @@ async Task<RunView> WaitForReady(HostManager manager, Guid profileId, int? expec
 await Check("Factorio preview validates only an owner-installed executable, existing save, and separate RCON port", () =>
 {
     using var data = new LocalData(Path.Combine(root, "validation-data"));
-    var driver = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly).All.Single(item => item.Kind == GameKinds.Factorio);
+    var driver = new GameServerRegistry(data, false, PortProbeMode.ObserveOnly).All.Single(item => item.Kind == GameKinds.Factorio);
     var profile = Profile(data, "validation");
     var managedSave = Path.Combine(profile.WorldDirectory, profile.WorldId + ".zip");
     var managedHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(managedSave)));
@@ -122,7 +122,7 @@ await Check("Factorio fixed launch, authenticated player count, graceful quit, b
 {
     using var data = new LocalData(Path.Combine(root, "lifecycle-data"));
     var profile = Profile(data, "lifecycle");
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
         "Factorio settings were rejected");
     var started = await manager.StartAsync(profile.Id);

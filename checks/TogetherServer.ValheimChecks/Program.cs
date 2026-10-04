@@ -179,7 +179,7 @@ try
 
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
-        var host = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+        var host = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
         var newSeed = new ServerProfile
         {
             Kind = "Valheim",
@@ -286,13 +286,13 @@ try
 
     using (var data = new LocalData(Path.Combine(root, "host")))
     {
-        var host = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+        var host = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
         Require((await host.HealthAsync(profile.Id)).Code == "ValheimLogReady", "Host restart lost exact process/readiness identity");
         var unrelatedWorld = Path.Combine(root, "unrelated-world");
         Directory.CreateDirectory(unrelatedWorld);
         using var unrelatedData = new LocalData(Path.Combine(root, "unrelated-host"));
         var unrelatedHost = new HostManager(unrelatedData,
-            new GameServerRegistry(unrelatedData, true, PortProbeMode.LoopbackOnly));
+            new GameServerRegistry(unrelatedData, true, PortProbeMode.ObserveOnly));
         var unrelatedProfile = new ServerProfile
         {
             Name = "Unrelated fixture",
@@ -335,7 +335,7 @@ try
 
     using (var stopData = new LocalData(Path.Combine(root, "remote-stop-host")))
     {
-        var games = new GameServerRegistry(stopData, false, PortProbeMode.LoopbackOnly);
+        var games = new GameServerRegistry(stopData, false, PortProbeMode.ObserveOnly);
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero));
         var host = new HostManager(stopData, games, clock);
         var stopProfile = new ServerProfile
@@ -527,7 +527,7 @@ try
 
     using (var logData = new LocalData(Path.Combine(root, "private-log-count-host")))
     {
-        var games = new GameServerRegistry(logData, false, PortProbeMode.LoopbackOnly);
+        var games = new GameServerRegistry(logData, false, PortProbeMode.ObserveOnly);
         var host = new HostManager(logData, games);
         var logProfile = new ServerProfile
         {
@@ -730,20 +730,14 @@ static async Task WaitForReady(HostManager host, Guid id)
 
 static int FreePort()
 {
+    var active = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+        .GetActiveUdpListeners().Select(endpoint => endpoint.Port).ToHashSet();
     for (var i = 0; i < 100; i++)
     {
         var port = Random.Shared.Next(36000, 55000);
-        try
-        {
-            using var first = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            using var second = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };
-            first.Bind(new IPEndPoint(IPAddress.Loopback, port));
-            second.Bind(new IPEndPoint(IPAddress.Loopback, port + 1));
-            return port;
-        }
-        catch (SocketException) { }
+        if (!active.Contains(port) && !active.Contains(port + 1)) return port;
     }
-    throw new Exception("No free synthetic UDP pair.");
+    throw new Exception("No unused synthetic UDP pair in the Windows port table.");
 }
 
 static void Require(bool condition, string message)
