@@ -69,6 +69,21 @@ internal sealed class SharedWorldTransferHealth
         lock (sync) return worlds.TryGetValue(profileId, out var state) ? state.Issue : null;
     }
 
+    internal void Cancel(Guid profileId, Attempt attempt)
+    {
+        lock (sync)
+        {
+            var state = State(profileId);
+            if (state.Epoch != attempt.Epoch || !attempt.Advanced) return;
+            // The caller stopped this attempt after new bytes arrived. An earlier
+            // no-progress warning no longer describes the retained partial file.
+            state.Issue = null;
+            state.NoProgressFailures = 0;
+            state.VersionHash = null;
+            state.LastBytes = 0;
+        }
+    }
+
     internal void Complete(Guid profileId, Attempt attempt, ReceivedSharedWorldResult result)
     {
         lock (sync)
@@ -91,7 +106,7 @@ internal sealed class SharedWorldTransferHealth
                 return;
             }
 
-            if (attempt.ReachedPayload && result.Code == "TransferInterrupted")
+            if (attempt.ReachedPayload && result.Code is ("TransferInterrupted" or "NetworkUnavailable"))
             {
                 state.NoProgressFailures = attempt.Advanced ? 0 :
                     state.VersionHash == attempt.VersionHash && state.LastBytes == attempt.ReceivedBytes

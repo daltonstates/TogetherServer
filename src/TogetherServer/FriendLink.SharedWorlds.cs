@@ -1143,9 +1143,17 @@ internal sealed partial class FriendLink
             await profileGate.WaitAsync(cancellationToken);
             profileEntered = true;
             var attempt = sharedTransferHealth.Begin(profileId);
-            var result = await PullSharedWorldCoreAsync(profileId, attempt, cancellationToken);
-            sharedTransferHealth.Complete(profileId, attempt, result);
-            return result;
+            try
+            {
+                var result = await PullSharedWorldCoreAsync(profileId, attempt, cancellationToken);
+                sharedTransferHealth.Complete(profileId, attempt, result);
+                return result;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                sharedTransferHealth.Cancel(profileId, attempt);
+                throw;
+            }
         }
         finally { if (profileEntered) profileGate.Release(); ReleaseRetained(); }
     }
@@ -1320,6 +1328,14 @@ internal sealed partial class FriendLink
                 output.Position = offset;
                 while (offset < file.Length)
                 {
+                    // Disposable packaged checks pause before the next HTTP request
+                    // so they can exercise an actual post-payload route loss.
+                    if (Environment.GetEnvironmentVariable(GameServerRegistry.FixtureOptInEnvironmentVariable) == "1" &&
+                        string.Equals(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_ROOT"),
+                            data.RootPath, StringComparison.OrdinalIgnoreCase) &&
+                        int.TryParse(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_BEFORE_CHUNK_DELAY_MS"),
+                            out var fixtureBeforeChunkDelay) && fixtureBeforeChunkDelay is > 0 and <= 5000)
+                        await Task.Delay(fixtureBeforeChunkDelay, transferToken);
                     if (withdrawnSharedConsent.ContainsKey(profileId))
                         return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
                     using var chunkResponse = await transferClient.GetAsync(

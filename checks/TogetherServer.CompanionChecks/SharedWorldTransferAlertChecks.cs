@@ -32,11 +32,34 @@ internal static class SharedWorldTransferAlertChecks
         for (var count = 0; count < 2; count++)
         {
             var failedNetwork = health.Begin(otherWorld);
-            failedNetwork.Progress(version, 0, 64);
             health.Complete(otherWorld, failedNetwork, Failure("NetworkUnavailable"));
         }
         Require(health.Issue(otherWorld)?.State == "Transfer unavailable",
-            "repeated network failures were called a stall");
+            "repeated failures before selecting a payload were called a stall");
+
+        health.Reset(world);
+        var dropped = health.Begin(world);
+        dropped.Progress(version, 0, 64);
+        health.Complete(world, dropped, Failure("NetworkUnavailable"));
+        Require(health.Issue(world)?.State == "Transfer interrupted",
+            "first post-payload disconnect was called a stall");
+        var droppedAgain = health.Begin(world);
+        droppedAgain.Progress(version, 0, 64);
+        health.Complete(world, droppedAgain, Failure("NetworkUnavailable"));
+        Require(health.Issue(world)?.State == "Stalled",
+            "repeated post-payload disconnects at the same offset were not a stall");
+
+        var cancelledAfterProgress = health.Begin(world);
+        cancelledAfterProgress.Progress(version, 0, 64);
+        cancelledAfterProgress.Progress(version, 32, 64);
+        health.Cancel(world, cancelledAfterProgress);
+        Require(health.Issue(world) is null,
+            "a caller-cancelled retry kept a stale stall after retaining new bytes");
+        var userCancelled = health.Begin(world);
+        userCancelled.Progress(version, 32, 64);
+        health.Complete(world, userCancelled, Failure("TransferCanceled"));
+        Require(health.Issue(world)?.State == "Transfer unavailable",
+            "a user cancellation was called a transport stall");
 
         var advancing = health.Begin(world);
         advancing.Progress(version, 0, 64);
