@@ -132,7 +132,21 @@ internal sealed partial class FriendLink : IDisposable
             {
                 lock (SharedWorldMutationGate.For(data.RootPath))
                     separate.MarkHostReturned(profileId);
-                inbox.Retire(profileId);
+                // Recovery offers require Host loss. A resolution offer instead
+                // names the exact competing signed heads and remains useful
+                // when the old Host returns to review the split.
+                var resolution = inbox.Armed(profileId);
+                var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
+                if (resolution?.Proposal.Schema != 3 ||
+                    config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
+                    config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) !=
+                        resolution.Roster.GroupId ||
+                    config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) !=
+                        resolution.Roster.OwnerPublicKey ||
+                    floor is null || floor.Epoch != resolution.Roster.Epoch ||
+                    floor.Revision != resolution.Roster.Revision ||
+                    floor.Signature != resolution.Roster.Signature)
+                    inbox.Retire(profileId);
             }
         }
     }

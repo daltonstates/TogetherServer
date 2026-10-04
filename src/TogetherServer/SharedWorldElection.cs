@@ -167,11 +167,22 @@ internal static class SharedWorldElection
     }
 
     internal static WorldAuthorityRecord ConfirmQuorum(WorldAuthorityOffer offer,
-        IReadOnlyList<WorldAuthorityVote> votes, WorldAuthorityStore store)
+        IReadOnlyList<WorldAuthorityVote> votes, WorldAuthorityStore store,
+        string receivedRoot)
     {
+        var parent = store.Read(offer.Proposal.ProfileId).SingleOrDefault(record =>
+            record.RecordHash == offer.Proposal.ParentAuthorityHash);
+        IEnumerable<SharedWorldVersion>? lineage = null;
+        if (offer.Proposal.Schema != 3 &&
+            (parent is null && offer.Version.Number > 1 ||
+             parent is not null && parent.Version.VersionHash != offer.Version.VersionHash))
+            lineage = FriendLink.ReadVerifiedReceivedLineage(receivedRoot, offer.Version,
+                parent?.Version);
         var draft = new WorldAuthorityRecord(offer.Proposal.Schema == 3 ? 2 : 1,
             offer.Proposal, offer.Roster,
-            offer.Version, votes, null, "");
+            offer.Version, votes, null, "",
+            VersionLineageDigest: lineage is null ? null :
+                WorldAuthorityTrust.LineageDigest(lineage));
         var record = draft with
         {
             RecordHash = WorldAuthorityTrust.Hash(
@@ -179,7 +190,7 @@ internal static class SharedWorldElection
         };
         if (!WorldAuthorityTrust.Verify(record))
             throw new InvalidDataException("The designated voters did not produce a valid majority.");
-        store.Append(record);
+        store.Append(record, externalLineage: lineage);
         return record;
     }
 

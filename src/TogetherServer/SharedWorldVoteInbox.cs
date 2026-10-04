@@ -213,7 +213,11 @@ internal sealed class SharedWorldVoteInbox(LocalData data)
             if (!authority.HasLocalSuccessorKeys(profileId, state.Offer.Proposal,
                     state.Offer.CandidateReceipt.DeviceId))
                 return new(false, "CandidateKeyUnavailable", votes.Count, required);
-            var record = SharedWorldElection.ConfirmQuorum(state.Offer, votes, authority);
+            var receivedRoot = Path.Combine(data.RootPath, "received-shared-worlds",
+                state.Offer.CandidateReceipt.DeviceId.ToString("N"), profileId.ToString("N"));
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, receivedRoot);
+            var record = SharedWorldElection.ConfirmQuorum(state.Offer, votes, authority,
+                receivedRoot);
             if (stopAfterAppendForChecks)
                 throw new InvalidOperationException("Simulated interruption after authority append.");
             authority.BindLocalSuccessor(profileId, record.RecordHash,

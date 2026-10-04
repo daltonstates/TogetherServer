@@ -7,9 +7,9 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using TogetherServer;
 
-// Three isolated copies of the packaged app exercise the public companion route.
+// Isolated copies of the packaged app exercise the public companion route.
 // The harness never starts a listener; only TogetherServer.exe owns HTTP ports.
-internal static class SharedWorldJourney
+internal static partial class SharedWorldJourney
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -20,12 +20,17 @@ internal static class SharedWorldJourney
         var hostData = Path.Combine(root, "host");
         var friendAData = Path.Combine(root, "friend-a");
         var friendBData = Path.Combine(root, "friend-b");
+        var friendCData = Path.Combine(root, "friend-c");
         var ports = AvailablePorts(3);
         var hostPort = ports[0];
         var companionPort = ports[1];
         var friendAPort = ports[2];
         var friendBPort = AvailablePorts(1, ports)[0];
         var candidatePort = AvailablePorts(1, hostPort, companionPort, friendAPort, friendBPort)[0];
+        var friendCPort = AvailablePorts(1, hostPort, companionPort, friendAPort,
+            friendBPort, candidatePort)[0];
+        var candidateAPort = AvailablePorts(1, hostPort, companionPort, friendAPort,
+            friendBPort, friendCPort, candidatePort)[0];
         var gamePort = AvailableGamePort();
         var world = Path.Combine(hostData, "worlds", "disposable-world");
         Directory.CreateDirectory(world);
@@ -52,6 +57,7 @@ internal static class SharedWorldJourney
         Process? host = null;
         Process? friendA = null;
         Process? friendB = null;
+        Process? friendC = null;
         var passed = 0;
         try
         {
@@ -63,6 +69,7 @@ internal static class SharedWorldJourney
             using var owner = LocalClient(hostPort);
             using var aLocal = LocalClient(friendAPort);
             using var bLocal = LocalClient(friendBPort);
+            using var cLocal = LocalClient(friendCPort);
             Require((await PutAsync<HostSettings, ActionResult>(owner,
                 "/api/local/settings", settings)).Ok, "disposable Host settings failed");
             Require((await PostAsync<ValheimPasswordRequest, ActionResult>(owner,
@@ -70,7 +77,7 @@ internal static class SharedWorldJourney
                 "disposable game password failed");
             var invite = await PostAsync<ServerInviteRequest, JsonElement>(owner,
                 $"/api/local/servers/{profile.Id}/invite",
-                new(false, true, true, DeviceLimit: 2));
+                new(false, true, true, DeviceLimit: 3));
             Require(invite.GetProperty("ok").GetBoolean() &&
                 invite.GetProperty("listenerActive").GetBoolean(),
                 "packaged Host did not open its deliberate HTTPS listener");
@@ -88,8 +95,9 @@ internal static class SharedWorldJourney
             var firstAPoll = await PollAsync(aLocal);
             var firstBPoll = await PollAsync(bLocal);
             Require(firstAPoll.State == "Connected" && firstBPoll.State == "Connected" &&
-                firstBPoll.ConnectionId != Guid.Empty,
+                firstAPoll.ConnectionId != Guid.Empty && firstBPoll.ConnectionId != Guid.Empty,
                 "both packaged Friends did not authenticate through pinned HTTPS");
+            var aConnectionId = firstAPoll.ConnectionId;
             var bConnectionId = firstBPoll.ConnectionId;
             Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
@@ -286,6 +294,32 @@ internal static class SharedWorldJourney
             await PollAsync(aLocal);
             await WaitVersionAsync(aLocal, profile.Id, 2);
 
+            friendC = StartApp(appPath, "--friend", friendCPort, friendCData);
+            await WaitLocalAsync(friendCPort);
+            Require((await PostAsync<FriendPairRequest, FriendActionResult>(cLocal,
+                "/api/local/friend/pair", new(code!))).Ok,
+                "Friend C could not join the disposable recovery group");
+            var deviceC = (await DeviceIdsAsync(owner, profile.Id))
+                .Single(id => id != deviceA && id != deviceB);
+            Require((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
+                $"/api/local/devices/{deviceC}/shared-world/{profile.Id}/grants",
+                new(new SharedWorldGrants(RecoveryVoter: true)))).Ok,
+                "owner could not appoint a voter without Receive access");
+            var voterReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/history/review", new());
+            Require(!voterReview.Ok && voterReview.Code == "GroupReviewRequired" &&
+                voterReview.GroupId is not null && voterReview.OwnerPublicKey is not null,
+                "voter-only PC did not require explicit signed group review");
+            var voterConfirmed = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/history/review",
+                new(voterReview.GroupId, voterReview.OwnerPublicKey));
+            Require(voterConfirmed.Ok && voterConfirmed.Code == "HistoryReviewed" &&
+                !(await GetAsync<ReceivedSharedWorldStatus>(cLocal,
+                    $"/api/local/friend/{profile.Id}/shared-world")).Consented,
+                "voter-only review accidentally granted Receive consent");
+            StopApp(friendC);
+            friendC = null;
+
             foreach (var id in devices)
                 Require((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
                     $"/api/local/devices/{id}/shared-world/{profile.Id}/grants",
@@ -309,6 +343,19 @@ internal static class SharedWorldJourney
             Require((await PostAsync<object, JsonElement>(bLocal,
                 "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(),
                 "candidate PC did not return to Friend mode");
+            Require((await PostAsync<object, JsonElement>(aLocal,
+                "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
+                "Friend A could not edit its future Host address");
+            Require((await PutAsync<HostSettings, ActionResult>(aLocal,
+                "/api/local/settings", new HostSettings
+                {
+                    CompanionEndpoint = $"https://127.0.0.1:{candidateAPort}",
+                    CompanionPort = candidateAPort,
+                    CompanionBindAddress = "127.0.0.1"
+                })).Ok, "Friend A could not save its direct candidate address");
+            Require((await PostAsync<object, JsonElement>(aLocal,
+                "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(),
+                "Friend A did not return to Friend mode");
 
             StopApp(host);
             host = null;
@@ -378,6 +425,11 @@ internal static class SharedWorldJourney
             friendA = null;
             StopApp(friendB);
             friendB = null;
+            FriendConfiguration aCredentials;
+            using (var savedFriend = new LocalData(friendAData))
+                aCredentials = savedFriend.LoadProtectedJson<FriendConfiguration>(
+                    $"friend-{aConnectionId:N}.protected") ??
+                    throw new Exception("disposable Friend A credential could not be read");
             FriendConfiguration bCredentials;
             using (var savedFriend = new LocalData(friendBData))
                 bCredentials = savedFriend.LoadProtectedJson<FriendConfiguration>(
@@ -386,17 +438,34 @@ internal static class SharedWorldJourney
             host = StartApp(appPath, "--host", hostPort, hostData);
             await WaitLocalAsync(hostPort);
             File.WriteAllText(Path.Combine(world, "world.dat"), "old Host split save retained");
-            await StartAndStopAsync(owner, profile.Id);
-            var split = await GetAsync<SharedWorldStatus>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world");
-            Require(split.Latest is { Number: 3 } &&
-                split.Latest.ParentHash == secondVersion.VersionHash &&
-                split.Latest.VersionHash != decision.Version.VersionHash,
-                "old Host did not retain its own later signed save before learning the takeover");
-            var splitVersion = split.Latest!;
-            friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
+            await StartReadyAsync(owner, profile.Id);
+            var planned = await PostAsync<PreparePlannedHandoffRequest, PlannedHandoffResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/handoff/prepare",
+                new(deviceA, $"https://127.0.0.1:{candidateAPort}"));
+            Require(planned is { Ok: true, Code: "WaitingForSuccessorCopy", Version: { Number: 3 } } &&
+                planned.Version.ParentHash == secondVersion.VersionHash &&
+                planned.Version.VersionHash != decision.Version.VersionHash,
+                $"old Host did not sign an independent final save: {planned.Code} {planned.Message}");
+            var splitVersion = planned.Version!;
             friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
-            await Task.WhenAll(WaitLocalAsync(friendBPort), WaitLocalAsync(friendAPort));
+            await WaitLocalAsync(friendAPort);
+            await PollAsync(aLocal);
+            await WaitVersionAsync(aLocal, profile.Id, 3);
+            await WaitCopiesAsync(owner, profile.Id, 1);
+            var handoff = await PostAsync<object, PlannedHandoffResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/handoff/complete", new { });
+            Require(handoff is { Ok: true, Code: "OldHostFenced", Authority: { } } &&
+                WorldAuthorityTrust.Verify(handoff.Authority) &&
+                handoff.Authority.Proposal.Kind == "Planned" &&
+                handoff.Authority.Version.VersionHash == splitVersion.VersionHash,
+                $"owner did not sign the independently staged handoff: {handoff.Code} {handoff.Message}");
+            var plannedAuthority = handoff.Authority!;
+            var staged = await PostAsync<object, PlannedHandoffStageResult>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/handoff/stage", new { });
+            Require(staged.Ok && staged.VersionHash == splitVersion.VersionHash,
+                $"successor did not stage the exact signed planned branch: {staged.Code} {staged.Message}");
+            friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
+            await WaitLocalAsync(friendBPort);
             var authorityLog = Path.Combine(hostData, "shared-worlds", profile.Id.ToString("N"),
                 "authority", "records.jsonl");
             for (var attempt = 0; attempt < 30 && !RecordedDecision(authorityLog, decision); attempt++)
@@ -404,8 +473,15 @@ internal static class SharedWorldJourney
                 await PollAsync(bLocal);
                 if (!RecordedDecision(authorityLog, decision)) await Task.Delay(250);
             }
-            Require(RecordedDecision(authorityLog, decision),
-                "old Host did not record the returning Friend's signed majority");
+            Require(RecordedDecision(authorityLog, decision) &&
+                RecordedDecision(authorityLog, plannedAuthority),
+                "old Host did not retain both independently signed authority branches");
+            var competing = (await GetAsync<SharedWorldStatus>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world")).Authority;
+            Require(competing?.CompetingHeads is { Count: 2 } &&
+                competing.CompetingHeads.Select(head => head.RecordHash).ToHashSet()
+                    .SetEquals([decision.RecordHash, plannedAuthority.RecordHash]),
+                "old Host did not expose both signed competing heads for review");
             var blockedStart = await PostAsync<object, ActionResult>(owner,
                 $"/api/local/profiles/{profile.Id}/start", new { });
             var blockedSharing = await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
@@ -438,11 +514,85 @@ internal static class SharedWorldJourney
                 $"retainedSignedSave={retainedManifest?.VersionHash == splitVersion.VersionHash && SharedWorldService.VerifySignature(retainedManifest)}, " +
                 $"retainedWorld={File.ReadAllText(Path.Combine(world, "world.dat")) == "old Host split save retained"}, " +
                 $"retainedFriendCopy={File.Exists(Path.Combine(bRoot, secondVersion.VersionHash, "payload", "world.dat"))}");
-            Console.WriteLine("PASS old Host retains its signed split save, then blocks Start and authenticated save/chunk sharing on signed return");
+            Console.WriteLine("PASS independent planned and quorum histories remain signed and fenced on old Host return");
             passed++;
 
-            Console.WriteLine("SKIP packaged conflict resolution and owner override: typed local resolution actions are not present on this branch yet. Signed split saves and authority are retained for review.");
-            Console.WriteLine($"Shared Worlds packaged journey: {passed} groups passed, 0 failed, 2 resolution scenarios skipped. Disposable data: {root}");
+            var aReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/history/review", new());
+            friendC = StartApp(appPath, "--friend", friendCPort, friendCData);
+            await WaitLocalAsync(friendCPort);
+            var cReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/history/review", new());
+            Require(aReview is { Ok: true, Code: "HistoryReviewed", CompetingHeads: 2 } &&
+                cReview is { Ok: true, Code: "HistoryReviewed", CompetingHeads: 2 } &&
+                (await GetAsync<WorldResolutionChoice[]>(aLocal,
+                    $"/api/local/friend/{profile.Id}/shared-world/resolution/heads")) is { Length: 2 },
+                $"two PCs did not independently verify both signed heads: A={aReview.Code}, C={cReview.Code}");
+            Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(cLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
+                "voter-only PC could not consent to a reviewed resolution vote");
+            var choices = await GetAsync<WorldResolutionChoice[]>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/resolution/heads");
+            var selected = choices.Single(choice => choice.RecordHash == plannedAuthority.RecordHash);
+            Require(selected.AvailableHere && choices.Single(choice =>
+                    choice.RecordHash == decision.RecordHash).Version == secondVersion.Number,
+                "resolution choices did not distinguish verified local copy from other signed history");
+            var ownerOffer = await PostAsync<object, WorldAuthorityOfferResult>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/resolution/owner-offer/{selected.RecordHash}",
+                new { });
+            Require(ownerOffer is { Ok: true, Code: "ResolutionOfferArmed", Offer: { } } &&
+                ownerOffer.Offer.Proposal.Kind == "ResolutionOwnerOverride" &&
+                ownerOffer.Offer.Roster.OwnerOverride &&
+                ownerOffer.Offer.Proposal.CompetingHeadHashes?.ToHashSet()
+                    .SetEquals([decision.RecordHash, plannedAuthority.RecordHash]) == true,
+                $"owner-enabled resolution did not name the exact signed split: {ownerOffer.Code} {ownerOffer.Message}");
+            var ownerOfferHash = WorldAuthorityTrust.ProposalHash(ownerOffer.Offer!.Proposal);
+            JsonElement[]? pendingOffers = null;
+            for (var attempt = 0; attempt < 30; attempt++)
+            {
+                await PollAsync(aLocal);
+                pendingOffers = await GetAsync<JsonElement[]>(owner,
+                    $"/api/local/profiles/{profile.Id}/shared-world/resolution/offers");
+                if (pendingOffers.Any(item => item.GetProperty("proposalHash").GetString() == ownerOfferHash))
+                    break;
+                await Task.Delay(250);
+            }
+            Require(pendingOffers?.Any(item => item.GetProperty("proposalHash").GetString() ==
+                    ownerOfferHash) == true,
+                "fenced old Host did not receive the candidate's authenticated owner offer");
+            using var ownerOfferClient = PinnedFriendClient(aCredentials);
+            using var ownerOfferReceipt = await ownerOfferClient.PostAsJsonAsync(
+                $"api/companion/servers/{profile.Id}/shared-world/resolution/owner-offer",
+                ownerOffer.Offer);
+            var receiptBody = await ownerOfferReceipt.Content.ReadFromJsonAsync<JsonElement>();
+            Require(ownerOfferReceipt.IsSuccessStatusCode &&
+                receiptBody.GetProperty("code").GetString() == "ResolutionOfferRecorded" &&
+                receiptBody.GetProperty("proposalHash").GetString() == ownerOfferHash,
+                "old Host did not acknowledge the exact authenticated owner offer");
+            var approved = await PostAsync<object, JsonElement>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/resolution/approve/{ownerOfferHash}",
+                new { });
+            Require(approved.GetProperty("code").GetString() == "OwnerOverrideRecorded" &&
+                approved.TryGetProperty("recordHash", out var approvedHash) &&
+                approvedHash.GetString() is { Length: 64 },
+                "owner's typed approval did not produce a signed resolution");
+            var resolvedHash = approved.GetProperty("recordHash").GetString()!;
+            var resolved = ReadRecordedAuthority(authorityLog, resolvedHash);
+            Require(resolved is { Schema: 2, OwnerSignature: not null } &&
+                resolved.Proposal.Kind == "ResolutionOwnerOverride" &&
+                resolved.Votes.Count == 0 && WorldAuthorityTrust.Verify(resolved) &&
+                resolved.Proposal.CompetingHeadHashes?.ToHashSet()
+                    .SetEquals([decision.RecordHash, plannedAuthority.RecordHash]) == true &&
+                resolved.Version.VersionHash == splitVersion.VersionHash &&
+                ReadRecordedAuthorities(authorityLog).Count >= 3 &&
+                !(await PostAsync<object, ActionResult>(owner,
+                    $"/api/local/profiles/{profile.Id}/start", new { })).Ok,
+                "owner override did not resolve exactly two retained branches or preserve old-Host fence");
+            Console.WriteLine("PASS owner override chooses one verified branch by signed approval and retains both competing records");
+            passed++;
+
+            passed += await RunOverrideOffResolutionAsync(appPath, valheimFixturePath);
+            Console.WriteLine($"Shared Worlds packaged journey: {passed} groups passed, 0 failed, 0 recovery scenarios skipped. Disposable data: {root}");
         }
         catch (Exception ex)
         {
@@ -466,6 +616,7 @@ internal static class SharedWorldJourney
             }
             StopApp(friendB);
             StopApp(friendA);
+            StopApp(friendC);
             StopApp(host);
         }
     }
@@ -486,6 +637,14 @@ internal static class SharedWorldJourney
         }
         catch (IOException) { return false; }
     }
+
+    private static IReadOnlyList<WorldAuthorityRecord> ReadRecordedAuthorities(string path) =>
+        File.ReadAllLines(path).Select(line =>
+            JsonSerializer.Deserialize<WorldAuthorityRecord>(line, Json) ??
+            throw new InvalidDataException("A signed authority record is unreadable.")).ToArray();
+
+    private static WorldAuthorityRecord? ReadRecordedAuthority(string path, string hash) =>
+        ReadRecordedAuthorities(path).SingleOrDefault(record => record.RecordHash == hash);
 
     private static HttpClient PinnedFriendClient(FriendConfiguration friend)
     {
@@ -510,6 +669,14 @@ internal static class SharedWorldJourney
 
     private static async Task StartAndStopAsync(HttpClient owner, Guid profileId)
     {
+        await StartReadyAsync(owner, profileId);
+        var stop = await PostAsync<object, ActionResult>(owner,
+            $"/api/local/profiles/{profileId}/stop", new { });
+        Require(stop.Ok, $"fixture graceful Stop failed: {stop.Code} {stop.Message}");
+    }
+
+    private static async Task StartReadyAsync(HttpClient owner, Guid profileId)
+    {
         var start = await PostAsync<object, ActionResult>(owner,
             $"/api/local/profiles/{profileId}/start", new { });
         Require(start.Ok, $"fixture Start failed: {start.Code} {start.Message}");
@@ -521,9 +688,6 @@ internal static class SharedWorldJourney
             if (!ready) await Task.Delay(100);
         }
         Require(ready, "fixture did not reach Ready before Stop");
-        var stop = await PostAsync<object, ActionResult>(owner,
-            $"/api/local/profiles/{profileId}/stop", new { });
-        Require(stop.Ok, $"fixture graceful Stop failed: {stop.Code} {stop.Message}");
     }
 
     private static async Task<Guid> OnlyDeviceAsync(HttpClient owner, Guid profileId)
