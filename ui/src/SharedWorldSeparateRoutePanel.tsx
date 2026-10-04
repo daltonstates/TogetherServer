@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
-import { Button, Input } from './Controls'
+import { Button, Input, TextArea } from './Controls'
 
 type Branch = { branchHash: string; offer: { version: { number: number };
   proposal: { profileId: string; candidateAddress: string } } }
@@ -159,7 +159,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
         <Button className="text-button" disabled={busy}
           onClick={() => void select(item)}>Review separate copy and show proof code</Button>
       </div>)}
-      {shown && <textarea className="ui-textarea" aria-label="Signed separate-copy proof code"
+      {shown && <TextArea aria-label="Signed separate-copy proof code"
         rows={3} readOnly value={JSON.stringify(shown)} />}</>}
     {shown && hosting && <section aria-label="Host this separate copy">
       <p role={hosting.reviewRequired ? 'alert' : 'status'}>{hosting.message}</p>
@@ -204,7 +204,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
       <Button className="text-button" disabled={busy} onClick={() => void select(shown)}>
         Refresh separate-copy status</Button>
     </section>}
-    <label>Proof code from candidate PC<textarea className="ui-textarea" rows={3}
+    <label>Proof code from candidate PC<TextArea rows={3}
       maxLength={512 * 1024} value={pasted} onChange={event => setPasted(event.target.value)} /></label>
     <Button className="secondary" disabled={busy || !pasted.trim()}
       onClick={() => void check()}>Check candidate control route from this PC</Button>
