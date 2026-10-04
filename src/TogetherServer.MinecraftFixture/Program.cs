@@ -56,6 +56,16 @@ while (true)
     if (!java && line == "save resume")
     {
         File.WriteAllText(Path.Combine(root, "synthetic-save-resume.marker"), "fixture only");
+        // This disposable fixture echoes the test's exact-run, per-hold request
+        // only after its console actually receives the fixed resume command.
+        var request = Path.Combine(root, "synthetic-save-resume-request.json");
+        if (File.Exists(request))
+        {
+            var acknowledgement = Path.Combine(root, "synthetic-save-resume-ack.json");
+            var temporary = acknowledgement + ".tmp";
+            File.WriteAllText(temporary, File.ReadAllText(request));
+            File.Move(temporary, acknowledgement, true);
+        }
         Console.WriteLine("[TogetherServer fixture/INFO]: synthetic resume received");
     }
     if (line is null) await Task.Delay(50);

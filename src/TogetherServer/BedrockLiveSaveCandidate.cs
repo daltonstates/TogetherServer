@@ -14,7 +14,11 @@ internal sealed record BedrockValidatedSnapshot(Guid OperationId,
     IReadOnlyList<BedrockSnapshotFile> Files, bool CompletionConfirmed = false,
     bool LiveCaptureAccepted = false);
 internal sealed record BedrockPendingResume(Guid ProfileId, Guid OperationId, int ProcessId,
-    long StartTimeUtcTicks, string ExecutablePath, string WorldDirectory);
+    long StartTimeUtcTicks, string ExecutablePath, string WorldDirectory, Guid AttemptNonce,
+    bool ResumeDispatched = false);
+internal sealed record BedrockFixtureResumeAcknowledgement(BedrockQuerySource Source,
+    Guid ProfileId, Guid OperationId, int ProcessId, long StartTimeUtcTicks,
+    string ExecutablePath, string WorldDirectory, Guid AttemptNonce);
 
 internal sealed class BedrockLiveSaveCandidate(LocalData data)
 {
@@ -28,7 +32,7 @@ internal sealed class BedrockLiveSaveCandidate(LocalData data)
         var run = ExactRun(requestedRun);
         using var process = ExactProcess(run);
         var marker = new BedrockPendingResume(run.ProfileId, run.OperationId, run.ProcessId!.Value,
-            run.StartTimeUtcTicks!.Value, run.ExecutablePath, run.WorldDirectory);
+            run.StartTimeUtcTicks!.Value, run.ExecutablePath, run.WorldDirectory, Guid.NewGuid());
         // The write-through marker exists before a hold can reach the console. An
         // ambiguous dispatch leaves it for explicit recovery on a later Host instance.
         using (var stream = new FileStream(markerPath, FileMode.CreateNew, FileAccess.Write,
@@ -55,10 +59,13 @@ internal sealed class BedrockLiveSaveCandidate(LocalData data)
     internal void Resume(ManagedRun requestedRun)
     {
         var run = ExactRun(requestedRun);
-        RequirePending(run);
+        var marker = RequirePending(run);
         using var process = ExactProcess(run);
         WindowsConsoleProcess.RequestBedrockSaveResume(process, run);
-        File.Delete(markerPath);
+        // Queueing a console command is not evidence that Bedrock resumed writes.
+        // Record dispatch durably, but retain the marker until acknowledgement.
+        // If this write fails, recovery can safely retry the fixed command.
+        WriteMarker(marker with { ResumeDispatched = true }, replace: true);
     }
 
     internal bool RecoverPending(ManagedRun requestedRun)
@@ -69,14 +76,68 @@ internal sealed class BedrockLiveSaveCandidate(LocalData data)
     }
 
     internal BedrockValidatedSnapshot CaptureFixtureQuery(ManagedRun run,
-        Func<BedrockQueryEvidence> evidence)
+        Func<BedrockQueryEvidence> evidence,
+        Action<BedrockFixtureResumeAcknowledgement> prepareResume,
+        Func<BedrockFixtureResumeAcknowledgement> resumeAcknowledgement)
     {
         try
         {
             Hold(run);
             return QueryFixture(run, evidence);
         }
-        finally { if (HasPendingResume) Resume(run); }
+        finally
+        {
+            if (HasPendingResume)
+            {
+                try { prepareResume(FixtureResumeRequest(run)); }
+                finally { Resume(run); }
+                AcknowledgeFixtureResume(run, resumeAcknowledgement());
+            }
+        }
+    }
+
+    internal BedrockFixtureResumeAcknowledgement FixtureResumeRequest(ManagedRun requestedRun)
+    {
+        var run = ExactRun(requestedRun);
+        var marker = RequirePending(run);
+        return new(BedrockQuerySource.FixtureSynthetic, marker.ProfileId, marker.OperationId,
+            marker.ProcessId, marker.StartTimeUtcTicks, marker.ExecutablePath,
+            marker.WorldDirectory, marker.AttemptNonce);
+    }
+
+    internal void AcknowledgeFixtureResume(ManagedRun requestedRun,
+        BedrockFixtureResumeAcknowledgement acknowledgement)
+    {
+        var run = ExactRun(requestedRun);
+        var marker = RequirePending(run);
+        if (!marker.ResumeDispatched || acknowledgement is null ||
+            acknowledgement.Source != BedrockQuerySource.FixtureSynthetic ||
+            acknowledgement.ProfileId != marker.ProfileId ||
+            acknowledgement.OperationId != marker.OperationId ||
+            acknowledgement.ProcessId != marker.ProcessId ||
+            acknowledgement.StartTimeUtcTicks != marker.StartTimeUtcTicks ||
+            !SamePath(acknowledgement.ExecutablePath, marker.ExecutablePath) ||
+            !SamePath(acknowledgement.WorldDirectory, marker.WorldDirectory) ||
+            acknowledgement.AttemptNonce == Guid.Empty ||
+            acknowledgement.AttemptNonce != marker.AttemptNonce)
+            throw new InvalidOperationException("Fixture resume acknowledgement does not match the pending hold.");
+        File.Delete(markerPath);
+    }
+
+    private void WriteMarker(BedrockPendingResume marker, bool replace)
+    {
+        var temporary = markerPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                       FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(stream, marker, Json);
+                stream.Flush(true);
+            }
+            File.Move(temporary, markerPath, replace);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     private ManagedRun ExactRun(ManagedRun requested)
@@ -121,7 +182,7 @@ internal sealed class BedrockLiveSaveCandidate(LocalData data)
         throw new InvalidOperationException("The exact Bedrock process could not be verified.");
     }
 
-    private void RequirePending(ManagedRun run)
+    private BedrockPendingResume RequirePending(ManagedRun run)
     {
         BedrockPendingResume? marker;
         try
@@ -134,11 +195,13 @@ internal sealed class BedrockLiveSaveCandidate(LocalData data)
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException)
         { throw new InvalidOperationException("Pending Bedrock resume needs manual review.", ex); }
-        if (marker is null || marker.ProfileId != run.ProfileId || marker.OperationId != run.OperationId ||
+        if (marker is null || marker.AttemptNonce == Guid.Empty ||
+            marker.ProfileId != run.ProfileId || marker.OperationId != run.OperationId ||
             marker.ProcessId != run.ProcessId || marker.StartTimeUtcTicks != run.StartTimeUtcTicks ||
             !SamePath(marker.ExecutablePath, run.ExecutablePath) ||
             !SamePath(marker.WorldDirectory, run.WorldDirectory))
             throw new InvalidOperationException("Pending Bedrock resume belongs to another run.");
+        return marker;
     }
 
     private static BedrockValidatedSnapshot Validate(ManagedRun run, BedrockQueryEvidence evidence)
