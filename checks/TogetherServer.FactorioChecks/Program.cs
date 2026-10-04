@@ -118,6 +118,104 @@ await Check("Factorio preview validates only an owner-installed executable, exis
     return Task.CompletedTask;
 });
 
+await Check("Factorio live-save candidate rejects stale runs and dispatches only the fixed RCON command", async () =>
+{
+    using var data = new LocalData(Path.Combine(root, "live-save-candidate-data"));
+    var profile = Profile(data, "live-save-candidate");
+    profile.Backups.Enabled = false;
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "Factorio candidate profile was rejected");
+    var started = await manager.StartAsync(profile.Id);
+    Require(started.Ok, $"Factorio candidate fixture did not start: {started.Code} {started.Message}");
+    var run = data.LoadRuns().Single();
+    var receivedMarker = Path.Combine(profile.WorldDirectory, "synthetic-server-save-received.marker");
+    var port = new ExactManagedFactorioLiveSaveCommandPort(data);
+    try
+    {
+        await WaitForReady(manager, profile.Id, 0);
+        void RequireRejected(ManagedRun candidate, string reason)
+        {
+            try
+            {
+                port.RequestFactorioSave(candidate);
+                throw new Exception(reason + " reached RCON");
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        var wrongStart = data.LoadRuns().Single();
+        wrongStart.StartTimeUtcTicks++;
+        RequireRejected(wrongStart, "mismatched process start time");
+        var recordedRuns = data.LoadRuns();
+        var forgedRuns = data.LoadRuns();
+        forgedRuns.Single().StartTimeUtcTicks++;
+        data.SaveRuns(forgedRuns);
+        try { RequireRejected(forgedRuns.Single(), "recorded process start time mismatch"); }
+        finally { data.SaveRuns(recordedRuns); }
+        var staleOperation = data.LoadRuns().Single();
+        staleOperation.OperationId = Guid.NewGuid();
+        RequireRejected(staleOperation, "stale operation");
+        var wrongDeclaredPort = data.LoadRuns().Single();
+        wrongDeclaredPort.DeclaredPorts = [new("UDP", profile.GamePort, "Game"),
+            new("TCP", profile.Factorio!.RconPort + 1, "Local RCON")];
+        RequireRejected(wrongDeclaredPort, "changed run RCON port");
+
+        var settings = data.LoadSettings();
+        var savedProfile = settings.Profiles.Single();
+        var originalRconPort = savedProfile.Factorio!.RconPort;
+        savedProfile.Factorio.RconPort = originalRconPort + 1;
+        data.SaveSettings(settings);
+        try { RequireRejected(run, "changed saved profile RCON port"); }
+        finally
+        {
+            savedProfile.Factorio.RconPort = originalRconPort;
+            data.SaveSettings(settings);
+        }
+        Require(!File.Exists(receivedMarker), "a rejected candidate reached the fixture RCON listener");
+
+        var dispatched = port.RequestFactorioSave(run);
+        Require(dispatched.OperationId == run.OperationId && dispatched.FixedCommand == "/server-save" &&
+            !dispatched.CompletionConfirmed, "the candidate claimed a completed save");
+        Require(File.Exists(receivedMarker) && File.ReadAllText(receivedMarker) == "authenticated /server-save",
+            "the exact fixed save command did not reach authenticated fixture RCON");
+        using (var process = Process.GetProcessById(run.ProcessId!.Value))
+            Require(!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks,
+                "the live-save command stopped or replaced the exact fixture process");
+
+        // Structural fixture evidence only: the producer closed this disposable ZIP.
+        var closedZip = Path.Combine(profile.WorldDirectory, "synthetic-live-save.zip");
+        using (var stream = new FileStream(closedZip, FileMode.Open, FileAccess.Read, FileShare.None))
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Read))
+        {
+            var entry = archive.Entries.Single();
+            Require(entry.FullName == "fixture-save/level.dat" && entry.Length is > 0 and < 1024,
+                "the closed synthetic ZIP did not have its expected bounded entry");
+            using var reader = new StreamReader(entry.Open());
+            Require(reader.ReadToEnd() == "synthetic live save", "the synthetic ZIP entry was unreadable");
+        }
+        Require(!SharedWorldLiveSaveAdapters.ForGame(GameKinds.Factorio)!.LiveCaptureAccepted &&
+            !SharedWorldLiveSaveAdapters.Status(GameKinds.Factorio).Available,
+            "fixture dispatch enabled live capture or sharing");
+        var stopped = await manager.StopAsync(profile.Id);
+        Require(stopped.Ok, $"Factorio candidate fixture did not stop: {stopped.Code} {stopped.Message}");
+    }
+    finally
+    {
+        foreach (var active in data.LoadRuns())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(active.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == active.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(active.ExecutablePath,
+                        StringComparison.OrdinalIgnoreCase)) process.Kill();
+            }
+            catch (Exception) { }
+        }
+    }
+});
+
 await Check("Factorio fixed launch, authenticated player count, graceful quit, backup vault, and rehearsal work", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "lifecycle-data"));

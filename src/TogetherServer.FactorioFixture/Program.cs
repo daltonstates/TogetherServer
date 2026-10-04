@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -90,6 +91,21 @@ static async Task ServeRcon(TcpListener listener, string password, string savePa
                 "synthetic-save-confirmed.marker"), "authenticated /quit", token);
             await WritePacket(stream, command.Id, 0, "Quitting", token);
             quit.TrySetResult();
+            continue;
+        }
+        if (command.Body == "/server-save")
+        {
+            var saveDirectory = Path.GetDirectoryName(savePath)!;
+            await File.WriteAllTextAsync(Path.Combine(saveDirectory,
+                "synthetic-server-save-received.marker"), "authenticated /server-save", token);
+            // Disposable fixture artifact only. A readable ZIP here proves neither
+            // Factorio completion nor that a real game can load a copied save.
+            var closedArchive = Path.Combine(saveDirectory, "synthetic-live-save.zip");
+            using (var file = new FileStream(closedArchive, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var archive = new ZipArchive(file, ZipArchiveMode.Create))
+            using (var writer = new StreamWriter(archive.CreateEntry("fixture-save/level.dat").Open()))
+                await writer.WriteAsync("synthetic live save".AsMemory(), token);
+            await WritePacket(stream, command.Id, 0, "Save requested", token);
             continue;
         }
         await WritePacket(stream, command.Id, 0, "unsupported fixed fixture command", token);
