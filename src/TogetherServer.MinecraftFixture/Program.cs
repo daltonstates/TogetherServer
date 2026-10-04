@@ -35,6 +35,29 @@ while (true)
             "fixture command received");
         Console.WriteLine("[Server thread/INFO]: synthetic world flush complete");
     }
+    if (!java && line == "save hold")
+    {
+        File.WriteAllText(Path.Combine(root, "synthetic-save-hold.marker"), "fixture only");
+        Console.WriteLine("[TogetherServer fixture/INFO]: synthetic hold received");
+    }
+    if (!java && line == "save query")
+    {
+        var worldName = properties.Single(value => value.StartsWith("level-name=", StringComparison.Ordinal))["level-name=".Length..];
+        var fileName = "db/synthetic.dat";
+        var worldFile = Path.Combine(root, "worlds", worldName, "db", "synthetic.dat");
+        var operationId = File.ReadAllText(Path.Combine(root, "synthetic-save-operation-id.txt")).Trim();
+        var evidence = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            operationId, source = "FixtureSynthetic", fileName, fileSize = new FileInfo(worldFile).Length
+        });
+        File.WriteAllText(Path.Combine(root, "synthetic-save-query.json"), evidence);
+        Console.WriteLine("[TogetherServer fixture/INFO]: synthetic query evidence emitted");
+    }
+    if (!java && line == "save resume")
+    {
+        File.WriteAllText(Path.Combine(root, "synthetic-save-resume.marker"), "fixture only");
+        Console.WriteLine("[TogetherServer fixture/INFO]: synthetic resume received");
+    }
     if (line is null) await Task.Delay(50);
 }
 loggingDone.Cancel();
