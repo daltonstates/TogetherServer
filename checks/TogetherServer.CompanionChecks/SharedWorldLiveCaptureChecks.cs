@@ -367,6 +367,10 @@ internal static class SharedWorldLiveCaptureChecks
                 Directory.Delete(Path.Combine(quarantineBase, $"fixture-{index}"));
             Require(File.ReadAllBytes(pointerPath).AsSpan().SequenceEqual(pointerBytes),
                 "denied recovery changed the signed latest pointer");
+            profile.SharedSavesEnabled = false;
+            Require(resumed.HasPotentialLiveOrphan(profile),
+                "turning sharing off hid an unpublished live copy");
+            profile.SharedSavesEnabled = true;
             var quarantined = resumed.QuarantineVerifiedLiveOrphan(profile, orphan.VersionHash);
             var quarantineRoot = Path.Combine(quarantineBase,
                 $"{orphan.GroupId:N}-{orphan.Number}-{orphan.VersionHash}");
@@ -379,6 +383,10 @@ internal static class SharedWorldLiveCaptureChecks
                 "verified recovery lost signed evidence, payload bytes, or the latest pointer");
             Require(resumed.ReviewLiveOrphan(profile) is { Code: "None", VersionHash: null },
                 "the owner review still offered a moved live copy");
+            profile.SharedSavesEnabled = false;
+            Require(!resumed.HasPotentialLiveOrphan(profile),
+                "a disabled world with retained published history and no orphan was flagged");
+            profile.SharedSavesEnabled = true;
             var postStop = resumed.PublishAfterStop(profile, secondBackup.Backup!.Id);
             Require(postStop.Ok && postStop.Version is { Number: 3,
                 CaptureKind: SharedWorldCaptureKinds.PostStopBackup } &&

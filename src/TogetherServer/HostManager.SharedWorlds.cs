@@ -316,7 +316,7 @@ public sealed partial class HostManager
     }
 
     private static bool LiveOrphanReviewFailure(Exception ex) =>
-        ex is IOException or UnauthorizedAccessException or JsonException or
+        ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or
             System.Security.Cryptography.CryptographicException or InvalidOperationException or
             ArgumentException or FormatException or OverflowException or NotSupportedException or
             System.Security.SecurityException;
@@ -329,6 +329,8 @@ public sealed partial class HostManager
             var profile = ExactLiveOrphanProfile(profileId);
             if (profile is null) return new("ReviewRequired", null,
                 "The saved server could not be identified safely. No review action is available.");
+            if (!profile.SharedSavesEnabled && !sharedWorlds.HasPotentialLiveOrphan(profile))
+                return new("None", null, "No interrupted live file copy needs review.");
             if (profile.SeparateCopySourceProfileId is not null ||
                 SharedAuthorityBlocked(profileId, out _))
                 return new("ReviewRequired", null,

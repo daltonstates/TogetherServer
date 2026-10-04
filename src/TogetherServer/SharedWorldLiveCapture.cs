@@ -474,6 +474,46 @@ internal sealed partial class SharedWorldService
             }
     }
 
+    // A disabled world can retain its old signed history. Distinguish that
+    // ordinary state from a possible unpublished version before reporting an
+    // authority warning; uncertainty must still require review.
+    internal bool HasPotentialLiveOrphan(ServerProfile profile)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+            lock (sync)
+            {
+                var root = Root(profile.Id);
+                EnsureUnlinkedRoot(data.RootPath, root);
+                if (File.Exists(root)) throw new InvalidDataException("Shared save storage needs review.");
+                if (!Directory.Exists(root)) return false;
+                var binding = ReadBinding(profile.Id) ??
+                    throw new InvalidDataException("Shared save source is missing.");
+                if (!BindingMatches(binding, profile))
+                    throw new InvalidDataException("Shared save source changed.");
+                var latestPath = LatestPath(profile.Id);
+                var status = Status(profile);
+                if (File.Exists(latestPath) && status.Latest is null)
+                    throw new InvalidDataException("Published shared save needs review.");
+                var groupRoot = Path.Combine(root, binding.GroupId.ToString("N"));
+                EnsureUnlinkedRoot(data.RootPath, groupRoot);
+                if (File.Exists(groupRoot))
+                    throw new InvalidDataException("Shared save group needs review.");
+                if (!Directory.Exists(groupRoot)) return false;
+                var publishedNumber = status.Latest?.Number ?? 0;
+                foreach (var entry in Directory.EnumerateFileSystemEntries(groupRoot))
+                {
+                    if (!Directory.Exists(entry) ||
+                        (File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0 ||
+                        !long.TryParse(Path.GetFileName(entry),
+                            System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out var number) || number < 1)
+                        throw new InvalidDataException("Shared save history needs review.");
+                    if (number > publishedNumber) return true;
+                }
+                return false;
+            }
+    }
+
     // An interrupted schema-5 publication is never reconciled into latest.json.
     // This remains the only mutation: move the exact verified directory while
     // leaving its signed files and the previous published pointer untouched.
