@@ -567,7 +567,7 @@ public sealed class PairingService
                 roster.Schema == 3 && chain.Heads(profileId)
                     .SingleOrDefault()?.Signature != roster.Signature ||
                 !(roster.Schema == 3
-                    ? roster.OwnerLocalBaselineMembers ?? chain.Read(profileId)[0].Members
+                    ? roster.OwnerLocalBaselineMembers ?? chain.First(profileId)!.Members
                     : roster.Members).SequenceEqual(SharedRosterMembers(profileId).OrderBy(item => item.DeviceId)))
                 throw new InvalidDataException("The signed roster no longer matches current access.");
             var path = RosterDirtyPath(profileId);

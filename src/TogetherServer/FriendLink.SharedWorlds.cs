@@ -74,6 +74,113 @@ public sealed record WorldHistoryReviewRequest(Guid? ConfirmGroupId = null,
 
 internal sealed partial class FriendLink
 {
+    private async Task<SharedWorldRoster?> FetchCurrentRosterAsync(Guid profileId,
+        HttpClient client, CancellationToken cancellationToken)
+    {
+        using var response = await client.GetAsync(
+            $"api/companion/servers/{profileId}/shared-world/roster/revisions/current",
+            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var bytes = await ReadBoundedSharedAsync(response.Content,
+            SharedWorldService.MaximumManifestBytes, cancellationToken);
+        if (!response.IsSuccessStatusCode || bytes is null) return null;
+        try { return JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json); }
+        catch (JsonException) { return null; }
+    }
+
+    private async Task<ReceivedSharedWorldResult?> CatchUpRosterAsync(Guid profileId,
+        HttpClient client, SharedWorldRoster current, string? pinned,
+        SharedRosterFloor? floor, CancellationToken cancellationToken)
+    {
+        if (current.ProfileId != profileId || !SharedWorldRosterTrust.VerifySignature(current) ||
+            pinned is not null && current.OwnerPublicKey != pinned)
+            return SharedFailure("RosterRejected", "The Host's current sharing list is invalid.");
+        var chain = new SharedWorldRosterChainStore(data);
+        try
+        {
+            var hasChain = chain.HasState(profileId);
+            var count = hasChain ? chain.Count(profileId) : 0;
+            var floorSeen = floor is null;
+            if (count > 0)
+            {
+                var local = chain.Heads(profileId);
+                if (local.Count != 1 || local[0].GroupId != current.GroupId ||
+                    local[0].OwnerPublicKey != current.OwnerPublicKey ||
+                    floor is not null && (floor.GroupId != local[0].GroupId ||
+                        floor.Revision > local[0].Revision || floor.Epoch > local[0].Epoch ||
+                        floor.Revision == local[0].Revision && floor.Signature != local[0].Signature))
+                    return SharedFailure("RosterRollback", "The saved sharing history changed unexpectedly.");
+                floorSeen = floor is null || local[0].GroupId == floor.GroupId &&
+                    local[0].Epoch == floor.Epoch && local[0].Revision == floor.Revision &&
+                    local[0].Signature == floor.Signature;
+            }
+            else if (floor is not null && (floor.GroupId != current.GroupId ||
+                floor.Revision > current.Revision || floor.Epoch > current.Epoch ||
+                floor.Revision == current.Revision && floor.Signature != current.Signature))
+                return SharedFailure("RosterRollback", "The Host's sharing list is older or changed unexpectedly.");
+            var first = count == 0;
+            var legacyAdvance = false;
+            var fullLastPage = false;
+            for (var pageNumber = 0; pageNumber < 4; pageNumber++)
+            {
+                using var response = await client.GetAsync(
+                    $"api/companion/servers/{profileId}/shared-world/roster/revisions?offset={count}",
+                    HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                var bytes = await ReadBoundedSharedAsync(response.Content, 4 * 1024 * 1024,
+                    cancellationToken);
+                if (!response.IsSuccessStatusCode || bytes is null)
+                    return SharedFailure("RosterUnavailable", "The signed sharing history is unavailable.");
+                List<SharedWorldRoster>? page;
+                try { page = JsonSerializer.Deserialize<List<SharedWorldRoster>>(bytes, Json); }
+                catch (JsonException)
+                { return SharedFailure("RosterRejected", "The signed sharing page is invalid."); }
+                if (page is null || page.Count > SharedWorldRosterChainStore.PageSize ||
+                    page.Any(item => item is null))
+                    return SharedFailure("RosterRejected", "The signed sharing page is invalid.");
+                if (!hasChain && count == 0 && page.Count == 1 &&
+                    current.Schema == 2 && SharedWorldRosterTrust.Verify(page[0]) &&
+                    SharedWorldRosterTrust.Hash(page[0]) == SharedWorldRosterTrust.Hash(current) &&
+                    (floor is null || page[0].GroupId == floor.GroupId &&
+                     (page[0].Epoch == floor.Epoch && page[0].Revision == floor.Revision &&
+                      page[0].Signature == floor.Signature ||
+                      page[0].Epoch > floor.Epoch && page[0].Revision > floor.Revision)))
+                    return null;
+                if (first && page.Count > 0 && floor is not null)
+                    legacyAdvance = page[0].Schema == 2 &&
+                        SharedWorldRosterTrust.Verify(page[0]) &&
+                        page[0].GroupId == floor.GroupId &&
+                        page[0].Epoch > floor.Epoch && page[0].Revision > floor.Revision;
+                foreach (var revision in page)
+                {
+                    if (floor is not null && revision.GroupId == floor.GroupId &&
+                        revision.Epoch == floor.Epoch && revision.Revision == floor.Revision &&
+                        revision.Signature == floor.Signature) floorSeen = true;
+                    chain.Append(revision, pinned ?? current.OwnerPublicKey);
+                }
+                count += page.Count;
+                first = false;
+                fullLastPage = page.Count == SharedWorldRosterChainStore.PageSize;
+                if (!fullLastPage) break;
+            }
+            var heads = chain.Heads(profileId);
+            if (fullLastPage && heads.Count == 1 && SharedWorldRosterTrust.Hash(heads[0]) !=
+                SharedWorldRosterTrust.Hash(current))
+                return SharedFailure("RosterCatchUpPending",
+                    "This PC is still checking the signed sharing history. Check again to continue.");
+            if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
+                SharedWorldRosterTrust.Hash(current))
+                return SharedFailure("RosterRejected", "The Host omitted a signed sharing revision.");
+            if (!floorSeen && !legacyAdvance && floor is not null &&
+                !(hasChain && chain.ContainsFloor(profileId, floor)))
+                return SharedFailure("RosterRollback", "The Host omitted the previously trusted sharing list.");
+            if (floor is not null && floor.GroupId == current.GroupId &&
+                floor.Revision == current.Revision && floor.Signature != current.Signature)
+                return SharedFailure("RosterRollback", "The Host changed an already trusted sharing list.");
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+        { return SharedFailure("RosterRejected", "The signed sharing history failed verification."); }
+    }
+
     public async Task<WorldHistoryReviewResult> ReviewSharedHistoryAsync(Guid profileId,
         WorldHistoryReviewRequest? request = null,
         CancellationToken cancellationToken = default)
@@ -720,45 +827,18 @@ internal sealed partial class FriendLink
         if (!enrollment.IsSuccessStatusCode)
             return (null, SharingFailure(selfId, "KeyReviewRequired",
                 "The owner needs to review this PC's sharing identity."));
-        using var response = await client.GetAsync(path + "/roster/revisions",
-            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        var bytes = await ReadBoundedSharedAsync(response.Content, 4 * 1024 * 1024, cancellationToken);
-        if (!response.IsSuccessStatusCode || bytes is null)
+        var roster = await FetchCurrentRosterAsync(profileId, client, cancellationToken);
+        if (roster is null)
             return (null, SharingFailure(selfId, "RosterUnavailable", "The Host's sharing list is unavailable."));
-        List<SharedWorldRoster>? revisions;
-        try { revisions = JsonSerializer.Deserialize<List<SharedWorldRoster>>(bytes, Json); }
-        catch (JsonException)
-        { return (null, SharingFailure(selfId, "RosterRejected", "The signed sharing list was invalid.")); }
-        if (revisions is null || revisions.Count is < 1 or > 256 ||
-            revisions.Any(item => item is null) || revisions[0].ProfileId != profileId ||
-            !SharedWorldRosterTrust.Verify(revisions[0]))
-            return (null, SharingFailure(selfId, "RosterRejected", "The signed sharing list was invalid."));
         var pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
-        if (pinned is not null && revisions[0].OwnerPublicKey != pinned)
+        if (pinned is not null && roster.OwnerPublicKey != pinned)
             return (null, SharingFailure(selfId, "SigningIdentityChanged",
                 "The Host's world identity changed. Ask the owner to review it."));
         var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
-        var chain = new SharedWorldRosterChainStore(data);
-        var hasChain = chain.HasState(profileId);
-        if (!SharedWorldSharingFloor.Allows(revisions, floor) &&
-            !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance(revisions, floor, hasChain))
-            return (null, SharingFailure(selfId, "RosterRollback",
-                "The Host's sharing list is older or changed unexpectedly."));
-        if (hasChain && chain.Read(profileId).Count > revisions.Count)
-            return (null, SharingFailure(selfId, "RosterRollback", "The Host sent an older sharing list."));
-        SharedWorldRoster roster;
-        if (hasChain || revisions.Count != 1 || revisions[0].Schema == 3)
-        {
-            foreach (var revision in revisions)
-                chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
-            var heads = chain.Heads(profileId);
-            if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
-                SharedWorldRosterTrust.Hash(revisions[^1]))
-                return (null, SharingFailure(selfId, "RosterConflict",
-                    "Competing sharing changes need owner review."));
-            roster = heads[0];
-        }
-        else roster = revisions[^1];
+        var failure = await CatchUpRosterAsync(profileId, client, roster, pinned, floor,
+            cancellationToken);
+        if (failure is not null)
+            return (null, SharingFailure(selfId, failure.Code, failure.Message));
         config.SharedWorldSigningKeys ??= [];
         config.SharedRosterFloors ??= [];
         config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
@@ -884,10 +964,12 @@ internal sealed partial class FriendLink
             {
                 var reviewRequired = result.Code is "SourceReviewRequired" or "ConsentRequired" or
                     "SigningIdentityChanged" or "VersionConflict" or "VersionChainInvalid";
-                var failures = result.Ok || reviewRequired ? 0 :
+                var catchUpPending = result.Code == "RosterCatchUpPending";
+                var failures = result.Ok || reviewRequired || catchUpPending ? 0 :
                     Math.Min(6, sharedFailures.GetValueOrDefault(profileId) + 1);
                 sharedFailures[profileId] = failures;
-                sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(reviewRequired ? 300 : failures == 0 ? 30 :
+                sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(catchUpPending ? 2 :
+                    reviewRequired ? 300 : failures == 0 ? 30 :
                     Math.Min(300, 5 * (1 << failures)));
             }
         }
@@ -1015,22 +1097,10 @@ internal sealed partial class FriendLink
             $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json, cancellationToken);
         if (!enrollment.IsSuccessStatusCode)
             return SharedFailure("KeyReviewRequired", "The Host did not accept this PC's signing identity. Ask the owner to review it.");
-        using var response = await client.GetAsync(
-            $"api/companion/servers/{profileId}/shared-world/roster/revisions",
-            HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        var bytes = await ReadBoundedSharedAsync(response.Content,
-            4 * 1024 * 1024, cancellationToken);
-        if (!response.IsSuccessStatusCode || bytes is null)
+        var roster = await FetchCurrentRosterAsync(profileId, client, cancellationToken);
+        if (roster is null || roster.ProfileId != profileId ||
+            !SharedWorldRosterTrust.VerifySignature(roster))
             return SharedFailure("RosterUnavailable", "The signed sharing history is unavailable.");
-        List<SharedWorldRoster>? revisions;
-        try { revisions = JsonSerializer.Deserialize<List<SharedWorldRoster>>(bytes, Json); }
-        catch (JsonException) { return SharedFailure("RosterRejected", "The signed sharing history is invalid."); }
-        if (revisions is null || revisions.Count is < 1 or > 256 ||
-            revisions.Any(item => item is null) ||
-            revisions[0].ProfileId != profileId || !SharedWorldRosterTrust.Verify(revisions[0]))
-            return SharedFailure("RosterRejected", "The owner-signed sharing history failed verification.");
-        var roster = revisions[^1] ??
-            throw new InvalidDataException("The signed sharing history is invalid.");
         var authorityStoreForStage = new WorldAuthorityStore(data);
         IReadOnlyList<WorldAuthorityRecord> acceptedBeforePage;
         try { acceptedBeforePage = authorityStoreForStage.Read(profileId); }
@@ -1118,28 +1188,10 @@ internal sealed partial class FriendLink
                 return SharedFailure("SourceReviewRequired",
                     "The Host changed this save source. Turn Allow saves off, then on to review the new signed group.");
             }
-            try
-            {
-                var chain = new SharedWorldRosterChainStore(data);
-                var hasChain = chain.HasState(profileId);
-                if (hasChain && chain.Read(profileId).Count > revisions.Count)
-                    return SharedFailure("RosterRejected", "The Host sent an older sharing history.");
-                if (floor is not null && floor.GroupId == roster.GroupId &&
-                    !SharedWorldSharingFloor.Allows(revisions, floor) &&
-                    !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance(revisions, floor, hasChain))
-                    return SharedFailure("RosterRejected", "The Host sent an older sharing history.");
-                if (hasChain || revisions.Count != 1 || revisions[0].Schema == 3)
-                {
-                    foreach (var revision in revisions)
-                        chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
-                    var heads = chain.Heads(profileId);
-                    if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
-                        SharedWorldRosterTrust.Hash(roster))
-                        return SharedFailure("RosterRejected", "Competing sharing changes need owner review.");
-                }
-            }
-            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
-            { return SharedFailure("RosterRejected", "The signed sharing history failed verification."); }
+            var rosterFailure = await CatchUpRosterAsync(profileId, client, roster, pinned,
+                floor is not null && floor.GroupId != roster.GroupId ? null : floor,
+                cancellationToken);
+            if (rosterFailure is not null) return rosterFailure;
             var member = roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
             if (roster.ProfileId != profileId || roster.OwnerPublicKey != (pinned ?? roster.OwnerPublicKey) ||
                 roster.Epoch < (floor?.Epoch ?? 0) || roster.Revision < (floor?.Revision ?? 0) ||

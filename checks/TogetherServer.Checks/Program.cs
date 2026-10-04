@@ -841,6 +841,375 @@ await Check("delegated roster chain enforces owner root, limited grants, and con
     return Task.CompletedTask;
 });
 
+await Check("paged roster retains 270 owner and delegated revisions with offline catch-up", () =>
+{
+    using var host = Data("paged-roster-host");
+    using var receiver = Data("paged-roster-receiver");
+    using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var manager = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var target = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var ownerPublic = Convert.ToBase64String(owner.ExportSubjectPublicKeyInfo());
+    var managerPublic = Convert.ToBase64String(manager.ExportSubjectPublicKeyInfo());
+    var targetPublic = Convert.ToBase64String(target.ExportSubjectPublicKeyInfo());
+    var profileId = Guid.NewGuid();
+    var groupId = Guid.NewGuid();
+    var managerId = Guid.NewGuid();
+    var targetId = Guid.NewGuid();
+    var members = new SharedWorldRosterMember[]
+    {
+        new(managerId, managerPublic, new(ManageSharing: true), false),
+        new(targetId, targetPublic, new(), false)
+    };
+    SharedWorldRoster Sign(SharedWorldRoster draft, ECDsa signer) => draft with
+    {
+        Signature = Convert.ToBase64String(signer.SignData(
+            SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+    };
+    var roster = Sign(new SharedWorldRoster(3, groupId, profileId, 1, 1, true,
+        ownerPublic, members, "", SignerDeviceId: Guid.Empty,
+        SignerPublicKey: ownerPublic), owner);
+    var chain = new SharedWorldRosterChainStore(host);
+    var received = new SharedWorldRosterChainStore(receiver);
+    SharedWorldRoster? historic = null;
+    chain.Append(roster, ownerPublic);
+    received.Append(roster, ownerPublic);
+    for (var n = 2; n <= 270; n++)
+    {
+        var delegated = n % 2 == 0;
+        var nextMembers = n == 270 ?
+            new SharedWorldRosterMember[] { members[0] with { Revoked = true }, members[1] } : members;
+        var draft = roster with
+        {
+            Epoch = n,
+            Revision = n,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(roster),
+            SignerDeviceId = delegated && n != 270 ? managerId : Guid.Empty,
+            SignerPublicKey = delegated && n != 270 ? managerPublic : ownerPublic,
+            Members = nextMembers,
+            Signature = ""
+        };
+        roster = Sign(draft, delegated && n != 270 ? manager : owner);
+        chain.Append(roster, ownerPublic);
+        if (n == 135) historic = roster;
+        if (n <= 8) received.Append(roster, ownerPublic);
+        members = nextMembers;
+    }
+    Require(chain.Count(profileId) == 270 && chain.ReadPage(profileId, 0).Count ==
+        SharedWorldRosterChainStore.PageSize && chain.ReadPage(profileId, 269).Count == 1,
+        "roster page size or count changed");
+    var floorName = $"shared-roster-chain-{profileId:N}.protected";
+    var floorBytes = host.LoadProtected(floorName)!;
+    Require(floorBytes.Length < 2048 &&
+        JsonDocument.Parse(floorBytes).RootElement.GetProperty("schema").GetInt32() == 2,
+        "protected roster floor grew with the journal");
+    var finalHash = SharedWorldRosterTrust.Hash(roster);
+    var incomplete = received.Heads(profileId).Single();
+    Require(SharedWorldRosterTrust.Hash(incomplete) != finalHash,
+        "a truncated offline catch-up looked complete");
+    for (long offset = received.Count(profileId); ;)
+    {
+        var page = chain.ReadPage(profileId, offset);
+        foreach (var revision in page) received.Append(revision, ownerPublic);
+        offset += page.Count;
+        if (page.Count < SharedWorldRosterChainStore.PageSize) break;
+    }
+    Require(received.Count(profileId) == 270 &&
+        SharedWorldRosterTrust.Hash(received.Heads(profileId).Single()) == finalHash &&
+        new SharedWorldRosterChainStore(receiver).Read(profileId).Count == 270,
+        "offline receiver did not accept the complete signed history");
+    Require(historic is not null && chain.Contains(profileId, historic),
+        "protected historical roster lookup was lost after 270 revisions");
+    var transferHealth = new SharedWorldTransferHealth();
+    transferHealth.Complete(profileId, transferHealth.Begin(profileId),
+        new(false, "RosterCatchUpPending", "Signed membership is catching up."));
+    Require(transferHealth.Issue(profileId) is null,
+        "normal roster catch-up was reported as a stalled save transfer");
+    var lookupName = $"shared-roster-lookup-{profileId:N}-{SharedWorldRosterTrust.Hash(historic!)}.protected";
+    var lookupBytes = host.LoadProtected(lookupName)!;
+    host.DeleteProtected(lookupName);
+    Require(!new SharedWorldRosterChainStore(host).Contains(profileId, historic!),
+        "authority accepted a historical roster without its protected lookup");
+    host.SaveProtected(lookupName, lookupBytes);
+    var rejected = Sign(roster with
+    {
+        Epoch = 271,
+        Revision = 271,
+        PreviousRosterHash = finalHash,
+        SignerDeviceId = managerId,
+        SignerPublicKey = managerPublic,
+        Signature = ""
+    }, manager);
+    RequireThrows<InvalidDataException>(() => chain.Append(rejected, ownerPublic),
+        "revoked delegate advanced the roster");
+    var pending = Sign(rejected with
+    { SignerDeviceId = Guid.Empty, SignerPublicKey = ownerPublic, Signature = "" }, owner);
+    chain.Append(pending, ownerPublic, stopAfterPendingForChecks: true);
+    Require(new SharedWorldRosterChainStore(host).Count(profileId) == 271,
+        "pending roster commit did not recover idempotently");
+    var second = Sign(pending with
+    {
+        Epoch = 272,
+        Revision = 272,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(pending),
+        Signature = ""
+    }, owner);
+    chain.Append(second, ownerPublic, stopAfterFileForChecks: true);
+    Require(new SharedWorldRosterChainStore(host).Read(profileId).Count == 272,
+        "written roster commit did not recover idempotently");
+    var oldFloor = host.LoadProtected(floorName)!;
+    var final = Sign(second with
+    {
+        Epoch = 273,
+        Revision = 273,
+        PreviousRosterHash = SharedWorldRosterTrust.Hash(second),
+        Signature = ""
+    }, owner);
+    chain.Append(final, ownerPublic);
+    var finalFloor = host.LoadProtected(floorName)!;
+    host.SaveProtected(floorName, oldFloor);
+    RequireThrows<InvalidDataException>(() => new SharedWorldRosterChainStore(host).Read(profileId),
+        "protected floor rollback accepted an extra revision file");
+    host.SaveProtected(floorName, finalFloor);
+    var revisionPath = Path.Combine(host.RootPath, "shared-worlds", profileId.ToString("N"),
+        "roster-chain", SharedWorldRosterTrust.Hash(roster) + ".json");
+    var original = File.ReadAllBytes(revisionPath);
+    File.AppendAllText(revisionPath, "tamper");
+    RequireThrows<InvalidDataException>(() => new SharedWorldRosterChainStore(host).Read(profileId),
+        "historic roster tampering survived validation");
+    File.WriteAllBytes(revisionPath, original);
+    File.Delete(revisionPath);
+    RequireThrows<InvalidDataException>(() => new SharedWorldRosterChainStore(host).Read(profileId),
+        "missing historic roster revision survived validation");
+    File.WriteAllBytes(revisionPath, original);
+    Require(new SharedWorldRosterChainStore(host).Read(profileId).Count == 273,
+        "restored valid roster journal could not be read");
+    return Task.CompletedTask;
+});
+
+await Check("schema-1 roster floor migrates with a pending signed revision", () =>
+{
+    using var data = Data("roster-floor-migration");
+    using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var ownerPublic = Convert.ToBase64String(owner.ExportSubjectPublicKeyInfo());
+    var id = Guid.NewGuid();
+    var group = Guid.NewGuid();
+    SharedWorldRoster Sign(SharedWorldRoster draft) => draft with
+    {
+        Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+    };
+    var rootRoster = Sign(new SharedWorldRoster(2, group, id, 1, 1, true,
+        ownerPublic, [], ""));
+    var chain = new SharedWorldRosterChainStore(data);
+    chain.Append(rootRoster, ownerPublic);
+    var rootHash = SharedWorldRosterTrust.Hash(rootRoster);
+    data.DeleteProtected($"shared-roster-lookup-{id:N}-{rootHash}.protected");
+    var oldFloor = new
+    {
+        Schema = 1,
+        ProfileId = id,
+        GroupId = group,
+        OwnerPublicKey = ownerPublic,
+        Hashes = new[] { rootHash }
+    };
+    var floorBytes = JsonSerializer.SerializeToUtf8Bytes(oldFloor,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var next = Sign(rootRoster with
+    {
+        Schema = 3,
+        Epoch = 2,
+        Revision = 2,
+        PreviousRosterHash = rootHash,
+        SignerDeviceId = Guid.Empty,
+        SignerPublicKey = ownerPublic,
+        Signature = ""
+    });
+    var pending = new
+    {
+        Schema = 1,
+        OldFloorHash = Convert.ToHexString(SHA256.HashData(floorBytes)),
+        RosterHash = SharedWorldRosterTrust.Hash(next),
+        Roster = next
+    };
+    data.SaveProtected($"shared-roster-chain-{id:N}.protected", floorBytes);
+    data.SaveProtected($"shared-roster-pending-{id:N}.protected",
+        JsonSerializer.SerializeToUtf8Bytes(pending, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    Require(new SharedWorldRosterChainStore(data).Read(id).Count == 2 &&
+        new SharedWorldRosterChainStore(data).Heads(id).Single().Signature == next.Signature &&
+        JsonDocument.Parse(data.LoadProtected($"shared-roster-chain-{id:N}.protected")!)
+            .RootElement.GetProperty("schema").GetInt32() == 2,
+        "legacy pending roster did not migrate and commit idempotently");
+    return Task.CompletedTask;
+});
+
+await Check("companion roster revisions use bounded TestServer pages", async () =>
+{
+    using var data = Data("roster-pages-testserver");
+    var profile = Profile("roster-pages", "roster-pages-world", FreePort());
+    profile.Kind = "Fixture";
+    profile.SharedSavesEnabled = true;
+    var port = 51388;
+    var address = $"https://127.0.0.1:{port}";
+    var settings = Settings(profile);
+    settings.CompanionEndpoint = address;
+    settings.CompanionPort = port;
+    settings.CompanionBindAddress = "127.0.0.1";
+    settings.CompanionListeningEnabled = true;
+    data.SaveSettings(settings);
+    using var certificate = new HostIdentity(data).Ensure(address);
+    using var deviceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var deviceId = Guid.NewGuid();
+    var bearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    var devicePublic = Convert.ToBase64String(deviceKey.ExportSubjectPublicKeyInfo());
+    data.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
+        {
+            Id = deviceId, AssignedProfileIds = [profile.Id],
+            CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bearer))),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldPublicKey = devicePublic,
+            SharedWorldGrants = new() { [profile.Id] = new(Receive: true) }
+        }]
+    });
+    var pairing = new PairingService(data);
+    var manager = new HostManager(data, Games(data));
+    var roster = await manager.PublishSharedWorldRosterAsync(profile.Id,
+        [new(deviceId, devicePublic, new(Receive: true), false)]);
+    pairing.ConfirmSharedRosterPublished(profile.Id, roster);
+    var chain = new SharedWorldRosterChainStore(data);
+    chain.Append(roster, roster.OwnerPublicKey);
+    using var owner = ECDsa.Create();
+    owner.ImportPkcs8PrivateKey(data.LoadProtected("shared-world-signing-key.protected")!, out _);
+    for (var n = 2; n <= 270; n++)
+    {
+        var draft = roster with
+        {
+            Schema = 3,
+            Epoch = n,
+            Revision = n,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(roster),
+            SignerDeviceId = Guid.Empty,
+            SignerPublicKey = roster.OwnerPublicKey,
+            Signature = ""
+        };
+        roster = draft with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+        };
+        chain.Append(roster, roster.OwnerPublicKey);
+    }
+    using var gate = new SemaphoreSlim(1, 1);
+    var listener = new CompanionServer(data, manager, pairing, Games(data),
+        new ServerLogService(data, manager), gate, port + 2);
+    var builder = WebApplication.CreateBuilder(Array.Empty<string>());
+    builder.WebHost.UseTestServer();
+    await using var app = listener.BuildInMemoryApp(builder, settings, new Uri(address));
+    await app.StartAsync();
+    using var client = app.GetTestServer().CreateClient();
+    client.BaseAddress = new Uri(address + "/");
+    client.DefaultRequestHeaders.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+    client.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());
+    var path = $"api/companion/servers/{profile.Id}/shared-world/roster/revisions";
+    foreach (var (offset, expected) in new[] { (0, 12), (12, 12), (264, 6), (270, 0) })
+    {
+        using var response = await client.GetAsync(path + $"?offset={offset}");
+        var bytes = await response.Content.ReadAsByteArrayAsync();
+        var page = JsonSerializer.Deserialize<List<SharedWorldRoster>>(bytes,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Require(response.IsSuccessStatusCode && bytes.Length <= 4 * 1024 * 1024 &&
+            page?.Count == expected, "companion returned an unbounded or incorrect roster page");
+    }
+    using var currentResponse = await client.GetAsync(path + "/current");
+    var current = await currentResponse.Content.ReadFromJsonAsync<SharedWorldRoster>();
+    Require(currentResponse.IsSuccessStatusCode && current?.Signature == roster.Signature,
+        "separate current roster did not match the signed journal head");
+    using var invalid = await client.GetAsync(path + "?offset=-1");
+    Require(invalid.StatusCode == HttpStatusCode.BadRequest, "negative roster offset was accepted");
+    using var receiver = Data("roster-pages-offline-friend");
+    var receiverChain = new SharedWorldRosterChainStore(receiver);
+    foreach (var revision in chain.ReadPage(profile.Id, 0).Take(8))
+        receiverChain.Append(revision, roster.OwnerPublicKey);
+    var localHead = receiverChain.Heads(profile.Id).Single();
+    receiver.SaveProtected($"shared-world-pc-signing-{deviceId:N}.protected",
+        deviceKey.ExportPkcs8PrivateKey());
+    receiver.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+        new FriendConfiguration
+        {
+            Endpoint = address,
+            Fingerprint = HostIdentity.Fingerprint(certificate),
+            DeviceId = deviceId,
+            Credential = bearer,
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+            SharedRosterFloors = new()
+            {
+                [profile.Id] = new(localHead.GroupId,
+                localHead.Epoch, localHead.Revision, localHead.Signature)
+            }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    using var friend = new FriendLink(receiver, "friend.protected", (_, _) =>
+    {
+        var peer = app.GetTestServer().CreateClient();
+        peer.BaseAddress = new Uri(address + "/");
+        return peer;
+    });
+    var friendView = await friend.PollAsync();
+    Require(friendView.Profiles.Any(item => item.Id == profile.Id),
+        "offline Friend did not establish its saved Host connection");
+    SharedWorldSharingView? sharing = null;
+    for (var attempt = 0; attempt < 7; attempt++)
+    {
+        var before = receiverChain.Count(profile.Id);
+        sharing = await friend.CheckSharedWorldSharingAsync(profile.Id);
+        var after = receiverChain.Count(profile.Id);
+        Require(after - before <= 4 * SharedWorldRosterChainStore.PageSize,
+            "Friend caught up more than four signed pages in one attempt");
+        if (sharing.Available) break;
+        Require(sharing.Code == "RosterCatchUpPending" && after > before,
+            "Friend did not make bounded progress while catching up");
+    }
+    Require(sharing is { Available: true } && sharing.Revision == roster.Revision &&
+        new SharedWorldRosterChainStore(receiver).Count(profile.Id) == 270 &&
+        new SharedWorldRosterChainStore(receiver).Heads(profile.Id).Single().Signature == roster.Signature,
+        "offline Friend did not catch up from its protected local floor");
+    using var truncatedData = Data("roster-pages-truncated-friend");
+    var truncatedChain = new SharedWorldRosterChainStore(truncatedData);
+    foreach (var revision in chain.ReadPage(profile.Id, 0).Take(8))
+        truncatedChain.Append(revision, roster.OwnerPublicKey);
+    truncatedData.SaveProtected($"shared-world-pc-signing-{deviceId:N}.protected",
+        deviceKey.ExportPkcs8PrivateKey());
+    truncatedData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+        new FriendConfiguration
+        {
+            Endpoint = address,
+            Fingerprint = HostIdentity.Fingerprint(certificate),
+            DeviceId = deviceId,
+            Credential = bearer,
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+            SharedRosterFloors = new()
+            {
+                [profile.Id] = new(localHead.GroupId,
+                localHead.Epoch, localHead.Revision, localHead.Signature)
+            }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    using var truncatedFriend = new FriendLink(truncatedData, "friend.protected", (_, _) =>
+    {
+        var peer = new HttpClient(new TruncatedRosterHandler(app.GetTestServer().CreateHandler()))
+        { BaseAddress = new Uri(address + "/") };
+        return peer;
+    });
+    Require((await truncatedFriend.PollAsync()).Profiles.Any(item => item.Id == profile.Id),
+        "truncated-page Friend did not establish its saved Host connection");
+    var truncated = await truncatedFriend.CheckSharedWorldSharingAsync(profile.Id);
+    Require(!truncated.Available && truncated.Code == "RosterRejected" &&
+        new SharedWorldRosterChainStore(truncatedData).Count(profile.Id) == 8,
+        "Friend accepted a truncated page as the current signed head");
+});
+
 await Check("offline Friend accepts a Host-attested pre-expiry delegation", () =>
 {
     using var data = Data("delegation-expiry-reconnect");
@@ -3364,10 +3733,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-        {
-            Name: "fixturemod", Version: "1.0.0",
-            RequiredGameVersion: "2.0", Type: "Factorio mod"
-        }],
+    {
+        Name: "fixturemod", Version: "1.0.0",
+        RequiredGameVersion: "2.0", Type: "Factorio mod"
+    }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -8910,5 +9279,19 @@ sealed class SkewedSharedCapture(string root) : ISharedWorldCaptureAdapter
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)))], root,
             new ServerSetupSnapshot(2, profile.Id, profile.Kind, profile.WorldId,
                 "Unknown", "", [], [], profile.GamePort, profile.Crossplay, profile.PublicListing));
+    }
+}
+
+sealed class TruncatedRosterHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        if (request.RequestUri?.AbsolutePath.EndsWith("/shared-world/roster/revisions",
+                StringComparison.Ordinal) == true &&
+            request.RequestUri.Query == "?offset=8")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("[]", Encoding.UTF8, "application/json") });
+        return base.SendAsync(request, cancellationToken);
     }
 }
