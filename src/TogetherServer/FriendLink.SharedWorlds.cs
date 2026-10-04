@@ -1946,17 +1946,46 @@ internal sealed partial class FriendLink
         anchor ??= records.OrderBy(record => record.Proposal.Epoch).FirstOrDefault()?.Version;
         if (anchor is null) return new(records.Count == 0 &&
             latest.SigningPublicKey == config?.SharedWorldSigningKeys?.GetValueOrDefault(profileId), false);
+        var pending = new Dictionary<long, SharedWorldVersion>();
         return await VerifySharedChainBatchAsync(data, config?.DeviceId ?? Guid.Empty, profileId,
             anchor, latest, records, async (number, token) =>
             {
                 if (withdrawnSharedConsent.ContainsKey(profileId)) return null;
-                using var response = await transferClient.GetAsync(
-                    $"api/companion/servers/{profileId}/shared-world/versions/{number}",
-                    HttpCompletionOption.ResponseHeadersRead, token);
-                var bytes = await ReadBoundedSharedAsync(response.Content,
-                    SharedWorldService.MaximumManifestBytes, token);
-                return !response.IsSuccessStatusCode || bytes is null ? null :
-                    JsonSerializer.Deserialize<SharedWorldVersion>(bytes, Json);
+                if (!pending.TryGetValue(number, out var item))
+                {
+                    var count = checked((int)Math.Min(WorldAuthorityTrust.ChainVersionsPerCheck,
+                        latest.Number - number));
+                    using var response = await transferClient.GetAsync(
+                        $"api/companion/servers/{profileId}/shared-world/versions/range/{number}/{count}",
+                        HttpCompletionOption.ResponseHeadersRead, token);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        // An older companion has only the single-version route.
+                        // A JSON denial from a current Host must not fall back.
+                        if (response.StatusCode != System.Net.HttpStatusCode.NotFound ||
+                            response.Content.Headers.ContentType?.MediaType?.Contains("json",
+                                StringComparison.OrdinalIgnoreCase) == true)
+                            return null;
+                        using var older = await transferClient.GetAsync(
+                            $"api/companion/servers/{profileId}/shared-world/versions/{number}",
+                            HttpCompletionOption.ResponseHeadersRead, token);
+                        var olderBytes = await ReadBoundedSharedAsync(older.Content,
+                            SharedWorldService.MaximumManifestBytes, token);
+                        return !older.IsSuccessStatusCode || olderBytes is null ? null :
+                            JsonSerializer.Deserialize<SharedWorldVersion>(olderBytes, Json);
+                    }
+                    var bytes = await ReadBoundedSharedAsync(response.Content,
+                        SharedWorldService.MaximumManifestBytes * count + 4096L, token);
+                    var range = bytes is null ? null :
+                        JsonSerializer.Deserialize<SharedWorldVersion[]>(bytes, Json);
+                    if (range?.Length != count || range.Where((value, index) =>
+                            value is null || value.Number != number + index).Any())
+                        return null;
+                    foreach (var value in range) pending.Add(value.Number, value);
+                    item = pending[number];
+                }
+                pending.Remove(number);
+                return item;
             }, cancellationToken);
     }
 

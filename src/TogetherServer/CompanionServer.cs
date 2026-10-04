@@ -924,6 +924,37 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             return latest.Latest?.VersionHash != status.Latest.VersionHash ?
                 Results.NotFound(new { code = "SharedVersionUnavailable" }) : Results.Json(prior);
         });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/versions/range/{start:long}/{count:int}",
+            async (HttpContext context, Guid profileId, long start, int count) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            var auth = await AuthorizeShared(device!, profileId);
+            decision = auth.Decision;
+            var current = auth.Current;
+            if (!decision.Ok || current is null)
+                return Results.Json(decision, statusCode: StatusCodes.Status403Forbidden);
+            var (status, _) = await manager.SharedWorldReadAsync(profileId);
+            if (!status.Enabled || status.Latest is null ||
+                count is < 1 or > WorldAuthorityTrust.ChainVersionsPerCheck ||
+                start < 1 || start > status.Latest.Number - count)
+                return Results.NotFound(new { code = "SharedVersionRangeUnavailable" });
+            IReadOnlyList<SharedWorldVersion> versions;
+            try
+            {
+                versions = await Task.Run(() => manager.ReadEarlierSharedVersionRange(
+                    status.Latest, start, count), context.RequestAborted);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+            { return Results.NotFound(new { code = "SharedVersionRangeUnavailable" }); }
+            var (latest, _) = await manager.SharedWorldReadAsync(profileId);
+            decision = (await AuthorizeShared(current, profileId)).Decision;
+            if (!decision.Ok || !latest.Enabled)
+                return Results.Json(new { code = decision.Ok ? "SharingOff" : decision.Code },
+                    statusCode: StatusCodes.Status403Forbidden);
+            return latest.Latest?.VersionHash != status.Latest.VersionHash ?
+                Results.NotFound(new { code = "SharedVersionRangeUnavailable" }) : Results.Json(versions);
+        });
         companion.MapGet("/servers/{profileId:guid}/shared-world/{versionHash}/files/{fileIndex:int}/chunks/{offset:long}",
             async (HttpContext context, Guid profileId, string versionHash, int fileIndex, long offset) =>
         {

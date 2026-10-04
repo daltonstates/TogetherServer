@@ -507,6 +507,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
     private readonly Dictionary<Guid, ReviewCache> reviewCaches = [];
     internal int ReviewFullValidationCount { get; private set; }
     internal int ReviewProofIndexBuildCount { get; private set; }
+    internal long ReviewProofPieceReadCount { get; private set; }
     private string Root(Guid profileId)
     {
         var root = Path.Combine(data.RootPath, "shared-worlds", profileId.ToString("N"), "authority");
@@ -809,6 +810,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 if (!File.Exists(path) || new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
                     (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                     throw new InvalidDataException("Authority lineage proof is missing or linked.");
+                ReviewProofPieceReadCount++;
                 yield return JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json) ??
                     throw new InvalidDataException("Authority lineage proof is invalid.");
                 if (number == record.Version.Number) yield break;
@@ -829,6 +831,7 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
             (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("Authority review proof is oversized or linked.");
+        ReviewProofPieceReadCount++;
         var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
         if (version is null || !SharedWorldService.VerifySignature(version) ||
             version.Number != number || version.GroupId != record.Version.GroupId ||
@@ -1081,6 +1084,42 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         if (records.Count == 0) return null;
         var heads = WorldAuthorityTrust.EffectiveHeads(records);
         return heads.Length == 1 && MatchesLocalSuccessor(heads[0]) ? heads[0] : null;
+    }
+
+    // Historical transfer checks the protected authority-log hash on each read.
+    // The signed proof is fully checked once per log revision and its requested
+    // piece is checked again against that verified index before it is served.
+    internal WorldAuthorityRecord? LocalAuthorizedHeadForTransfer(Guid profileId)
+    {
+        var records = ReadReviewRecords(profileId);
+        if (records.Count == 0) return null;
+        var heads = WorldAuthorityTrust.EffectiveHeads(records);
+        return heads.Length == 1 && MatchesLocalSuccessor(heads[0]) ? heads[0] : null;
+    }
+
+    internal SharedWorldVersion? FindProvenVersionForTransfer(Guid profileId, long number)
+    {
+        var records = ReadReviewRecords(profileId);
+        var effective = WorldAuthorityTrust.EffectiveHeads(records);
+        if (effective.Length != 1) return null;
+        for (WorldAuthorityRecord? head = effective[0]; head is not null; head = records.SingleOrDefault(item =>
+                 item.RecordHash == head.Proposal.ParentAuthorityHash))
+        {
+            if (head.Version.Number == number && head.VersionLineageDigest is null)
+                return head.Version;
+            var parent = records.SingleOrDefault(item =>
+                item.RecordHash == head.Proposal.ParentAuthorityHash);
+            if (number < (parent?.Version.Number ?? 0) + 1 || number > head.Version.Number)
+                continue;
+            if (head.VersionLineageDigest is null)
+                return head.VersionLineage?.FirstOrDefault(item => item.Number == number);
+            var indexed = ReadReviewProofIndex(profileId, head.RecordHash, number);
+            var proof = ReadReviewProofVersion(head, number);
+            if (indexed is null || proof?.VersionHash != indexed.Value.ExpectedHash)
+                throw new InvalidDataException("Authority proof version changed after verification.");
+            return proof;
+        }
+        return null;
     }
     internal bool HasLocalSuccessorKeys(Guid profileId, WorldAuthorityProposal proposal,
         Guid deviceId)
