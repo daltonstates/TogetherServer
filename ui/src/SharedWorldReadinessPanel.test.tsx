@@ -15,9 +15,9 @@ it('shows rehearsal limits and keeps takeover unavailable', async () => {
   }))
   render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111" />)
   fireEvent.click(screen.getByText('Check this PC for future hosting'))
-  fireEvent.click(screen.getByRole('button', { name: 'Rehearse disposable copy' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Rehearse file restore' }))
   await waitFor(() => expect(calls.some(url => url.endsWith('/rehearse'))).toBe(true))
-  expect(await screen.findByText('Disposable copy checked and removed.')).toBeInTheDocument()
+  expect(await screen.findByText('Disposable file restore checked and removed.')).toBeInTheDocument()
   expect(screen.getByText(/real game load, join, and save still need testing/)).toBeInTheDocument()
   expect(screen.getByText(/Fixture process rehearsal is unavailable/)).toBeInTheDocument()
   expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
@@ -35,6 +35,7 @@ it('finishes a verified majority with signed add-ons before showing manual Start
   const addOn = { name: 'Reviewed mod', version: '1.0', requiredGameVersion: '2.0',
     type: 'Factorio mod', id: null }
   let ready = false
+  const hostingSetupChange = vi.fn()
   let finishBody: Record<string, unknown> | null = null
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/handoff/finish')) {
@@ -49,7 +50,8 @@ it('finishes a verified majority with signed add-ons before showing manual Start
       controlRouteFingerprint: fingerprint }),
     { status: 200 })
   }))
-  render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111" />)
+  render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111"
+    onHostingSetupChange={hostingSetupChange} />)
   fireEvent.click(screen.getByText('Check this PC for future hosting'))
   expect(await screen.findByRole('button', { name: 'Finish setup and checks' })).toBeInTheDocument()
   fireEvent.click(screen.getByText('Required add-ons'))
@@ -61,4 +63,6 @@ it('finishes a verified majority with signed add-ons before showing manual Start
   expect(sent && sent.recordHash).toBe(hash)
   expect((sent?.setup as { enabledAddOns: unknown[] }).enabledAddOns).toEqual([addOn])
   expect(await screen.findByText(/Ready for manual Start/)).toBeInTheDocument()
+  await waitFor(() => expect(hostingSetupChange).toHaveBeenLastCalledWith(true))
+  expect(screen.getByText(/test a real game join and saved Stop/)).toBeInTheDocument()
 })

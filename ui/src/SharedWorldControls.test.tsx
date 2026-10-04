@@ -41,7 +41,7 @@ describe('Shared saves controls', () => {
     expect(sharing).not.toBeChecked()
     fireEvent.click(sharing)
     await waitFor(() => expect(calls).toContain(`PUT /api/local/profiles/${profile}/shared-world`))
-    fireEvent.click(screen.getByText('Technical details and PC permissions'))
+    fireEvent.click(screen.getByText('Sharing permissions and owner choice'))
     const grant = await screen.findByLabelText('Receive for Friend PC')
     fireEvent.click(grant)
     await waitFor(() => expect(calls).toContain(
@@ -75,7 +75,8 @@ describe('Shared saves controls', () => {
     fireEvent.click(toggle)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
-    expect(await screen.findByText(/1 version\(s\) behind/)).toBeInTheDocument()
+    expect(await screen.findByText('This PC is one save behind')).toBeInTheDocument()
+    expect(screen.getByText('Shared worlds').closest('summary')).toHaveTextContent('This PC is one save behind')
     expect(screen.getByText(/automatic takeover are unavailable/)).toBeInTheDocument()
   })
 
@@ -180,13 +181,13 @@ describe('Shared saves controls', () => {
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(screen.getByText('Shared worlds'))
     fireEvent.click(await screen.findByRole('button', { name: 'Receive latest save' }))
-    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary')!
       .querySelector('[role="alert"]')).toHaveTextContent('Low space — receiving paused'))
-    fireEvent.click(screen.getByText(/Shared worlds/, { selector: 'summary' }))
-    expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
-    fireEvent.click(screen.getByText(/Shared worlds/, { selector: 'summary' }))
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(screen.getByText('Shared worlds').closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('Shared worlds'))
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
-    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary')!
       .querySelector('[role="alert"]')).not.toBeInTheDocument())
   })
 
@@ -196,12 +197,12 @@ describe('Shared saves controls', () => {
       thisPcVersion: 2, state: stalled ? 'Stalled' : 'Ready to pull',
       error: stalled ? 'Receiving made no progress across repeated attempts.' : null })))
     render(<FriendSharedWorlds profileId={profile} available />)
-    await screen.findByText('1 version(s) behind')
+    await screen.findByText('This PC is one save behind')
     stalled = true
-    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary')!
       .querySelector('[role="alert"]')).toHaveTextContent('Receiving stalled — retrying'),
     { timeout: 7500 })
-    expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Shared worlds').closest('details')).not.toHaveAttribute('open')
   }, 10000)
 
   it('warns about signed-history capacity without hiding a save behind', async () => {
@@ -210,11 +211,11 @@ describe('Shared saves controls', () => {
       capacityState: 'Signed history nearly full',
       capacityNotice: 'This PC is nearing its signed save history limit.' })))
     render(<FriendSharedWorlds profileId={profile} available />)
-    const summary = await screen.findByText(/Shared worlds/, { selector: 'summary' })
+    const summary = (await screen.findByText('Shared worlds')).closest('summary')!
     await waitFor(() => expect(summary.querySelector('[role="alert"]'))
       .toHaveTextContent('Save history near limit'))
     fireEvent.click(summary)
-    expect(screen.getByText('1 version(s) behind')).toBeInTheDocument()
+    expect(summary).toHaveTextContent('This PC is one save behind')
     expect(screen.getByText('This PC is nearing its signed save history limit.'))
       .toHaveAttribute('role', 'alert')
   })
@@ -226,11 +227,41 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/Copied to 2 PCs.*latest post-Stop file copy 4/)).toBeInTheDocument()
+    expect(await screen.findByText(/Copied to 2 PCs.*latest post-Stop file copy 4/, { selector: 'p' })).toBeInTheDocument()
+    expect(screen.getByText('Shared saves').closest('summary')).toHaveTextContent('Copied to 2 PCs')
     expect(screen.getByText(/Game load and playability have not been checked/)).toBeInTheDocument()
     expect(screen.getByText(/app cannot prove its current availability/)).toBeInTheDocument()
     expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
       error: null, confirmedCopies: -1 })).toThrow()
+  })
+
+  it('shows manual Start readiness only after the restored setup checks confirm it', async () => {
+    let ready = false
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/handoff/finish')) {
+        ready = true
+        return reply({ ok: true, code: 'ReadyForManualStart', message: 'Setup checks passed.',
+          pendingChecks: null })
+      }
+      if (url.endsWith('/handoff/restore')) return reply({ staged: true, restored: true,
+        recordHash: 'A'.repeat(64), message: 'Setup checks passed.', pendingChecks: [],
+        preparedServerRoot: null, readyForManualStart: ready, requiredAddOns: [],
+        controlRouteFingerprint: 'B'.repeat(64) })
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      return reply({ consented: true, hostVersion: 2, thisPcVersion: 2,
+        state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
+      .toHaveTextContent('Verified copy on this PC'))
+    expect(screen.getByText('Shared worlds').closest('summary'))
+      .not.toHaveTextContent('Ready for manual Start')
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Finish setup and checks' }))
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
+      .toHaveTextContent('Ready for manual Start; game load untested'))
+    expect(screen.getByText(/Files are hash-verified; game load and playability have not been checked/))
+      .toBeInTheDocument()
   })
 
   it('copies only a normalized direct IP address for the current shared Host', async () => {
@@ -283,9 +314,11 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByText('Shared saves'))
     const toggle = await screen.findByLabelText('Owner has final say on save conflicts')
     await waitFor(() => expect(toggle).toBeEnabled())
+    expect(screen.getByText("Owner's final say: On.")).toBeInTheDocument()
     fireEvent.click(toggle)
     await waitFor(() => expect(bodies).toEqual([{ ownerOverride: false }]))
     expect(toggle).not.toBeChecked()
+    expect(screen.getByText("Owner's final say: Off.")).toBeInTheDocument()
   })
 
   it('shows successor sharing permissions as read only', async () => {
@@ -562,7 +595,7 @@ describe('Shared saves controls', () => {
             competingHeads: null, exactManagedProcessRunning: false } })))
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/Copied to 2 PCs · latest post-Stop file copy 4/)).toBeInTheDocument()
+    expect(await screen.findByText(/Copied to 2 PCs · latest post-Stop file copy 4/, { selector: 'p' })).toBeInTheDocument()
     expect(screen.getByText('This PC holds the verified current hosting decision.')).toBeInTheDocument()
     expect(screen.queryByText(/Preserved version/)).not.toBeInTheDocument()
   })

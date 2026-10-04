@@ -486,7 +486,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const authority = status?.authority
   const fenced = authority?.state === 'OldHostFenced'
   const review = authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
-  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared saves</summary>
+  const copyHeadline = fenced ? 'Another PC now hosts this world' :
+    review ? 'Hosting decision needs review' : !status?.enabled ? 'Sharing off' :
+      status.latest ? `Copied to ${status.confirmedCopies} PCs` : 'No post-Stop copy yet'
+  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary><span>Shared saves</span>
+    {status && <span> · {copyHeadline}</span>}</summary>
     {(fenced || review) && <section role="alert" aria-label="Hosting authority">
       <h4>{fenced ? 'Another PC now hosts this world' :
         authority?.state === 'CompetingHistories' ? 'Competing hosting histories need review' : 'Hosting decision needs review'}</h4>
@@ -494,6 +498,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       <p>This PC keeps its preserved local copy. Do not start or share this world here.</p>
       {authority?.exactManagedProcessRunning && <p>The exact game process managed by this PC is still running. Stop it gracefully, then review the saved histories.</p>}
     </section>}
+    {status?.latest ? <p role="status">{fenced || review ?
+      `Preserved version ${status.latest.number} on this PC` :
+      `${status.enabled ? `Copied to ${status.confirmedCopies} PCs` : 'Sharing off; previously confirmed copies'} · latest post-Stop file copy ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
+      <p role="status">{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' :
+        status?.enabled ? 'No post-Stop save has been published yet.' : 'Sharing is off. No post-Stop save has been published yet.'}</p>}
     {authority?.state === 'ThisPcHost' && <p role="status">This PC holds the verified current hosting decision.</p>}
     {!fenced && !review && <><p>After a graceful Stop, send hash-verified world files to approved PCs. Game load and playability have not been checked. Live save capture and automatic takeover are unavailable.</p>
       <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p></>}
@@ -504,14 +513,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     {status?.enabled && !fenced && !review && <div className="actions"><Button className="secondary" disabled={!shareAddress}
       onClick={() => void copyAddress()}>Share current address</Button></div>}
     {status?.enabled && !shareAddress && !fenced && !review && <p className="helper-text">Save a direct IP HTTPS address in Host settings under Friend route before sharing an address change.</p>}
-    {status?.latest ? <p>{fenced || review ?
-      `Preserved version ${status.latest.number} on this PC` :
-      `Copied to ${status.confirmedCopies} PCs · latest post-Stop file copy ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
-      <p>{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' : 'No post-Stop save has been published yet.'}</p>}
-    {status?.enabled && <details><summary>Technical details and PC permissions</summary>
+    {status?.enabled && <details><summary>Sharing permissions and owner choice</summary>
     <label><Input type="checkbox" disabled={busy || !roster || !status.canManageSharing}
       checked={roster?.ownerOverride ?? true} onChange={event => void changeOverride(event.target.checked)} />
       Owner has final say on save conflicts</label>
+    {roster && <p role="status">Owner's final say: {roster.ownerOverride ? 'On' : 'Off'}.</p>}
     {status?.enabled && <p className="helper-text">Verified sharing list: {roster ? `${roster.members.filter(member => !member.revoked && (member.accessExpiresUtc === null || Date.parse(member.accessExpiresUtc) > Date.now())).length} active PCs, revision ${roster.revision}` : 'pending'}.
       These grants are separate from Start, Stop, and logs.</p>}
     {status?.enabled && eligible.map(device => {
@@ -582,6 +588,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
 export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   { profileId: string; available: boolean; onAddressChange?: () => void }) {
   const [status, setStatus] = useState<FriendStatus | null>(null)
+  const [hostingSetupReady, setHostingSetupReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [successorHash, setSuccessorHash] = useState('')
   const [successorPin, setSuccessorPin] = useState('')
@@ -807,31 +814,39 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     } catch (error) { setReviewed(null); setResolutionMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  const behind = status?.hostVersion != null && status.thisPcVersion != null &&
+  const behind = status?.consented && status.hostVersion != null && status.thisPcVersion != null &&
     status.hostVersion > status.thisPcVersion && !status.state.startsWith('Host save source changed')
-  const headline = status?.state === 'Ready' ? 'Verified copy on this PC' :
-    status?.state === 'Receiving' ? 'Receiving completed save' :
+  const headline = !status ? 'Checking save status' :
+    !status.consented ? 'Save receiving is off' :
+    status.state.startsWith('Host save source changed') ? status.state :
     status?.state === 'Low space' ? 'Low space — receiving paused' :
-    status?.state === 'Signed history full' ? 'Signed save history full — receiving paused' :
-    status?.state === 'Signed history nearly full' ? 'Signed save history nearly full' :
+    status?.state === 'Signed history full' ? 'Save history full — receiving paused' :
+    status?.state === 'Signed history nearly full' ? 'Save history near limit' :
     status?.state === 'Stalled' ? 'Receiving stalled — retrying' :
-    status?.state.startsWith('Host save source changed') ? status.state :
+    status?.state === 'Receiving' ? 'Receiving completed save' :
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
-      `${status.hostVersion - status.thisPcVersion} version(s) behind` : status?.state
+      `This PC is ${status.hostVersion - status.thisPcVersion === 1 ? 'one save' :
+        `${status.hostVersion - status.thisPcVersion} saves`} behind` :
+      hostingSetupReady && status.thisPcVersion != null ? 'Ready for manual Start; game load untested' :
+        status.state === 'Ready' ? 'Verified copy on this PC' : status.state
   const transferAlert = status?.state === 'Low space' || status?.state === 'Stalled' ||
-    status?.state === 'Signed history full'
-  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary>Shared worlds
-    {transferAlert && <span className="warning-text" role="alert"> · {headline}</span>}
-    {!transferAlert && status?.capacityState && <span className="warning-text" role="alert"> · {status.capacityState === 'Signed history full' ? 'Save history full' : 'Save history near limit'}</span>}</summary>
+    status?.state.startsWith('Host save source changed') || status?.state === 'Signed history full'
+  const capacityAlert = status?.capacityState && !transferAlert ?
+    status.capacityState === 'Signed history full' ? 'Save history full' : 'Save history near limit' : null
+  return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary><span>Shared worlds</span>
+    <span> · </span><span className={transferAlert ? 'warning-text' : undefined}
+      role={transferAlert ? 'alert' : undefined}>{headline}</span>
+    {capacityAlert && <span className="warning-text" role="alert"> · {capacityAlert}</span>}</summary>
+    <p role="status">{status?.thisPcVersion != null && status.consented ?
+      `Verified post-Stop file copy ${status.thisPcVersion} on this PC. ${headline}.` : `${headline}.`}</p>
     <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>Update the Host app before receiving shared saves.</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
-    {status && <p className="helper-text" role={status.state.startsWith('Host save source changed') ? 'alert' : 'status'}>{headline}</p>}
     {status?.capacityNotice && <p role="alert">{status.capacityNotice}</p>}
-    {status && <p className="helper-text">Trust: {status.trust}.
-      Roster revision {status.rosterRevision ?? 'not checked'}. This is a verified copy status, not takeover readiness.</p>}
+    {status && <details><summary>Technical details</summary><p>Trust: {status.trust}.
+      Roster revision {status.rosterRevision ?? 'not checked'}. This is a verified copy status, not takeover readiness.</p></details>}
     {status?.state === 'Receiving' && <p role="status">Receiving {status.receivedBytes} of {status.totalBytes} bytes.</p>}
     <div className="actions"><Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('check')}>Check latest</Button>
@@ -905,7 +920,8 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       <SharedWorldSeparateRoutePanel profileId={profileId}
         separateCopies={recovery?.separateCopies ?? 0} />}
     <FriendSharingManager profileId={profileId} available={available} />
-    {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId} />}
+    {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId}
+      onHostingSetupChange={setHostingSetupReady} />}
     {available && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
       <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override.</p>
       <Button className="secondary" disabled={busy} onClick={() => void loadChoices()}>Check signed branches</Button>
