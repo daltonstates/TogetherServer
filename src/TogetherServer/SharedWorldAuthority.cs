@@ -80,9 +80,13 @@ internal static class WorldAuthorityTrust
         JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer authority Host acceptance v1",
-            record.RecordHash, record.Proposal.GroupId, record.Proposal.ProfileId,
-            record.Proposal.Epoch, record.Proposal.ParentAuthorityHash,
-            record.Proposal.RosterHash, record.Proposal.VersionHash,
+            record.RecordHash,
+            record.Proposal.GroupId,
+            record.Proposal.ProfileId,
+            record.Proposal.Epoch,
+            record.Proposal.ParentAuthorityHash,
+            record.Proposal.RosterHash,
+            record.Proposal.VersionHash,
             AcceptedUtc = acceptedUtc
         }, Json);
     internal static bool VerifyHostAcceptance(WorldAuthorityRecord record)
@@ -668,7 +672,9 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             throw new InvalidDataException("Authority proof record hash changed.");
         if (!verifiedStagingRecords.Contains(record.RecordHash))
         {
-            if (!WorldAuthorityTrust.Verify(record))
+            // Staging is provisional; AppendReceivedStaged verifies the owner-rooted
+            // roster chain before the decision becomes durable.
+            if (!WorldAuthorityTrust.Verify(record, true))
                 throw new InvalidDataException("Authority proof record is invalid.");
             verifiedStagingRecords.Add(record.RecordHash);
         }
@@ -976,9 +982,12 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
         if (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) != record.Proposal.CandidatePublicKey)
             throw new InvalidDataException("The candidate Host key does not match the authority proposal.");
         var now = (clock ?? TimeProvider.System).GetUtcNow();
-        return record with { HostAcceptedUtc = now,
+        return record with
+        {
+            HostAcceptedUtc = now,
             HostAcceptanceSignature = Convert.ToBase64String(key.SignData(
-                WorldAuthorityTrust.HostAcceptanceBasis(record, now), HashAlgorithmName.SHA256)) };
+                WorldAuthorityTrust.HostAcceptanceBasis(record, now), HashAlgorithmName.SHA256))
+        };
     }
     private bool MatchesLocalSuccessor(WorldAuthorityRecord record)
     {
@@ -1121,7 +1130,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             record.Proposal.GroupId != expectedGroupId ||
             record.VersionLineageDigest is null ||
             record.Proposal.ParentAuthorityHash != parent?.RecordHash ||
-            parent is not null && !WorldAuthorityTrust.Verify(parent))
+            parent is not null && (!TrustedRoster(parent.Roster, false) ||
+                !WorldAuthorityTrust.Verify(parent, true)))
             throw new InvalidDataException("Staged authority does not match the pinned shared world.");
         var (_, last, digest) = ReadStagedProofCursor(record, parent);
         if (last?.Number != record.Version.Number ||
@@ -1262,7 +1272,8 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
                 if (lineNumber >= offset && page.Count < WorldAuthorityTrust.PageSize)
                 {
                     var record = JsonSerializer.Deserialize<WorldAuthorityRecord>(line, Json);
-                    if (!WorldAuthorityTrust.Verify(record) || record!.Proposal.ProfileId != profileId)
+                    if (record is null || !TrustedRoster(record.Roster, false) ||
+                        !WorldAuthorityTrust.Verify(record, true) || record.Proposal.ProfileId != profileId)
                         throw new InvalidDataException("Authority page record failed verification.");
                     page.Add(record);
                 }

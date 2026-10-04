@@ -269,16 +269,26 @@ internal sealed partial class SharedWorldService
                         baseline.SequenceEqual(orderedMembers) &&
                         parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride)) return parent;
                     using var ownerKey = LoadSigningKey();
-                    var draftRevision = parent with { Schema = 3, Epoch = checked(parent.Epoch + 1),
+                    var draftRevision = parent with
+                    {
+                        Schema = 3,
+                        Epoch = checked(parent.Epoch + 1),
                         Revision = checked(parent.Revision + 1),
-                        Members = mergedMembers, OwnerOverride = ownerOverride ?? parent.OwnerOverride,
+                        Members = mergedMembers,
+                        OwnerOverride = ownerOverride ?? parent.OwnerOverride,
                         PreviousRosterHash = SharedWorldRosterTrust.Hash(parent),
-                        SignerDeviceId = Guid.Empty, SignerPublicKey = parent.OwnerPublicKey,
+                        SignerDeviceId = Guid.Empty,
+                        SignerPublicKey = parent.OwnerPublicKey,
                         OwnerLocalBaselineMembers = orderedMembers,
-                        HostAcceptedUtc = null, HostAcceptanceSignature = null,
-                        Signature = "" };
-                    var signedRevision = draftRevision with { Signature = Convert.ToBase64String(
-                        ownerKey.SignData(SharedWorldRosterTrust.Basis(draftRevision), HashAlgorithmName.SHA256)) };
+                        HostAcceptedUtc = null,
+                        HostAcceptanceSignature = null,
+                        Signature = ""
+                    };
+                    var signedRevision = draftRevision with
+                    {
+                        Signature = Convert.ToBase64String(
+                        ownerKey.SignData(SharedWorldRosterTrust.Basis(draftRevision), HashAlgorithmName.SHA256))
+                    };
                     chain.Append(signedRevision, parent.OwnerPublicKey);
                     return signedRevision;
                 }
@@ -391,10 +401,13 @@ internal sealed partial class SharedWorldService
         using var ownerKey = LoadSigningKey();
         if (revision.OwnerPublicKey != Convert.ToBase64String(ownerKey.ExportSubjectPublicKeyInfo()))
             throw new InvalidDataException("The Host does not own this sharing group.");
-        return revision with { HostAcceptedUtc = acceptedUtc,
+        return revision with
+        {
+            HostAcceptedUtc = acceptedUtc,
             HostAcceptanceSignature = Convert.ToBase64String(ownerKey.SignData(
                 SharedWorldRosterTrust.HostAcceptanceBasis(revision, acceptedUtc),
-                HashAlgorithmName.SHA256)) };
+                HashAlgorithmName.SHA256))
+        };
     }
 
     private SharedWorldRoster? ReadRosterForBinding(ServerProfile profile, SourceBinding binding)

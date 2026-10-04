@@ -67,16 +67,32 @@ internal static class SharedWorldRosterTrust
             roster.Members
         }, Json) : roster.OwnerLocalBaselineMembers is null ? JsonSerializer.SerializeToUtf8Bytes(new
         {
-            domain = "TogetherServer shared roster revision v3", roster.Schema,
-            roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
-            roster.OwnerOverride, roster.OwnerPublicKey, roster.Members,
-            roster.PreviousRosterHash, roster.SignerDeviceId, roster.SignerPublicKey
+            domain = "TogetherServer shared roster revision v3",
+            roster.Schema,
+            roster.GroupId,
+            roster.ProfileId,
+            roster.Epoch,
+            roster.Revision,
+            roster.OwnerOverride,
+            roster.OwnerPublicKey,
+            roster.Members,
+            roster.PreviousRosterHash,
+            roster.SignerDeviceId,
+            roster.SignerPublicKey
         }, Json) : JsonSerializer.SerializeToUtf8Bytes(new
         {
-            domain = "TogetherServer shared roster revision v3", roster.Schema,
-            roster.GroupId, roster.ProfileId, roster.Epoch, roster.Revision,
-            roster.OwnerOverride, roster.OwnerPublicKey, roster.Members,
-            roster.PreviousRosterHash, roster.SignerDeviceId, roster.SignerPublicKey,
+            domain = "TogetherServer shared roster revision v3",
+            roster.Schema,
+            roster.GroupId,
+            roster.ProfileId,
+            roster.Epoch,
+            roster.Revision,
+            roster.OwnerOverride,
+            roster.OwnerPublicKey,
+            roster.Members,
+            roster.PreviousRosterHash,
+            roster.SignerDeviceId,
+            roster.SignerPublicKey,
             roster.OwnerLocalBaselineMembers
         }, Json);
 
@@ -87,8 +103,13 @@ internal static class SharedWorldRosterTrust
         JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer delegated roster Host acceptance v1",
-            roster.ProfileId, roster.GroupId, roster.Epoch, roster.Revision,
-            roster.PreviousRosterHash, roster.SignerDeviceId, roster.Signature,
+            roster.ProfileId,
+            roster.GroupId,
+            roster.Epoch,
+            roster.Revision,
+            roster.PreviousRosterHash,
+            roster.SignerDeviceId,
+            roster.Signature,
             AcceptedUtc = acceptedUtc
         }, Json);
 

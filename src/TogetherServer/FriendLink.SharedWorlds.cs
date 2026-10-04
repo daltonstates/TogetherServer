@@ -472,8 +472,10 @@ internal sealed partial class FriendLink
         }
         catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException)
-        { return SharingFailure(config?.DeviceId ?? Guid.Empty, "RosterUnavailable",
-            "This PC could not verify the current sharing permissions."); }
+        {
+            return SharingFailure(config?.DeviceId ?? Guid.Empty, "RosterUnavailable",
+            "This PC could not verify the current sharing permissions.");
+        }
         finally { ReleaseRetained(); }
     }
 
@@ -576,18 +578,34 @@ internal sealed partial class FriendLink
                     !self.Grants.ManageSharing || self.AccessExpiresUtc is { } expiry && expiry <= DateTimeOffset.UtcNow ||
                     target is null)
                     return SharedFailure("PermissionDenied", "This PC cannot manage sharing for that person.");
-                var changed = target with { Revoked = change.Revoked,
-                    Grants = target.Grants with { Receive = change.Receive,
-                        EligibleHost = change.EligibleHost, RecoveryVoter = change.RecoveryVoter } };
-                var revision = parent with { Schema = 3, Epoch = parent.Epoch + 1,
+                var changed = target with
+                {
+                    Revoked = change.Revoked,
+                    Grants = target.Grants with
+                    {
+                        Receive = change.Receive,
+                        EligibleHost = change.EligibleHost,
+                        RecoveryVoter = change.RecoveryVoter
+                    }
+                };
+                var revision = parent with
+                {
+                    Schema = 3,
+                    Epoch = parent.Epoch + 1,
                     Revision = parent.Revision + 1,
                     PreviousRosterHash = SharedWorldRosterTrust.Hash(parent),
-                    SignerDeviceId = config.DeviceId, SignerPublicKey = publicKey,
+                    SignerDeviceId = config.DeviceId,
+                    SignerPublicKey = publicKey,
                     Members = parent.Members.Select(item => item.DeviceId == change.DeviceId ? changed : item).ToArray(),
-                    HostAcceptedUtc = null, HostAcceptanceSignature = null,
-                    Signature = "" };
-                revision = revision with { Signature = Convert.ToBase64String(key.SignData(
-                    SharedWorldRosterTrust.Basis(revision), HashAlgorithmName.SHA256)) };
+                    HostAcceptedUtc = null,
+                    HostAcceptanceSignature = null,
+                    Signature = ""
+                };
+                revision = revision with
+                {
+                    Signature = Convert.ToBase64String(key.SignData(
+                    SharedWorldRosterTrust.Basis(revision), HashAlgorithmName.SHA256))
+                };
                 if (!SharedWorldRosterTrust.VerifyRevision(revision, parent, parent.OwnerPublicKey,
                     DateTimeOffset.UtcNow, true))
                     return SharedFailure("InvalidSharingChange", "The signed sharing change was invalid.");
@@ -1720,8 +1738,14 @@ internal sealed partial class FriendLink
         CancellationToken cancellationToken)
     {
         if (latest.Number < anchor.Number) return new(false, true);
+        var delegatedHashes = records.Any(record => record.Roster.Schema == 3)
+            ? new WorldAuthorityStore(data).Read(profileId).Select(record => record.RecordHash)
+                .ToHashSet(StringComparer.Ordinal)
+            : null;
         if (!SharedWorldService.VerifySignature(anchor) ||
-            records.Any(record => !WorldAuthorityTrust.Verify(record) ||
+            records.Any(record => record.Roster.Schema == 3 &&
+                    delegatedHashes?.Contains(record.RecordHash) != true ||
+                !WorldAuthorityTrust.Verify(record, true) ||
                 record.Proposal.GroupId != anchor.GroupId || record.Version.ProfileId != anchor.ProfileId ||
                 record.Version.Game != anchor.Game || record.Version.WorldId != anchor.WorldId) ||
             !ValidAtAuthorityBoundary(anchor, records)) return new(false, false);

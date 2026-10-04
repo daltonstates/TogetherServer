@@ -508,7 +508,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     member.PublicKey != device.SharedWorldPublicKey ||
                     !(member.Grants.Receive || member.Grants.RecoveryVoter || member.Grants.EligibleHost) ||
                     member.AccessExpiresUtc is { } expires && expires <= DateTimeOffset.UtcNow ||
-                    !WorldAuthorityTrust.Verify(record))
+                    !WorldAuthorityTrust.Verify(record, true))
                     return Results.StatusCode(403);
                 if (!Reauthorize(device, out var currentDevice, out decision) ||
                     currentDevice is null || !pairing.CanAccess(currentDevice, profileId) ||
