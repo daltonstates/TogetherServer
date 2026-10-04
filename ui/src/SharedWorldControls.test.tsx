@@ -101,6 +101,49 @@ describe('Shared saves controls', () => {
     expect(await screen.findByText('Up to date when last checked')).toBeInTheDocument()
   })
 
+  it('shows a manual low-space failure in the closed summary and clears it after a verified pull', async () => {
+    let current = { consented: true, hostVersion: 3, thisPcVersion: 2,
+      state: 'Ready to pull', error: null as string | null }
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/pull')) {
+        if (current.state !== 'Low space') {
+          current = { ...current, state: 'Low space', error: 'Keep at least 1 GiB free.' }
+          return reply({ ok: false, code: 'InsufficientSpace', message: current.error })
+        }
+        current = { ...current, state: 'Up to date when last checked', thisPcVersion: 3, error: null }
+        return reply({ ok: true, code: 'SaveReceived', message: 'Verified copy received.', status: current })
+      }
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (init?.method) throw new Error(`Unexpected request ${url}`)
+      return reply(current)
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Receive latest save' }))
+    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+      .querySelector('[role="alert"]')).toHaveTextContent('Low space — receiving paused'))
+    fireEvent.click(screen.getByText(/Shared worlds/, { selector: 'summary' }))
+    expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText(/Shared worlds/, { selector: 'summary' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
+    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+      .querySelector('[role="alert"]')).not.toBeInTheDocument())
+  })
+
+  it('refreshes a stalled transfer alert while Shared worlds stays closed', async () => {
+    let stalled = false
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ consented: true, hostVersion: 3,
+      thisPcVersion: 2, state: stalled ? 'Stalled' : 'Ready to pull',
+      error: stalled ? 'Receiving made no progress across repeated attempts.' : null })))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    await screen.findByText('1 version(s) behind')
+    stalled = true
+    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+      .querySelector('[role="alert"]')).toHaveTextContent('Receiving stalled — retrying'),
+    { timeout: 7500 })
+    expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
+  }, 10000)
+
   it('shows only the confirmed copy count returned for the latest version', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ enabled: true, error: null,
       confirmedCopies: 2, latest: { number: 4, versionHash: 'A'.repeat(64),

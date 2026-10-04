@@ -1345,6 +1345,26 @@ await Check("sharing manager can inspect grants without Receive access", () =>
         !SharedWorldSharingFloor.Allows([roster, newer with { Signature = "sibling" }], floor) &&
         !SharedWorldSharingFloor.Allows([roster, newer with { GroupId = Guid.NewGuid() }], floor),
         "manage-only check overwrote a protected legacy floor with rollback or a sibling");
+    var signedRoot = roster with
+    {
+        Signature = Convert.ToBase64String(key.SignData(
+        SharedWorldRosterTrust.Basis(roster), HashAlgorithmName.SHA256))
+    };
+    var nextDraft = signedRoot with { Epoch = 2, Revision = 2, Signature = "" };
+    var signedNext = nextDraft with
+    {
+        Signature = Convert.ToBase64String(key.SignData(
+        SharedWorldRosterTrust.Basis(nextDraft), HashAlgorithmName.SHA256))
+    };
+    var legacyFloor = new SharedRosterFloor(signedRoot.GroupId, 1, 1, signedRoot.Signature);
+    Require(SharedWorldSharingFloor.AllowsLegacyOwnerAdvance([signedNext], legacyFloor, false) &&
+        !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance([signedRoot], legacyFloor, false) &&
+        !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance([signedNext], legacyFloor, true) &&
+        !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance(
+            [signedNext with { Signature = "altered" }], legacyFloor, false) &&
+        !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance(
+            [signedNext with { GroupId = Guid.NewGuid() }], legacyFloor, false),
+        "legacy owner advance bypassed the signed monotonic floor or an established chain");
     return Task.CompletedTask;
 });
 

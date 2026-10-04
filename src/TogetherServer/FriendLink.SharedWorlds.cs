@@ -57,6 +57,13 @@ internal static class SharedWorldSharingFloor
                 item.GroupId == floor.GroupId && item.Epoch == floor.Epoch &&
                 item.Revision == floor.Revision && item.Signature == floor.Signature);
     }
+
+    internal static bool AllowsLegacyOwnerAdvance(IReadOnlyList<SharedWorldRoster> revisions,
+        SharedRosterFloor? floor, bool hasChain) =>
+        !hasChain && floor is not null && revisions.Count > 0 &&
+        revisions[0].Schema == 2 && SharedWorldRosterTrust.Verify(revisions[0]) &&
+        revisions[0].GroupId == floor.GroupId &&
+        revisions[0].Epoch > floor.Epoch && revisions[0].Revision > floor.Revision;
 }
 
 internal sealed partial class FriendLink
@@ -450,6 +457,7 @@ internal sealed partial class FriendLink
 
     private const long ReceiverReserveBytes = 1024L * 1024 * 1024;
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedTransfers = new();
+    private readonly SharedWorldTransferHealth sharedTransferHealth = new();
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();
     private readonly object sharedReceiptSync = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> sharedProfileGates = new();
@@ -530,20 +538,27 @@ internal sealed partial class FriendLink
             return (null, SharingFailure(selfId, "SigningIdentityChanged",
                 "The Host's world identity changed. Ask the owner to review it."));
         var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
-        if (!SharedWorldSharingFloor.Allows(revisions, floor))
+        var chain = new SharedWorldRosterChainStore(data);
+        var hasChain = chain.HasState(profileId);
+        if (!SharedWorldSharingFloor.Allows(revisions, floor) &&
+            !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance(revisions, floor, hasChain))
             return (null, SharingFailure(selfId, "RosterRollback",
                 "The Host's sharing list is older or changed unexpectedly."));
-        var chain = new SharedWorldRosterChainStore(data);
-        if (chain.HasState(profileId) && chain.Read(profileId).Count > revisions.Count)
+        if (hasChain && chain.Read(profileId).Count > revisions.Count)
             return (null, SharingFailure(selfId, "RosterRollback", "The Host sent an older sharing list."));
-        foreach (var revision in revisions)
-            chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
-        var heads = chain.Heads(profileId);
-        if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
-            SharedWorldRosterTrust.Hash(revisions[^1]))
-            return (null, SharingFailure(selfId, "RosterConflict",
-                "Competing sharing changes need owner review."));
-        var roster = heads[0];
+        SharedWorldRoster roster;
+        if (hasChain || revisions.Count != 1 || revisions[0].Schema == 3)
+        {
+            foreach (var revision in revisions)
+                chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
+            var heads = chain.Heads(profileId);
+            if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
+                SharedWorldRosterTrust.Hash(revisions[^1]))
+                return (null, SharingFailure(selfId, "RosterConflict",
+                    "Competing sharing changes need owner review."));
+            roster = heads[0];
+        }
+        else roster = revisions[^1];
         config.SharedWorldSigningKeys ??= [];
         config.SharedRosterFloors ??= [];
         config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
@@ -621,6 +636,7 @@ internal sealed partial class FriendLink
                     accepted.PreviousRosterHash != revision.PreviousRosterHash ||
                     !SharedWorldRosterTrust.VerifyHostAcceptance(accepted))
                     return SharedFailure("RosterRevisionRejected", "The Host's signed acceptance was invalid.");
+                chain.Append(parent, parent.OwnerPublicKey);
                 chain.Append(accepted, parent.OwnerPublicKey);
                 config.SharedRosterFloors![profileId] = new(accepted.GroupId,
                     accepted.Epoch, accepted.Revision, accepted.Signature);
@@ -673,10 +689,6 @@ internal sealed partial class FriendLink
                 sharedFailures[profileId] = failures;
                 sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(reviewRequired ? 300 : failures == 0 ? 30 :
                     Math.Min(300, 5 * (1 << failures)));
-                if (!result.Ok && result.Code == "InsufficientSpace")
-                    sharedTransfers[profileId] = SharedWorldStatus(profileId) with { State = "Low space", Error = result.Message };
-                else if (!result.Ok && failures > 0)
-                    sharedTransfers[profileId] = SharedWorldStatus(profileId) with { State = "Stalled", Error = result.Message };
             }
         }
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
@@ -909,17 +921,22 @@ internal sealed partial class FriendLink
             try
             {
                 var chain = new SharedWorldRosterChainStore(data);
-                if (chain.HasState(profileId) && chain.Read(profileId).Count > revisions.Count)
+                var hasChain = chain.HasState(profileId);
+                if (hasChain && chain.Read(profileId).Count > revisions.Count)
                     return SharedFailure("RosterRejected", "The Host sent an older sharing history.");
                 if (floor is not null && floor.GroupId == roster.GroupId &&
-                    !SharedWorldSharingFloor.Allows(revisions, floor))
+                    !SharedWorldSharingFloor.Allows(revisions, floor) &&
+                    !SharedWorldSharingFloor.AllowsLegacyOwnerAdvance(revisions, floor, hasChain))
                     return SharedFailure("RosterRejected", "The Host sent an older sharing history.");
-                foreach (var revision in revisions)
-                    chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
-                var heads = chain.Heads(profileId);
-                if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
-                    SharedWorldRosterTrust.Hash(roster))
-                    return SharedFailure("RosterRejected", "Competing sharing changes need owner review.");
+                if (hasChain || revisions.Count != 1 || revisions[0].Schema == 3)
+                {
+                    foreach (var revision in revisions)
+                        chain.Append(revision, pinned ?? revisions[0].OwnerPublicKey);
+                    var heads = chain.Heads(profileId);
+                    if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
+                        SharedWorldRosterTrust.Hash(roster))
+                        return SharedFailure("RosterRejected", "Competing sharing changes need owner review.");
+                }
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
             { return SharedFailure("RosterRejected", "The signed sharing history failed verification."); }
@@ -1051,6 +1068,7 @@ internal sealed partial class FriendLink
                 sharedFailures.Remove(profileId);
                 sharedTransfers.TryRemove(profileId, out _);
             }
+            sharedTransferHealth.Reset(profileId);
             return new(true, "ConsentSaved", enabled ? "This PC may pull approved completed saves." :
                 "This PC will no longer pull shared saves.");
         }
@@ -1070,7 +1088,18 @@ internal sealed partial class FriendLink
                     config.ConsentedSharedWorldProfiles?.Contains(profileId) == true) return active;
             }
             finally { gate.Release(); }
-            return LocalSharedWorldStatus(profileId);
+            var local = LocalSharedWorldStatus(profileId);
+            var issue = sharedTransferHealth.Issue(profileId);
+            return issue is null || !local.Consented || local.Error is not null ||
+                local.State.StartsWith("Host save source changed", StringComparison.Ordinal) ||
+                local.State.StartsWith("Competing save histories", StringComparison.Ordinal)
+                ? local : local with
+                {
+                    State = issue.State,
+                    Error = issue.Message,
+                    ReceivedBytes = issue.ReceivedBytes,
+                    TotalBytes = issue.TotalBytes
+                };
         }
         finally { ReleaseRetained(); }
     }
@@ -1381,11 +1410,32 @@ internal sealed partial class FriendLink
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
         var profileGate = sharedProfileGates.GetOrAdd(profileId, _ => new SemaphoreSlim(1, 1));
         var profileEntered = false;
-        var entered = false;
         try
         {
             await profileGate.WaitAsync(cancellationToken);
             profileEntered = true;
+            var attempt = sharedTransferHealth.Begin(profileId);
+            try
+            {
+                var result = await PullSharedWorldCoreAsync(profileId, attempt, cancellationToken);
+                sharedTransferHealth.Complete(profileId, attempt, result);
+                return result;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                sharedTransferHealth.Cancel(profileId, attempt);
+                throw;
+            }
+        }
+        finally { if (profileEntered) profileGate.Release(); ReleaseRetained(); }
+    }
+
+    private async Task<ReceivedSharedWorldResult> PullSharedWorldCoreAsync(Guid profileId,
+        SharedWorldTransferHealth.Attempt attempt, CancellationToken cancellationToken)
+    {
+        var entered = false;
+        try
+        {
             await gate.WaitAsync(cancellationToken);
             entered = true;
             if (config is null) return SharedFailure("NotPaired", "Connect to a Host first.");
@@ -1515,6 +1565,7 @@ internal sealed partial class FriendLink
                 version.Files.Sum(file => ExistingPartialBytes(payloadStage, file));
             var totalBytes = SharedWorldService.BoundedTotalBytes(version.Files);
             var receivedBytes = totalBytes - remaining;
+            attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
             sharedTransfers[profileId] = new(true, version.Number, old?.Number,
                 "Receiving", null, receivedBytes, totalBytes,
                 config.SharedRosterFloors[profileId].Revision,
@@ -1549,6 +1600,14 @@ internal sealed partial class FriendLink
                 output.Position = offset;
                 while (offset < file.Length)
                 {
+                    // Disposable packaged checks pause before the next HTTP request
+                    // so they can exercise an actual post-payload route loss.
+                    if (Environment.GetEnvironmentVariable(GameServerRegistry.FixtureOptInEnvironmentVariable) == "1" &&
+                        string.Equals(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_ROOT"),
+                            data.RootPath, StringComparison.OrdinalIgnoreCase) &&
+                        int.TryParse(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_BEFORE_CHUNK_DELAY_MS"),
+                            out var fixtureBeforeChunkDelay) && fixtureBeforeChunkDelay is > 0 and <= 5000)
+                        await Task.Delay(fixtureBeforeChunkDelay, transferToken);
                     if (withdrawnSharedConsent.ContainsKey(profileId))
                         return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
                     using var chunkResponse = await transferClient.GetAsync(
@@ -1565,6 +1624,7 @@ internal sealed partial class FriendLink
                     await output.WriteAsync(chunk, transferToken);
                     offset += chunk.Length;
                     receivedBytes += chunk.Length;
+                    attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
                     sharedTransfers[profileId] = new(true, version.Number, old?.Number,
                         "Receiving", null, receivedBytes, totalBytes,
                         config.SharedRosterFloors[profileId].Revision,
@@ -1664,11 +1724,14 @@ internal sealed partial class FriendLink
                 LocalSharedWorldStatus(profileId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException) { return SharedFailure("TransferInterrupted", "The transfer stopped; progress was kept for retry."); }
-        catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
+        catch (TaskCanceledException) { return SharedFailure("NetworkUnavailable", "The Host did not answer before the transfer timed out. Progress was kept for retry."); }
+        catch (OperationCanceledException) { return SharedFailure("TransferCanceled", "The transfer stopped; progress was kept for retry."); }
+        catch (HttpRequestException ex)
+        { return SharedFailure("NetworkUnavailable", "The Host connection failed; progress was kept for retry. " + ex.Message); }
+        catch (Exception ex) when (ex is IOException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException or OverflowException)
         { return SharedFailure("TransferFailed", "The transfer stopped; verified copies were kept. " + ex.Message); }
-        finally { sharedTransfers.TryRemove(profileId, out _); if (entered) gate.Release(); if (profileEntered) profileGate.Release(); ReleaseRetained(); }
+        finally { sharedTransfers.TryRemove(profileId, out _); if (entered) gate.Release(); }
     }
 
     internal static bool HasReceiverReserve(long freeBytes, long remainingBytes) =>
