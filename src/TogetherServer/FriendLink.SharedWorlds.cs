@@ -1942,16 +1942,10 @@ internal sealed partial class FriendLink
                 transferClient, transferToken, verifiedInThisTransfer: true);
             try
             {
-                var protectedHashes = new SharedWorldSeparateCopyStore(data).Read(profileId)
-                    .Select(branch => branch.Offer.Version.VersionHash)
-                    .Concat(new WorldAuthorityStore(data).Read(profileId)
-                        .Select(record => record.Version.VersionHash))
-                    .ToHashSet(StringComparer.Ordinal);
-                if (old is not null) protectedHashes.Add(old.VersionHash);
-                // A signed resolution is a permanent branch choice. Keep every
-                // verified received payload so losing history cannot be pruned.
-                if (!new WorldAuthorityStore(data).Read(profileId).Any(record => record.Schema == 2))
-                    PruneReceived(root, version.VersionHash, protectedHashes);
+                PruneReceivedAfterTransfer(root, version.VersionHash, old?.VersionHash,
+                    new WorldAuthorityStore(data).Read(profileId),
+                    new SharedWorldSeparateCopyStore(data).Read(profileId)
+                        .Select(branch => branch.Offer.Version.VersionHash));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             { /* A verified receipt is kept even if old-version cleanup fails. */ }
@@ -2640,6 +2634,18 @@ internal sealed partial class FriendLink
             foreach (var old in group.Where(item => !keep.Contains(item.Path)))
                 if (!ContainsReparsePoint(old.Path)) Directory.Delete(old.Path, true);
         }
+    }
+
+    internal static void PruneReceivedAfterTransfer(string root, string newest,
+        string? previous, IReadOnlyList<WorldAuthorityRecord> authorities,
+        IEnumerable<string> separateBranchHashes)
+    {
+        // Signed decisions keep their exact branch heads for review. Ordinary
+        // descendants after a resolution still follow the three-copy policy.
+        var protectedHashes = authorities.Select(record => record.Version.VersionHash)
+            .Concat(separateBranchHashes).ToHashSet(StringComparer.Ordinal);
+        if (previous is not null) protectedHashes.Add(previous);
+        PruneReceived(root, newest, protectedHashes);
     }
 
     private static void PrunePartialStages(string root, string currentHash)

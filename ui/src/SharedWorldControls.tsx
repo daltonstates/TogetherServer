@@ -813,21 +813,27 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     } catch (error) { setReviewed(null); setResolutionMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  const behind = status?.consented && status.hostVersion != null && status.thisPcVersion != null &&
-    status.hostVersion > status.thisPcVersion && !status.state.startsWith('Host save source changed')
+  const statusProblem = status?.state === 'Error' ||
+    status?.state.startsWith('Host save source changed') ||
+    status?.state.startsWith('Competing save histories')
+  const behind = status?.consented && !statusProblem && status.error == null && status.hostVersion != null &&
+    status.thisPcVersion != null && status.hostVersion > status.thisPcVersion
   const headline = !status ? 'Checking save status' :
     !status.consented ? 'Save receiving is off' :
-    status.state.startsWith('Host save source changed') ? status.state :
+    statusProblem ? status.error ?? status.state :
     status?.state === 'Low space' ? 'Low space — receiving paused' :
     status?.state === 'Stalled' ? 'Receiving stalled — retrying' :
     status?.state === 'Receiving' ? 'Receiving completed save' :
+    status.error != null ? status.error :
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
       `This PC is ${status.hostVersion - status.thisPcVersion === 1 ? 'one save' :
         `${status.hostVersion - status.thisPcVersion} saves`} behind` :
-      hostingSetupReady && status.thisPcVersion != null ? 'Ready for manual Start; game load untested' :
+      hostingSetupReady && status.thisPcVersion != null && status.error == null &&
+        (status.state === 'Ready' || status.state === 'Up to date when last checked') ?
+        'Ready for manual Start; game load untested' :
         status.state === 'Ready' ? 'Verified copy on this PC' : status.state
-  const transferAlert = status?.state === 'Low space' || status?.state === 'Stalled' ||
-    status?.state.startsWith('Host save source changed')
+  const transferAlert = statusProblem || status?.error != null || status?.state === 'Low space' ||
+    status?.state === 'Stalled'
   const capacityAlert = status?.capacityState === 'Low space' && !transferAlert ?
     'Low space — receiving paused' : null
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary><span>Shared worlds</span>

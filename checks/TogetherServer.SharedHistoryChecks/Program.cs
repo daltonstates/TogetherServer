@@ -175,6 +175,131 @@ try
             .ReadReviewProofIndex(profile, record.RecordHash, 129),
             "a signed but changed review proof passed full-lineage verification");
         File.WriteAllBytes(proofPath, correctProof);
+
+        var losingVersion = SharedWorldService.SignVersion(reviewHead with
+        { BackupId = Guid.NewGuid() }, signer);
+        var losingLineage = reviewVersions[..^1].Append(losingVersion).ToArray();
+        var losingProposalDraft = proposalDraft with
+        {
+            VersionHash = losingVersion.VersionHash,
+            CandidateAddress = "https://127.0.0.1:5133"
+        };
+        var losingProposal = losingProposalDraft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+                WorldAuthorityTrust.ProposalBasis(losingProposalDraft), HashAlgorithmName.SHA256))
+        };
+        var losingVoteDraft = voteDraft with
+        { ProposalHash = WorldAuthorityTrust.ProposalHash(losingProposal), Signature = "" };
+        var losingVote = losingVoteDraft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+                WorldAuthorityTrust.VoteBasis(losingVoteDraft), HashAlgorithmName.SHA256))
+        };
+        var losingRecordDraft = new WorldAuthorityRecord(1, losingProposal, roster,
+            losingVersion, [losingVote], null, "",
+            VersionLineageDigest: WorldAuthorityTrust.LineageDigest(losingLineage));
+        var losingRecord = losingRecordDraft with
+        { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(losingRecordDraft)) };
+        authority.AppendReceived(losingRecord, profile, head.GroupId, head.SigningPublicKey,
+            losingLineage);
+        using var hostingKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var hostingPublicKey = Convert.ToBase64String(hostingKey.ExportSubjectPublicKeyInfo());
+        var branchHashes = new[] { record.RecordHash, losingRecord.RecordHash }
+            .Order(StringComparer.Ordinal).ToArray();
+        var resolutionDraft = new WorldAuthorityProposal(3, head.GroupId, profile, 2,
+            record.RecordHash, WorldAuthorityTrust.RosterHash(roster), reviewHead.VersionHash,
+            hostingPublicKey, "https://127.0.0.1:5134", "ResolutionQuorum", successorId,
+            successorKey, "", CompetingHeadHashes: branchHashes);
+        var bindingDraft = new WorldSuccessorBinding(successorId, successorKey,
+            hostingPublicKey, "");
+        var binding = bindingDraft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+                WorldAuthorityTrust.BindingBasis(resolutionDraft, bindingDraft), HashAlgorithmName.SHA256))
+        };
+        resolutionDraft = resolutionDraft with { SuccessorBinding = binding };
+        var resolutionProposal = resolutionDraft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+                WorldAuthorityTrust.ProposalBasis(resolutionDraft), HashAlgorithmName.SHA256))
+        };
+        var resolutionVoteDraft = new WorldAuthorityVote(1,
+            WorldAuthorityTrust.ProposalHash(resolutionProposal), successorId, successorKey, "");
+        var resolutionVote = resolutionVoteDraft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+                WorldAuthorityTrust.VoteBasis(resolutionVoteDraft), HashAlgorithmName.SHA256))
+        };
+        var resolutionRecordDraft = new WorldAuthorityRecord(2, resolutionProposal, roster,
+            reviewHead, [resolutionVote], null, "");
+        var resolutionRecord = resolutionRecordDraft with
+        { RecordHash = WorldAuthorityTrust.Hash(WorldAuthorityTrust.RecordBasis(resolutionRecordDraft)) };
+        authority.AppendReceived(resolutionRecord, profile, head.GroupId, head.SigningPublicKey);
+        Require(authority.ReadUniqueHead(profile)?.RecordHash == resolutionRecord.RecordHash,
+            "the disposable competing histories were not resolved by a signed majority");
+
+        var retentionVault = Path.Combine(root, "resolved-received-world");
+        Directory.CreateDirectory(retentionVault);
+        void AddCopy(SharedWorldVersion version)
+        {
+            var copy = Path.Combine(retentionVault, version.VersionHash);
+            var copiedPayload = Path.Combine(copy, SharedWorldService.PayloadDirectory);
+            Directory.CreateDirectory(copiedPayload);
+            File.WriteAllBytes(Path.Combine(copiedPayload, "world.dat"), [1]);
+            File.WriteAllBytes(Path.Combine(copy, "version.json"),
+                JsonSerializer.SerializeToUtf8Bytes(version));
+            FriendLink.KeepSignedManifest(retentionVault, version);
+        }
+        AddCopy(reviewHead);
+        AddCopy(losingVersion);
+        var separateVersion = SharedWorldService.SignVersion(reviewHead with
+        { BackupId = Guid.NewGuid() }, signer);
+        AddCopy(separateVersion);
+        var successorVersions = new List<SharedWorldVersion>();
+        var previous = reviewHead;
+        for (var index = 0; index < 6; index++)
+        {
+            var next = SharedWorldService.SignVersion(previous with
+            {
+                Number = previous.Number + 1,
+                ParentHash = previous.VersionHash,
+                BackupId = Guid.NewGuid()
+            }, hostingKey);
+            AddCopy(next);
+            File.WriteAllBytes(Path.Combine(retentionVault, "latest.json"),
+                JsonSerializer.SerializeToUtf8Bytes(next));
+            FriendLink.PruneReceivedAfterTransfer(retentionVault, next.VersionHash,
+                previous.VersionHash, authority.Read(profile), [separateVersion.VersionHash]);
+            successorVersions.Add(next);
+            previous = next;
+        }
+        var retained = Directory.EnumerateDirectories(retentionVault)
+            .Select(Path.GetFileName).Where(name => name is { Length: 64 })
+            .ToHashSet(StringComparer.Ordinal);
+        var expectedRetained = new[] { reviewHead.VersionHash, losingVersion.VersionHash,
+            separateVersion.VersionHash }
+            .Concat(successorVersions.TakeLast(3).Select(item => item.VersionHash))
+            .ToHashSet(StringComparer.Ordinal);
+        Require(retained.SetEquals(expectedRetained) &&
+            FriendLink.ReadVerifiedReceivedLineage(retentionVault, previous,
+                resolutionRecord.Version).LongCount() == 6,
+            "post-resolution receives did not keep three recent payloads, protected branch heads, and signed ancestry");
+        var damagedVersion = SharedWorldService.SignVersion(successorVersions[0] with
+        { BackupId = Guid.NewGuid() }, hostingKey);
+        AddCopy(damagedVersion);
+        File.WriteAllBytes(Path.Combine(retentionVault, damagedVersion.VersionHash,
+            SharedWorldService.PayloadDirectory, "world.dat"), [9]);
+        FriendLink.PruneReceivedAfterTransfer(retentionVault, previous.VersionHash,
+            successorVersions[^2].VersionHash, authority.Read(profile),
+            [separateVersion.VersionHash]);
+        reviewData.Dispose();
+        using var restartedRetention = new LocalData(root);
+        Require(Directory.Exists(Path.Combine(retentionVault, damagedVersion.VersionHash)) &&
+            FriendLink.ReadReceivedLatest(retentionVault)?.VersionHash == previous.VersionHash &&
+            new WorldAuthorityStore(restartedRetention).ReadUniqueHead(profile)?.RecordHash ==
+                resolutionRecord.RecordHash,
+            "pruning removed an unverified folder or lost the selected copy after restart");
     }
 
     var replay = SharedWorldService.SignVersion(head with
@@ -237,7 +362,7 @@ try
     File.Delete(middlePath);
     RequireThrows<InvalidDataException>(() => FriendLink.ReadVerifiedReceivedLineage(vault, head, null).LongCount(),
         "missing takeover ancestor was accepted");
-    Console.WriteLine("PASS 4,102-version catch-up, cursor restart, exact-temp replay, orphan, tamper, takeover proof, 128-version review paging");
+    Console.WriteLine("PASS 4,102-version catch-up, cursor restart, exact-temp replay, orphan, tamper, takeover proof, 128-version review paging, resolved-branch payload retention");
 }
 finally
 {
