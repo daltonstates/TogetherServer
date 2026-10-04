@@ -1370,6 +1370,19 @@ await Check("delegated publication serves current permissions and owner can revo
     RequireThrows<InvalidDataException>(() => manager.PublishDelegatedRosterAsync(profile.Id,
         delegateId, delegatePublic, revision, () => false).GetAwaiter().GetResult(),
         "a revoked transport credential published during the serialized check");
+    // A durable pending marker fences roster changes before any game process
+    // is launched. Owner and delegated publication must enforce the same rule.
+    var pendingHandoffName = $"planned-handoff-{profile.Id:N}.protected";
+    host.SaveProtected(pendingHandoffName, JsonSerializer.SerializeToUtf8Bytes(
+        new PendingPlannedHandoff(1, profile.Id, root.GroupId, new string('A', 64),
+            WorldAuthorityTrust.RosterHash(root), targetId, "https://192.0.2.10:5131")));
+    RequireThrows<InvalidDataException>(() => manager.PublishDelegatedRosterAsync(profile.Id,
+        delegateId, delegatePublic, revision).GetAwaiter().GetResult(),
+        "a delegate changed the signed roster during a pending handoff");
+    Require((await manager.SharedWorldRosterHistoryAsync(profile.Id))?.Count == 1 &&
+        (await manager.SharedWorldRosterAsync(profile.Id))?.Signature == root.Signature,
+        "a rejected handoff roster change mutated signed history");
+    host.DeleteProtected(pendingHandoffName);
     var published = await manager.PublishDelegatedRosterAsync(profile.Id,
         delegateId, delegatePublic, revision);
     Require(published.Signature == revision.Signature &&
@@ -4554,10 +4567,15 @@ await Check("planned handoff validates the complete successor address before Sto
     {
         "https://192.0.2.10:5131/page", "https://192.0.2.10:5131?target=world",
         "https://192.0.2.10:5131#world", "https://user@192.0.2.10:5131",
-        "http://192.0.2.10:5131", "https://host.example:5131"
+        "http://192.0.2.10:5131", "https://host.example:5131",
+        "https://127.0.0.1:5131", "https://[::1]:5131",
+        "https://0.0.0.0:5131", "https://[::]:5131", "https://192.0.2.10:0"
     })
         Require((await manager.PreparePlannedHandoffAsync(profile.Id, Guid.NewGuid(), address)).Code ==
             "InvalidSuccessorAddress", "an invalid successor route passed the pre-Stop check");
+    foreach (var address in new[] { "https://192.0.2.10:5131/", "https://[2001:db8::10]:5131" })
+        Require((await manager.PreparePlannedHandoffAsync(profile.Id, Guid.NewGuid(), address)).Code ==
+            "SuccessorNotEligible", "a valid direct IP route did not reach the eligibility check");
     Require(!data.HasProtected($"planned-handoff-{profile.Id:N}.protected") &&
         new WorldBackupService(data, TimeProvider.System).List(profile.Id).Count == 0,
         "invalid route validation changed the save or handoff state");

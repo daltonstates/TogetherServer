@@ -403,9 +403,9 @@ internal sealed partial class FriendLink
         {
             if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
-            if (!sharedHostLoss.MayPropose)
+            if (!CurrentRecoveryHostLoss(profileId))
                 return new(false, "HostLossNotConfirmed",
-                    "Wait for two minutes of failed secure Host checks before proposing takeover.");
+                    "Select the current Host connection and confirm two minutes of failed secure checks before proposing takeover.");
             if (config.SharedWorldConflicts?.Contains(profileId) == true ||
                 config.PendingSharedWorldGroups?.ContainsKey(profileId) == true)
                 return new(false, "HistoryReviewRequired", "Review the competing or changed save history first.");
@@ -427,13 +427,19 @@ internal sealed partial class FriendLink
                     "Set this PC's direct HTTPS address before proposing takeover. Open Friend connections only when ready to receive votes.");
             using var certificate = new HostIdentity(data).Ensure(settings.CompanionEndpoint);
             using var key = LoadPcSigningKey();
-            var offer = SharedWorldElection.PrepareOffer(sharedHostLoss, ReceivedRoot(profileId),
-                roster, floor, config.DeviceId, key, settings.CompanionEndpoint,
-                HostIdentity.Fingerprint(certificate), new WorldAuthorityStore(data));
-            offer = new SharedWorldVoteInbox(data).Arm(offer, ReceivedRoot(profileId));
-            return new(true, "RecoveryOfferArmed",
-                "This PC prepared a signed offer. Other approved PCs can vote only through its pinned HTTPS address; no game server has started.",
-                offer);
+            lock (SharedWorldMutationGate.For(data.RootPath))
+            {
+                if (!CurrentRecoveryHostLoss(profileId))
+                    return new(false, "HostLossNotConfirmed",
+                        "The current signed Host changed. Select its connection and check its reachability first.");
+                var offer = SharedWorldElection.PrepareOffer(sharedHostLoss, ReceivedRoot(profileId),
+                    roster, floor, config.DeviceId, key, settings.CompanionEndpoint,
+                    HostIdentity.Fingerprint(certificate), new WorldAuthorityStore(data));
+                offer = new SharedWorldVoteInbox(data).Arm(offer, ReceivedRoot(profileId));
+                return new(true, "RecoveryOfferArmed",
+                    "This PC prepared a signed offer. Other approved PCs can vote only through its pinned HTTPS address; no game server has started.",
+                    offer);
+            }
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
                                    CryptographicException or UnauthorizedAccessException or ArgumentException)
@@ -494,9 +500,9 @@ internal sealed partial class FriendLink
             entered = true;
             if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
-            if (!sharedHostLoss.MayPropose && offer.Proposal.Schema != 3)
+            if (!CurrentRecoveryHostLoss(profileId) && offer.Proposal.Schema != 3)
                 return new(false, "HostLossNotConfirmed",
-                    "This PC must also confirm two minutes without the pinned Host before voting.");
+                    "Select the current Host connection and confirm two minutes without it before voting.");
             if (!SharedWorldElection.VerifyOffer(offer) || offer.Proposal.ProfileId != profileId ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
                 config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != offer.Roster.OwnerPublicKey ||
@@ -521,7 +527,7 @@ internal sealed partial class FriendLink
                     config.SharedRosterFloors?.GetValueOrDefault(profileId) != floor ||
                     (!isResolution && config.SharedWorldConflicts?.Contains(profileId) == true) ||
                     config.PendingSharedWorldGroups?.ContainsKey(profileId) == true ||
-                    (requireLoss && !isResolution && !sharedHostLoss.MayPropose))
+                    (requireLoss && !isResolution && !CurrentRecoveryHostLoss(profileId)))
                     return false;
                 var rosterBytes = data.LoadProtected(
                     $"shared-world-roster-{voterId:N}-{profileId:N}.protected");
@@ -533,7 +539,7 @@ internal sealed partial class FriendLink
                         grants => grants.RecoveryVoter) &&
                     WorldAuthorityTrust.ProposalHash(offer.Proposal) == hash;
             }
-            using var candidate = MakeClient(offer.Proposal.CandidateAddress,
+            using var candidate = makeClient(offer.Proposal.CandidateAddress,
                 [offer.CandidateTlsFingerprint]);
             var path = $"api/companion/servers/{profileId}/shared-world/recovery/{hash}";
             // A candidate can also be a voter. Its HTTPS route probes Host loss
@@ -569,12 +575,16 @@ internal sealed partial class FriendLink
                 return new(false, "CandidateOfferChanged", "The candidate's signed offer changed during review.");
             await gate.WaitAsync(cancellationToken);
             entered = true;
-            if (!CurrentVoteContext(requireLoss: true))
-                return new(false, "RecoveryOfferRejected",
-                    "This PC's consent, signed roster, vote grant, or Host-loss check changed during review.");
             var store = new WorldAuthorityStore(data);
-            var vote = SharedWorldElection.Vote(sharedHostLoss, ReceivedRoot(profileId), floor,
-                ownerKey, received, voterId, signer, store);
+            WorldAuthorityVote vote;
+            lock (SharedWorldMutationGate.For(data.RootPath))
+            {
+                if (!CurrentVoteContext(requireLoss: true))
+                    return new(false, "RecoveryOfferRejected",
+                        "This PC's consent, signed roster, vote grant, or Host-loss check changed during review.");
+                vote = SharedWorldElection.Vote(sharedHostLoss, ReceivedRoot(profileId), floor,
+                    ownerKey, received, voterId, signer, store);
+            }
             gate.Release();
             entered = false;
             using var voteResponse = await candidate.PostAsJsonAsync(path + "/vote", vote, Json,
@@ -767,7 +777,10 @@ internal sealed partial class FriendLink
     private readonly SharedWorldTransferHealth sharedTransferHealth = new();
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();
     private readonly object sharedReceiptSync = new();
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> sharedProfileGates = new();
+    // Successor enrollment preserves the device ID and received vault. The
+    // original and successor connections must not copy or prune it concurrently.
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SharedReceiveGates =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> sharedProfileCancellation = new();
     private CancellationTokenSource sharedLinkCancellation = new();
     private readonly object sharedScheduleSync = new();
@@ -1698,16 +1711,19 @@ internal sealed partial class FriendLink
         CancellationToken cancellationToken = default)
     {
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
-        var profileGate = sharedProfileGates.GetOrAdd(profileId, _ => new SemaphoreSlim(1, 1));
+        SemaphoreSlim? profileGate = null;
         var profileEntered = false;
         try
         {
+            var vaultRoot = await ConfiguredReceiveRootAsync(profileId, cancellationToken);
+            if (vaultRoot is null) return SharedFailure("NotPaired", "Connect to a Host first.");
+            profileGate = SharedReceiveGates.GetOrAdd(vaultRoot, _ => new SemaphoreSlim(1, 1));
             await profileGate.WaitAsync(cancellationToken);
             profileEntered = true;
             var attempt = sharedTransferHealth.Begin(profileId);
             try
             {
-                var result = await PullSharedWorldCoreAsync(profileId, attempt, cancellationToken);
+                var result = await PullSharedWorldCoreAsync(profileId, vaultRoot, attempt, cancellationToken);
                 sharedTransferHealth.Complete(profileId, attempt, result);
                 return result;
             }
@@ -1717,10 +1733,22 @@ internal sealed partial class FriendLink
                 throw;
             }
         }
-        finally { if (profileEntered) profileGate.Release(); ReleaseRetained(); }
+        finally { if (profileEntered) profileGate!.Release(); ReleaseRetained(); }
     }
 
-    private async Task<ReceivedSharedWorldResult> PullSharedWorldCoreAsync(Guid profileId,
+    private async Task<string?> ConfiguredReceiveRootAsync(Guid profileId,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return config is null ? null : Path.GetFullPath(Path.Combine(data.RootPath,
+                "received-shared-worlds", config.DeviceId.ToString("N"), profileId.ToString("N")));
+        }
+        finally { gate.Release(); }
+    }
+
+    private async Task<ReceivedSharedWorldResult> PullSharedWorldCoreAsync(Guid profileId, string vaultRoot,
         SharedWorldTransferHealth.Attempt attempt, CancellationToken cancellationToken)
     {
         var entered = false;
@@ -1742,6 +1770,8 @@ internal sealed partial class FriendLink
             var deviceId = config.DeviceId;
             var pins = AcceptedPins().ToArray();
             var root = ReceivedRoot(profileId);
+            if (!Path.GetFullPath(root).Equals(vaultRoot, StringComparison.OrdinalIgnoreCase))
+                return SharedFailure("ConnectionChanged", "The saved Host connection changed while waiting to receive.");
             using var transferClient = makeClient(endpoint, pins);
             transferClient.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Credential);
@@ -1844,8 +1874,14 @@ internal sealed partial class FriendLink
                 return SharedFailure("VersionConflict", "The published version does not continue this PC's verified world history.");
             if (old?.VersionHash == version.VersionHash)
             {
-                await SendSharedReceiptAsync(profileId, old, deviceId, transferClient, transferToken);
-                return new(true, "AlreadyReceived", $"This PC already has the latest hash-verified {copyDescription}. Game load has not been checked.",
+                // The durable pointer can precede receipt signing if this PC
+                // exits during confirmation. ReadReceivedLatest verified the
+                // full payload, so retry may create the missing exact receipt.
+                var alreadyConfirmed = await SendSharedReceiptAsync(profileId, old, deviceId,
+                    transferClient, transferToken, verifiedInThisTransfer: true);
+                return new(true, "AlreadyReceived", alreadyConfirmed ?
+                    $"This PC already has the latest hash-verified {copyDescription}, confirmed to the Host. Game load has not been checked." :
+                    $"This PC already has the latest hash-verified {copyDescription}. Game load has not been checked. Host confirmation is pending; retry when connected.",
                     LocalSharedWorldStatus(profileId));
             }
             var stage = Path.Combine(root, ".partial-" + version.VersionHash);

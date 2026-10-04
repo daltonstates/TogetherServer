@@ -10,10 +10,14 @@ internal sealed partial class FriendLink
     {
         if (!TryRetain())
             return new(false, "ConnectionClosed", "This saved Host connection is closing.");
-        var singleFlight = sharedProfileGates.GetOrAdd(profileId, _ => new SemaphoreSlim(1, 1));
+        SemaphoreSlim? singleFlight = null;
         var enteredFlight = false;
         try
         {
+            var vaultRoot = await ConfiguredReceiveRootAsync(profileId, cancellationToken);
+            if (vaultRoot is null)
+                return new(false, "VerifiedCopyRequired", "Connect to a Host and receive a verified copy first.");
+            singleFlight = SharedReceiveGates.GetOrAdd(vaultRoot, _ => new SemaphoreSlim(1, 1));
             await singleFlight.WaitAsync(cancellationToken);
             enteredFlight = true;
             string endpoint;
@@ -38,13 +42,15 @@ internal sealed partial class FriendLink
                 credential = config.Credential;
                 pins = AcceptedPins().ToArray();
                 vault = ReceivedRoot(profileId);
+                if (!Path.GetFullPath(vault).Equals(vaultRoot, StringComparison.OrdinalIgnoreCase))
+                    return new(false, "ConnectionChanged", "The saved Host connection changed while waiting to stage.");
                 ownerKey = pinned;
                 groupId = group;
                 deviceId = config.DeviceId;
                 floor = savedFloor;
             }
             finally { gate.Release(); }
-            using var client = MakeClient(endpoint, pins);
+            using var client = makeClient(endpoint, pins);
             client.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential);
             client.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());
@@ -117,7 +123,7 @@ internal sealed partial class FriendLink
         { return new(false, "HandoffFailed", "The handoff proof or staged copy failed verification: " + ex.Message); }
         finally
         {
-            if (enteredFlight) singleFlight.Release();
+            if (enteredFlight) singleFlight!.Release();
             ReleaseRetained();
         }
     }

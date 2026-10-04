@@ -98,10 +98,29 @@ internal sealed partial class FriendLink : IDisposable
     private int nextChatProfile;
     private HttpClient? client;
     private readonly Func<string, IEnumerable<string>, HttpClient> makeClient;
-    private readonly SharedWorldHostLoss sharedHostLoss = new();
-    internal bool CurrentRecoveryHostLoss(Guid profileId) =>
-        config?.ApprovedSharedWorldGroups?.ContainsKey(profileId) == true &&
-        config.ConsentedSharedWorldProfiles.Contains(profileId) && sharedHostLoss.MayPropose;
+    private readonly SharedWorldHostLoss sharedHostLoss;
+    internal bool CurrentRecoveryHostLoss(Guid profileId)
+    {
+        var connection = config;
+        if (connection?.ApprovedSharedWorldGroups?.TryGetValue(profileId, out var groupId) != true ||
+            !connection.ConsentedSharedWorldProfiles.Contains(profileId) || !sharedHostLoss.MayPropose)
+            return false;
+        try
+        {
+            var heads = WorldAuthorityTrust.EffectiveHeads(new WorldAuthorityStore(data).Read(profileId));
+            if (heads.Length == 0) return true;
+            // Enrollment keeps the old Host connection. Failure at its address
+            // cannot establish loss of the successor named by signed authority.
+            return heads.Length == 1 && heads[0].Proposal.GroupId == groupId &&
+                HostIdentity.TryEndpoint(connection.Endpoint, out var observed) &&
+                HostIdentity.TryEndpoint(heads[0].Proposal.CandidateAddress, out var current) &&
+                observed.GetLeftPart(UriPartial.Authority).Equals(
+                    current.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+            CryptographicException or UnauthorizedAccessException or ArgumentException or OverflowException)
+        { return false; }
+    }
 
     internal async Task<bool> ProbeRecoveryHostLossAsync(Guid profileId,
         CancellationToken cancellationToken = default)
@@ -164,8 +183,10 @@ internal sealed partial class FriendLink : IDisposable
     private bool resourcesDisposed;
 
     public FriendLink(LocalData data, string configFile,
-        Func<string, IEnumerable<string>, HttpClient>? clientFactory = null)
+        Func<string, IEnumerable<string>, HttpClient>? clientFactory = null,
+        SharedWorldHostLoss? hostLoss = null)
     {
+        sharedHostLoss = hostLoss ?? new SharedWorldHostLoss();
         makeClient = clientFactory ?? MakeClient;
         this.data = data;
         chat = new ServerChat(data);

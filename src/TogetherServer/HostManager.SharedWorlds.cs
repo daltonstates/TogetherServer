@@ -92,7 +92,8 @@ public sealed partial class HostManager
                 SharedAuthorityBlocked(profileId, out _))
                 return new(false, "HandoffAlreadyPending", "Review the current handoff or authority history first.");
             if (successorAddress is null || successorAddress.Length is < 3 or > 255 ||
-                !HostIdentity.TryEndpoint(successorAddress, out var address))
+                !HostIdentity.TryEndpoint(successorAddress, out var address) ||
+                !SharedWorldRouteTrust.DirectIpAddress(successorAddress))
                 return new(false, "InvalidSuccessorAddress", "Enter the successor's direct HTTPS IP address and port.");
             successorAddress = address.GetLeftPart(UriPartial.Authority);
             var roster = sharedWorlds.ReadRoster(profile);
@@ -614,6 +615,8 @@ public sealed partial class HostManager
             {
                 var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
                     throw new InvalidDataException("Server not found.");
+                if (data.HasProtected(PlannedHandoffName(profileId)))
+                    throw new InvalidDataException("A planned handoff is pending; keep this signed roster unchanged.");
                 if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom ||
                     SharedAuthorityBlocked(profileId, out _) ||
                     authority.HasState(profileId) || transportStillAuthorized?.Invoke() == false)

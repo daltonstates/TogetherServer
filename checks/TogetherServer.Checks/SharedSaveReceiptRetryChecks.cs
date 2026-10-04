@@ -48,14 +48,14 @@ internal static class SharedSaveReceiptRetryChecks
                 Id = deviceId, AssignedProfileIds = [profile.Id],
                 CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(credential))),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1), SharedWorldPublicKey = publicKey,
-                SharedWorldGrants = new() { [profile.Id] = new(Receive: true) }
+                SharedWorldGrants = new() { [profile.Id] = new(Receive: true, EligibleHost: true) }
             }]
         });
         var games = new GameServerRegistry(host, true, PortProbeMode.ObserveOnly);
         var pairing = new PairingService(host);
         var manager = new HostManager(host, games);
         var roster = await manager.PublishSharedWorldRosterAsync(profile.Id,
-            [new(deviceId, publicKey, new(Receive: true), false)]);
+            [new(deviceId, publicKey, new(Receive: true, EligibleHost: true), false)]);
         pairing.ConfirmSharedRosterPublished(profile.Id, roster);
         var backups = new WorldBackupService(host, TimeProvider.System);
         var backup = backups.Create(profile, BackupKinds.Rolling);
@@ -86,6 +86,8 @@ internal static class SharedSaveReceiptRetryChecks
         var receipts = 0;
         var manifestReads = 0;
         Func<Task>? afterLatestRead = null;
+        long recoveryStamp = 0;
+        var hostLoss = new SharedWorldHostLoss(() => recoveryStamp, 1000);
         using var friend = new FriendLink(receiver, "friend.protected", (_, _) =>
             new HttpClient(new ReceiptHandler(app.GetTestServer().CreateHandler(), () => receipts++, async () =>
             {
@@ -94,7 +96,7 @@ internal static class SharedSaveReceiptRetryChecks
                 afterLatestRead = null;
                 await review();
             }))
-            { BaseAddress = new Uri(endpoint + "/") });
+            { BaseAddress = new Uri(endpoint + "/") }, hostLoss);
         Require((await friend.PollAsync()).Profiles.Any(item => item.Id == profile.Id), "Friend did not authenticate");
         var first = await friend.PullSharedWorldAsync(profile.Id);
         Require(first.Ok && receipts == 1, $"initial receive failed: {first.Code} {first.Message}");
@@ -102,6 +104,14 @@ internal static class SharedSaveReceiptRetryChecks
         var payload = Path.Combine(vault, version!.VersionHash);
         var pointer = Path.Combine(vault, "latest.json");
         Require(Directory.Exists(payload) && File.Exists(pointer), "initial receipt was not durable");
+        // Model a crash after writing the current pointer, before signing the
+        // Host's exact-copy receipt. An ordinary receive retry must repair it.
+        File.Delete(Path.Combine(payload, "receipt.json"));
+        receipts = 0;
+        var confirmationRetry = await friend.PullSharedWorldAsync(profile.Id);
+        Require(confirmationRetry.Ok && confirmationRetry.Code == "AlreadyReceived" &&
+            receipts == 1 && File.Exists(Path.Combine(payload, "receipt.json")),
+            "a completed-copy retry did not recreate and send its missing receipt");
         // Model a crash after the atomic payload move and before writing the pointer.
         File.Delete(pointer);
         receipts = 0;
@@ -137,6 +147,86 @@ internal static class SharedSaveReceiptRetryChecks
         Require(latest.Ok && newer is not null && FriendLink.ReadReceivedLatest(vault)?.VersionHash == newer.VersionHash &&
             receipts == 1 && Directory.Exists(payload),
             "receiving the observed newer head failed or discarded the earlier verified copy");
+        // Successor enrollment keeps the same device identity and vault in a
+        // second saved connection. Both connections must share transfer ownership.
+        receiver.SaveProtected("second-friend.protected", receiver.LoadProtected("friend.protected")!);
+        var secondTransferClientCreated = false;
+        using var secondFriend = new FriendLink(receiver, "second-friend.protected", (_, _) =>
+        {
+            secondTransferClientCreated = true;
+            return new HttpClient(app.GetTestServer().CreateHandler()) { BaseAddress = new Uri(endpoint + "/") };
+        });
+        Require((await secondFriend.PollAsync()).Profiles.Any(item => item.Id == profile.Id),
+            "second saved connection did not authenticate");
+        secondTransferClientCreated = false;
+        var thirdBackup = backups.Create(profile, BackupKinds.Rolling);
+        Require(thirdBackup.Ok && thirdBackup.Backup is not null, "third disposable backup failed");
+        var third = new SharedWorldService(host, backups).PublishAfterStop(profile, thirdBackup.Backup!.Id).Version!;
+        Require(third is not null && third.Number == newer!.Number + 1, "third shared copy failed");
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manifestReads = 0;
+        afterLatestRead = async () =>
+        {
+            paused.SetResult();
+            await resume.Task;
+        };
+        var firstTransfer = friend.PullSharedWorldAsync(profile.Id);
+        await paused.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var secondTransfer = secondFriend.PullSharedWorldAsync(profile.Id);
+        var handoffStage = secondFriend.StagePlannedHandoffAsync(profile.Id, CancellationToken.None);
+        // Creating the transfer client occurs synchronously after acquiring
+        // ownership, so no timing delay or network probe is needed here.
+        var concurrentVaultAccess = secondTransferClientCreated;
+        resume.TrySetResult();
+        var transfers = await Task.WhenAll(firstTransfer, secondTransfer);
+        var staged = await handoffStage;
+        Require(!concurrentVaultAccess,
+            "saved connections sharing one vault transferred or staged concurrently");
+        Require(transfers.All(item => item.Ok) &&
+            FriendLink.ReadReceivedLatest(vault)?.VersionHash == third!.VersionHash &&
+            staged is { Ok: false, Code: "HandoffOfferUnavailable" },
+            "serialized saved connections did not preserve the verified latest copy");
+        // The old Host's failed route is not evidence that a signed successor
+        // is absent. Bind loss eligibility to the current authority's address.
+        hostLoss.Observe(HostReachabilityObservation.TransportFailure);
+        for (var i = 0; i < 12; i++)
+        {
+            recoveryStamp += 10_000;
+            hostLoss.Observe(HostReachabilityObservation.TransportFailure);
+        }
+        Require(friend.CurrentRecoveryHostLoss(profile.Id), "continuous initial Host loss was not eligible");
+        var receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(
+            File.ReadAllBytes(Path.Combine(vault, third!.VersionHash, "receipt.json")), json)!;
+        const string successorAddress = "https://192.0.2.44:5131";
+        var handoff = new SharedWorldService(host, backups).SignPlannedHandoff(roster, third,
+            receipt, deviceId, successorAddress, 1, null);
+        new WorldAuthorityStore(receiver).AppendReceived(handoff, profile.Id, roster.GroupId, roster.OwnerPublicKey,
+            FriendLink.ReadVerifiedReceivedLineage(vault, third, null));
+        Require(!friend.CurrentRecoveryHostLoss(profile.Id) &&
+            (await friend.PrepareRecoveryOfferAsync(profile.Id)).Code == "HostLossNotConfirmed" &&
+            !await friend.ProbeRecoveryHostLossAsync(profile.Id),
+            "loss of the old Host route authorized recovery after a signed successor handoff");
+        var staleOffer = SharedWorldElection.PrepareOffer(hostLoss, vault, roster,
+            new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature), deviceId, key,
+            endpoint, HostIdentity.Fingerprint(certificate), new WorldAuthorityStore(receiver));
+        Require((await friend.VoteOnRecoveryOfferAsync(profile.Id, staleOffer)).Code == "HostLossNotConfirmed",
+            "an old-route loss timer allowed voting for another recovery");
+        var currentConfiguration = JsonSerializer.Deserialize<FriendConfiguration>(
+            receiver.LoadProtected("second-friend.protected")!, json)!;
+        currentConfiguration.Endpoint = successorAddress + "/";
+        receiver.SaveProtected("current-friend.protected", JsonSerializer.SerializeToUtf8Bytes(currentConfiguration, json));
+        var currentHostLoss = new SharedWorldHostLoss(() => recoveryStamp, 1000);
+        currentHostLoss.Observe(HostReachabilityObservation.TransportFailure);
+        for (var i = 0; i < 12; i++)
+        {
+            recoveryStamp += 10_000;
+            currentHostLoss.Observe(HostReachabilityObservation.TransportFailure);
+        }
+        using var currentFriend = new FriendLink(receiver, "current-friend.protected", hostLoss: currentHostLoss);
+        Require(currentFriend.CurrentRecoveryHostLoss(profile.Id), "fresh loss of the current signed Host was rejected");
+        currentHostLoss.Observe(HostReachabilityObservation.Authenticated);
+        Require(!currentFriend.CurrentRecoveryHostLoss(profile.Id), "current signed Host return did not cancel loss eligibility");
         await app.StopAsync();
     }
 
