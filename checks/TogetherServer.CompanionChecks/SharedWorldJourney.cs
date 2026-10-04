@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Net.NetworkInformation;
 using System.Text.Json;
 using TogetherServer;
+using TogetherServer.CompanionChecks;
 
 // Three isolated copies of the packaged app exercise the public companion route.
 // The harness never starts a listener; only TogetherServer.exe owns HTTP ports.
@@ -56,6 +57,9 @@ internal static class SharedWorldJourney
             friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
             await Task.WhenAll(WaitLocalAsync(hostPort), WaitLocalAsync(friendAPort),
                 WaitLocalAsync(friendBPort));
+            WindowsListenerOwners.RequireTogetherServerOwner(hostPort, host);
+            WindowsListenerOwners.RequireTogetherServerOwner(friendAPort, friendA);
+            WindowsListenerOwners.RequireTogetherServerOwner(friendBPort, friendB);
             using var owner = LocalClient(hostPort);
             using var aLocal = LocalClient(friendAPort);
             using var bLocal = LocalClient(friendBPort);
@@ -70,6 +74,7 @@ internal static class SharedWorldJourney
             Require(invite.GetProperty("ok").GetBoolean() &&
                 invite.GetProperty("listenerActive").GetBoolean(),
                 "packaged Host did not open its deliberate HTTPS listener");
+            WindowsListenerOwners.RequireTogetherServerOwner(companionPort, host);
             var code = invite.GetProperty("password").GetString();
             Require(!string.IsNullOrWhiteSpace(code), "invite has no code");
             Require((await PostAsync<FriendPairRequest, FriendActionResult>(aLocal,
@@ -143,6 +148,7 @@ internal static class SharedWorldJourney
             friendA = StartApp(appPath, "--friend", friendAPort, friendAData,
                 receiveDelayMs: 3000);
             await WaitLocalAsync(friendAPort);
+            WindowsListenerOwners.RequireTogetherServerOwner(friendAPort, friendA);
             await PollAsync(aLocal);
             var partial = Path.Combine(aRoot, ".partial-" + secondVersion.VersionHash,
                 "payload", "world.dat");
@@ -164,6 +170,7 @@ internal static class SharedWorldJourney
                 "owner could not deliberately restore Receive");
             friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
             await WaitLocalAsync(friendAPort);
+            WindowsListenerOwners.RequireTogetherServerOwner(friendAPort, friendA);
             await PollAsync(aLocal);
             await WaitVersionAsync(aLocal, profile.Id, 2);
             Require(File.Exists(Path.Combine(aRoot, secondVersion.VersionHash,
@@ -174,6 +181,7 @@ internal static class SharedWorldJourney
 
             friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
             await WaitLocalAsync(friendBPort);
+            WindowsListenerOwners.RequireTogetherServerOwner(friendBPort, friendB);
             await PollAsync(bLocal);
             await WaitVersionAsync(bLocal, profile.Id, 2);
             await WaitCopiesAsync(owner, profile.Id, 2);
@@ -220,6 +228,8 @@ internal static class SharedWorldJourney
                 "Host loss erased the Friend's verified copy or was reported as connected");
             host = StartApp(appPath, "--host", hostPort, hostData);
             await WaitLocalAsync(hostPort);
+            WindowsListenerOwners.RequireTogetherServerOwner(hostPort, host);
+            WindowsListenerOwners.RequireTogetherServerOwner(companionPort, host);
             var returned = await GetAsync<SharedWorldStatus>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world");
             Require(returned.Latest?.VersionHash == secondVersion.VersionHash &&

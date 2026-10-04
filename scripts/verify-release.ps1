@@ -86,6 +86,12 @@ try {
             $locations = $offenders | ForEach-Object { "$($_.Path):$($_.LineNumber)" }
             throw "Check runners must not own OS listeners: $($locations -join ', ')"
         }
+        $probeOffenders = @($checkFiles | Select-String -Pattern 'PortProbeMode\.LoopbackOnly' |
+            Where-Object { $_.Line -notmatch 'GameServerRegistry\.ProbeAddress\s*\(' })
+        if ($probeOffenders.Count -gt 0) {
+            $locations = $probeOffenders | ForEach-Object { "$($_.Path):$($_.LineNumber)" }
+            throw "Check runners must use ObserveOnly for indirect port probes: $($locations -join ', ')"
+        }
         $coreChecks = Get-Content -LiteralPath 'checks/TogetherServer.Checks/Program.cs' -Raw
         $routes = [regex]::Matches($coreChecks, 'new CompanionServer\([\s\S]*?\);')
         if ($routes.Count -eq 0 -or @($routes | Where-Object {
