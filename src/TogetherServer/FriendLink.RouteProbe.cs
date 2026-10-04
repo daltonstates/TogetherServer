@@ -70,12 +70,18 @@ internal sealed partial class FriendLink
                         WorldAuthorityTrust.CandidateDevicePublicKey(current.Proposal))
                         .AccessExpiresUtc is { } currentExpiry && currentExpiry <= DateTimeOffset.UtcNow)
                     return Fail("HandoffProofInvalid", "Current signed membership or permission changed.");
-                return SharedWorldRouteTrust.Verify(proof, current, nonce, tlsFingerprint)
-                    ? new(true, "ControlRouteObserved",
-                        "This Friend connection reached the successor over pinned HTTPS and verified its signed handoff. Confirm this check ran on another PC; the game route and a real join still need testing.",
-                        DateTimeOffset.UtcNow, recordHash)
-                    : Fail("RouteProofInvalid",
+                if (!SharedWorldRouteTrust.Verify(proof, current, nonce, tlsFingerprint))
+                    return Fail("RouteProofInvalid",
                         "The successor did not return a valid signed route proof from the pinned address.");
+                using var confirmed = await client.PostAsJsonAsync(
+                    $"api/companion/servers/{profileId}/shared-world/route-confirm/{recordHash}",
+                    new SharedWorldRouteConfirmation(challenge, proof!), Json, cancellationToken);
+                return confirmed.IsSuccessStatusCode
+                    ? new(true, "ControlRouteObserved",
+                        "This Friend PC completed a pinned HTTPS round trip with the successor. Test the game route and real join after Start.",
+                        DateTimeOffset.UtcNow, recordHash)
+                    : Fail("RouteConfirmationFailed",
+                        "The successor did not record this verified direct-IP control route check.");
             }
             finally { gate.Release(); }
         }

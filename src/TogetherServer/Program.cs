@@ -1553,8 +1553,17 @@ app.MapGet("/api/local/friend/{id:guid}/shared-world/handoff/restore", async (Ht
     Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/restore",
     async (HttpContext context, Guid id, SuccessorRestoreRequest request) =>
-    friendMode ? Results.Json(await manager.RestoreSharedSuccessorAsync(id,
-        request, context.RequestAborted)) : Results.Conflict(new { code = "HostMode" }));
+    {
+        if (!friendMode) return Results.Conflict(new { code = "HostMode" });
+        var result = await manager.RestoreSharedSuccessorAsync(id,
+            request, context.RequestAborted);
+        if (result.Ok) await companionServer.SyncAsync();
+        return Results.Json(result);
+    });
+app.MapPost("/api/local/friend/{id:guid}/shared-world/handoff/finish",
+    async (Guid id, SuccessorFinishRequest request) =>
+    friendMode ? Results.Json(await manager.FinishSharedSuccessorAsync(id, request)) :
+    Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/check", async (HttpContext context, Guid id) =>
     friendMode ? Results.Json(await friend.CheckSharedWorldAsync(id, context.RequestAborted)) :
     Results.Conflict(new { code = "HostMode" }));

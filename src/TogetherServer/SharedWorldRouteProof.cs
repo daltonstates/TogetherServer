@@ -9,6 +9,8 @@ public sealed record SharedWorldRouteProof(int Schema, Guid ProfileId, string Re
 public sealed record SharedWorldRouteChallenge(int Schema, Guid ProfileId, string RecordHash,
     string Nonce, Guid ObserverDeviceId, string ObserverPublicKey, string Signature);
 public sealed record SharedWorldRouteRequest(string RecordHash, string TlsFingerprint);
+public sealed record SharedWorldRouteConfirmation(SharedWorldRouteChallenge Challenge,
+    SharedWorldRouteProof Proof);
 public sealed record SharedWorldRouteCheck(bool ControlRouteObserved, string Code, string Message,
     DateTimeOffset CheckedUtc, string? RecordHash = null);
 

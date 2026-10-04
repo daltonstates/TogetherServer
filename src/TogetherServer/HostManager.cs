@@ -442,7 +442,8 @@ public sealed partial class HostManager
             (!data.HasProtected("host-certificate.protected") ||
              !(serverInvites.Count > 0 || devices.Any(device =>
                 (device.InviteHash is not null || device.CredentialHash is not null)) ||
-               new SharedWorldVoteInbox(data).HasArmedOffer(next.CompanionEndpoint))))
+               new SharedWorldVoteInbox(data).HasArmedOffer(next.CompanionEndpoint) ||
+               HasSuccessorRouteCandidate(next))))
             return Result(false, "PairingRequired", "Create a pairing invite and Host TLS identity before enabling the listener.");
         if (next.RemoteControlsEnabled &&
             !(serverInvites.Any(invite => invite.CanStart || invite.CanStop) ||
@@ -1057,8 +1058,16 @@ public sealed partial class HostManager
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
         if (data.HasProtected(SuccessorRestoreName(profileId)))
-            return Result(false, "SuccessorChecksPending",
-                "This restored shared world needs a verified disposable game rehearsal and direct-IP Friend route checks before Start.");
+        {
+            string? issue;
+            try { issue = SuccessorStartIssue(profileId, profile); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or
+                System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or
+                UnauthorizedAccessException or ArgumentException or OverflowException)
+            { issue = "The signed restore or local checks could not be verified."; }
+            if (issue is not null)
+                return Result(false, "SuccessorChecksPending", issue);
+        }
         if (data.HasProtected(PlannedHandoffName(profileId)))
             return Result(false, "PlannedHandoffPending",
                 "A planned handoff is waiting for the successor's verified copy. Complete or review it before starting this world.");
