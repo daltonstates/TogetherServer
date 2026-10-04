@@ -870,6 +870,7 @@ await Check("paged roster retains 270 owner and delegated revisions with offline
         SignerPublicKey: ownerPublic), owner);
     var chain = new SharedWorldRosterChainStore(host);
     var received = new SharedWorldRosterChainStore(receiver);
+    SharedWorldRoster? historic = null;
     chain.Append(roster, ownerPublic);
     received.Append(roster, ownerPublic);
     for (var n = 2; n <= 270; n++)
@@ -889,6 +890,7 @@ await Check("paged roster retains 270 owner and delegated revisions with offline
         };
         roster = Sign(draft, delegated && n != 270 ? manager : owner);
         chain.Append(roster, ownerPublic);
+        if (n == 135) historic = roster;
         if (n <= 8) received.Append(roster, ownerPublic);
         members = nextMembers;
     }
@@ -915,6 +917,19 @@ await Check("paged roster retains 270 owner and delegated revisions with offline
         SharedWorldRosterTrust.Hash(received.Heads(profileId).Single()) == finalHash &&
         new SharedWorldRosterChainStore(receiver).Read(profileId).Count == 270,
         "offline receiver did not accept the complete signed history");
+    Require(historic is not null && chain.Contains(profileId, historic),
+        "protected historical roster lookup was lost after 270 revisions");
+    var transferHealth = new SharedWorldTransferHealth();
+    transferHealth.Complete(profileId, transferHealth.Begin(profileId),
+        new(false, "RosterCatchUpPending", "Signed membership is catching up."));
+    Require(transferHealth.Issue(profileId) is null,
+        "normal roster catch-up was reported as a stalled save transfer");
+    var lookupName = $"shared-roster-lookup-{profileId:N}-{SharedWorldRosterTrust.Hash(historic!)}.protected";
+    var lookupBytes = host.LoadProtected(lookupName)!;
+    host.DeleteProtected(lookupName);
+    Require(!new SharedWorldRosterChainStore(host).Contains(profileId, historic!),
+        "authority accepted a historical roster without its protected lookup");
+    host.SaveProtected(lookupName, lookupBytes);
     var rejected = Sign(roster with
     {
         Epoch = 271,
@@ -988,6 +1003,7 @@ await Check("schema-1 roster floor migrates with a pending signed revision", () 
     var chain = new SharedWorldRosterChainStore(data);
     chain.Append(rootRoster, ownerPublic);
     var rootHash = SharedWorldRosterTrust.Hash(rootRoster);
+    data.DeleteProtected($"shared-roster-lookup-{id:N}-{rootHash}.protected");
     var oldFloor = new
     {
         Schema = 1,
@@ -1065,7 +1081,7 @@ await Check("companion roster revisions use bounded TestServer pages", async () 
     chain.Append(roster, roster.OwnerPublicKey);
     using var owner = ECDsa.Create();
     owner.ImportPkcs8PrivateKey(data.LoadProtected("shared-world-signing-key.protected")!, out _);
-    for (var n = 2; n <= 40; n++)
+    for (var n = 2; n <= 270; n++)
     {
         var draft = roster with
         {
@@ -1097,7 +1113,7 @@ await Check("companion roster revisions use bounded TestServer pages", async () 
         new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
     client.DefaultRequestHeaders.Add("X-Device-Id", deviceId.ToString());
     var path = $"api/companion/servers/{profile.Id}/shared-world/roster/revisions";
-    foreach (var (offset, expected) in new[] { (0, 12), (12, 12), (36, 4), (40, 0) })
+    foreach (var (offset, expected) in new[] { (0, 12), (12, 12), (264, 6), (270, 0) })
     {
         using var response = await client.GetAsync(path + $"?offset={offset}");
         var bytes = await response.Content.ReadAsByteArrayAsync();
@@ -1143,9 +1159,20 @@ await Check("companion roster revisions use bounded TestServer pages", async () 
     var friendView = await friend.PollAsync();
     Require(friendView.Profiles.Any(item => item.Id == profile.Id),
         "offline Friend did not establish its saved Host connection");
-    var sharing = await friend.CheckSharedWorldSharingAsync(profile.Id);
-    Require(sharing.Available && sharing.Revision == roster.Revision &&
-        new SharedWorldRosterChainStore(receiver).Count(profile.Id) == 40 &&
+    SharedWorldSharingView? sharing = null;
+    for (var attempt = 0; attempt < 7; attempt++)
+    {
+        var before = receiverChain.Count(profile.Id);
+        sharing = await friend.CheckSharedWorldSharingAsync(profile.Id);
+        var after = receiverChain.Count(profile.Id);
+        Require(after - before <= 4 * SharedWorldRosterChainStore.PageSize,
+            "Friend caught up more than four signed pages in one attempt");
+        if (sharing.Available) break;
+        Require(sharing.Code == "RosterCatchUpPending" && after > before,
+            "Friend did not make bounded progress while catching up");
+    }
+    Require(sharing is { Available: true } && sharing.Revision == roster.Revision &&
+        new SharedWorldRosterChainStore(receiver).Count(profile.Id) == 270 &&
         new SharedWorldRosterChainStore(receiver).Heads(profile.Id).Single().Signature == roster.Signature,
         "offline Friend did not catch up from its protected local floor");
     using var truncatedData = Data("roster-pages-truncated-friend");
@@ -3706,10 +3733,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-        {
-            Name: "fixturemod", Version: "1.0.0",
-            RequiredGameVersion: "2.0", Type: "Factorio mod"
-        }],
+    {
+        Name: "fixturemod", Version: "1.0.0",
+        RequiredGameVersion: "2.0", Type: "Factorio mod"
+    }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");

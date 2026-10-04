@@ -98,6 +98,7 @@ internal sealed partial class FriendLink
         {
             var hasChain = chain.HasState(profileId);
             var count = hasChain ? chain.Count(profileId) : 0;
+            var floorSeen = floor is null;
             if (count > 0)
             {
                 var local = chain.Heads(profileId);
@@ -107,15 +108,18 @@ internal sealed partial class FriendLink
                         floor.Revision > local[0].Revision || floor.Epoch > local[0].Epoch ||
                         floor.Revision == local[0].Revision && floor.Signature != local[0].Signature))
                     return SharedFailure("RosterRollback", "The saved sharing history changed unexpectedly.");
+                floorSeen = floor is null || local[0].GroupId == floor.GroupId &&
+                    local[0].Epoch == floor.Epoch && local[0].Revision == floor.Revision &&
+                    local[0].Signature == floor.Signature;
             }
             else if (floor is not null && (floor.GroupId != current.GroupId ||
                 floor.Revision > current.Revision || floor.Epoch > current.Epoch ||
                 floor.Revision == current.Revision && floor.Signature != current.Signature))
                 return SharedFailure("RosterRollback", "The Host's sharing list is older or changed unexpectedly.");
             var first = count == 0;
-            var floorSeen = floor is null;
             var legacyAdvance = false;
-            while (true)
+            var fullLastPage = false;
+            for (var pageNumber = 0; pageNumber < 4; pageNumber++)
             {
                 using var response = await client.GetAsync(
                     $"api/companion/servers/{profileId}/shared-world/roster/revisions?offset={count}",
@@ -153,16 +157,19 @@ internal sealed partial class FriendLink
                 }
                 count += page.Count;
                 first = false;
-                if (page.Count < SharedWorldRosterChainStore.PageSize) break;
+                fullLastPage = page.Count == SharedWorldRosterChainStore.PageSize;
+                if (!fullLastPage) break;
             }
             var heads = chain.Heads(profileId);
+            if (fullLastPage && heads.Count == 1 && SharedWorldRosterTrust.Hash(heads[0]) !=
+                SharedWorldRosterTrust.Hash(current))
+                return SharedFailure("RosterCatchUpPending",
+                    "This PC is still checking the signed sharing history. Check again to continue.");
             if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
                 SharedWorldRosterTrust.Hash(current))
                 return SharedFailure("RosterRejected", "The Host omitted a signed sharing revision.");
             if (!floorSeen && !legacyAdvance && floor is not null &&
-                !(hasChain && chain.Read(profileId).Any(item =>
-                    item.GroupId == floor.GroupId && item.Epoch == floor.Epoch &&
-                    item.Revision == floor.Revision && item.Signature == floor.Signature)))
+                !(hasChain && chain.ContainsFloor(profileId, floor)))
                 return SharedFailure("RosterRollback", "The Host omitted the previously trusted sharing list.");
             if (floor is not null && floor.GroupId == current.GroupId &&
                 floor.Revision == current.Revision && floor.Signature != current.Signature)
@@ -911,10 +918,12 @@ internal sealed partial class FriendLink
             {
                 var reviewRequired = result.Code is "SourceReviewRequired" or "ConsentRequired" or
                     "SigningIdentityChanged" or "VersionConflict" or "VersionChainInvalid";
-                var failures = result.Ok || reviewRequired ? 0 :
+                var catchUpPending = result.Code == "RosterCatchUpPending";
+                var failures = result.Ok || reviewRequired || catchUpPending ? 0 :
                     Math.Min(6, sharedFailures.GetValueOrDefault(profileId) + 1);
                 sharedFailures[profileId] = failures;
-                sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(reviewRequired ? 300 : failures == 0 ? 30 :
+                sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(catchUpPending ? 2 :
+                    reviewRequired ? 300 : failures == 0 ? 30 :
                     Math.Min(300, 5 * (1 << failures)));
             }
         }

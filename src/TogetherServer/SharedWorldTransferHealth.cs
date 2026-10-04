@@ -89,7 +89,7 @@ internal sealed class SharedWorldTransferHealth
         {
             var state = State(profileId);
             if (state.Epoch != attempt.Epoch) return; // Consent changed during this attempt.
-            if (result.Ok)
+            if (result.Ok || result.Code == "RosterCatchUpPending")
             {
                 state.Issue = null;
                 state.NoProgressFailures = 0;

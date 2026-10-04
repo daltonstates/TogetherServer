@@ -14,12 +14,16 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         IReadOnlyList<string>? Hashes = null, long Count = 0,
         IReadOnlyList<string>? Heads = null, bool UnreviewedOwnerEdit = false);
     private sealed record Index(int Schema, long Offset, IReadOnlyList<string> Hashes);
+    private sealed record Lookup(int Schema, Guid ProfileId, Guid GroupId,
+        string OwnerPublicKey, string Hash, long Position);
     private sealed record Pending(int Schema, string OldFloorHash, string RosterHash, SharedWorldRoster Roster);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object sync = new();
     private static string FloorName(Guid id) => $"shared-roster-chain-{id:N}.protected";
     private static string PendingName(Guid id) => $"shared-roster-pending-{id:N}.protected";
     private static string IndexName(Guid id, long page) => $"shared-roster-index-{id:N}-{page:D12}.protected";
+    private static string LookupName(Guid id, string hash) =>
+        $"shared-roster-lookup-{id:N}-{hash}.protected";
     private string Root(Guid id)
     {
         var root = Path.Combine(data.RootPath, "shared-worlds", id.ToString("N"), "roster-chain");
@@ -94,6 +98,33 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
     private void SaveIndex(Guid id, long number, IReadOnlyList<string> hashes) =>
         data.SaveProtected(IndexName(id, number), JsonSerializer.SerializeToUtf8Bytes(
             new Index(2, number * IndexSize, hashes), Json));
+    private void EnsureLookup(Guid id, Floor floor, string hash, long position)
+    {
+        var expected = new Lookup(2, id, floor.GroupId, floor.OwnerPublicKey, hash, position);
+        var prior = data.LoadProtected(LookupName(id, hash));
+        if (prior is not null)
+        {
+            if (JsonSerializer.Deserialize<Lookup>(prior, Json) != expected)
+                throw new InvalidDataException("Protected roster lookup changed.");
+            return;
+        }
+        data.SaveProtected(LookupName(id, hash), JsonSerializer.SerializeToUtf8Bytes(expected, Json));
+    }
+    private bool HasLookup(Guid id, Floor floor, string hash)
+    {
+        var bytes = data.LoadProtected(LookupName(id, hash));
+        if (bytes is null) return false;
+        var lookup = JsonSerializer.Deserialize<Lookup>(bytes, Json);
+        if (lookup is null || lookup.Schema != 2 || lookup.ProfileId != id ||
+            lookup.GroupId != floor.GroupId || lookup.OwnerPublicKey != floor.OwnerPublicKey ||
+            lookup.Hash != hash || lookup.Position < 0 || lookup.Position >= floor.Count)
+            throw new InvalidDataException("Protected roster lookup is invalid.");
+        var index = LoadIndex(id, lookup.Position / IndexSize);
+        if (index.Hashes.Count != Math.Min(IndexSize, floor.Count - index.Offset) ||
+            index.Hashes[(int)(lookup.Position % IndexSize)] != hash)
+            throw new InvalidDataException("Protected roster lookup disagrees with the journal.");
+        return true;
+    }
     private static string[] NextHeads(IReadOnlyList<string> heads, SharedWorldRoster roster, string hash) =>
         heads.Count == 0 ? [hash] : heads[0] == roster.PreviousRosterHash ? [hash] : [heads[0], hash];
     private void ValidateNext(SharedWorldRoster roster, Floor floor, bool firstAcceptance)
@@ -158,6 +189,7 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             else if (index.Hashes.Count != expectedCount + 1 || index.Hashes[^1] != hash)
                 throw new InvalidDataException("Staged roster index changed.");
         }
+        EnsureLookup(id, floor, hash, floor.Count);
         SaveFloor(id, floor with
         {
             Count = floor.Count + 1,
@@ -183,6 +215,8 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             committed.Hashes.Count == (floor.Count - 1) % IndexSize + 1 &&
             committed.Hashes[^1] == pending.RosterHash)
         {
+            if (!HasLookup(id, floor, pending.RosterHash))
+                throw new InvalidDataException("Committed roster lookup is missing.");
             _ = LoadRevision(id, pending.RosterHash);
             data.DeleteProtected(PendingName(id));
             return;
@@ -237,9 +271,11 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 .Select(Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.Ordinal) : [];
         if (!files.SetEquals(hashes))
             throw new InvalidDataException("Roster chain files changed or were rolled back.");
-        Reserve(id, hashes.Count * 256L + 16 * 1024);
+        Reserve(id, hashes.Count * 1024L + 16 * 1024);
         for (var i = 0; i < hashes.Count; i += IndexSize)
             SaveIndex(id, i / IndexSize, hashes.Skip(i).Take(IndexSize).ToArray());
+        for (var i = 0; i < hashes.Count; i++)
+            EnsureLookup(id, state, hashes[i], i);
         SaveFloor(id, state);
         if (pending is not null) data.DeleteProtected(PendingName(id));
     }
@@ -264,6 +300,8 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             if (last.Hashes.Count != (floor.Count - 1) % IndexSize + 1 ||
                 !floor.Heads!.Contains(last.Hashes[^1]))
                 throw new InvalidDataException("Roster floor and index disagree.");
+            if (!HasLookup(id, floor, last.Hashes[^1]))
+                throw new InvalidDataException("Current roster lookup is missing.");
         }
         return floor;
     }
@@ -278,6 +316,45 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
     {
         lock (sync) return Ready(id).Heads!.Select(hash => LoadRevision(id, hash)).ToArray();
     }
+    internal bool Contains(Guid id, SharedWorldRoster roster)
+    {
+        lock (sync)
+        {
+            var floor = Ready(id);
+            if (roster.ProfileId != id || roster.GroupId != floor.GroupId ||
+                roster.OwnerPublicKey != floor.OwnerPublicKey ||
+                !SharedWorldRosterTrust.VerifySignature(roster)) return false;
+            var hash = SharedWorldRosterTrust.Hash(roster);
+            return HasLookup(id, floor, hash) &&
+                SharedWorldRosterTrust.Hash(LoadRevision(id, hash)) == hash;
+        }
+    }
+    internal bool ContainsFloor(Guid id, SharedRosterFloor trusted)
+    {
+        lock (sync)
+        {
+            var floor = Ready(id);
+            if (trusted.GroupId != floor.GroupId || floor.Count == 0) return false;
+            for (long page = 0; page <= (floor.Count - 1) / IndexSize; page++)
+            {
+                var index = LoadIndex(id, page);
+                if (index.Hashes.Count != Math.Min(IndexSize, floor.Count - index.Offset))
+                    throw new InvalidDataException("Roster index was truncated.");
+                foreach (var hash in index.Hashes)
+                {
+                    if (!HasLookup(id, floor, hash))
+                        throw new InvalidDataException("Protected roster lookup is missing.");
+                    var revision = LoadRevision(id, hash);
+                    if (revision.GroupId == trusted.GroupId &&
+                        revision.Epoch == trusted.Epoch &&
+                        revision.Revision == trusted.Revision &&
+                        revision.Signature == trusted.Signature)
+                        return SharedWorldRosterTrust.VerifySignature(revision);
+                }
+            }
+            return false;
+        }
+    }
     internal IReadOnlyList<SharedWorldRoster> ReadPage(Guid id, long offset)
     {
         lock (sync)
@@ -285,9 +362,15 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             if (offset < 0) throw new InvalidDataException("Roster offset is invalid.");
             var floor = Ready(id);
             var result = new List<SharedWorldRoster>();
-            for (var i = offset; i < Math.Min(floor.Count, offset + PageSize); i++)
+            for (var i = offset; i < floor.Count && i - offset < PageSize; i++)
             {
-                var roster = LoadRevision(id, LoadIndex(id, i / IndexSize).Hashes[(int)(i % IndexSize)]);
+                var index = LoadIndex(id, i / IndexSize);
+                if (index.Hashes.Count != Math.Min(IndexSize, floor.Count - index.Offset))
+                    throw new InvalidDataException("Roster index was truncated.");
+                var hash = index.Hashes[(int)(i % IndexSize)];
+                if (!HasLookup(id, floor, hash))
+                    throw new InvalidDataException("Protected roster lookup is missing.");
+                var roster = LoadRevision(id, hash);
                 if (roster.ProfileId != id || roster.GroupId != floor.GroupId ||
                     roster.OwnerPublicKey != floor.OwnerPublicKey)
                     throw new InvalidDataException("Roster revision crossed a world boundary.");
@@ -309,6 +392,8 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 if (index.Hashes.Count != Math.Min(IndexSize, floor.Count - index.Offset))
                     throw new InvalidDataException("Roster index was truncated.");
                 var hash = index.Hashes[(int)(i % IndexSize)];
+                if (!HasLookup(id, floor, hash))
+                    throw new InvalidDataException("Protected roster lookup is missing.");
                 var roster = LoadRevision(id, hash);
                 ValidateNext(roster, state, false);
                 result.Add(roster);
