@@ -76,7 +76,8 @@ function parseRouteCheck(value: unknown): RouteCheck {
   return item as RouteCheck
 }
 
-export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) {
+export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange }:
+  { profileId: string; onHostingSetupChange?: (ready: boolean) => void }) {
   const [serverFile, setServerFile] = useState('')
   const [gameVersion, setGameVersion] = useState('')
   const [passwordSet, setPasswordSet] = useState(false)
@@ -95,8 +96,11 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
   const [routeResult, setRouteResult] = useState<RouteCheck | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  useEffect(() => { onHostingSetupChange?.(handoff?.readyForManualStart === true) },
+    [handoff?.readyForManualStart, onHostingSetupChange])
   useEffect(() => {
     let active = true
+    setHandoff(null)
     void getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus)
       .then(status => { if (active) {
         setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
@@ -187,7 +191,7 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
     <p className="helper-text">Matching add-ons, a fresh managed location, real game load, and direct-IP routes still need confirmation before hosting.</p>
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
       Check this PC</Button><Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
-      Rehearse disposable copy</Button></div>
+      Rehearse file restore</Button></div>
     <details><summary>Test successor's control route from another Friend PC</summary>
       <p>On another Friend PC, use the signed authority hash and successor certificate fingerprint. This checks pinned HTTPS. Test the game route after Start.</p>
       {handoff?.recordHash && <p className="helper-text">Current signed authority: <code style={{ overflowWrap: 'anywhere' }}>{handoff.recordHash}</code></p>}
@@ -229,7 +233,7 @@ export function SharedWorldReadinessPanel({ profileId }: { profileId: string }) 
         <li key={check}>{check}</li>)}</ul>}</div>}
     {error && <p role="alert">{error}</p>}
     {result && <div role="status"><p>{result.managedProcessRehearsalPassed ?
-      'Disposable fixture process checked and removed.' : result.rehearsalPassed ? 'Disposable copy checked and removed.' :
+      'Disposable fixture process checked and removed.' : result.rehearsalPassed ? 'Disposable file restore checked and removed.' :
       result.ready ? 'Local checks passed.' : 'Hosting still needs setup.'}</p>
       {result.reasons.length > 0 && <ul>{result.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
       {result.rehearsalPassed && <details><summary>Technical details</summary>

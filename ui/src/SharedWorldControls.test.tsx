@@ -75,7 +75,8 @@ describe('Shared saves controls', () => {
     fireEvent.click(toggle)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
-    expect(await screen.findByText(/1 version\(s\) behind/)).toBeInTheDocument()
+    expect(await screen.findByText('This PC is one save behind')).toBeInTheDocument()
+    expect(screen.getByText('Shared worlds').closest('summary')).toHaveTextContent('This PC is one save behind')
     expect(screen.getByText(/automatic takeover are unavailable/)).toBeInTheDocument()
   })
 
@@ -180,13 +181,13 @@ describe('Shared saves controls', () => {
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(screen.getByText('Shared worlds'))
     fireEvent.click(await screen.findByRole('button', { name: 'Receive latest save' }))
-    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary')!
       .querySelector('[role="alert"]')).toHaveTextContent('Low space — receiving paused'))
-    fireEvent.click(screen.getByText(/Shared worlds/, { selector: 'summary' }))
-    expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
-    fireEvent.click(screen.getByText(/Shared worlds/, { selector: 'summary' }))
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(screen.getByText('Shared worlds').closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('Shared worlds'))
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
-    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary')!
       .querySelector('[role="alert"]')).not.toBeInTheDocument())
   })
 
@@ -196,12 +197,12 @@ describe('Shared saves controls', () => {
       thisPcVersion: 2, state: stalled ? 'Stalled' : 'Ready to pull',
       error: stalled ? 'Receiving made no progress across repeated attempts.' : null })))
     render(<FriendSharedWorlds profileId={profile} available />)
-    await screen.findByText('1 version(s) behind')
+    await screen.findByText('This PC is one save behind')
     stalled = true
-    await waitFor(() => expect(screen.getByText(/Shared worlds/, { selector: 'summary' })
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary')!
       .querySelector('[role="alert"]')).toHaveTextContent('Receiving stalled — retrying'),
     { timeout: 7500 })
-    expect(screen.getByText(/Shared worlds/, { selector: 'summary' }).closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Shared worlds').closest('details')).not.toHaveAttribute('open')
   }, 10000)
 
   it('shows only the confirmed copy count returned for the latest version', async () => {
@@ -211,11 +212,30 @@ describe('Shared saves controls', () => {
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/Copied to 2 PCs.*latest post-Stop file copy 4/)).toBeInTheDocument()
+    expect(await screen.findByText(/Copied to 2 PCs.*latest post-Stop file copy 4/, { selector: 'p' })).toBeInTheDocument()
+    expect(screen.getByText('Shared saves').closest('summary')).toHaveTextContent('Copied to 2 PCs')
     expect(screen.getByText(/Game load and playability have not been checked/)).toBeInTheDocument()
     expect(screen.getByText(/app cannot prove its current availability/)).toBeInTheDocument()
     expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
       error: null, confirmedCopies: -1 })).toThrow()
+  })
+
+  it('shows manual Start readiness only after the restored setup checks confirm it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/handoff/restore')) return reply({ staged: true, restored: true,
+        recordHash: 'A'.repeat(64), message: 'Setup checks passed.', pendingChecks: [],
+        preparedServerRoot: null, readyForManualStart: true, requiredAddOns: [],
+        controlRouteFingerprint: 'B'.repeat(64) })
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      return reply({ consented: true, hostVersion: 2, thisPcVersion: 2,
+        state: 'Ready', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
+      .toHaveTextContent('Ready for manual Start; game load untested'))
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(screen.getByText(/Files are hash-verified; game load and playability have not been checked/))
+      .toBeInTheDocument()
   })
 
   it('copies only a normalized direct IP address for the current shared Host', async () => {
@@ -547,7 +567,7 @@ describe('Shared saves controls', () => {
             competingHeads: null, exactManagedProcessRunning: false } })))
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
-    expect(await screen.findByText(/Copied to 2 PCs · latest post-Stop file copy 4/)).toBeInTheDocument()
+    expect(await screen.findByText(/Copied to 2 PCs · latest post-Stop file copy 4/, { selector: 'p' })).toBeInTheDocument()
     expect(screen.getByText('This PC holds the verified current hosting decision.')).toBeInTheDocument()
     expect(screen.queryByText(/Preserved version/)).not.toBeInTheDocument()
   })
