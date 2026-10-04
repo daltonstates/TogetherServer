@@ -218,9 +218,11 @@ internal sealed partial class FriendLink
         WorldAuthorityOffer offer, CancellationToken cancellationToken = default)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
-        await gate.WaitAsync(cancellationToken);
+        var entered = false;
         try
         {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
             if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
             if (!sharedHostLoss.MayPropose && offer.Proposal.Schema != 3)
@@ -232,22 +234,53 @@ internal sealed partial class FriendLink
                 config.SharedRosterFloors?.GetValueOrDefault(profileId) is not { } floor ||
                 offer.Proposal.Schema != 3 && config.SharedWorldConflicts?.Contains(profileId) == true)
                 return new(false, "RecoveryOfferRejected", "This offer does not match the trusted shared world on this PC.");
+            var voterId = config.DeviceId;
+            var hostId = config.HostId;
+            var hostEndpoint = config.Endpoint;
+            var ownerKey = config.SharedWorldSigningKeys[profileId];
             using var signer = LoadPcSigningKey();
+            var publicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
+            var hash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
+            var isResolution = offer.Proposal.Schema == 3;
+            bool CurrentVoteContext(bool requireLoss)
+            {
+                if (config is null || config.DeviceId != voterId || config.HostId != hostId ||
+                    config.Endpoint != hostEndpoint ||
+                    !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                    config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
+                    config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != ownerKey ||
+                    config.SharedRosterFloors?.GetValueOrDefault(profileId) != floor ||
+                    (!isResolution && config.SharedWorldConflicts?.Contains(profileId) == true) ||
+                    config.PendingSharedWorldGroups?.ContainsKey(profileId) == true ||
+                    (requireLoss && !isResolution && !sharedHostLoss.MayPropose))
+                    return false;
+                var rosterBytes = data.LoadProtected(
+                    $"shared-world-roster-{voterId:N}-{profileId:N}.protected");
+                var currentRoster = rosterBytes is not null &&
+                    rosterBytes.LongLength <= SharedWorldService.MaximumManifestBytes ?
+                    JsonSerializer.Deserialize<SharedWorldRoster>(rosterBytes, Json) : null;
+                return currentRoster?.Signature == offer.Roster.Signature &&
+                    SharedWorldRosterTrust.HasRole(currentRoster, voterId, publicKey,
+                        grants => grants.RecoveryVoter) &&
+                    WorldAuthorityTrust.ProposalHash(offer.Proposal) == hash;
+            }
             using var candidate = MakeClient(offer.Proposal.CandidateAddress,
                 [offer.CandidateTlsFingerprint]);
-            var hash = WorldAuthorityTrust.ProposalHash(offer.Proposal);
             var path = $"api/companion/servers/{profileId}/shared-world/recovery/{hash}";
+            // A candidate can also be a voter. Its HTTPS route probes Host loss
+            // through this same FriendLink, so network I/O cannot hold the gate.
+            gate.Release();
+            entered = false;
             using var challengeResponse = await candidate.GetAsync(
-                $"{path}/challenge/{config.DeviceId}", cancellationToken);
+                $"{path}/challenge/{voterId}", cancellationToken);
             var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
                 cancellationToken);
             var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
                 JsonSerializer.Deserialize<WorldAuthorityChallenge>(challengeBytes, Json) : null;
             if (challenge?.Nonce is not { Length: 44 })
                 return new(false, "CandidateUnavailable", "The candidate did not provide a valid secure challenge.");
-            var publicKey = Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo());
             var requestDraft = new WorldAuthorityOfferRequest(1, offer.Roster.GroupId, profileId,
-                hash, config.DeviceId, publicKey, challenge.Nonce, "");
+                hash, voterId, publicKey, challenge.Nonce, "");
             var request = requestDraft with
             {
                 Signature = Convert.ToBase64String(signer.SignData(
@@ -265,9 +298,16 @@ internal sealed partial class FriendLink
                 received.Roster.Signature != offer.Roster.Signature ||
                 received.Version.VersionHash != offer.Version.VersionHash)
                 return new(false, "CandidateOfferChanged", "The candidate's signed offer changed during review.");
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            if (!CurrentVoteContext(requireLoss: true))
+                return new(false, "RecoveryOfferRejected",
+                    "This PC's consent, signed roster, vote grant, or Host-loss check changed during review.");
             var store = new WorldAuthorityStore(data);
             var vote = SharedWorldElection.Vote(sharedHostLoss, ReceivedRoot(profileId), floor,
-                offer.Roster.OwnerPublicKey, received, config.DeviceId, signer, store);
+                ownerKey, received, voterId, signer, store);
+            gate.Release();
+            entered = false;
             using var voteResponse = await candidate.PostAsJsonAsync(path + "/vote", vote, Json,
                 cancellationToken);
             var resultBytes = await ReadBoundedSharedAsync(voteResponse.Content, 2 * 1024 * 1024,
@@ -276,6 +316,11 @@ internal sealed partial class FriendLink
                 JsonSerializer.Deserialize<WorldAuthorityVoteResult>(resultBytes, Json) : null;
             if (result is not { Ok: true })
                 return new(false, "VoteNotConfirmed", "The signed vote is saved on this PC. Retry with the same offer to confirm delivery.");
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            if (!CurrentVoteContext(requireLoss: false))
+                return new(false, "RecoveryOfferRejected",
+                    "This PC's consent, signed roster, or vote grant changed before the decision was saved.");
             if (result.Decision is { } decision)
                 store.AppendReceived(decision, profileId, offer.Roster.GroupId,
                     offer.Roster.OwnerPublicKey);
@@ -289,7 +334,7 @@ internal sealed partial class FriendLink
                                    CryptographicException or UnauthorizedAccessException or
                                    HttpRequestException or TaskCanceledException or ArgumentException)
         { return new(false, "RecoveryVoteUnavailable", "The secure recovery vote could not finish: " + ex.Message); }
-        finally { gate.Release(); ReleaseRetained(); }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<WorldResolutionInvitationResult> ImportResolutionInvitationAsync(
@@ -980,6 +1025,18 @@ internal sealed partial class FriendLink
             // Persist the rollback floor before any manifest or chunks are trusted.
             config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
             config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature);
+            // The first verified group is the one this PC explicitly consented
+            // to receive. Older installs can have this floor without an
+            // approval entry; pin only that same group, never a changed source.
+            var observedDifferentGroup = config.LastSharedHostGroups?.TryGetValue(profileId,
+                out var observedGroup) == true && observedGroup != roster.GroupId;
+            if (config.ApprovedSharedWorldGroups?.ContainsKey(profileId) != true &&
+                config.PendingSharedWorldGroups?.ContainsKey(profileId) != true &&
+                (floor is null || floor.GroupId == roster.GroupId) && !observedDifferentGroup)
+            {
+                config.ApprovedSharedWorldGroups ??= [];
+                config.ApprovedSharedWorldGroups[profileId] = roster.GroupId;
+            }
             SaveConfig();
             // Retain the signed roster for recovery during a Host outage.
             data.SaveProtected($"shared-world-roster-{deviceId:N}-{profileId:N}.protected",
