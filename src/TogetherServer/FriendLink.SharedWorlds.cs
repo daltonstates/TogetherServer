@@ -1795,8 +1795,7 @@ internal sealed partial class FriendLink
                 "Receiving", null, receivedBytes, totalBytes,
                 config.SharedRosterFloors[profileId].Revision,
                 "Owner signature and this PC's Receive grant verified when last checked");
-            var driveRoot = Path.GetPathRoot(root)!;
-            if (!HasReceiverReserve(new DriveInfo(driveRoot).AvailableFreeSpace, remaining))
+            if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), remaining))
                 return SharedFailure("InsufficientSpace", "Keep at least 1 GiB free after receiving this save. Existing verified copies were kept.");
             for (var index = 0; index < version.Files.Count; index++)
             {
@@ -2355,7 +2354,7 @@ internal sealed partial class FriendLink
 
     private static (string State, string Message)? SignedHistoryNotice(string root)
     {
-        var free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace;
+        var free = SharedWorldFixtureSpace.AvailableBytes(root);
         if (!HasReceiverReserve(free, SharedWorldService.MaximumManifestBytes))
             return ("Low space", "Keep at least 1 GiB free to receive another signed save.");
         return null;
@@ -2391,8 +2390,7 @@ internal sealed partial class FriendLink
                 throw new InvalidDataException("A saved signed manifest changed.");
             return;
         }
-        if (!HasReceiverReserve(new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!)
-                .AvailableFreeSpace, bytes.Length))
+        if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), bytes.Length))
             throw new SignedHistorySpaceException(
                 "Keep at least 1 GiB free before receiving another signed save. Verified copies were kept.");
         try
@@ -2481,8 +2479,7 @@ internal sealed partial class FriendLink
         if (latest.Number < first)
             throw new InvalidDataException("The complete signed save lineage is not available on this PC.");
         var spoolBytes = checked((latest.Number - first + 1) * 64);
-        if (!HasReceiverReserve(new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!)
-                .AvailableFreeSpace, spoolBytes))
+        if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), spoolBytes))
             throw new InvalidDataException("The signed save lineage needs more free space for verification.");
         SharedWorldService.EnsureUnlinkedRoot(Path.GetDirectoryName(root)!, root);
         var spoolPath = SharedWorldService.SafeChild(root,

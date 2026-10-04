@@ -227,15 +227,38 @@ internal static partial class SharedWorldJourney
             Console.WriteLine("PASS interrupted chunks survive restart; real route loss stalls only repeated no-progress retries and clears on receipt");
             passed++;
 
+            friendB = StartApp(appPath, "--friend", friendBPort, friendBData,
+                freeBytesCeiling: 0);
+            await WaitLocalAsync(friendBPort);
+            await PollAsync(bLocal);
+            await WaitSharedStateAsync(bLocal, profile.Id, "Low space");
+            var lowSpacePull = await PostAsync<object, ReceivedSharedWorldResult>(bLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+            var lowSpaceStatus = await GetAsync<ReceivedSharedWorldStatus>(bLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(!lowSpacePull.Ok && lowSpacePull.Code == "InsufficientSpace" &&
+                lowSpaceStatus.State == "Low space" && lowSpaceStatus.ThisPcVersion == 1 &&
+                lowSpaceStatus.Error?.Contains("1 GiB", StringComparison.Ordinal) == true &&
+                File.ReadAllText(Path.Combine(bRoot, firstVersion.VersionHash,
+                    "payload", "world.dat")) == "first verified fixture change" &&
+                !Directory.Exists(Path.Combine(bRoot, secondVersion.VersionHash)),
+                "simulated low space accepted a later save, lost the earlier verified payload, or hid its alert");
+            StopApp(friendB);
+            friendB = null;
             friendB = StartApp(appPath, "--friend", friendBPort, friendBData);
             await WaitLocalAsync(friendBPort);
             await PollAsync(bLocal);
             await WaitVersionAsync(bLocal, profile.Id, 2);
             await WaitCopiesAsync(owner, profile.Id, 2);
-            Require(File.Exists(Path.Combine(bRoot, firstVersion.VersionHash,
-                        "payload", "world.dat")),
-                "catch-up deleted the earlier verified copy");
-            Console.WriteLine("PASS offline Friend B catches up and retains its earlier verified version");
+            var spaceRestored = await GetAsync<ReceivedSharedWorldStatus>(bLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(spaceRestored.Error is null && spaceRestored.State != "Low space" &&
+                File.ReadAllText(Path.Combine(bRoot, firstVersion.VersionHash,
+                    "payload", "world.dat")) == "first verified fixture change" &&
+                File.Exists(Path.Combine(bRoot, secondVersion.VersionHash,
+                    "payload", "world.dat")),
+                "normal catch-up left a stale low-space alert or deleted the earlier verified copy");
+            Console.WriteLine("PASS packaged low-space refusal keeps an earlier copy and resumes after the ceiling is removed");
             passed++;
 
             var tamperedFile = Path.Combine(aRoot, secondVersion.VersionHash,
@@ -256,14 +279,14 @@ internal static partial class SharedWorldJourney
             Console.WriteLine("PASS payload tampering fails verification without erasing other PCs' copies");
             passed++;
 
-            // The packaged route reads the real disk. Filling a machine to test its
-            // reserve is unsafe, so the deterministic boundary is exercised here.
+            // The fixture ceiling above exercises refusal through packaged HTTPS;
+            // this separately pins the exact 1 GiB reserve boundary.
             const long reserve = 1024L * 1024 * 1024;
             Require(!FriendLink.HasReceiverReserve(reserve, 1) &&
                 !FriendLink.HasReceiverReserve(reserve - 1, 0) &&
                 FriendLink.HasReceiverReserve(reserve + 1, 1),
                 "1 GiB receiving reserve boundary changed");
-            Console.WriteLine("PASS 1 GiB disk reserve boundary (policy check; no disk was filled)");
+            Console.WriteLine("PASS 1 GiB disk reserve boundary without filling the disk");
             passed++;
 
             StopApp(host);
@@ -773,7 +796,7 @@ internal static partial class SharedWorldJourney
     }
 
     private static Process StartApp(string path, string mode, int port, string data,
-        int receiveDelayMs = 0, int beforeChunkDelayMs = 0)
+        int receiveDelayMs = 0, int beforeChunkDelayMs = 0, long? freeBytesCeiling = null)
     {
         Directory.CreateDirectory(data);
         var info = new ProcessStartInfo(path)
@@ -794,6 +817,8 @@ internal static partial class SharedWorldJourney
             info.Environment["TOGETHERSERVER_FIXTURE_RECEIVE_DELAY_MS"] = receiveDelayMs.ToString();
         if (beforeChunkDelayMs > 0)
             info.Environment["TOGETHERSERVER_FIXTURE_BEFORE_CHUNK_DELAY_MS"] = beforeChunkDelayMs.ToString();
+        if (freeBytesCeiling is not null)
+            info.Environment[SharedWorldFixtureSpace.CeilingEnvironmentVariable] = freeBytesCeiling.Value.ToString();
         var process = Process.Start(info) ?? throw new Exception("packaged app did not start");
         process.OutputDataReceived += (_, eventArgs) =>
         {

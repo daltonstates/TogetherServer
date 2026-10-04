@@ -100,8 +100,51 @@ internal static class SharedWorldTransferAlertChecks
         health.Complete(world, inFlight, Failure("InsufficientSpace"));
         Require(health.Issue(world) is null, "an old transfer restored an alert after consent changed");
 
+        CheckFixtureSpaceCeiling();
         CheckInterruptedSignedHistoryWrite();
         Console.WriteLine("PASS shared-world transfer alert transitions");
+    }
+
+    private static void CheckFixtureSpaceCeiling()
+    {
+        var journeyRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
+            "TogetherServer-space-checks", "shared-world-journey", Guid.NewGuid().ToString("N")));
+        var dataRoot = Path.Combine(journeyRoot, "friend-test");
+        var vault = Path.Combine(dataRoot, "received-shared-worlds",
+            Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(vault);
+        var names = new[] { GameServerRegistry.FixtureOptInEnvironmentVariable,
+            "TOGETHERSERVER_FIXTURE_ROOT", "TOGETHERSERVER_DATA_DIR",
+            SharedWorldFixtureSpace.CeilingEnvironmentVariable };
+        var previous = names.Select(Environment.GetEnvironmentVariable).ToArray();
+        try
+        {
+            Environment.SetEnvironmentVariable(names[0], "1");
+            Environment.SetEnvironmentVariable(names[1], dataRoot);
+            Environment.SetEnvironmentVariable(names[2], dataRoot);
+            Environment.SetEnvironmentVariable(names[3], "0");
+            Require(SharedWorldFixtureSpace.AvailableBytes(vault) == 0,
+                "the disposable Friend ceiling did not lower available space");
+            Environment.SetEnvironmentVariable(names[3], long.MaxValue.ToString());
+            Require(SharedWorldFixtureSpace.AvailableBytes(vault) <=
+                    new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace,
+                "the fixture ceiling raised real available space");
+            Environment.SetEnvironmentVariable(names[3], "0");
+            Environment.SetEnvironmentVariable(names[2], Path.Combine(journeyRoot, "other"));
+            Require(SharedWorldFixtureSpace.AvailableBytes(vault) ==
+                    new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace,
+                "a ceiling escaped its exact disposable data root");
+        }
+        finally
+        {
+            for (var index = 0; index < names.Length; index++)
+                Environment.SetEnvironmentVariable(names[index], previous[index]);
+            var expectedParent = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
+                "TogetherServer-space-checks", "shared-world-journey")) + Path.DirectorySeparatorChar;
+            if (!journeyRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The disposable space check directory changed unexpectedly.");
+            Directory.Delete(journeyRoot, recursive: true);
+        }
     }
 
     private static void CheckInterruptedSignedHistoryWrite()
