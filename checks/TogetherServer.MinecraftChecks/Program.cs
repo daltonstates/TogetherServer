@@ -20,6 +20,19 @@ var passed = 0;
 var failed = 0;
 
 void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
+void PrepareFixtureResume(string worldDirectory, BedrockFixtureResumeAcknowledgement request)
+{
+    File.Delete(Path.Combine(worldDirectory, "synthetic-save-resume-ack.json"));
+    File.WriteAllText(Path.Combine(worldDirectory, "synthetic-save-resume-request.json"),
+        JsonSerializer.Serialize(request));
+}
+BedrockFixtureResumeAcknowledgement ReadFixtureResume(string worldDirectory)
+{
+    var path = Path.Combine(worldDirectory, "synthetic-save-resume-ack.json");
+    for (var attempt = 0; attempt < 40 && !File.Exists(path); attempt++) Thread.Sleep(100);
+    Require(File.Exists(path), "fixture did not acknowledge the received resume command");
+    return JsonSerializer.Deserialize<BedrockFixtureResumeAcknowledgement>(File.ReadAllText(path))!;
+}
 void Report(string message)
 {
     File.AppendAllText(Path.Combine(root, "results.txt"), message + Environment.NewLine);
@@ -209,6 +222,231 @@ await Check("Java live-save candidate sends only to its exact fixture run", asyn
             try
             {
                 using var process = Process.GetProcessById(run.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
+                        StringComparison.OrdinalIgnoreCase))
+                    process.Kill();
+            }
+            catch (Exception) { }
+        }
+    }
+});
+
+await Check("Bedrock live-save candidate validates synthetic snapshot and resumes after interruption", async () =>
+{
+    var profile = Profile(GameKinds.MinecraftBedrock, "bedrock-live-save-candidate", "world", FreePort());
+    var world = Path.Combine(profile.WorldDirectory, "worlds", profile.WorldId, "db");
+    Directory.CreateDirectory(world);
+    File.WriteAllBytes(Path.Combine(world, "synthetic.dat"), [1, 2, 3, 4]);
+    using var data = new LocalData(Path.Combine(root, "bedrock-live-save-candidate-data"));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
+    Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+        "Bedrock candidate profile was rejected");
+    var started = await manager.StartAsync(profile.Id);
+    Require(started.Ok, $"Bedrock candidate fixture did not start: {started.Code} {started.Message}");
+    try
+    {
+        await Ready(manager, profile.Id);
+        var run = data.LoadRuns().Single();
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "synthetic-save-operation-id.txt"),
+            run.OperationId.ToString("D"));
+        var candidate = new BedrockLiveSaveCandidate(data);
+        var stale = data.LoadRuns().Single();
+        stale.StartTimeUtcTicks++;
+        try { candidate.Hold(stale); throw new Exception("stale run reached hold"); }
+        catch (InvalidOperationException) { }
+        Require(!candidate.HasPendingResume &&
+            !File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-hold.marker")),
+            "stale run reached the fixture");
+
+        candidate.Hold(run);
+        Require(candidate.HasPendingResume, "hold did not persist pending resume");
+        for (var attempt = 0; attempt < 40 &&
+             !File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-hold.marker")); attempt++)
+            await Task.Delay(100);
+        Require(File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-hold.marker")),
+            "hold did not reach fixture");
+        var firstRequest = candidate.FixtureResumeRequest(run);
+        try { candidate.AcknowledgeFixtureResume(run, firstRequest); throw new Exception("pre-dispatch acknowledgement was accepted"); }
+        catch (InvalidOperationException) { }
+        Require(candidate.HasPendingResume, "pre-dispatch acknowledgement cleared pending resume");
+        // A new candidate instance represents explicit recovery after Host interruption.
+        var recovered = new BedrockLiveSaveCandidate(data);
+        Require(recovered.RecoverPending(run) && recovered.HasPendingResume,
+            "queued recovery cleared pending resume without acknowledgement");
+        Require(!File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume-ack.json")),
+            "fixture acknowledged resume without a request");
+        try { recovered.Hold(run); throw new Exception("another hold was accepted before acknowledgement"); }
+        catch (IOException) { }
+        PrepareFixtureResume(profile.WorldDirectory, firstRequest);
+        Require(recovered.RecoverPending(run) && recovered.HasPendingResume,
+            "retry cleared pending resume before fixture acknowledgement");
+        var wrongRun = firstRequest with { OperationId = Guid.NewGuid() };
+        try { recovered.AcknowledgeFixtureResume(run, wrongRun); throw new Exception("mismatched run acknowledgement was accepted"); }
+        catch (InvalidOperationException) { }
+        var wrongAttempt = firstRequest with { AttemptNonce = Guid.NewGuid() };
+        try { recovered.AcknowledgeFixtureResume(run, wrongAttempt); throw new Exception("mismatched attempt acknowledgement was accepted"); }
+        catch (InvalidOperationException) { }
+        Require(recovered.HasPendingResume, "invalid acknowledgement cleared pending resume");
+        recovered.AcknowledgeFixtureResume(run, ReadFixtureResume(profile.WorldDirectory));
+        Require(!recovered.HasPendingResume, "correct fixture acknowledgement did not clear pending resume");
+        for (var attempt = 0; attempt < 40 &&
+             !File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker")); attempt++)
+            await Task.Delay(100);
+        Require(File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker")),
+            "resume did not reach fixture");
+        File.Delete(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker"));
+
+        var queryFile = Path.Combine(profile.WorldDirectory, "synthetic-save-query.json");
+        var snapshot = candidate.CaptureFixtureQuery(run, () =>
+        {
+            for (var attempt = 0; attempt < 40 && !File.Exists(queryFile); attempt++)
+                Thread.Sleep(100);
+            Require(File.Exists(queryFile), "query did not produce fixture evidence");
+            using var query = JsonDocument.Parse(File.ReadAllText(queryFile));
+            Require(query.RootElement.GetProperty("source").GetString() == "FixtureSynthetic",
+                "query evidence source was not the fixture");
+            return new BedrockQueryEvidence(
+                Guid.Parse(query.RootElement.GetProperty("operationId").GetString()!),
+                BedrockQuerySource.FixtureSynthetic,
+                [new(query.RootElement.GetProperty("fileName").GetString()!,
+                    query.RootElement.GetProperty("fileSize").GetInt64())]);
+        }, request => PrepareFixtureResume(profile.WorldDirectory, request),
+            () => ReadFixtureResume(profile.WorldDirectory));
+        Require(snapshot.OperationId == run.OperationId && !snapshot.CompletionConfirmed &&
+            !snapshot.LiveCaptureAccepted && !candidate.HasPendingResume,
+            "candidate claimed accepted live capture or left pending resume");
+        for (var attempt = 0; attempt < 40 &&
+             !File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker")); attempt++)
+            await Task.Delay(100);
+        Require(File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker")),
+            "normal capture did not resume fixture writes");
+        File.Delete(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker"));
+
+        try
+        {
+            candidate.CaptureFixtureQuery(run, () => new BedrockQueryEvidence(run.OperationId,
+                BedrockQuerySource.FixtureSynthetic, [new("../outside", 4)]),
+                request => PrepareFixtureResume(profile.WorldDirectory, request),
+                () => ReadFixtureResume(profile.WorldDirectory));
+            throw new Exception("invalid fixture query was accepted");
+        }
+        catch (InvalidDataException) { }
+        Require(!candidate.HasPendingResume, "failed fixture query left writes held");
+        for (var attempt = 0; attempt < 40 &&
+             !File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker")); attempt++)
+            await Task.Delay(100);
+        Require(File.Exists(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker")),
+            "failed fixture query did not dispatch resume");
+        File.Delete(Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker"));
+
+        candidate.Hold(run);
+        var laterRequest = candidate.FixtureResumeRequest(run);
+        Require(laterRequest.AttemptNonce != firstRequest.AttemptNonce,
+            "a new hold reused the previous attempt nonce");
+        try { candidate.AcknowledgeFixtureResume(run, firstRequest); throw new Exception("stale acknowledgement was accepted"); }
+        catch (InvalidOperationException) { }
+        Require(candidate.HasPendingResume, "stale acknowledgement cleared the new hold");
+        try
+        {
+            var bad = new BedrockQueryEvidence[]
+            {
+                new(Guid.NewGuid(), BedrockQuerySource.FixtureSynthetic, [new("db/synthetic.dat", 4)]),
+                new(run.OperationId, BedrockQuerySource.FixtureSynthetic, [new("../outside", 4)]),
+                new(run.OperationId, BedrockQuerySource.FixtureSynthetic, [new("/outside", 4)]),
+                new(run.OperationId, BedrockQuerySource.FixtureSynthetic, [new("db/synthetic.dat", 5)]),
+                new(run.OperationId, BedrockQuerySource.FixtureSynthetic,
+                    [new("db/synthetic.dat", 4), new("DB/SYNTHETIC.DAT", 4)])
+            };
+            foreach (var evidence in bad)
+            {
+                try { candidate.QueryFixture(run, () => evidence); throw new Exception("invalid query evidence accepted"); }
+                catch (InvalidDataException) { }
+            }
+        }
+        finally
+        {
+            PrepareFixtureResume(profile.WorldDirectory, candidate.FixtureResumeRequest(run));
+            candidate.Resume(run);
+            Require(candidate.HasPendingResume, "resume dispatch cleared pending marker");
+            candidate.AcknowledgeFixtureResume(run, ReadFixtureResume(profile.WorldDirectory));
+        }
+        Require(!candidate.HasPendingResume &&
+            !SharedWorldLiveSaveAdapters.ForGame(GameKinds.MinecraftBedrock)!.LiveCaptureAccepted,
+            "candidate enabled live sharing or left pending resume");
+        await Stop(manager, profile);
+        await WaitForExit(run.ConsoleCaptureProcessId, run.ConsoleCaptureStartTimeUtcTicks);
+    }
+    finally
+    {
+        foreach (var run in data.LoadRuns())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(run.ProcessId!.Value);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
+                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
+                        StringComparison.OrdinalIgnoreCase))
+                    process.Kill();
+            }
+            catch (Exception) { }
+        }
+    }
+});
+
+await Check("Bedrock pending resume survives a Host data reopen", async () =>
+{
+    var profile = Profile(GameKinds.MinecraftBedrock, "bedrock-pending-resume-reopen", "world", FreePort());
+    var dataPath = Path.Combine(root, "bedrock-pending-resume-reopen-data");
+    var data = new LocalData(dataPath);
+    ManagedRun? run = null;
+    try
+    {
+        var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
+        Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
+            "Bedrock recovery profile was rejected");
+        var started = await manager.StartAsync(profile.Id);
+        Require(started.Ok, $"Bedrock recovery fixture did not start: {started.Code} {started.Message}");
+        await Ready(manager, profile.Id);
+        run = data.LoadRuns().Single();
+        new BedrockLiveSaveCandidate(data).Hold(run);
+        Require(new BedrockLiveSaveCandidate(data).HasPendingResume,
+            "pending resume was not written before interruption");
+        data.Dispose(); // Release the Host lock while the disposable server keeps running.
+
+        using var reopened = new LocalData(dataPath);
+        var recovery = new BedrockLiveSaveCandidate(reopened);
+        Require(recovery.HasPendingResume, "pending resume was not durable across Host data reopen");
+        var stale = reopened.LoadRuns().Single();
+        stale.StartTimeUtcTicks++;
+        try { recovery.RecoverPending(stale); throw new Exception("stale run resumed Bedrock"); }
+        catch (InvalidOperationException) { }
+        Require(recovery.HasPendingResume, "stale recovery cleared the pending marker");
+        PrepareFixtureResume(profile.WorldDirectory, recovery.FixtureResumeRequest(run));
+        Require(recovery.RecoverPending(run) && recovery.HasPendingResume,
+            "reopened Host cleared pending marker on dispatch");
+        try { recovery.Hold(run); throw new Exception("reopened Host allowed another hold before acknowledgement"); }
+        catch (IOException) { }
+        recovery.AcknowledgeFixtureResume(run, ReadFixtureResume(profile.WorldDirectory));
+        Require(!recovery.HasPendingResume,
+            "reopened Host did not clear correct fixture acknowledgement");
+        var resumeMarker = Path.Combine(profile.WorldDirectory, "synthetic-save-resume.marker");
+        for (var attempt = 0; attempt < 40 && !File.Exists(resumeMarker); attempt++)
+            await Task.Delay(100);
+        Require(File.Exists(resumeMarker), "reopened Host resume did not reach fixture");
+        var resumedManager = new HostManager(reopened,
+            new GameServerRegistry(reopened, false, PortProbeMode.ObserveOnly));
+        await Stop(resumedManager, profile);
+        await WaitForExit(run.ConsoleCaptureProcessId, run.ConsoleCaptureStartTimeUtcTicks);
+    }
+    finally
+    {
+        data.Dispose();
+        if (run?.ProcessId is { } processId)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(processId);
                 if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
                     Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
                         StringComparison.OrdinalIgnoreCase))

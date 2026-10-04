@@ -242,9 +242,19 @@ internal static class WindowsConsoleProcess
     internal static void RequestJavaSaveFlush(Process process, ManagedRun run)
         => RequestFixedCommand(process, run, "save-all flush");
 
+    internal static void RequestBedrockSaveHold(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "save hold");
+
+    internal static void RequestBedrockSaveQuery(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "save query");
+
+    internal static void RequestBedrockSaveResume(Process process, ManagedRun run)
+        => RequestFixedCommand(process, run, "save resume");
+
     private static void RequestFixedCommand(Process process, ManagedRun run, string command)
     {
-        if (command is not ("stop" or "exit" or "save-all flush"))
+        if (command is not ("stop" or "exit" or "save-all flush" or
+                            "save hold" or "save query" or "save resume"))
             throw new InvalidOperationException("Unsupported fixed server action.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows console stop is required.");
         var previous = ConsoleMembers().FirstOrDefault(id => id != Environment.ProcessId);
