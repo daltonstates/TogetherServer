@@ -762,6 +762,28 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             }
         }
     }
+
+    internal SharedWorldVersion? ReadReviewProofVersion(WorldAuthorityRecord record, long number)
+    {
+        if (record.VersionLineageDigest is null || number < 1 || number > record.Version.Number)
+            return null;
+        var root = ProofRoot(record.Proposal.ProfileId, record.RecordHash);
+        if (!Directory.Exists(root)) return null;
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+        var path = SharedWorldService.SafeChild(root,
+            number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".json");
+        if (!File.Exists(path)) return null;
+        if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Authority review proof is oversized or linked.");
+        var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        if (version is null || !SharedWorldService.VerifySignature(version) ||
+            version.Number != number || version.GroupId != record.Version.GroupId ||
+            version.ProfileId != record.Version.ProfileId || version.Game != record.Version.Game ||
+            version.WorldId != record.Version.WorldId)
+            throw new InvalidDataException("Authority review proof failed verification.");
+        return version;
+    }
     internal IEnumerable<SharedWorldVersion> ReadLocalPublishedLineage(
         WorldAuthorityRecord record, WorldAuthorityRecord? parent)
     {

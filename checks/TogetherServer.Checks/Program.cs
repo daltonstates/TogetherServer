@@ -4476,6 +4476,93 @@ await Check("shared world authority requires signed majority, fences old Host, a
         store.ClearStagedProof(third, nextAuthority);
         Require(new WorldAuthorityStore(data).Read(profile.Id).Any(item => item.RecordHash == third.RecordHash),
             "resumed proof was not verified and durable after restart");
+        var reviewManager = new HostManager(data, Games(data));
+        Require((await reviewManager.SharedWorldStatusAsync(profile.Id)).Authority?.State ==
+            "CompetingHistories" &&
+            (await reviewManager.SharedWorldReviewProofAsync(profile.Id, third.RecordHash,
+                longLineage[35].Number))?.VersionHash == longLineage[35].VersionHash &&
+            await reviewManager.SharedWorldReviewProofAsync(profile.Id, third.RecordHash,
+                nextAuthority.Version.Number) is null &&
+            (await reviewManager.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
+            "fenced Host did not isolate signed proof review from ordinary save sharing");
+        var reviewProofPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+            "authority", "proof-" + third.RecordHash, longLineage[35].Number + ".json");
+        var originalReviewProof = File.ReadAllBytes(reviewProofPath);
+        try
+        {
+            File.WriteAllBytes(reviewProofPath, new byte[SharedWorldService.MaximumManifestBytes + 1]);
+            RequireThrows<InvalidDataException>(() => new WorldAuthorityStore(data)
+                .ReadReviewProofVersion(third, longLineage[35].Number),
+                "oversized review proof was served");
+            File.WriteAllText(reviewProofPath, "{tampered");
+            RequireThrows<JsonException>(() => new WorldAuthorityStore(data)
+                .ReadReviewProofVersion(third, longLineage[35].Number),
+                "tampered review proof was served");
+        }
+        finally { File.WriteAllBytes(reviewProofPath, originalReviewProof); }
+        using (var reviewPortReservation = new TcpListener(IPAddress.Loopback, 0))
+        {
+            reviewPortReservation.Start();
+            var reviewPort = ((IPEndPoint)reviewPortReservation.LocalEndpoint).Port;
+            reviewPortReservation.Stop();
+            var reviewAddress = $"https://127.0.0.1:{reviewPort}";
+            using var reviewCertificate = new HostIdentity(data).Ensure(reviewAddress);
+            var reviewSettings = data.LoadSettings();
+            reviewSettings.CompanionBindAddress = "127.0.0.1";
+            reviewSettings.CompanionEndpoint = reviewAddress;
+            reviewSettings.CompanionPort = reviewPort;
+            reviewSettings.CompanionListeningEnabled = true;
+            data.SaveSettings(reviewSettings);
+            var reviewBearer = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            data.SavePairingState(new PairingPersistentState { Devices = [new PairedDevice
+            {
+                Id = voters[2].Id, AssignedProfileIds = [profile.Id],
+                CredentialHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(reviewBearer))),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                SharedWorldGrants = new() { [profile.Id] = new(RecoveryVoter: true) },
+                SharedWorldPublicKey = Convert.ToBase64String(voters[2].Key.ExportSubjectPublicKeyInfo())
+            }] });
+            var dirtyPath = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+                "roster-dirty");
+            if (File.Exists(dirtyPath)) File.Delete(dirtyPath);
+            using var reviewGate = new SemaphoreSlim(1, 1);
+            var liveReviewManager = new HostManager(data, Games(data));
+            var reviewListener = new CompanionServer(data, liveReviewManager, new PairingService(data),
+                Games(data), new ServerLogService(data, liveReviewManager), reviewGate, reviewPort + 2);
+            try
+            {
+                await reviewListener.SyncAsync();
+                Require(reviewListener.ListenerState == CompanionListenerStates.Listening,
+                    "fenced review fixture listener did not open");
+                using var voterData = Data("digest-review-voter");
+                voterData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(
+                    new FriendConfiguration
+                    {
+                        Endpoint = reviewAddress,
+                        Fingerprint = HostIdentity.Fingerprint(reviewCertificate),
+                        DeviceId = voters[2].Id,
+                        Credential = reviewBearer,
+                        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                        ApprovedSharedWorldGroups = new() { [profile.Id] = roster.GroupId },
+                        SharedWorldSigningKeys = new() { [profile.Id] = roster.OwnerPublicKey },
+                        SharedRosterFloors = new() { [profile.Id] = new(roster.GroupId,
+                            noOverrideRoster.Epoch, noOverrideRoster.Revision,
+                            noOverrideRoster.Signature) }
+                    }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                voterData.SaveProtected($"shared-world-pc-signing-{voters[2].Id:N}.protected",
+                    voters[2].Key.ExportPkcs8PrivateKey());
+                using var voterLink = new FriendLink(voterData, "friend.protected");
+                WorldHistoryReviewResult reviewResult = new(false, "Pending", "");
+                for (var attempt = 0; attempt < 4 && !reviewResult.Ok; attempt++)
+                    reviewResult = await voterLink.ReviewSharedHistoryAsync(profile.Id);
+                Require(reviewResult.Ok && reviewResult.CompetingHeads >= 2 &&
+                    new WorldAuthorityStore(voterData).Read(profile.Id)
+                        .Any(item => item.RecordHash == third.RecordHash),
+                    "voter-only Friend did not verify the digest-backed lineage under fencing: " +
+                    reviewResult.Code);
+            }
+            finally { await reviewListener.StopAsync(); }
+        }
         using (var longProofData = Data("authority-proof-over-4096"))
         {
             var longStore = new WorldAuthorityStore(longProofData);

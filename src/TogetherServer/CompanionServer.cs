@@ -612,6 +612,26 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 records is null ? Results.Conflict(new { code = "AuthorityUnavailable" }) :
                 Results.Json(records);
         });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/authority/{recordHash}/proof/{number:long}",
+            async (HttpContext context, Guid profileId, string recordHash, long number) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            var auth = await AuthorizeHistoryReview(device!, profileId);
+            if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
+            SharedWorldVersion? proof;
+            try { proof = await manager.SharedWorldReviewProofAsync(profileId, recordHash, number); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { return Results.NotFound(new { code = "HistoryProofUnavailable" }); }
+            var recheck = await AuthorizeHistoryReview(auth.Current!, profileId);
+            if (!recheck.Decision.Ok) return Results.Json(recheck.Decision, statusCode: 403);
+            if (proof is null) return Results.NotFound(new { code = "HistoryProofUnavailable" });
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(proof,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return bytes.Length > SharedWorldService.MaximumManifestBytes
+                ? Results.NotFound(new { code = "HistoryProofUnavailable" }) :
+                Results.Bytes(bytes, "application/json");
+        });
         companion.MapPost("/servers/{profileId:guid}/shared-world/receipts",
             async (HttpContext context, Guid profileId) =>
         {

@@ -502,6 +502,27 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    internal async Task<SharedWorldVersion?> SharedWorldReviewProofAsync(Guid profileId,
+        string recordHash, long number)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (settings.Profiles.All(item => item.Id != profileId) ||
+                recordHash.Length != 64 || !recordHash.All(Uri.IsHexDigit)) return null;
+            var records = authority.Read(profileId);
+            var record = records.SingleOrDefault(item => item.RecordHash == recordHash);
+            if (record?.VersionLineageDigest is null) return null;
+            var parent = records.SingleOrDefault(item =>
+                item.RecordHash == record.Proposal.ParentAuthorityHash);
+            var first = WorldAuthorityStore.FirstProofNumber(record, parent);
+            if (number < first || number > record.Version.Number) return null;
+            return authority.ReadReviewProofVersion(record, number) ??
+                sharedWorlds.ReadReviewProofVersion(record, number);
+        }
+        finally { gate.Release(); }
+    }
+
     internal async Task<IReadOnlyList<WorldAuthorityRecord>?> SharedWorldAuthorityAsync(
         Guid profileId, int offset = 0)
     {

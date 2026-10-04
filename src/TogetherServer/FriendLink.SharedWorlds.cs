@@ -71,8 +71,45 @@ internal sealed partial class FriendLink
                 ? JsonSerializer.Deserialize<List<WorldAuthorityRecord>>(historyBytes, Json) : null;
             if (page is null) return new(false, "HistoryUnavailable", "Signed history is unavailable.");
             var additions = NewAuthorityPage(accepted, page);
+            var staged = new HashSet<string>(StringComparer.Ordinal);
+            var remaining = WorldAuthorityTrust.ProofVersionsPerCheck;
+            foreach (var record in additions.Where(item => item.VersionLineageDigest is not null))
+            {
+                var parent = additions.Concat(accepted).SingleOrDefault(item =>
+                    item.RecordHash == record.Proposal.ParentAuthorityHash);
+                var batch = await StageAuthorityProofBatchAsync(store, record, parent,
+                    remaining, async (number, token) =>
+                    {
+                        using var response = await client.GetAsync(
+                            $"api/companion/servers/{profileId}/shared-world/authority/" +
+                            $"{record.RecordHash}/proof/{number}",
+                            HttpCompletionOption.ResponseHeadersRead, token);
+                        var bytes = await ReadBoundedSharedAsync(response.Content,
+                            SharedWorldService.MaximumManifestBytes, token);
+                        return response.IsSuccessStatusCode && bytes is not null
+                            ? JsonSerializer.Deserialize<SharedWorldVersion>(bytes, Json) : null;
+                    }, cancellationToken);
+                remaining -= batch.Used;
+                if (!batch.Complete) return new(false, "HistoryCatchUpPending",
+                    "Check again to finish verifying signed history.");
+                var seal = VerifyStagedAuthorityProofBatch(store, record, parent,
+                    remaining, cancellationToken);
+                remaining -= seal.Used;
+                if (!seal.Complete) return new(false, "HistoryCatchUpPending",
+                    "Check again to finish verifying signed history.");
+                staged.Add(record.RecordHash);
+            }
             foreach (var record in additions)
-                store.AppendReceived(record, profileId, group.Value, owner);
+            {
+                if (staged.Contains(record.RecordHash))
+                {
+                    var parent = store.Read(profileId).SingleOrDefault(item =>
+                        item.RecordHash == record.Proposal.ParentAuthorityHash);
+                    store.AppendReceivedStaged(record, parent, profileId, group.Value, owner);
+                    store.ClearStagedProof(record, parent);
+                }
+                else store.AppendReceived(record, profileId, group.Value, owner);
+            }
             accepted = store.Read(profileId);
             config.SharedRosterFloors![profileId] = new(roster.GroupId, roster.Epoch,
                 roster.Revision, roster.Signature);

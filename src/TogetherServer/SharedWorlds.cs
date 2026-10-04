@@ -539,6 +539,33 @@ internal sealed partial class SharedWorldService
         }
     }
 
+    // Read a signed manifest only for authority-history review. This does not
+    // expose payload chunks or make the fenced publication available again.
+    internal SharedWorldVersion ReadReviewProofVersion(WorldAuthorityRecord record, long number)
+    {
+        lock (sync)
+        {
+            if (record.VersionLineageDigest is null || number < 1 ||
+                number > record.Version.Number)
+                throw new InvalidDataException("Authority proof number is invalid.");
+            if (number == record.Version.Number) return record.Version;
+            var root = Path.Combine(Root(record.Proposal.ProfileId),
+                record.Proposal.GroupId.ToString("N"),
+                number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            var path = SafeChild(root, "version.json");
+            if (!File.Exists(path) || new FileInfo(path).Length > MaximumManifestBytes ||
+                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Authority proof version is missing or linked.");
+            var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+            if (version is null || !VerifySignature(version) || version.Number != number ||
+                version.GroupId != record.Version.GroupId ||
+                version.ProfileId != record.Version.ProfileId ||
+                version.Game != record.Version.Game || version.WorldId != record.Version.WorldId)
+                throw new InvalidDataException("Authority proof version failed verification.");
+            return version;
+        }
+    }
+
     private bool AuthorizedPublishedLineageForLatest(SharedWorldVersion latest,
         WorldAuthorityRecord head)
     {
