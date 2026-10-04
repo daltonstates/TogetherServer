@@ -84,6 +84,7 @@ internal sealed partial class FriendLink : IDisposable
     private readonly object lifetimeSync = new();
     private readonly LocalData data;
     private readonly string configFile;
+    private readonly Func<string, IEnumerable<string>, HttpClient>? historyReviewClientFactory;
     private FriendConfiguration? config;
     private FriendView view;
     private Guid instanceId = Guid.NewGuid();
@@ -140,10 +141,12 @@ internal sealed partial class FriendLink : IDisposable
     private bool disposed;
     private bool resourcesDisposed;
 
-    public FriendLink(LocalData data, string configFile)
+    public FriendLink(LocalData data, string configFile,
+        Func<string, IEnumerable<string>, HttpClient>? historyReviewClientFactory = null)
     {
         this.data = data;
         this.configFile = configFile;
+        this.historyReviewClientFactory = historyReviewClientFactory;
         config = LoadConfig(data, configFile);
         if (config is not null)
         {

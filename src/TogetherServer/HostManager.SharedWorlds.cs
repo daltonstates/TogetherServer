@@ -486,6 +486,37 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    // Review data remains readable after fencing. This path never supplies a save
+    // manifest, chunk, receipt, or hosting authority to the caller.
+    internal async Task<SharedWorldRoster?> SharedWorldReviewRosterAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null) return null;
+            // Before the first authority record, an unpublished membership change
+            // cannot be used for review. Once fenced, the signed roster and current
+            // device grants are intersected by CompanionServer for read-only access.
+            if (pairing.SharedRosterDirty(profileId) && !authority.HasState(profileId))
+                return null;
+            var local = sharedWorlds.ReadRoster(profile);
+            if (local is null) return null;
+            var heads = WorldAuthorityTrust.EffectiveHeads(authority.ReadReviewRecords(profileId));
+            if (heads.Length == 0) return local;
+            var rosters = heads.Select(item => item.Roster).Append(local).ToArray();
+            if (rosters.Any(item => item.GroupId != local.GroupId ||
+                item.OwnerPublicKey != local.OwnerPublicKey || !SharedWorldRosterTrust.Verify(item)))
+                return null;
+            var newest = rosters.OrderByDescending(item => item.Epoch)
+                .ThenByDescending(item => item.Revision).First();
+            if (rosters.Any(item => item.Epoch == newest.Epoch &&
+                item.Revision == newest.Revision && item.Signature != newest.Signature)) return null;
+            return newest;
+        }
+        finally { gate.Release(); }
+    }
+
     internal async Task<SharedWorldRoster> PublishDelegatedRosterAsync(Guid profileId,
         Guid deviceId, string enrolledPublicKey, SharedWorldRoster revision,
         Func<bool>? transportStillAuthorized = null)
@@ -519,6 +550,38 @@ public sealed partial class HostManager
                 chain.Append(accepted, parent.OwnerPublicKey);
                 return sharedWorlds.ReadRoster(profile)!;
             }
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<IReadOnlyList<WorldAuthorityRecord>?> SharedWorldReviewHistoryAsync(
+        Guid profileId, int offset = 0)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (settings.Profiles.All(item => item.Id != profileId)) return null;
+            return authority.ReadPage(profileId, offset);
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<SharedWorldVersion?> SharedWorldReviewProofAsync(Guid profileId,
+        string recordHash, long number)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (settings.Profiles.All(item => item.Id != profileId) ||
+                recordHash.Length != 64 || !recordHash.All(Uri.IsHexDigit)) return null;
+            var indexed = authority.ReadReviewProofIndex(profileId, recordHash, number);
+            if (indexed is null) return null;
+            var (record, expectedHash) = indexed.Value;
+            var proof = authority.ReadReviewProofVersion(record, number) ??
+                sharedWorlds.ReadReviewProofVersion(record, number);
+            if (proof.VersionHash != expectedHash)
+                throw new InvalidDataException("Authority review proof changed after verification.");
+            return proof;
         }
         finally { gate.Release(); }
     }

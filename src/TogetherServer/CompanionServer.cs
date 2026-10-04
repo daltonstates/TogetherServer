@@ -122,42 +122,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             var builder = WebApplication.CreateBuilder(Array.Empty<string>());
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(bind, settings.CompanionPort, listener => listener.UseHttps(nextCertificate)));
-            builder.Services.AddRateLimiter(options =>
-            {
-                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-                options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
-                    RateLimitPartition.GetFixedWindowLimiter("host", _ => new FixedWindowRateLimiterOptions
-                    { PermitLimit = 600, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
-                options.AddPolicy("pairing", context => RateLimitPartition.GetFixedWindowLimiter(
-                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
-                    { PermitLimit = 12, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
-            });
-            nextApp = builder.Build();
-            nextApp.Use(async (context, next) =>
-            {
-                var authorityIngest = context.Request.Path.Value?.EndsWith(
-                    "/shared-world/authority", StringComparison.Ordinal) == true ||
-                    context.Request.Path.Value?.EndsWith(
-                        "/shared-world/resolution/owner-offer", StringComparison.Ordinal) == true;
-                var maximumBody = authorityIngest ? 2 * 1024 * 1024 : 4096;
-                if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
-                    context.Connection.LocalPort != settings.CompanionPort ||
-                    !context.Request.Path.StartsWithSegments("/api/companion") ||
-                    !string.Equals(context.Request.Host.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase) ||
-                    context.Request.Host.Port != settings.CompanionPort ||
-                    context.Request.ContentLength > maximumBody)
-                {
-                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                    return;
-                }
-                if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
-                    bodySize.MaxRequestBodySize = maximumBody;
-                context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-                context.Response.Headers["Cache-Control"] = "no-store";
-                await next();
-            });
-            nextApp.UseRateLimiter();
-            MapRoutes(nextApp);
+            nextApp = BuildApp(builder, settings, endpoint, false);
             await nextApp.StartAsync();
             active = nextApp;
             certificate = nextCertificate;
@@ -212,6 +177,54 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games);
             return (object)new { available = permit.Allowed, reason = permit.Reason };
         });
+
+    // The checks use the same companion routes and request guard with TestServer.
+    // TestServer has no socket, so only its synthetic local-port feature is set here.
+    internal WebApplication BuildInMemoryApp(WebApplicationBuilder builder, HostSettings settings,
+        Uri endpoint) => BuildApp(builder, settings, endpoint, true);
+
+    private WebApplication BuildApp(WebApplicationBuilder builder, HostSettings settings,
+        Uri endpoint, bool inMemory)
+    {
+        builder.Services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
+                RateLimitPartition.GetFixedWindowLimiter("host", _ => new FixedWindowRateLimiterOptions
+                { PermitLimit = 600, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
+            options.AddPolicy("pairing", context => RateLimitPartition.GetFixedWindowLimiter(
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+                { PermitLimit = 12, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
+        });
+        var app = builder.Build();
+        app.Use(async (context, next) =>
+        {
+            if (inMemory) context.Connection.LocalPort = settings.CompanionPort;
+            var authorityIngest = context.Request.Path.Value?.EndsWith(
+                "/shared-world/authority", StringComparison.Ordinal) == true ||
+                context.Request.Path.Value?.EndsWith(
+                    "/shared-world/resolution/owner-offer", StringComparison.Ordinal) == true;
+            var maximumBody = authorityIngest ? 2 * 1024 * 1024 : 4096;
+            if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
+                context.Connection.LocalPort != settings.CompanionPort ||
+                !context.Request.Path.StartsWithSegments("/api/companion") ||
+                !string.Equals(context.Request.Host.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase) ||
+                context.Request.Host.Port != settings.CompanionPort ||
+                context.Request.ContentLength > maximumBody)
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+            if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
+                bodySize.MaxRequestBodySize = maximumBody;
+            context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            context.Response.Headers["Cache-Control"] = "no-store";
+            await next();
+        });
+        app.UseRateLimiter();
+        MapRoutes(app);
+        return app;
+    }
 
     private void MapRoutes(WebApplication app)
     {
@@ -274,6 +287,32 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
             { /* A damaged roster denies transfer. */ }
             return (new(false, "RosterDenied", "The current signed roster does not allow this transfer."), null);
+        }
+
+
+        async Task<(PairingDecision Decision, PairedDevice? Current)> AuthorizeHistoryReview(
+            PairedDevice loaded, Guid profileId)
+        {
+            var decision = pairing.AuthorizeSharedHistory(loaded, profileId, out var current);
+            if (!decision.Ok || current is null) return (decision, null);
+            try
+            {
+                var roster = await manager.SharedWorldReviewRosterAsync(profileId);
+                decision = pairing.AuthorizeSharedHistory(current, profileId, out var refreshed);
+                if (decision.Ok && refreshed?.SharedWorldPublicKey is not null && roster is not null &&
+                    roster.Members.SingleOrDefault(item => item.DeviceId == refreshed.Id) is
+                    { Revoked: false } member &&
+                    member.PublicKey == refreshed.SharedWorldPublicKey &&
+                    (member.Grants.Receive &&
+                        refreshed.SharedWorldGrants?.GetValueOrDefault(profileId)?.Receive == true ||
+                     member.Grants.RecoveryVoter &&
+                        refreshed.SharedWorldGrants?.GetValueOrDefault(profileId)?.RecoveryVoter == true) &&
+                    (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow))
+                    return (decision, refreshed);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { /* Invalid review material denies access. */ }
+            return (new(false, "RosterDenied", "The current signed roster does not allow history review."), null);
         }
 
         async Task<CompanionStatus> PublicStatus(Guid deviceId)
@@ -589,7 +628,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId)) return Results.StatusCode(403);
+            if (!pairing.CanAccess(device!, profileId) || pairing.SharedRosterDirty(profileId))
+                return Results.StatusCode(403);
             return Results.Json(new SharedWorldEnrollmentChallenge(sharedEnrollment.Issue(device!.Id, profileId)));
         });
         companion.MapPost("/servers/{profileId:guid}/shared-world/enrollment",
@@ -597,7 +637,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId) ||
+            if (!pairing.CanAccess(device!, profileId) || pairing.SharedRosterDirty(profileId) ||
                 !sharedEnrollment.Consume(device!.Id, profileId, request.Nonce))
                 return Results.StatusCode(403);
             // Enrollment changes the signed membership. A successor can host
@@ -628,10 +668,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            var auth = await AuthorizeShared(device!, profileId);
+            var auth = await AuthorizeHistoryReview(device!, profileId);
             if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
-            var roster = await manager.SharedWorldRosterAsync(profileId);
-            var recheck = await AuthorizeShared(auth.Current!, profileId);
+            var roster = await manager.SharedWorldReviewRosterAsync(profileId);
+            var recheck = await AuthorizeHistoryReview(auth.Current!, profileId);
             return recheck.Decision.Ok ? Results.Json(roster) : Results.Json(recheck.Decision, statusCode: 403);
         });
         companion.MapGet("/servers/{profileId:guid}/shared-world/roster/revisions", async (HttpContext context, Guid profileId) =>
@@ -698,15 +738,35 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            var auth = await AuthorizeShared(device!, profileId);
+            var auth = await AuthorizeHistoryReview(device!, profileId);
             if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
             var offset = int.TryParse(context.Request.Query["offset"], out var parsedOffset) &&
                 parsedOffset >= 0 ? parsedOffset : 0;
-            var records = await manager.SharedWorldAuthorityAsync(profileId, offset);
-            var recheck = await AuthorizeShared(auth.Current!, profileId);
+            var records = await manager.SharedWorldReviewHistoryAsync(profileId, offset);
+            var recheck = await AuthorizeHistoryReview(auth.Current!, profileId);
             return !recheck.Decision.Ok ? Results.Json(recheck.Decision, statusCode: 403) :
                 records is null ? Results.Conflict(new { code = "AuthorityUnavailable" }) :
                 Results.Json(records);
+        });
+        companion.MapGet("/servers/{profileId:guid}/shared-world/authority/{recordHash}/proof/{number:long}",
+            async (HttpContext context, Guid profileId, string recordHash, long number) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            var auth = await AuthorizeHistoryReview(device!, profileId);
+            if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
+            SharedWorldVersion? proof;
+            try { proof = await manager.SharedWorldReviewProofAsync(profileId, recordHash, number); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
+            { return Results.NotFound(new { code = "HistoryProofUnavailable" }); }
+            var recheck = await AuthorizeHistoryReview(auth.Current!, profileId);
+            if (!recheck.Decision.Ok) return Results.Json(recheck.Decision, statusCode: 403);
+            if (proof is null) return Results.NotFound(new { code = "HistoryProofUnavailable" });
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(proof,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return bytes.Length > SharedWorldService.MaximumManifestBytes
+                ? Results.NotFound(new { code = "HistoryProofUnavailable" }) :
+                Results.Bytes(bytes, "application/json");
         });
         companion.MapPost("/servers/{profileId:guid}/shared-world/receipts",
             async (HttpContext context, Guid profileId) =>

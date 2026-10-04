@@ -1594,6 +1594,24 @@ public sealed class PairingService
         }
     }
 
+    public PairingDecision AuthorizeSharedHistory(PairedDevice device, Guid profileId,
+        out PairedDevice? current)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
+        {
+            current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
+            if (current is null) return new(false, "Unauthorized", "This PC's saved access was not accepted.");
+            var decision = AuthorizationDecision(current, UtcNow);
+            if (!decision.Ok) return decision;
+            var grants = current.SharedWorldGrants?.GetValueOrDefault(profileId);
+            return current.AssignedProfileIds?.Contains(profileId) == true &&
+                current.SharedWorldPublicKey is not null &&
+                grants is not null && (grants.Receive || grants.RecoveryVoter)
+                ? new(true, "HistoryReviewAllowed", "Shared world history review is allowed.")
+                : new(false, "PermissionDenied", "History review is not granted to this PC for this server.");
+        }
+    }
+
     public PairingDecision SetReceiveSaves(Guid deviceId, Guid profileId, bool enabled)
     {
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)

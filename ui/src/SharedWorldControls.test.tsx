@@ -79,6 +79,38 @@ describe('Shared saves controls', () => {
     expect(screen.getByText(/automatic takeover are unavailable/)).toBeInTheDocument()
   })
 
+  it('lets a voter review and confirm signed membership without enabling save receipt', async () => {
+    const ownerPublicKey = 'owner-public-key-for-voter-review'
+    const calls: Array<{ url: string; body: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/history/review')) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        calls.push({ url, body })
+        return body.confirmGroupId === profile && body.confirmOwnerPublicKey === ownerPublicKey ?
+          reply({ ok: true, code: 'HistoryReviewed', message: 'Signed hosting history was reviewed.',
+            recordCount: 2, competingHeads: 2, groupId: null, ownerPublicKey: null }) :
+          reply({ ok: false, code: 'GroupReviewRequired', message: 'Review signed membership.',
+            recordCount: 0, competingHeads: 0, groupId: profile, ownerPublicKey })
+      }
+      if (url.endsWith('/resolution/heads')) return reply([])
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      return reply({ consented: false, hostVersion: null, thisPcVersion: null,
+        state: 'Consent off', error: null })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(screen.getByText('Shared worlds'))
+    expect(await screen.findByLabelText('Allow saves on this PC')).not.toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Review signed history' }))
+    expect(await screen.findByRole('button', { name: 'Confirm group and owner' })).toBeEnabled()
+    expect(screen.getByText(new RegExp(`Group ${profile}`))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm group and owner' }))
+    expect(await screen.findByText('Signed hosting history was reviewed.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Allow saves on this PC')).not.toBeChecked()
+    expect(calls).toHaveLength(2)
+    expect(calls[1].body).toEqual({ confirmGroupId: profile, confirmOwnerPublicKey: ownerPublicKey })
+    expect(screen.getByRole('button', { name: 'Receive latest save' })).toBeDisabled()
+  })
+
   it('rejects malformed status responses', () => {
     expect(() => parseHostSharedWorldStatus({ enabled: 'yes', latest: null, error: null })).toThrow()
     expect(() => parseFriendSharedWorldStatus({ consented: false, hostVersion: '3',
