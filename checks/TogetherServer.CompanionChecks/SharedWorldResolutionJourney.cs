@@ -156,7 +156,8 @@ internal static partial class SharedWorldJourney
             Require(retainedPayloads.SetEquals(receivedHashes.Skip(2)) &&
                 !Directory.Exists(Path.Combine(bVault, firstVersion.VersionHash)) &&
                 File.Exists(Path.Combine(bVault, "signed-history",
-                    firstVersion.VersionHash + ".json")),
+                    (firstVersion.Number / 1024).ToString("x16"),
+                    firstVersion.Number + "-" + firstVersion.VersionHash + ".json")),
                 "exactly three recent payloads and the earlier signed manifest were not retained");
             Require((await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review", new())).Ok,
@@ -311,7 +312,8 @@ internal static partial class SharedWorldJourney
                 File.Exists(Path.Combine(bVault, recoveryVersion.VersionHash,
                     "payload", "world.dat")) &&
                 File.Exists(Path.Combine(bVault, "signed-history",
-                    firstVersion.VersionHash + ".json")),
+                    (firstVersion.Number / 1024).ToString("x16"),
+                    firstVersion.Number + "-" + firstVersion.VersionHash + ".json")),
                 "override-off resolution lost a signed branch, old-Host fence, or verified copy");
             Require((await PostAsync<object, JsonElement>(aLocal,
                 "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean() &&

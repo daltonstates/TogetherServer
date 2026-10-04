@@ -1335,14 +1335,30 @@ internal sealed class WorldAuthorityStore(LocalData data, TimeProvider? clock = 
             var first = FirstProofNumber(record, parent);
             if (number < first || number > record.Version.Number) return null;
             var cache = reviewCaches[profileId];
-            if (!cache.ProofHashes.TryGetValue(recordHash, out var hashes))
+            var pageStart = first + (number - first) / WorldAuthorityTrust.ChainVersionsPerCheck *
+                WorldAuthorityTrust.ChainVersionsPerCheck;
+            var pageKey = recordHash + ":" + pageStart.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (!cache.ProofHashes.TryGetValue(pageKey, out var hashes))
             {
-                var proof = ReadProof(record, parent)?.ToArray();
-                if (!WorldAuthorityTrust.VerifyLineage(record, parent, proof))
+                var page = new Dictionary<long, string>();
+                IEnumerable<SharedWorldVersion> CapturePage()
+                {
+                    foreach (var version in ReadProof(record, parent) ?? [])
+                    {
+                        if (version.Number >= pageStart &&
+                            version.Number - pageStart < WorldAuthorityTrust.ChainVersionsPerCheck)
+                            page.Add(version.Number, version.VersionHash);
+                        yield return version;
+                    }
+                }
+                if (!WorldAuthorityTrust.VerifyLineage(record, parent, CapturePage()))
                     throw new InvalidDataException("Authority review lineage failed verification.");
-                hashes = proof!.ToDictionary(item => item.Number,
-                    item => item.VersionHash);
-                cache.ProofHashes.Add(recordHash, hashes);
+                hashes = page;
+                // Only the requested 128-version page stays in memory. Every new
+                // page is rebuilt from the complete signed lineage before use.
+                cache.ProofHashes.Clear();
+                cache.ProofHashes.Add(pageKey, hashes);
                 ReviewProofIndexBuildCount++;
             }
             return hashes.TryGetValue(number, out var expectedHash)

@@ -108,11 +108,10 @@ internal sealed class SharedWorldTransferHealth
                 return;
             }
 
-            if (result.Code is "InsufficientSpace" or "SignedHistoryFull")
+            if (result.Code == "InsufficientSpace")
             {
                 state.NoProgressFailures = 0;
-                state.Issue = new(result.Code == "SignedHistoryFull" ?
-                    "Signed history full" : "Low space", result.Message,
+                state.Issue = new("Low space", result.Message,
                     attempt.ReceivedBytes, attempt.TotalBytes);
                 return;
             }

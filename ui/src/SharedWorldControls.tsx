@@ -12,7 +12,7 @@ type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versi
 type AuthorityStatus = { state: 'NoTakeover' | 'OldHostFenced' | 'ThisPcHost' | 'CompetingHistories' | 'ReviewRequired';
   message: string; head: AuthorityHead | null; competingHeads: AuthorityHead[]; exactManagedProcessRunning: boolean }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null;
-  capacityNotice: string | null; capacityState: 'Signed history full' | 'Signed history nearly full' | null }
+  capacityNotice: string | null; capacityState: 'Low space' | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
 type RosterMember = { deviceId: string; grants: Grants; revoked: boolean; accessExpiresUtc: string | null }
@@ -217,8 +217,7 @@ export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
     thisPcVersion: numberOrNull(source.thisPcVersion, 'This PC version'),
     state: source.state, error: textOrNull(source.error, 'Received save error'),
     capacityNotice: textOrNull(source.capacityNotice ?? null, 'Signed history notice'),
-    capacityState: source.capacityState === 'Signed history full' ||
-      source.capacityState === 'Signed history nearly full' ? source.capacityState : null,
+    capacityState: source.capacityState === 'Low space' ? source.capacityState : null,
     receivedBytes: numberOrNull(source.receivedBytes ?? 0, 'Received bytes') ?? 0,
     totalBytes: numberOrNull(source.totalBytes ?? 0, 'Total bytes') ?? 0,
     rosterRevision: numberOrNull(source.rosterRevision ?? null, 'Roster revision'),
@@ -820,8 +819,6 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     !status.consented ? 'Save receiving is off' :
     status.state.startsWith('Host save source changed') ? status.state :
     status?.state === 'Low space' ? 'Low space — receiving paused' :
-    status?.state === 'Signed history full' ? 'Save history full — receiving paused' :
-    status?.state === 'Signed history nearly full' ? 'Save history near limit' :
     status?.state === 'Stalled' ? 'Receiving stalled — retrying' :
     status?.state === 'Receiving' ? 'Receiving completed save' :
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
@@ -830,9 +827,9 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       hostingSetupReady && status.thisPcVersion != null ? 'Ready for manual Start; game load untested' :
         status.state === 'Ready' ? 'Verified copy on this PC' : status.state
   const transferAlert = status?.state === 'Low space' || status?.state === 'Stalled' ||
-    status?.state.startsWith('Host save source changed') || status?.state === 'Signed history full'
-  const capacityAlert = status?.capacityState && !transferAlert ?
-    status.capacityState === 'Signed history full' ? 'Save history full' : 'Save history near limit' : null
+    status?.state.startsWith('Host save source changed')
+  const capacityAlert = status?.capacityState === 'Low space' && !transferAlert ?
+    'Low space — receiving paused' : null
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary><span>Shared worlds</span>
     <span> · </span><span className={transferAlert ? 'warning-text' : undefined}
       role={transferAlert ? 'alert' : undefined}>{headline}</span>
