@@ -13,24 +13,43 @@ public sealed record ControlPortCheck(int Port, string State, string Detail,
     IReadOnlyList<LanAddressHint> LanAddresses, string LanForwardDetail);
 public sealed record PortDiagnosticsView(DateTimeOffset CheckedUtc,
     IReadOnlyList<GamePortCheck> Games, ControlPortCheck Control);
+internal sealed record PortDiagnosticsPortTable(IPEndPoint[] Tcp, IPEndPoint[] Udp);
 
 public static class PortDiagnostics
 {
     public static PortDiagnosticsView Read(HostSnapshot snapshot, GameServerRegistry games,
         bool companionActive, IReadOnlyList<DeviceView> devices, string? listenerWarning = null,
-        string? listenerState = null)
+        string? listenerState = null) => ReadCore(snapshot, games, companionActive, devices,
+            listenerWarning, listenerState, null);
+
+    internal static PortDiagnosticsView ReadObserved(HostSnapshot snapshot, GameServerRegistry games,
+        bool companionActive, IReadOnlyList<DeviceView> devices, PortDiagnosticsPortTable table,
+        string? listenerWarning = null, string? listenerState = null) =>
+        ReadCore(snapshot, games, companionActive, devices, listenerWarning, listenerState, table);
+
+    private static PortDiagnosticsView ReadCore(HostSnapshot snapshot, GameServerRegistry games,
+        bool companionActive, IReadOnlyList<DeviceView> devices, string? listenerWarning,
+        string? listenerState, PortDiagnosticsPortTable? observed)
     {
         var checkedUtc = DateTimeOffset.UtcNow;
         IPEndPoint[]? udp = null;
         IPEndPoint[]? tcp = null;
         string? inspectionError = null;
-        try
+        if (observed is not null)
         {
-            var properties = IPGlobalProperties.GetIPGlobalProperties();
-            udp = properties.GetActiveUdpListeners();
-            tcp = properties.GetActiveTcpListeners();
+            udp = observed.Udp;
+            tcp = observed.Tcp;
         }
-        catch (NetworkInformationException ex) { inspectionError = ex.Message; }
+        else
+        {
+            try
+            {
+                var properties = IPGlobalProperties.GetIPGlobalProperties();
+                udp = properties.GetActiveUdpListeners();
+                tcp = properties.GetActiveTcpListeners();
+            }
+            catch (NetworkInformationException ex) { inspectionError = ex.Message; }
+        }
 
         var gameChecks = snapshot.Settings.Profiles.Select(profile =>
         {

@@ -35,7 +35,7 @@ int FreePort()
         if (GameServerRegistry.PortsAvailable([
             new("TCP", port, "Java game"),
             new("UDP", port, "Bedrock IPv4 game", "IPv4"),
-            new("UDP", port + 1, "Bedrock IPv6 game", "IPv6")], PortProbeMode.LoopbackOnly))
+            new("UDP", port + 1, "Bedrock IPv6 game", "IPv6")], PortProbeMode.ObserveOnly))
             return port;
     }
     throw new Exception("No free TCP and UDP port found.");
@@ -162,7 +162,7 @@ await Check("Java and Bedrock settings fail closed without prepared files", asyn
     var java = Profile(GameKinds.MinecraftJava, "java-validation", "world", port, eula: false);
     var bedrock = Profile(GameKinds.MinecraftBedrock, "bedrock-validation", "world", port);
     using var data = new LocalData(Path.Combine(root, "validation-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [java, bedrock] })).Ok, "profile settings rejected");
     Require((await manager.StartAsync(java.Id)).Code == "MinecraftEulaRequired", "unprepared Java EULA was accepted");
     File.WriteAllText(Path.Combine(java.WorldDirectory, "eula.txt"), "eula=true");
@@ -184,7 +184,7 @@ await Check("Java and Bedrock settings fail closed without prepared files", asyn
     Require((await manager.StartAsync(bedrock.Id)).Code == "MinecraftIpv6PortInvalid", "invalid Bedrock IPv6 port was accepted");
     File.WriteAllText(Path.Combine(bedrock.WorldDirectory, "server.properties"),
         $"level-name=world\nserver-port={port}\nserver-portv6={port + 1}\nenable-lan-visibility=true\n");
-    var bedrockDriver = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly).All.Single(driver => driver.Kind == GameKinds.MinecraftBedrock);
+    var bedrockDriver = new GameServerRegistry(data, false, PortProbeMode.ObserveOnly).All.Single(driver => driver.Kind == GameKinds.MinecraftBedrock);
     var visiblePorts = bedrockDriver.Ports(bedrock);
     Require(visiblePorts.Any(item => item.Family == "IPv4" && item.Port == 19132) &&
         visiblePorts.Any(item => item.Family == "IPv6" && item.Port == 19133),
@@ -196,7 +196,7 @@ await Check("known pre-game capture failure clears only its exact run and permit
     var profile = Profile(GameKinds.MinecraftJava, "java-pre-game-failure", "world", FreePort());
     File.WriteAllText(profile.ExecutablePath, "not a Windows executable");
     using var data = new LocalData(Path.Combine(root, "pre-game-failure-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
         "pre-game failure profile was rejected");
     var failedLaunch = await manager.StartAsync(profile.Id);
@@ -263,7 +263,7 @@ await Check("Java and Bedrock logs are exact-run bounded, typed, and sanitized",
         var name = kind == GameKinds.MinecraftJava ? "java-logs" : "bedrock-logs";
         var profile = Profile(kind, name, "world", FreePort());
         using var data = new LocalData(Path.Combine(root, name + "-data"));
-        var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+        var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
         Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
             kind + " log profile was rejected");
         var started = await manager.StartAsync(profile.Id);
@@ -376,7 +376,7 @@ await Check("chatty capture cannot block graceful Stop or kill an unrelated proc
     var unrelatedOutput = unrelated.StandardOutput.ReadToEndAsync();
     var unrelatedError = unrelated.StandardError.ReadToEndAsync();
     using var data = new LocalData(Path.Combine(root, "chatty-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
         "chatty profile was rejected");
     try
@@ -433,7 +433,7 @@ await Check("missing display log cannot change Minecraft lifecycle authority", a
 {
     var profile = Profile(GameKinds.MinecraftBedrock, "bedrock-log-failure", "world", FreePort());
     using var data = new LocalData(Path.Combine(root, "log-failure-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
         "log-failure profile was rejected");
     var started = await manager.StartAsync(profile.Id);
@@ -452,7 +452,7 @@ await Check("missing display log cannot change Minecraft lifecycle authority", a
         Require(snapshot.Runs.Single(run => run.ProfileId == profile.Id) is
         { State: "Ready", OnlinePlayers: 0, PlayerCountTrusted: true },
             "display-log failure changed Minecraft readiness or player-count authority");
-        using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+        using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
         Require(permit.Allowed, "display-log failure changed the zero-player Stop permit");
         var marker = Path.Combine(profile.WorldDirectory, "stop.marker");
         if (File.Exists(marker)) File.Delete(marker);
@@ -483,7 +483,7 @@ await Check("two games can share a world name and numeric port on different prot
     var java = Profile(GameKinds.MinecraftJava, "java-concurrent", "shared", port);
     var bedrock = Profile(GameKinds.MinecraftBedrock, "bedrock-concurrent", "shared", port);
     using var data = new LocalData(Path.Combine(root, "concurrent-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings
     {
         MaxConcurrentServers = 2,
@@ -504,7 +504,7 @@ await Check("two games can share a world name and numeric port on different prot
         Require(snapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
             .All(run => run.OnlinePlayers == 0 && run.MaxPlayers == 10 && run.AutoShutdownAtUtc is not null),
             "Minecraft player counts and empty-server deadlines were not exposed in the Host snapshot");
-        var games = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly);
+        var games = new GameServerRegistry(data, false, PortProbeMode.ObserveOnly);
         var ports = PortDiagnostics.Read(snapshot, games, false, []);
         Require(ports.Games.Count == 2 && ports.Games.All(check => check.State is "Open on PC" or "Loopback only"),
             "local TCP and UDP listeners were not reported for both games: " +
@@ -580,7 +580,7 @@ await Check("older run records recover port ownership from their saved profile",
     var first = Profile(GameKinds.MinecraftJava, "java-old-a", "alpha", port);
     var second = Profile(GameKinds.MinecraftJava, "java-old-b", "beta", port);
     using var data = new LocalData(Path.Combine(root, "legacy-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { MaxConcurrentServers = 2, Profiles = [first, second] })).Ok,
         "legacy profiles rejected");
     var started = await manager.StartAsync(first.Id);
@@ -590,7 +590,7 @@ await Check("older run records recover port ownership from their saved profile",
         var runs = data.LoadRuns();
         runs.Single().DeclaredPorts.Clear();
         data.SaveRuns(runs);
-        var restarted = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+        var restarted = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
         Require((await restarted.StartAsync(second.Id)).Code == "PortConflict", "legacy run lost its declared TCP port");
         await Stop(restarted, first);
     }

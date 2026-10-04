@@ -14,18 +14,22 @@ public sealed class FriendService : IDisposable
     private Guid selectedId;
     private bool disposed;
     private int retainedOperations;
+    private readonly Func<HttpClient>? testClientFactory;
     private sealed record SavedConnections(List<Guid> Ids, Guid SelectedId);
 
-    public FriendService(LocalData data)
+    public FriendService(LocalData data) : this(data, null) { }
+
+    internal FriendService(LocalData data, Func<HttpClient>? testClientFactory)
     {
         this.data = data;
+        this.testClientFactory = testClientFactory;
         var state = LoadIndex(data);
         var ids = state.Ids;
         foreach (var id in ids.Distinct())
         {
             var file = FileName(id);
             if (!data.HasProtected(file)) continue;
-            var link = new FriendLink(data, file);
+            var link = new FriendLink(data, file, testClientFactory);
             if (link.Configured) links.Add((id, link));
             else link.Dispose();
         }
@@ -53,7 +57,7 @@ public sealed class FriendService : IDisposable
         try
         {
             var id = Guid.NewGuid();
-            var link = new FriendLink(data, FileName(id));
+            var link = new FriendLink(data, FileName(id), testClientFactory);
             var result = await link.PairAsync(invitation, hostAddress);
             if (!result.Ok)
             {

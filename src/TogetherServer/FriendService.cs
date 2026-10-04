@@ -84,6 +84,7 @@ internal sealed partial class FriendLink : IDisposable
     private readonly object lifetimeSync = new();
     private readonly LocalData data;
     private readonly string configFile;
+    private readonly Func<HttpClient>? testClientFactory;
     private FriendConfiguration? config;
     private FriendView view;
     private Guid instanceId = Guid.NewGuid();
@@ -134,10 +135,11 @@ internal sealed partial class FriendLink : IDisposable
     private bool disposed;
     private bool resourcesDisposed;
 
-    public FriendLink(LocalData data, string configFile)
+    public FriendLink(LocalData data, string configFile, Func<HttpClient>? testClientFactory = null)
     {
         this.data = data;
         this.configFile = configFile;
+        this.testClientFactory = testClientFactory;
         config = LoadConfig(data, configFile);
         if (config is not null)
         {
@@ -905,7 +907,7 @@ internal sealed partial class FriendLink : IDisposable
     {
         if (config is null) throw new InvalidOperationException("Connect to a Host first.");
         if (client is not null) return client;
-        client = MakeClient(config.Endpoint, AcceptedPins());
+        client = testClientFactory?.Invoke() ?? MakeClient(config.Endpoint, AcceptedPins());
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
         client.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
         client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());

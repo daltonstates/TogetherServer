@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.RateLimiting;
 
 namespace TogetherServer;
@@ -22,7 +23,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     GameServerRegistry games, ServerLogService serverLogs, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
     Func<bool>? isShuttingDown = null,
     Func<Guid, CancellationToken, Task<bool>>? recoveryLossProbe = null,
-    Func<Guid, bool>? recoveryLossCurrent = null)
+    Func<Guid, bool>? recoveryLossCurrent = null,
+    Action<IWebHostBuilder>? inMemoryTransport = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -52,6 +54,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
     }
 
     public bool Active => active is not null && manager.CompanionListeningEnabled;
+    internal WebApplication? InMemoryApp => inMemoryTransport is null ? null : active;
     public string ListenerState { get; private set; } = CompanionListenerStates.Off;
     public string? Warning { get; private set; }
     public IReadOnlyList<RemoteOperationView> RecentOperations() => operations.Recent();
@@ -106,8 +109,10 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             }
             await StopCoreAsync();
             var builder = WebApplication.CreateBuilder(Array.Empty<string>());
-            builder.WebHost.ConfigureKestrel(options =>
-                options.Listen(bind, settings.CompanionPort, listener => listener.UseHttps(nextCertificate)));
+            if (inMemoryTransport is null)
+                builder.WebHost.ConfigureKestrel(options =>
+                    options.Listen(bind, settings.CompanionPort, listener => listener.UseHttps(nextCertificate)));
+            else inMemoryTransport(builder.WebHost);
             builder.Services.AddRateLimiter(options =>
             {
                 options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -127,7 +132,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                         "/shared-world/resolution/owner-offer", StringComparison.Ordinal) == true;
                 var maximumBody = authorityIngest ? 2 * 1024 * 1024 : 4096;
                 if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
-                    context.Connection.LocalPort != settings.CompanionPort ||
+                    (inMemoryTransport is null && context.Connection.LocalPort != settings.CompanionPort) ||
                     !context.Request.Path.StartsWithSegments("/api/companion") ||
                     !string.Equals(context.Request.Host.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase) ||
                     context.Request.Host.Port != settings.CompanionPort ||
@@ -150,7 +155,9 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             activeAddress = configurationKey;
             Warning = null;
             ListenerState = CompanionListenerStates.Listening;
-            DiagnosticOutput.WriteLine($"Companion HTTPS listener: {address}");
+            DiagnosticOutput.WriteLine(inMemoryTransport is null
+                ? $"Companion HTTPS listener: {address}"
+                : "Companion routes started in memory for checks.");
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or
             System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or

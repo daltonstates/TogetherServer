@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using TogetherServer;
 
@@ -16,19 +17,14 @@ async Task Check(string name, Func<Task> test)
 void Require(bool value, string message) { if (!value) throw new Exception(message); }
 int FreePort()
 {
+    var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
+        .Select(endpoint => endpoint.Port).ToHashSet();
     for (var attempt = 0; attempt < 100; attempt++)
     {
         var port = Random.Shared.Next(35000, 59000);
-        try
-        {
-            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-            { ExclusiveAddressUse = true };
-            socket.Bind(new IPEndPoint(IPAddress.Loopback, port));
-            return port;
-        }
-        catch (SocketException) { }
+        if (!active.Contains(port)) return port;
     }
-    throw new Exception("No free UDP port found.");
+    throw new Exception("No unused UDP port found in the Windows port table.");
 }
 
 ServerProfile Profile(string name, int port)
@@ -102,7 +98,7 @@ async Task<RunView> WaitForState(HostManager manager, Guid profileId, string sta
 await Check("protected scripts are required and never authorize remote stop", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "lifecycle-data"));
-    var games = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly);
+    var games = new GameServerRegistry(data, false, PortProbeMode.ObserveOnly);
     var manager = new HostManager(data, games);
     var activeManager = manager;
     var profile = Profile("custom-lifecycle", FreePort());
@@ -157,7 +153,7 @@ await Check("protected scripts are required and never authorize remote stop", as
 await Check("invalid status fails closed and local stop remains available", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "invalid-status-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     var profile = Profile("invalid-status", FreePort());
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok, "settings failed");
     Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts("Write-Output 'not json'"))).Ok, "scripts failed");
@@ -243,7 +239,7 @@ await Check("invalid status fails closed and local stop remains available", asyn
 await Check("script count cannot replace a conflicting server", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "conflict-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     var port = FreePort();
     var running = Profile("custom-running", port);
     var requested = Profile("custom-requested", port);
@@ -271,7 +267,7 @@ await Check("script count cannot replace a conflicting server", async () =>
 await Check("operation-scoped Stop survives an immediate Custom start race", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "immediate-stop-data"));
-    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+    var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     var profile = Profile("custom-immediate-stop", FreePort());
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
         "settings failed");
@@ -304,7 +300,7 @@ await Check("operation-scoped Stop survives an immediate Custom start race", asy
 await Check("owner certification enables guarded Custom lifecycle and invalidates on change", async () =>
 {
     using var data = new LocalData(Path.Combine(root, "certified-lifecycle-data"));
-    var games = new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly);
+    var games = new GameServerRegistry(data, false, PortProbeMode.ObserveOnly);
     var clock = new ManualTimeProvider(DateTimeOffset.Parse("2026-09-23T12:00:00Z"));
     var manager = new HostManager(data, games, clock);
     var port = FreePort();
@@ -418,7 +414,7 @@ await Check("contract v2 rejects stale wrong and contradictory proofs", async ()
     async Task Exercise(string name, string status, string expected)
     {
         using var data = new LocalData(Path.Combine(root, "contract-invalid-" + name));
-        var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.LoopbackOnly));
+        var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
         var profile = Profile("invalid-" + name, FreePort());
         Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok, "settings failed");
         Require((await manager.SetCustomScriptsAsync(profile.Id, ContractV2Scripts(status))).Ok, "scripts failed");

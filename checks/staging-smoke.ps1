@@ -18,17 +18,18 @@ New-Item -ItemType Directory -Path $productionWorld -Force | Out-Null
 $productionSave = Join-Path $productionWorld 'owner-save.db'
 [IO.File]::WriteAllText($productionSave, 'production-owner-data')
 
-$listeners = @(
-    [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0),
-    [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-)
-try {
-    $listeners[0].Start()
-    $listeners[1].Start()
-    $productionPort = ([Net.IPEndPoint]$listeners[0].LocalEndpoint).Port
-    $stagingPort = ([Net.IPEndPoint]$listeners[1].LocalEndpoint).Port
+$activeTcp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+    ForEach-Object { $_.Port }
+$ports = @()
+for ($attempt = 0; $attempt -lt 200 -and $ports.Count -lt 2; $attempt++) {
+    $candidate = Get-Random -Minimum 51000 -Maximum 60000
+    if ($activeTcp -notcontains $candidate -and $ports -notcontains $candidate) {
+        $ports += $candidate
+    }
 }
-finally { $listeners | ForEach-Object { $_.Stop() } }
+if ($ports.Count -ne 2) { throw 'No unused local app port pair found in the Windows port table.' }
+$productionPort = $ports[0]
+$stagingPort = $ports[1]
 $productionUrl = "http://127.0.0.1:$productionPort"
 $stagingUrl = "http://127.0.0.1:$stagingPort"
 $productionHeaders = @{ Origin = $productionUrl; 'X-TogetherServer-Local' = '1' }

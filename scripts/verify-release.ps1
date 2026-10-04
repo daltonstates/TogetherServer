@@ -72,6 +72,28 @@ try {
             throw "Desktop code bypasses DiagnosticOutput: $($locations -join ', ')"
         }
     }
+    Invoke-Checked 'Check runner listener identity' {
+        $checkFiles = @(Get-ChildItem -LiteralPath (Join-Path $repository 'checks') -File -Recurse |
+            Where-Object { $_.Extension -in '.cs', '.ps1' -and
+                $_.FullName -notmatch '[\\/](?:obj|bin)[\\/]' })
+        $listenerPatterns = @(
+            '\bnew\s+(?:System\.Net\.Sockets\.)?(?:TcpListener|UdpClient|Socket)\s*\(',
+            '\[(?:System\.)?Net\.Sockets\.(?:TcpListener|UdpClient|Socket)\]::new\s*\(',
+            '\.Bind\s*\(', '\.Listen\s*\('
+        )
+        $offenders = @($checkFiles | Select-String -Pattern $listenerPatterns)
+        if ($offenders.Count -gt 0) {
+            $locations = $offenders | ForEach-Object { "$($_.Path):$($_.LineNumber)" }
+            throw "Check runners must not own OS listeners: $($locations -join ', ')"
+        }
+        $coreChecks = Get-Content -LiteralPath 'checks/TogetherServer.Checks/Program.cs' -Raw
+        $routes = [regex]::Matches($coreChecks, 'new CompanionServer\([\s\S]*?\);')
+        if ($routes.Count -eq 0 -or @($routes | Where-Object {
+            !$_.Value.Contains('inMemoryTransport: builder => builder.UseTestServer()')
+        }).Count -gt 0) {
+            throw 'Core route checks must use in-memory TestServer; packaged journeys own real sockets.'
+        }
+    }
     Invoke-Checked 'UI lint' {
         Push-Location ui
         try { npm run lint }

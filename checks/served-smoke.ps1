@@ -12,28 +12,24 @@ if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath
 $caseRoot = Join-Path $repository ('local-data/served-smoke/' + [guid]::NewGuid().ToString('N'))
 $worldDirectory = Join-Path $caseRoot 'disposable-world'
 New-Item -ItemType Directory -Path $worldDirectory -Force | Out-Null
-$probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-$probe.Start()
-$port = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
-$probe.Stop()
+$activeTcp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+    ForEach-Object { $_.Port }
+$port = 0
+for ($attempt = 0; $attempt -lt 100 -and $port -eq 0; $attempt++) {
+    $candidate = Get-Random -Minimum 51000 -Maximum 60000
+    if ($activeTcp -notcontains $candidate) { $port = $candidate }
+}
+if ($port -eq 0) { throw 'No unused local app port found in the Windows port table.' }
 function Get-FreeUdpPair {
+    $activeUdp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveUdpListeners() |
+        ForEach-Object { $_.Port }
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         $candidate = Get-Random -Minimum 35000 -Maximum 45000
-        $one = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
-            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
-        $two = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,
-            [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
-        try {
-            $one.ExclusiveAddressUse = $true
-            $two.ExclusiveAddressUse = $true
-            $one.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate))
-            $two.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, $candidate + 1))
+        if ($activeUdp -notcontains $candidate -and $activeUdp -notcontains ($candidate + 1)) {
             return $candidate
         }
-        catch [Net.Sockets.SocketException] { }
-        finally { $one.Dispose(); $two.Dispose() }
     }
-    throw 'Could not reserve a free UDP port pair for the served smoke.'
+    throw 'No unused UDP port pair found in the Windows port table.'
 }
 $gamePort = Get-FreeUdpPair
 $baseUrl = "http://127.0.0.1:$port"
