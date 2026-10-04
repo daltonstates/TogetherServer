@@ -65,7 +65,9 @@ internal sealed partial class SharedWorldService
     internal const long MaximumSharedWorldBytes = 64L * 1024 * 1024 * 1024;
     private sealed record SourceBinding(string Directory, string Game, string WorldId, Guid GroupId);
     private const string SigningKeyFile = "shared-world-signing-key.protected";
-    private const int MaximumIndexedVersions = 100_000;
+    // Keep only one requested page in memory. Older history has no lifetime cap;
+    // an uncached page is verified again from the signed current head.
+    private const int HistoricalIndexWindow = 4096;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly LocalData data;
     private readonly ISharedWorldCaptureAdapter capture;
@@ -82,11 +84,15 @@ internal sealed partial class SharedWorldService
     private readonly Dictionary<Guid, EarlierVersionIndex> earlierVersionIndexes = [];
     internal long HistoricalVersionStepCount { get; private set; }
     internal long HistoricalManifestReadCount { get; private set; }
+    internal Func<long, SharedWorldVersion>? HistoricalVersionForChecks { get; set; }
     internal int HistoricalProofIndexBuildCount => Authority.ReviewProofIndexBuildCount;
     internal long HistoricalProofManifestReadCount => Authority.ReviewProofPieceReadCount;
     // Invoked only by deterministic core checks while the publication gates are held.
     internal Action? AfterGovernanceCheckForChecks { get; set; }
-    private readonly Dictionary<(string VersionHash, int FileIndex), string[]> chunkHashes = new();
+    private readonly Dictionary<(Guid ProfileId, string VersionHash, int FileIndex), string[]> chunkHashes = new();
+    internal int CachedChunkFileCount => chunkHashes.Count;
+    internal int CachedHistoricalHashCount(Guid profileId) =>
+        earlierVersionIndexes.GetValueOrDefault(profileId)?.Hashes.Count ?? 0;
 
     internal string LocalAuthorityPublicKey()
     {
@@ -564,6 +570,7 @@ internal sealed partial class SharedWorldService
                     var latestStage = LatestPath(profile.Id) + ".new";
                     File.WriteAllBytes(latestStage, JsonSerializer.SerializeToUtf8Bytes(version, Json));
                     File.Move(latestStage, LatestPath(profile.Id), true);
+                    EvictOldChunkHashes(profile.Id, version.VersionHash);
                     try { PrunePublishedPayloads(version); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
                     { /* The latest verified payload remains available; cleanup can retry at next publish. */ }
@@ -616,7 +623,7 @@ internal sealed partial class SharedWorldService
                 new FileInfo(path).Length != file.Length)
                 throw new InvalidDataException("Shared save file changed during transfer.");
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var cacheKey = (version.VersionHash, fileIndex);
+            var cacheKey = (version.ProfileId, version.VersionHash, fileIndex);
             if (!chunkHashes.TryGetValue(cacheKey, out var hashes))
             {
                 hashes = HashChunksAndVerify(stream, file);
@@ -633,6 +640,14 @@ internal sealed partial class SharedWorldService
         }
     }
 
+    internal void EvictOldChunkHashes(Guid profileId, string latestHash)
+    {
+        lock (sync)
+            foreach (var key in chunkHashes.Keys.Where(key =>
+                key.ProfileId == profileId && key.VersionHash != latestHash).ToArray())
+                chunkHashes.Remove(key);
+    }
+
     public SharedWorldVersion ReadEarlierVersion(SharedWorldVersion latest, long number)
     {
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
@@ -647,19 +662,20 @@ internal sealed partial class SharedWorldService
                 latest.Number == head.Version.Number && latest.VersionHash != head.Version.VersionHash))
                 throw new InvalidDataException("The published save is outside the selected authority lineage.");
             if (!earlierVersionIndexes.TryGetValue(latest.ProfileId, out var index) ||
-                index.LatestHash != latest.VersionHash || index.AuthorityHash != head?.RecordHash)
+                index.LatestHash != latest.VersionHash || index.AuthorityHash != head?.RecordHash ||
+                !index.Hashes.ContainsKey(number))
             {
                 index = new(latest, head?.RecordHash);
                 earlierVersionIndexes[latest.ProfileId] = index;
             }
             while (index.Lowest.Number > number)
             {
-                if (index.Hashes.Count >= MaximumIndexedVersions)
-                    throw new InvalidDataException("This missed-save gap exceeds the bounded version index.");
                 var prior = ReadHistoricalVersion(latest, index.Lowest.Number - 1, head);
                 CheckHistoricalLink(latest, index.Lowest, prior, head);
                 index.Hashes.Add(prior.Number, prior.VersionHash);
                 index.Lowest = prior;
+                if (index.Hashes.Count > HistoricalIndexWindow)
+                    index.Hashes.Remove(prior.Number + HistoricalIndexWindow);
             }
             var result = ReadHistoricalVersion(latest, number, head);
             if (!index.Hashes.TryGetValue(number, out var expectedHash) ||
@@ -676,6 +692,7 @@ internal sealed partial class SharedWorldService
         WorldAuthorityRecord? head)
     {
         HistoricalVersionStepCount++;
+        if (HistoricalVersionForChecks is { } fixture) return fixture(number);
         if (head is not null && number <= head.Version.Number)
             return Authority.FindProvenVersionForTransfer(latest.ProfileId, number) ??
                 throw new InvalidDataException("Earlier authority proof is missing.");
