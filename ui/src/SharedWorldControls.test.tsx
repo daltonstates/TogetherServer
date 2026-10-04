@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus,
-  parseHostSharedWorldStatus, normalizedDirectIpHttpsEndpoint, parseSharingView } from './SharedWorldControls'
+  parseHostSharedWorldStatus, normalizedDirectIpHttpsEndpoint, parseRecoveryOffer, parseSharingView } from './SharedWorldControls'
 import type { Device } from './contracts'
 
 const profile = '11111111-1111-4111-8111-111111111111'
@@ -49,7 +49,8 @@ describe('Shared saves controls', () => {
     expect(screen.getByLabelText('Eligible host for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Recovery voter for Friend PC')).not.toBeChecked()
     expect(screen.getByLabelText('Manage sharing for Friend PC')).not.toBeChecked()
-    expect(screen.getByText(/Live save capture and automatic takeover are unavailable/)).toBeInTheDocument()
+    expect(screen.getByText(/A live save is a verified snapshot captured while the game is running/)).toBeInTheDocument()
+    expect(screen.getByText(/Automatic takeover is unavailable/)).toBeInTheDocument()
     expect(screen.getByText(/Use its hash-verified post-Stop file copy/)).toBeInTheDocument()
   })
 
@@ -77,7 +78,7 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Receive latest save' }))
     expect(await screen.findByText('This PC is one save behind')).toBeInTheDocument()
     expect(screen.getByText('Shared worlds').closest('summary')).toHaveTextContent('This PC is one save behind')
-    expect(screen.getByText(/automatic takeover are unavailable/)).toBeInTheDocument()
+    expect(screen.getByText(/Automatic takeover is unavailable/)).toBeInTheDocument()
   })
 
   it('lets a voter review and confirm signed membership without enabling save receipt', async () => {
@@ -144,6 +145,14 @@ describe('Shared saves controls', () => {
     expect(() => parseHostSharedWorldStatus({ enabled: 'yes', latest: null, error: null })).toThrow()
     expect(() => parseFriendSharedWorldStatus({ consented: false, hostVersion: '3',
       thisPcVersion: null, state: 'Off', error: null })).toThrow()
+  })
+
+  it('accepts only the two signed save capture kinds in a recovery offer', () => {
+    expect(parseRecoveryOffer(offer, profile).version.captureKind).toBe('PostStopBackup')
+    expect(parseRecoveryOffer({ ...offer, version: { ...offer.version, captureKind: 'LiveSave' } }, profile)
+      .version.captureKind).toBe('LiveSave')
+    expect(() => parseRecoveryOffer({ ...offer, version: { ...offer.version, captureKind: 'Unknown' } }, profile))
+      .toThrow('Save capture kind is invalid.')
   })
 
   it('refreshes an open receiver panel as automatic catch-up advances', async () => {
@@ -221,18 +230,31 @@ describe('Shared saves controls', () => {
   })
 
   it('shows only the confirmed copy count returned for the latest version', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => reply({ enabled: true, error: null,
-      confirmedCopies: 2, latest: { number: 4, versionHash: 'A'.repeat(64),
-        createdUtc: '2026-10-03T12:00:00Z' } })))
+    let captureKind: string | undefined = 'PostStopBackup'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
+      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
+        reply({ enabled: true, error: null, confirmedCopies: 2,
+          latest: { number: 4, versionHash: 'A'.repeat(64),
+            createdUtc: '2026-10-03T12:00:00Z', captureKind } })))
     render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
       onGrantChanged={async () => {}} />)
     fireEvent.click(screen.getByText('Shared saves'))
     expect(await screen.findByText(/Copied to 2 PCs.*latest post-Stop file copy 4/, { selector: 'p' })).toBeInTheDocument()
     expect(screen.getByText('Shared saves').closest('summary')).toHaveTextContent('Copied to 2 PCs')
-    expect(screen.getByText(/Game load and playability have not been checked/)).toBeInTheDocument()
+    expect(screen.getByText(/Hash verification does not prove game load or playability/)).toBeInTheDocument()
     expect(screen.getByText(/app cannot prove its current availability/)).toBeInTheDocument()
+    captureKind = 'LiveSave'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
+    expect(await screen.findByText(/Copied to 2 PCs.*latest live save copy 4/, { selector: 'p' })).toBeInTheDocument()
+    captureKind = undefined
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
+    expect(await screen.findByText(/Copied to 2 PCs.*latest verified save copy 4/, { selector: 'p' })).toBeInTheDocument()
+    expect(screen.queryByText(/latest post-Stop file copy 4/)).not.toBeInTheDocument()
     expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
       error: null, confirmedCopies: -1 })).toThrow()
+    expect(() => parseHostSharedWorldStatus({ enabled: true, error: null,
+      latest: { number: 4, versionHash: 'A'.repeat(64), createdUtc: '2026-10-03T12:00:00Z',
+        captureKind: 'Unknown' } })).toThrow('Save capture kind is invalid.')
   })
 
   it('shows manual Start readiness only after the restored setup checks confirm it', async () => {
@@ -267,6 +289,8 @@ describe('Shared saves controls', () => {
     render(<FriendSharedWorlds profileId={profile} available />)
     await waitFor(() => expect(screen.getByText('Shared worlds').closest('summary'))
       .toHaveTextContent('Verified copy on this PC'))
+    expect(screen.getByText(/Verified save copy 2 on this PC/)).toBeInTheDocument()
+    expect(screen.queryByText(/Verified post-Stop file copy 2/)).not.toBeInTheDocument()
     expect(screen.getByText('Shared worlds').closest('summary'))
       .not.toHaveTextContent('Ready for manual Start')
     fireEvent.click(screen.getByText('Shared worlds'))
@@ -283,7 +307,7 @@ describe('Shared saves controls', () => {
       .toHaveTextContent('The stored save failed verification.'))
     expect(screen.getByText('Shared worlds').closest('summary'))
       .not.toHaveTextContent('Ready for manual Start')
-    expect(screen.getByText(/Files are hash-verified; game load and playability have not been checked/))
+    expect(screen.getByText(/Hash verification does not prove game load or playability/))
       .toBeInTheDocument()
   })
 
@@ -612,7 +636,7 @@ describe('Shared saves controls', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
       url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
         reply({ enabled: true, latest: { number: 4, versionHash: head.versionHash,
-          createdUtc: '2026-10-03T12:00:00Z' }, confirmedCopies: 2,
+          createdUtc: '2026-10-03T12:00:00Z', captureKind: 'PostStopBackup' }, confirmedCopies: 2,
           canManageSharing: false, error: null, authority: { state: 'ThisPcHost',
             message: 'This PC holds hosting authority for this world.', head,
             competingHeads: null, exactManagedProcessRunning: false } })))
@@ -696,14 +720,26 @@ describe('Shared saves controls', () => {
     expect(screen.queryByRole('button', { name: 'Check and vote for this offer' })).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Offer code from candidate PC'), { target: { value: JSON.stringify(offer) } })
     fireEvent.click(screen.getByRole('button', { name: 'Review offer code' }))
+    expect(screen.getByText(/save version 3 \(post-Stop backup\)/)).toBeInTheDocument()
+    const liveOffer = { ...offer, version: { ...offer.version, captureKind: 'LiveSave' } }
+    fireEvent.change(screen.getByLabelText('Offer code from candidate PC'), { target: { value: JSON.stringify(liveOffer) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Review offer code' }))
+    expect(screen.getByText(/save version 3 \(live save snapshot\)/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Offer code from candidate PC'), { target: { value: JSON.stringify({
+      ...offer, version: { ...offer.version, captureKind: 'Unknown' } }) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Review offer code' }))
+    expect(screen.getByText(/Invalid offer code: Save capture kind is invalid/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check and vote for this offer' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Offer code from candidate PC'), { target: { value: JSON.stringify(liveOffer) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Review offer code' }))
     expect(screen.getByText(/another Host may still be running/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check and vote for this offer' }))
     expect(await screen.findByText('The candidate did not answer.')).toBeInTheDocument()
     expect(screen.queryByText(/Majority decision recorded/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check and vote for this offer' }))
     await waitFor(() => expect(calls).toEqual([
-      { url: `/api/local/friend/${profile}/shared-world/recovery/vote`, body: offer },
-      { url: `/api/local/friend/${profile}/shared-world/recovery/vote`, body: offer }]))
+      { url: `/api/local/friend/${profile}/shared-world/recovery/vote`, body: liveOffer },
+      { url: `/api/local/friend/${profile}/shared-world/recovery/vote`, body: liveOffer }]))
     expect(await screen.findByText('Your recovery vote was recorded.')).toBeInTheDocument()
     expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
   })

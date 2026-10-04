@@ -5,7 +5,8 @@ import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 
-type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string } | null; error: string | null; confirmedCopies: number;
+type CaptureKind = 'PostStopBackup' | 'LiveSave'
+type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string; captureKind: CaptureKind | null } | null; error: string | null; confirmedCopies: number;
   liveSave: { available: boolean; message: string }; canManageSharing: boolean; authority: AuthorityStatus | null }
 type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versionHash: string;
   hostDeviceId: string; hostPublicKey: string; hostAddress: string }
@@ -29,7 +30,7 @@ const deviceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 type HandoffStatus = { pending: boolean; code: string; message: string; successorDeviceId: string | null;
   finalVersion: number | null; receiptConfirmed: boolean; canComplete: boolean; canCancel: boolean }
 type RecoveryOffer = { proposal: { profileId: string; candidateAddress: string; candidatePublicKey: string };
-  version: { number: number; versionHash: string; captureKind: string }; candidateReceipt: { deviceId: string } }
+  version: { number: number; versionHash: string; captureKind: CaptureKind }; candidateReceipt: { deviceId: string } }
 type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'MajorityRecorded' |
   'ObservedMajority' | 'HistoricalRecovery' | 'HistoryReviewRequired'; votes: number;
   required: number; version: number | null; versionHash: string | null; candidateAddress: string | null;
@@ -86,6 +87,10 @@ function hash(value: unknown, where: string): string {
   if (!/^[0-9a-f]{64}$/i.test(result)) throw new Error(`${where} is invalid.`)
   return result
 }
+function captureKind(value: unknown): CaptureKind {
+  if (value !== 'PostStopBackup' && value !== 'LiveSave') throw new Error('Save capture kind is invalid.')
+  return value
+}
 export function parseRecoveryOffer(value: unknown, profileId: string): RecoveryOffer {
   const source = record(value, 'Recovery offer')
   const proposal = record(source.proposal, 'Recovery proposal')
@@ -100,8 +105,8 @@ export function parseRecoveryOffer(value: unknown, profileId: string): RecoveryO
     parsed.pathname !== '/' || parsed.origin !== address.replace(/\/$/, ''))
     throw new Error('Candidate address is invalid.')
   const number = numberOrNull(version.number, 'Save version')
-  if (number === null || number < 1 || version.captureKind !== 'PostStopBackup')
-    throw new Error('Only a completed post-Stop save can be offered.')
+  if (number === null || number < 1) throw new Error('Save version is invalid.')
+  captureKind(version.captureKind)
   guid(receipt.deviceId, 'Candidate PC')
   shortText(proposal.candidatePublicKey, 'Candidate identity', 500)
   hash(version.versionHash, 'Save hash')
@@ -178,7 +183,8 @@ export function parseHostSharedWorldStatus(value: unknown): HostStatus {
     if (number === null || number < 1 || typeof item.versionHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.versionHash) ||
       typeof item.createdUtc !== 'string' || !Number.isFinite(Date.parse(item.createdUtc)))
       throw new Error('Published version is invalid.')
-    latest = { number, versionHash: item.versionHash, createdUtc: item.createdUtc }
+    latest = { number, versionHash: item.versionHash, createdUtc: item.createdUtc,
+      captureKind: item.captureKind == null ? null : captureKind(item.captureKind) }
   }
   const authority = source.authority == null ? null : parseAuthorityStatus(source.authority)
   return { enabled: boolean(source.enabled, 'Sharing switch'), latest, error: textOrNull(source.error, 'Shared save error'),
@@ -485,9 +491,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const authority = status?.authority
   const fenced = authority?.state === 'OldHostFenced'
   const review = authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
+  const latestCopyLabel = status?.latest?.captureKind === 'PostStopBackup' ? 'post-Stop file copy' :
+    status?.latest?.captureKind === 'LiveSave' ? 'live save copy' : 'verified save copy'
   const copyHeadline = fenced ? 'Another PC now hosts this world' :
     review ? 'Hosting decision needs review' : !status?.enabled ? 'Sharing off' :
-      status.latest ? `Copied to ${status.confirmedCopies} PCs` : 'No post-Stop copy yet'
+      status.latest ? `Copied to ${status.confirmedCopies} PCs` : 'No verified save yet'
   return <details className="advanced-block" onToggle={event => setOpen(event.currentTarget.open)}><summary><span>Shared saves</span>
     {status && <span> · {copyHeadline}</span>}</summary>
     {(fenced || review) && <section role="alert" aria-label="Hosting authority">
@@ -499,11 +507,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     </section>}
     {status?.latest ? <p role="status">{fenced || review ?
       `Preserved version ${status.latest.number} on this PC` :
-      `${status.enabled ? `Copied to ${status.confirmedCopies} PCs` : 'Sharing off; previously confirmed copies'} · latest post-Stop file copy ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
+      `${status.enabled ? `Copied to ${status.confirmedCopies} PCs` : 'Sharing off; previously confirmed copies'} · latest ${latestCopyLabel} ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p role="status">{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' :
-        status?.enabled ? 'No post-Stop save has been published yet.' : 'Sharing is off. No post-Stop save has been published yet.'}</p>}
+        status?.enabled ? 'No shared save has been published yet.' : 'Sharing is off. No shared save has been published yet.'}</p>}
     {authority?.state === 'ThisPcHost' && <p role="status">This PC holds the verified current hosting decision.</p>}
-    {!fenced && !review && <><p>After a graceful Stop, send hash-verified world files to approved PCs. Game load and playability have not been checked. Live save capture and automatic takeover are unavailable.</p>
+    {!fenced && !review && <><p>Current production sharing copies world files after a graceful Stop. A live save is a verified snapshot captured while the game is running; creating one is currently unavailable. Hash verification does not prove game load or playability. Automatic takeover is unavailable.</p>
       <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p></>}
     <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false || fenced || review}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
@@ -571,7 +579,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     </section>
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void Promise.all([refreshHost(), getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster).then(setRoster)]).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
-    <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Only immutable, hash-verified post-Stop backup files are sent over the existing paired HTTPS connection. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
+    <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Immutable, hash-verified save files are sent over the existing paired HTTPS connection. A post-Stop backup is copied after Stop; a live save is captured while the game is running. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
       {roster?.members.map(member => <p key={member.deviceId}>PC {member.deviceId} - {member.revoked ? 'revoked' : 'active'} - Receive {member.grants.receive ? 'yes' : 'no'} - host {member.grants.eligibleHost ? 'yes' : 'no'} - vote {member.grants.recoveryVoter ? 'yes' : 'no'} - manage {member.grants.manageSharing ? 'yes' : 'no'}</p>)}
       {authority?.head && <p>Verified head: epoch {authority.head.epoch} · PC {authority.head.hostDeviceId} · address {authority.head.hostAddress} · decision hash {authority.head.recordHash} · save hash {authority.head.versionHash}</p>}
       {authority?.competingHeads.map(head => <p key={head.recordHash}>Competing head: epoch {head.epoch} · PC {head.hostDeviceId} · address {head.hostAddress} · decision hash {head.recordHash} · save hash {head.versionHash}</p>)}
@@ -841,8 +849,8 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       role={transferAlert ? 'alert' : undefined}>{headline}</span>
     {capacityAlert && <span className="warning-text" role="alert"> · {capacityAlert}</span>}</summary>
     <p role="status">{status?.thisPcVersion != null && status.consented ?
-      `Verified post-Stop file copy ${status.thisPcVersion} on this PC. ${headline}.` : `${headline}.`}</p>
-    <p>Receive approved post-Stop file copies into this PC's private vault. Files are hash-verified; game load and playability have not been checked. Live save sharing and automatic takeover are unavailable.</p>
+      `Verified save copy ${status.thisPcVersion} on this PC. ${headline}.` : `${headline}.`}</p>
+    <p>Receive approved, hash-verified saves into this PC's private vault. A post-Stop backup is copied after a graceful Stop; a live save is a snapshot captured while the game is running. Current production sharing creates post-Stop copies only. Hash verification does not prove game load or playability. Automatic takeover is unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>Update the Host app before receiving shared saves.</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
@@ -901,7 +909,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       <label>Offer code from candidate PC<TextArea rows={3} value={offerCode} maxLength={512 * 1024}
         onChange={event => { setOfferCode(event.target.value); setReviewedOffer(null); setVoteCount(null) }} /></label>
       <Button className="secondary" disabled={busy || !offerCode.trim()} onClick={reviewOffer}>Review offer code</Button>
-      {reviewedOffer && <div><p>Candidate PC {reviewedOffer.candidateReceipt.deviceId} · save version {reviewedOffer.version.number} · {reviewedOffer.proposal.candidateAddress}</p>
+      {reviewedOffer && <div><p>Candidate PC {reviewedOffer.candidateReceipt.deviceId} · save version {reviewedOffer.version.number} ({reviewedOffer.version.captureKind === 'LiveSave' ? 'live save snapshot' : 'post-Stop backup'}) · {reviewedOffer.proposal.candidateAddress}</p>
         <p role="alert">Another Host may still be running. Voting for a different save history could split this world. Check the candidate PC, address, and save version with the group.</p>
         <Button className="secondary" disabled={busy || !available} onClick={() => void vote()}>Check and vote for this offer</Button></div>}
       {voteCount && !recovery?.required && <p role="status">Votes {voteCount.votes}/{voteCount.required}. {voteCount.majorityReached ?
