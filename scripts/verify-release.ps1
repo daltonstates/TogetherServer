@@ -131,6 +131,9 @@ try {
     Invoke-Checked 'Shared Worlds packaged journey' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-world-journey
     }
+    Invoke-Checked 'Shared LiveSave packaged transfer journey' {
+        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-live-transfer-journey
+    }
     Invoke-Checked 'TogetherServer.CompanionChecks' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
     }

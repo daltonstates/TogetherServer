@@ -25,6 +25,13 @@ if (args.Skip(1).Contains("--shared-live-core", StringComparer.OrdinalIgnoreCase
     SharedWorldLiveCaptureChecks.Run();
     return 0;
 }
+if (args.Skip(1).Contains("--shared-live-transfer-journey", StringComparer.OrdinalIgnoreCase))
+{
+    if (!File.Exists(appPath) || !File.Exists(fixturePath))
+        throw new Exception("Build the packaged app and synthetic fixture first.");
+    await SharedWorldJourney.RunLiveTransferAsync(appPath, fixturePath);
+    return 0;
+}
 if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
     throw new Exception("Run scripts/build.ps1 first.");
 if (args.Skip(1).Contains("--core-remote-journey", StringComparer.OrdinalIgnoreCase))
