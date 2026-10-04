@@ -8,6 +8,7 @@ import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 type CaptureKind = 'PostStopBackup' | 'LiveSave'
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string; captureKind: CaptureKind | null } | null; error: string | null; confirmedCopies: number;
   liveSave: { available: boolean; message: string }; canManageSharing: boolean; authority: AuthorityStatus | null }
+type LiveOrphanReview = { code: 'None' | 'Verified' | 'ReviewRequired'; versionHash: string | null; message: string }
 type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versionHash: string;
   hostDeviceId: string; hostPublicKey: string; hostAddress: string }
 type AuthorityStatus = { state: 'NoTakeover' | 'OldHostFenced' | 'ThisPcHost' | 'CompetingHistories' | 'ReviewRequired';
@@ -191,6 +192,17 @@ export function parseHostSharedWorldStatus(value: unknown): HostStatus {
     confirmedCopies: numberOrNull(source.confirmedCopies ?? 0, 'Confirmed copies') ?? 0, liveSave,
     canManageSharing: boolean(source.canManageSharing ?? true, 'Sharing management'), authority }
 }
+export function parseLiveOrphanReview(value: unknown): LiveOrphanReview {
+  const source = record(value, 'Interrupted file copy')
+  if (Object.keys(source).sort().join(',') !== 'code,message,versionHash' ||
+    source.code !== 'None' && source.code !== 'Verified' && source.code !== 'ReviewRequired')
+    throw new Error('Interrupted file copy status is invalid.')
+  const versionHash = source.versionHash === null ? null : hash(source.versionHash, 'Interrupted copy hash')
+  if ((source.code === 'Verified') !== (versionHash !== null) ||
+    versionHash !== null && !/^[0-9A-F]{64}$/.test(versionHash))
+    throw new Error('Interrupted file copy hash is invalid.')
+  return { code: source.code, versionHash, message: shortText(source.message, 'Interrupted file copy guidance') }
+}
 function parseAuthorityHead(value: unknown): AuthorityHead {
   const head = record(value, 'Hosting decision')
   const epoch = numberOrNull(head.epoch, 'Hosting epoch')
@@ -345,6 +357,8 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const [roster, setRoster] = useState<Roster | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [liveOrphan, setLiveOrphan] = useState<LiveOrphanReview | null>(null)
+  const [liveOrphanError, setLiveOrphanError] = useState('')
   const [handoff, setHandoff] = useState<HandoffStatus | null>(null)
   const [successorId, setSuccessorId] = useState('')
   const [successorAddress, setSuccessorAddress] = useState('')
@@ -365,6 +379,26 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)])
     setStatus(nextStatus); setHandoff(nextHandoff)
   }
+  const refreshLiveOrphan = async (clearError = true) => {
+    if (clearError) setLiveOrphanError('')
+    try {
+      setLiveOrphan(await getLocalJson(`/api/local/profiles/${profileId}/shared-world/live-orphan`,
+        parseLiveOrphanReview))
+    } catch (error) { setLiveOrphan(null); setLiveOrphanError(current => current || errorMessage(error)) }
+  }
+  const quarantineLiveOrphan = async () => {
+    if (liveOrphan?.code !== 'Verified' || !liveOrphan.versionHash) return
+    setBusy(true); setLiveOrphanError(''); setMessage('')
+    try {
+      const result = await changeJson(
+        `/api/local/profiles/${profileId}/shared-world/live-orphan/quarantine`,
+        'POST', parseBasicResult, { versionHash: liveOrphan.versionHash })
+      if (result.ok) setMessage(result.message)
+      else setLiveOrphanError(result.message)
+    } catch (error) { setLiveOrphanError(errorMessage(error)) }
+    finally { await refreshLiveOrphan(false); setBusy(false) }
+  }
+  useEffect(() => { setLiveOrphan(null); setLiveOrphanError('') }, [profileId])
   const [pendingResolutions, setPendingResolutions] = useState<PendingResolution[]>([])
   const [resolutionMessage, setResolutionMessage] = useState('')
   useEffect(() => {
@@ -579,7 +613,16 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     </section>
     {message && <p role="status">{message}</p>}
     <Button className="text-button" disabled={busy} onClick={() => void Promise.all([refreshHost(), getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster).then(setRoster)]).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
-    <details><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Immutable, hash-verified save files are sent over the existing paired HTTPS connection. A post-Stop backup is copied after Stop; a live save is captured while the game is running. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
+    <details onToggle={event => { if (event.currentTarget.open) void refreshLiveOrphan() }}><summary>Technical details</summary><p>Copy count includes PCs that signed a confirmation for this exact version after checking every file. It was last confirmed when that PC connected; the app cannot prove its current availability. Immutable, hash-verified save files are sent over the existing paired HTTPS connection. A post-Stop backup is copied after Stop; a live save is captured while the game is running. A hash check does not prove the game can load or play this world. Previous downloaded copies cannot be recalled.</p>
+      <section aria-label="Interrupted live file copy"><h4>Interrupted live file copy</h4>
+        {liveOrphan ? <p role={liveOrphan.code === 'ReviewRequired' ? 'alert' : 'status'}>{liveOrphan.message}</p> :
+          <p className="helper-text">Open these details to check for a verified interrupted file copy.</p>}
+        {liveOrphan?.code === 'Verified' && <><p>Exact save hash: <code>{liveOrphan.versionHash}</code></p>
+          <p>Quarantine preserves the signed files for review, up to eight local copies. It does not publish or promote this copy. A new post-Stop save can be made afterward. Game load has not been checked; real-game live sharing remains unavailable.</p>
+          <Button className="secondary" disabled={busy} onClick={() => void quarantineLiveOrphan()}>Quarantine for review</Button></>}
+        {liveOrphanError && <p role="alert">{liveOrphanError}</p>}
+        <Button className="text-button" disabled={busy} onClick={() => void refreshLiveOrphan()}>Refresh interrupted copy</Button>
+      </section>
       {roster?.members.map(member => <p key={member.deviceId}>PC {member.deviceId} - {member.revoked ? 'revoked' : 'active'} - Receive {member.grants.receive ? 'yes' : 'no'} - host {member.grants.eligibleHost ? 'yes' : 'no'} - vote {member.grants.recoveryVoter ? 'yes' : 'no'} - manage {member.grants.manageSharing ? 'yes' : 'no'}</p>)}
       {authority?.head && <p>Verified head: epoch {authority.head.epoch} · PC {authority.head.hostDeviceId} · address {authority.head.hostAddress} · decision hash {authority.head.recordHash} · save hash {authority.head.versionHash}</p>}
       {authority?.competingHeads.map(head => <p key={head.recordHash}>Competing head: epoch {head.epoch} · PC {head.hostDeviceId} · address {head.hostAddress} · decision hash {head.recordHash} · save hash {head.versionHash}</p>)}

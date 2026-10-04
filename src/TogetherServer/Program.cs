@@ -685,6 +685,19 @@ app.MapGet("/api/local/profiles/{id:guid}/shared-world", async (HttpContext cont
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Conflict(new { code = "FriendMode" }) :
     Results.Json(await manager.SharedWorldStatusAsync(id)));
+app.MapGet("/api/local/profiles/{id:guid}/shared-world/live-orphan", async (HttpContext context, Guid id) =>
+{
+    if (LocalSharedLiveOrphanRequest.RejectGet(context, friendMode) is { } rejection)
+        return rejection;
+    return Results.Json(await manager.SharedLiveOrphanReviewAsync(id));
+});
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/live-orphan/quarantine",
+    async (HttpContext context, Guid id) =>
+    {
+        var (versionHash, rejection) = await LocalSharedLiveOrphanRequest.ReadPostAsync(context, friendMode);
+        if (rejection is not null) return rejection;
+        return await HostOnly(() => manager.QuarantineSharedLiveOrphanAsync(id, versionHash!));
+    });
 app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedWorldConsentRequest request) =>
 {
     if (friendMode) return Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first."));
