@@ -53,6 +53,12 @@ Restore is local-owner-only and requires Offline with no uncertain run identity.
 
 The owner may copy a completed verified backup to a selected vault. TogetherServer verifies every destination hash and retains the local copy; the owner must choose an external or network folder when another-device protection is intended. **Test restore** copies the payload into disposable owned scratch storage, verifies the full manifest, and deletes that scratch copy without changing the live world. Neither result proves the real game can load the save, so a recognizable real-game restore drill remains an acceptance gate.
 
+### Shared live save recovery gate
+
+Live save publication remains fixture-only. A completion response alone does not bind the bytes of a running game to an immutable snapshot, so every real-game staging adapter is blocked until it supplies a typed, verified snapshot source. If a schema-5 live version reaches its signed directory but the app exits before updating the latest pointer, later publication stops. Post-Stop publication must never promote that orphan automatically.
+
+The internal recovery operation requires the exact orphan version hash, verifies its signature, parent, paths, complete payload hashes, and current sharing authority, then moves the untouched manifest and payload into a bounded local quarantine. The previous latest pointer remains intact, and a later post-Stop copy can advance from it. A damaged or ambiguous orphan stays blocked for owner review. Before enabling live save sharing for any real game, the Host must expose a local owner review action for this exact-hash quarantine, show the preserved copy and storage limit, and provide a recovery path for a damaged orphan. No Friend request may select a path or trigger this action.
+
 Before an owner-approved in-app update closes the app, a bounded local-state recovery checkpoint is hashed and bound to the current/target versions, storage schema, and previous EXE. The replacement helper validates that checkpoint again before replacing the verified executable. This checkpoint is recovery material, not automatic schema rollback or evidence that a new version can load every world.
 
 ### Archived session summaries

@@ -17,6 +17,7 @@ public sealed record SharedWorldPortableSetup(int GamePort, bool Crossplay,
 public static class SharedWorldCaptureKinds
 {
     public const string PostStopBackup = "PostStopBackup";
+    public const string LiveSave = "LiveSave";
 }
 
 internal sealed record VerifiedSharedWorldCapture(int Schema, string Kind, Guid BackupId,
@@ -89,6 +90,9 @@ internal sealed partial class SharedWorldService
     internal long HistoricalProofManifestReadCount => Authority.ReviewProofPieceReadCount;
     // Invoked only by deterministic core checks while the publication gates are held.
     internal Action? AfterGovernanceCheckForChecks { get; set; }
+    // Fixture-only seam for checking the same retention rule with competing
+    // authority heads without manufacturing a real signed recovery election.
+    internal Func<Guid, IReadOnlyCollection<string>>? RetentionProtectedHeadsForChecks { get; set; }
     private readonly Dictionary<(Guid ProfileId, string VersionHash, int FileIndex), string[]> chunkHashes = new();
     internal int CachedChunkFileCount => chunkHashes.Count;
     internal int CachedHistoricalHashCount(Guid profileId) =>
@@ -760,9 +764,10 @@ internal sealed partial class SharedWorldService
     {
         try
         {
-            if (value.Schema is not (1 or 2 or 3 or 4) || value.GroupId == Guid.Empty || value.ProfileId == Guid.Empty ||
+            if (value.Schema is not (1 or 2 or 3 or 4 or 5) || value.GroupId == Guid.Empty || value.ProfileId == Guid.Empty ||
                 value.Number < 1 || value.Files.Count is < 1 or > MaximumFiles ||
-                value.CaptureKind != SharedWorldCaptureKinds.PostStopBackup ||
+                value.CaptureKind is not (SharedWorldCaptureKinds.PostStopBackup or SharedWorldCaptureKinds.LiveSave) ||
+                (value.CaptureKind == SharedWorldCaptureKinds.LiveSave) != (value.Schema == 5) ||
                 value.PortableSetup is null || value.PortableSetup.GamePort is < 1 or > 65535 ||
                 value.Schema == 1 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 1) ||
                 value.Schema == 2 && !SharedWorldPortableSetupReader.LegacyFieldsEmpty(value.PortableSetup, 2) ||
@@ -998,9 +1003,26 @@ internal sealed partial class SharedWorldService
                         files,
                         publicKey
                     }, Json)
-                    : JsonSerializer.Serialize(new
+                    : schema == 4
+                    ? JsonSerializer.Serialize(new
                     {
                         schema = 4,
+                        group,
+                        number,
+                        parent,
+                        profile,
+                        game,
+                        world,
+                        createdUtc,
+                        captureKind,
+                        backup,
+                        portableSetup,
+                        files,
+                        publicKey
+                    }, Json)
+                    : JsonSerializer.Serialize(new
+                    {
+                        schema = 5,
                         group,
                         number,
                         parent,
@@ -1109,6 +1131,10 @@ internal sealed partial class SharedWorldService
         if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length > MaximumManifestBytes)
             throw new InvalidDataException("Unpublished shared version is incomplete.");
         var candidate = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(manifestPath), Json);
+        // A live capture needs fresh exact-run approval. An interrupted live
+        // publication must never be completed by a later post-Stop operation.
+        if (candidate?.CaptureKind == SharedWorldCaptureKinds.LiveSave)
+            throw new InvalidDataException("An interrupted live save publication needs review.");
         using var key = LoadPublishingKey(profile.Id);
         if (candidate is null || !VerifySignature(candidate) || candidate.ProfileId != profile.Id ||
             candidate.Game != profile.Kind || candidate.WorldId != profile.WorldId ||
@@ -1142,8 +1168,13 @@ internal sealed partial class SharedWorldService
     {
         foreach (var file in latest.Files)
             VerifyFile(SafeChild(Path.Combine(VersionRoot(latest), PayloadDirectory), file.Path), file);
-        // A resolution records a branch choice without deleting other branches.
-        if (Authority.Read(latest.ProfileId).Any(record => record.Schema == 2)) return;
+        // Preserve every current signed authority head, including competing
+        // heads. Historical manifests remain even when their payload expires.
+        var retained = new HashSet<string>(StringComparer.Ordinal) { latest.VersionHash };
+        foreach (var head in WorldAuthorityTrust.EffectiveHeads(Authority.Read(latest.ProfileId)))
+            retained.Add(head.Version.VersionHash);
+        if (latest.Game == GameKinds.Fixture && RetentionProtectedHeadsForChecks is not null)
+            retained.UnionWith(RetentionProtectedHeadsForChecks(latest.ProfileId));
         var candidates = new List<SharedWorldVersion>();
         foreach (var group in Directory.EnumerateDirectories(Root(latest.ProfileId)))
         {
@@ -1162,7 +1193,7 @@ internal sealed partial class SharedWorldService
                     candidates.Add(version);
             }
         }
-        var retained = new HashSet<string>(StringComparer.Ordinal) { latest.VersionHash };
+        var verified = new List<SharedWorldVersion>();
         foreach (var group in candidates.GroupBy(item => item.GroupId))
         {
             var kept = 0;
@@ -1172,12 +1203,16 @@ internal sealed partial class SharedWorldService
                 {
                     foreach (var file in candidate.Files)
                         VerifyFile(SafeChild(Path.Combine(VersionRoot(candidate), PayloadDirectory), file.Path), file);
+                    verified.Add(candidate);
                     if (kept++ < 3) retained.Add(candidate.VersionHash);
                 }
                 catch (InvalidDataException) { /* Damaged payload cannot count as a verified fallback. */ }
             }
         }
-        foreach (var candidate in candidates.Where(item => !retained.Contains(item.VersionHash)))
+        // ReadChunk and publication share sync, so a payload cannot disappear
+        // during a chunk read. The wire protocol serves only the current head;
+        // a Friend whose head changes must fetch the newer signed version.
+        foreach (var candidate in verified.Where(item => !retained.Contains(item.VersionHash)))
             foreach (var file in candidate.Files)
             {
                 var path = SafeChild(Path.Combine(VersionRoot(candidate), PayloadDirectory), file.Path);
