@@ -310,9 +310,11 @@ internal static class WindowsConsoleProcess
         _ => (ushort)char.ToUpperInvariant(character)
     };
 
-    private static bool CaptureIdentityMatches(ManagedRun run)
+    internal static bool CaptureIdentityMatches(ManagedRun run)
     {
         if (run.ConsoleCaptureProcessId is null || run.ConsoleCaptureStartTimeUtcTicks is null ||
+            run.ConsoleCaptureProcessId == run.ProcessId ||
+            run.ConsoleCaptureProcessId == Environment.ProcessId ||
             string.IsNullOrWhiteSpace(run.ConsoleCaptureExecutablePath)) return false;
         try
         {

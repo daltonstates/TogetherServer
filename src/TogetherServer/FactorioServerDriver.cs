@@ -76,7 +76,8 @@ internal sealed class FactorioServerDriver(LocalData data) : IGameServerDriver
             "--start-server", save,
             "--port", run.GamePort.ToString(CultureInfo.InvariantCulture),
             "--rcon-port", rconPort.ToString(CultureInfo.InvariantCulture),
-            "--rcon-password", password
+            "--rcon-password", password,
+            "--console-log", run.LogPath
         };
         var configuration = Path.Combine(run.WorldDirectory, "server-settings.json");
         if (File.Exists(configuration))

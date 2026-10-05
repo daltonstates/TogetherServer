@@ -26,7 +26,11 @@ while (true)
     if (command is null) return 3;
     File.AppendAllText(Path.Combine(directory, "synthetic-console-lines.txt"), command + Environment.NewLine);
     if (command == "save")
+    {
+        Console.WriteLine("Saving world data: 100%");
         File.WriteAllText(Path.Combine(directory, "synthetic-save-received.marker"), "literal save");
+        Console.WriteLine("World saved.");
+    }
     else if (command == "exit")
     {
         File.WriteAllText(Path.Combine(directory, "synthetic-exit-received.marker"), "literal exit");

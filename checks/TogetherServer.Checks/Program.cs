@@ -35,6 +35,12 @@ await Check("remote rehearsal staging, exact signed receipt, expiry and redactio
     () => RemoteRehearsalSafetyChecks.RunAsync(root));
 await Check("world load rehearsal boundaries", () => WorldLoadRehearsalChecks.RunAsync(root, fixture, CreateJunction));
 await Check("staging live save fixed action and failure recovery", () => LiveSaveActionChecks.RunAsync(root, fixture));
+await Check("Bedrock and Factorio immutable snapshot boundaries", () => BedrockFactorioSnapshotChecks.RunAsync(root, fixture));
+await Check("game console completion and immutable snapshots", () =>
+{
+    GameConsoleSnapshotChecks.Run(root, CreateJunction);
+    return Task.CompletedTask;
+});
 ServerProfile Profile(string name, string world, int port, string? directory = null)
 {
     var path = directory ?? Path.Combine(root, name);
@@ -3818,10 +3824,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-    {
-        Name: "fixturemod", Version: "1.0.0",
-        RequiredGameVersion: "2.0", Type: "Factorio mod"
-    }],
+        {
+            Name: "fixturemod", Version: "1.0.0",
+            RequiredGameVersion: "2.0", Type: "Factorio mod"
+        }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");

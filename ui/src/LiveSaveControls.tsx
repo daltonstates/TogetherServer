@@ -20,11 +20,12 @@ function parseAttempt(value: unknown): LiveSaveAttempt {
   const source = record(value)
   const requestId = text(source.requestId, 36)
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId) ||
-    !['Requested', 'Capturing', 'Publishing', 'Published', 'Failed', 'Canceled', 'Withdrawn'].includes(String(source.state)) ||
+    typeof source.state !== 'string' || !['Requested', 'Capturing', 'Publishing', 'Published', 'Failed', 'Canceled', 'Withdrawn'].includes(source.state) ||
+    source.state === 'Published' && (source.versionHash == null || source.versionNumber == null) ||
     source.versionHash != null && !/^[a-f0-9]{64}$/i.test(text(source.versionHash, 64)) ||
     source.versionNumber != null && (typeof source.versionNumber !== 'number' || !Number.isSafeInteger(source.versionNumber) || source.versionNumber < 1))
     throw new ContractError('Invalid live-save attempt')
-  return { requestId, state: String(source.state), code: text(source.code, 100), message: text(source.message),
+  return { requestId, state: source.state, code: text(source.code, 100), message: text(source.message),
     versionHash: source.versionHash == null ? null : text(source.versionHash, 64), versionNumber: source.versionNumber == null ? null : source.versionNumber as number }
 }
 export const parseLiveSaveStatus: Decoder<LiveSaveStatus> = value => {

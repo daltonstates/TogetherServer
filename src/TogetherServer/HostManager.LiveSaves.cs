@@ -27,7 +27,8 @@ public sealed partial class HostManager
 {
     private const string LiveSaveAttemptsName = "live-save-attempts.protected";
     private bool stagingLiveFixtureEnabled;
-    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeLiveSaves = new();
+    private sealed record ActiveLiveSave(Guid RequestId, CancellationTokenSource Cancellation);
+    private readonly ConcurrentDictionary<Guid, ActiveLiveSave> activeLiveSaves = new();
     internal void EnableStagingLiveFixture()
     {
         stagingLiveFixtureEnabled = true;
@@ -55,10 +56,17 @@ public sealed partial class HostManager
     }
     private void SaveLiveSaveAttempts(List<LiveSaveAttempt> attempts) => data.SaveProtected(LiveSaveAttemptsName, JsonSerializer.SerializeToUtf8Bytes(attempts));
     private static bool LiveAttemptPending(LiveSaveAttempt attempt) => attempt.State is "Requested" or "Capturing" or "Publishing";
-    private void CancelLiveSave(Guid profileId)
+    private void CancelLiveSave(Guid profileId, Guid? requestId = null)
     {
-        if (activeLiveSaves.TryGetValue(profileId, out var cancellation))
-            try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        if (activeLiveSaves.TryGetValue(profileId, out var active) &&
+            (requestId is null || active.RequestId == requestId))
+            try { active.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+    }
+    private IManagedLiveSnapshotAdapter? AcceptedSnapshotAdapter(string game)
+    {
+        if (!SharedWorldLiveSaveAdapters.IsGameAccepted(game)) return null;
+        var adapter = SharedWorldLiveSaveAdapters.CreateSnapshotAdapter(data, games, game);
+        return adapter?.LiveCaptureAccepted == true ? adapter : null;
     }
     private SharedWorldLiveSaveStatus LiveSaveStatusUnderGate(ServerProfile profile)
     {
@@ -71,10 +79,15 @@ public sealed partial class HostManager
                 ResumePending = true,
                 Message = "A previous save hold has no verified resume acknowledgement. Retry exact-run resume or gracefully Stop and review; another capture is blocked."
             };
-        if (profile.Kind != GameKinds.Fixture || !stagingLiveFixtureEnabled) return status;
+        var fixture = profile.Kind == GameKinds.Fixture && stagingLiveFixtureEnabled;
+        if (!fixture && AcceptedSnapshotAdapter(profile.Kind) is null) return status;
         try
         {
-            var attempt = ReadLiveSaveAttempts().LastOrDefault(item => item.ProfileId == profile.Id);
+            var attempts = ReadLiveSaveAttempts();
+            if (ReconcilePublishedAttempts(profile, attempts)) SaveLiveSaveAttempts(attempts);
+            if (!DiscardPublishedPrivateCopies(profile, attempts))
+                return status with { Code = "LiveSaveReviewRequired", Message = "A published save's redundant private copy needs cleanup review. Its signed version and source were kept." };
+            var attempt = attempts.LastOrDefault(item => item.ProfileId == profile.Id);
             var run = runs.SingleOrDefault(item => item.ProfileId == profile.Id);
             // Availability is derived again under the lifecycle gate on submission.
             var available = !data.Recovery.LifecycleBlocked && !data.HasProtected(PlannedHandoffName(profile.Id)) &&
@@ -82,8 +95,10 @@ public sealed partial class HostManager
                 run.StopRequestedUtc is null && Identity(run) == "Matched" && (attempt is null || !LiveAttemptPending(attempt)) &&
                 !SharedAuthorityBlocked(profile.Id, out _) && WorldCopyBlock(profile, "live capture") is null &&
                 sharedWorlds.ReviewLiveOrphan(profile).Code == "None";
-            return new(available, "Staging fixture only. Synthetic completion, sealed immutable copy and signed publication do not prove a real game save or load.",
-                GameKinds.Fixture, available ? "StagingFixtureReady" : "StagingFixtureBlocked", status.Stages, LastAttempt: attempt?.View());
+            return new(available, fixture ? "Staging fixture only. Synthetic completion, sealed immutable copy and signed publication do not prove a real game save or load." :
+                "Save through the accepted game adapter and share its sealed copy with approved PCs.",
+                profile.Kind, fixture ? available ? "StagingFixtureReady" : "StagingFixtureBlocked" :
+                    available ? "LiveSaveReady" : "LiveSaveBlocked", status.Stages, LastAttempt: attempt?.View());
         }
         catch (Exception ex) when (LiveOrphanReviewFailure(ex))
         { return status with { Code = "LiveSaveReviewRequired", Message = "Live-save attempt records need owner review. Keep the copies." }; }
@@ -96,16 +111,23 @@ public sealed partial class HostManager
         CancellationTokenSource? deadline = null;
         List<LiveSaveAttempt>? attempts = null;
         LiveSaveAttempt? attempt = null;
+        ManagedLiveSnapshotStore? snapshotStore = null;
+        ImmutableLiveSaveSnapshot? snapshot = null;
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
-            if (profile.Kind != GameKinds.Fixture || !stagingLiveFixtureEnabled)
+            var fixture = profile.Kind == GameKinds.Fixture && stagingLiveFixtureEnabled;
+            var snapshotAdapter = fixture ? null : AcceptedSnapshotAdapter(profile.Kind);
+            if (!fixture && snapshotAdapter is null)
                 return new(false, "GameAcceptanceRequired", SharedWorldLiveSaveAdapters.Status(profile.Kind).Message);
             if (data.Recovery.LifecycleBlocked || profile.SeparateCopySourceProfileId is not null ||
                 SharedAuthorityBlocked(profileId, out _) || data.HasProtected(PlannedHandoffName(profileId)))
                 return new(false, "LiveSaveAuthorityBlocked", "Resolve data recovery, handoff and signed hosting authority before sharing.");
             attempts = ReadLiveSaveAttempts();
+            if (ReconcilePublishedAttempts(profile, attempts)) SaveLiveSaveAttempts(attempts);
+            if (!DiscardPublishedPrivateCopies(profile, attempts))
+                return new(false, "LiveSaveReviewRequired", "A published save's redundant private copy needs cleanup review. Keep the signed version and source.");
             var duplicate = attempts.SingleOrDefault(item => item.RequestId == request.RequestId);
             if (duplicate is not null)
             {
@@ -116,7 +138,7 @@ public sealed partial class HostManager
             }
             if (attempts.Any(item => item.ProfileId == profileId && LiveAttemptPending(item)))
                 return new(false, "LiveSaveReviewRequired", "Withdraw and review the interrupted attempt before another capture.");
-            if (!LiveSaveStatusUnderGate(profile).Available) return new(false, "LiveSaveBlocked", "Enable shared saves and resolve the exact running fixture and any copy work first.");
+            if (!LiveSaveStatusUnderGate(profile).Available) return new(false, "LiveSaveBlocked", "Enable shared saves and resolve the exact running server and any copy work first.");
             var run = runs.Single(item => item.ProfileId == profileId);
             if (attempts.Count == 64)
             {
@@ -128,12 +150,26 @@ public sealed partial class HostManager
             attempts.Add(attempt); SaveLiveSaveAttempts(attempts);
             deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
-            activeLiveSaves[profileId] = deadline;
-            IManagedLiveSaveAdapter adapter = new FixtureLiveSaveAdapter();
-            var completion = await adapter.CompleteAsync(run, deadline.Token);
+            activeLiveSaves[profileId] = new(request.RequestId, deadline);
+            LiveSaveCompletionEvidence completion;
+            if (fixture)
+            {
+                IManagedLiveSaveAdapter adapter = new FixtureLiveSaveAdapter();
+                completion = await adapter.CompleteAsync(run, deadline.Token);
+            }
+            else
+            {
+                snapshotStore = new ManagedLiveSnapshotStore(data, games);
+                snapshot = await snapshotAdapter!.CaptureAsync(profile, run, deadline.Token, request.RequestId);
+                completion = snapshot.Completion;
+                sharedWorlds.ConfigureManagedLiveSnapshots(games);
+            }
             if (Identity(run) != "Matched") throw new InvalidDataException();
             attempt.State = "Capturing"; attempt.CaptureId = Guid.NewGuid(); SaveLiveSaveAttempts(attempts);
-            sharedWorlds.StageLiveCapture(profile, run, completion, deadline.Token, attempt.CaptureId.Value);
+            if (snapshot is null)
+                sharedWorlds.StageLiveCapture(profile, run, completion, deadline.Token, attempt.CaptureId.Value);
+            else
+                sharedWorlds.StageLiveCapture(profile, run, snapshot, deadline.Token, attempt.CaptureId.Value);
             attempt.State = "Publishing"; SaveLiveSaveAttempts(attempts);
             var published = sharedWorlds.PublishLiveCapture(profile, attempt.CaptureId.Value,
                 new(attempt.CaptureId.Value, run.OperationId, true), deadline.Token);
@@ -144,7 +180,8 @@ public sealed partial class HostManager
                 return new(true, attempt.Code, attempt.Message, attempt.View());
             }
             attempt.State = "Published"; attempt.Code = "LiveSavePublished";
-            attempt.Message = "Synthetic running save published through signed lineage. Receive and exact-copy receipt use the normal grants. Real game load remains unverified.";
+            attempt.Message = fixture ? "Synthetic running save published through signed lineage. Receive and exact-copy receipt use the normal grants. Real game load remains unverified." :
+                "The accepted adapter's sealed running save is current. Receive and exact-copy receipt use the normal grants.";
             attempt.VersionHash = published.Version.VersionHash; attempt.VersionNumber = published.Version.Number;
             SaveLiveSaveAttempts(attempts);
             return new(true, attempt.Code, attempt.Message, attempt.View());
@@ -161,7 +198,21 @@ public sealed partial class HostManager
             if (attempt?.State == "Published") return new(true, attempt.Code, attempt.Message, attempt.View());
             return new(false, "LiveSaveFailed", "Save completion or immutable publication could not be certified. Review the current and interrupted signed copies before retry.", attempt?.View());
         }
-        finally { activeLiveSaves.TryRemove(profileId, out _); deadline?.Dispose(); gate.Release(); }
+        finally
+        {
+            activeLiveSaves.TryRemove(profileId, out _);
+            deadline?.Dispose();
+            try
+            {
+                if (snapshotStore is not null && snapshot is not null) snapshotStore.Discard(snapshot);
+            }
+            catch (Exception ex) when (LiveOrphanReviewFailure(ex))
+            {
+                Activity("Backup", "LiveSnapshotCleanupPending", "An adapter's sealed private copy needs cleanup review. Its source and signed versions were kept.",
+                    ActivitySeverity.Warning, profileId);
+            }
+            finally { gate.Release(); }
+        }
     }
     private void RecordLiveFailure(List<LiveSaveAttempt> attempts, LiveSaveAttempt attempt, string state, string code)
     {
@@ -187,16 +238,49 @@ public sealed partial class HostManager
         attempt.VersionHash = current.VersionHash; attempt.VersionNumber = current.Number;
         return true;
     }
+    private bool ReconcilePublishedAttempts(ServerProfile profile, List<LiveSaveAttempt> attempts)
+    {
+        var changed = false;
+        foreach (var attempt in attempts.Where(item => item.ProfileId == profile.Id && item.State == "Publishing"))
+            changed |= RecoverPublishedAttempt(profile, attempt);
+        return changed;
+    }
+    private bool DiscardPublishedPrivateCopies(ServerProfile profile, IEnumerable<LiveSaveAttempt> attempts)
+    {
+        try
+        {
+            var snapshots = new ManagedLiveSnapshotStore(data, games);
+            foreach (var attempt in attempts.Where(item => item.ProfileId == profile.Id && item.State == "Published"))
+                snapshots.DiscardForAttempt(profile.Id, attempt.OperationId, attempt.RequestId);
+            return true;
+        }
+        catch (Exception ex) when (LiveOrphanReviewFailure(ex)) { return false; }
+    }
     public async Task<LiveSaveActionResult> WithdrawLiveSaveAsync(Guid profileId, LiveSaveRequest request)
     {
-        CancelLiveSave(profileId);
+        if (request.RequestId == Guid.Empty)
+            return new(false, "LiveSaveRequestInvalid", "A fixed request identity is required.");
+        CancelLiveSave(profileId, request.RequestId);
         await gate.WaitAsync();
         try
         {
             var list = ReadLiveSaveAttempts(); var attempt = list.SingleOrDefault(item => item.RequestId == request.RequestId && item.ProfileId == profileId);
-            if (attempt is null || attempt.State == "Published" || settings.Profiles.SingleOrDefault(item => item.Id == profileId) is { } profile && RecoverPublishedAttempt(profile, attempt))
-                return new(false, "LiveSaveWithdrawalDenied", "A published copy stays in signed history. Choose a pending or failed attempt.");
+            if (attempt is null || list.LastOrDefault(item => item.ProfileId == profileId)?.RequestId != request.RequestId)
+                return new(false, "LiveSaveWithdrawalDenied", "Choose this server's current pending or failed save request.");
+            if (settings.Profiles.SingleOrDefault(item => item.Id == profileId) is { } profile &&
+                RecoverPublishedAttempt(profile, attempt))
+            {
+                SaveLiveSaveAttempts(list);
+                if (!DiscardPublishedPrivateCopies(profile, list))
+                    return new(false, "LiveSaveReviewRequired", "The current signed save was recovered, but its redundant private copy needs cleanup review.", attempt.View());
+                return new(false, "LiveSaveWithdrawalDenied", "The exact signed copy is already current. Its completed attempt was recovered without publishing another version.", attempt.View());
+            }
+            if (attempt.State == "Published")
+                return new(false, "LiveSaveWithdrawalDenied", "A published copy stays in signed history. Choose a pending or failed attempt.", attempt.View());
             RecordLiveFailure(list, attempt, "Withdrawn", "LiveSaveWithdrawn");
+            var snapshots = new ManagedLiveSnapshotStore(data, games);
+            snapshots.DiscardForAttempt(profileId, attempt.OperationId, attempt.RequestId);
+            snapshots.DiscardInterrupted(profileId);
             return new(true, attempt.Code, "Private capture withdrawn. Signed versions and source files were kept; use interrupted-copy review if needed.", attempt.View());
         }
         catch (Exception ex) when (LiveOrphanReviewFailure(ex))
@@ -215,9 +299,24 @@ public sealed partial class HostManager
             if (profileId is not null && profileId != pending.ProfileId)
                 return new(false, "BedrockResumeProfileMismatch", "This pending resume belongs to another server.");
             var run = runs.SingleOrDefault(item => item.ProfileId == pending.ProfileId && item.OperationId == pending.OperationId);
-            if (run is null || Identity(run) != "Matched" || run.StopRequestedUtc is not null)
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == pending.ProfileId);
+            if (run is null || profile?.Kind != GameKinds.MinecraftBedrock || Identity(run) != "Matched" || run.StopRequestedUtc is not null)
                 return new(false, "BedrockResumeReviewRequired", "The exact held process is unresolved or stopped. Keep its resume marker and review the save state.");
-            candidate.RecoverPending(run); // The candidate rechecks every saved identity and dispatches literal save resume only.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var requestedUtc = DateTimeOffset.UtcNow;
+            var acknowledged = await new BedrockManagedSnapshotAdapter(data, games).ResumeAsync(profile, run, timeout.Token);
+            if (acknowledged)
+            {
+                Activity("Backup", "BedrockResumeConfirmed", "The exact held run acknowledged resumed writes; its pending marker was cleared.",
+                    ActivitySeverity.Important, run.ProfileId);
+                return new(true, "BedrockResumeConfirmed", "The exact held run acknowledged resumed writes. Game load and live-save acceptance remain separate checks.");
+            }
+            var dispatched = candidate.ReadPending();
+            if (dispatched is not { ResumeDispatched: true, ResumeRequestedUtc: { } sentUtc } ||
+                sentUtc < requestedUtc || dispatched.AttemptNonce != pending.AttemptNonce ||
+                dispatched.ProfileId != pending.ProfileId || dispatched.OperationId != pending.OperationId ||
+                dispatched.ProcessId != pending.ProcessId || dispatched.StartTimeUtcTicks != pending.StartTimeUtcTicks)
+                return new(false, "BedrockResumeReviewRequired", "Exact-run save resume could not be confirmed as sent. Keep the pending marker and review the held process; another capture remains blocked.");
             Activity("Backup", "BedrockResumePending", "Exact-run save resume was sent after an interrupted hold. Completion is unverified; another live capture stays blocked.",
                 ActivitySeverity.Important, run.ProfileId);
             return new(true, "BedrockResumeDispatched", "Exact-run save resume was sent. Its durable marker stays until a verified acknowledgement; another capture remains blocked.");

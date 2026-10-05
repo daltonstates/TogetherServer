@@ -66,7 +66,7 @@ internal static class MinecraftCapturedLogFrame
 }
 
 // This internal command is hosted by the same executable as TogetherServer. It
-// owns the redirected stdout/stderr pipes for one Minecraft process so capture
+// owns the redirected stdout/stderr pipes for one fixed Minecraft/Terraria process so capture
 // continues if the main Host process restarts. Standard input remains attached
 // to the new Windows console and the existing fixed `stop` command path.
 internal static class MinecraftConsoleCapture
@@ -235,10 +235,17 @@ internal static class MinecraftConsoleCapture
                     .Equals(workingDirectory, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Minecraft Java capture arguments are invalid.");
         }
+        else if (name.Equals("TerrariaServer.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ValidTerrariaArguments(workingDirectory, request.Arguments) ||
+                !File.Exists(request.Arguments[1]) ||
+                request.Arguments.Count == 7 && !File.Exists(request.Arguments[6]))
+                throw new InvalidDataException("Terraria capture arguments are invalid.");
+        }
         else if (!name.Equals("bedrock_server.exe", StringComparison.OrdinalIgnoreCase) ||
                  request.Arguments.Count != 0)
         {
-            throw new InvalidDataException("Minecraft capture supports only fixed Java or Bedrock launches.");
+            throw new InvalidDataException("Console capture supports only fixed Java, Bedrock, or Terraria launches.");
         }
         return request with
         {
@@ -247,6 +254,21 @@ internal static class MinecraftConsoleCapture
             LogPath = logPath,
             Arguments = request.Arguments.ToArray()
         };
+    }
+
+    internal static bool ValidTerrariaArguments(string workingDirectory, IReadOnlyList<string> arguments)
+    {
+        if (!Path.IsPathFullyQualified(workingDirectory) || arguments.Count is not (5 or 7) ||
+            arguments[0] != "-world" || arguments[2] != "-port" || arguments[4] != "-noupnp" ||
+            !int.TryParse(arguments[3], NumberStyles.None, CultureInfo.InvariantCulture, out var port) ||
+            port is < 1 or > 65535 || !Path.IsPathFullyQualified(arguments[1]) ||
+            !Path.GetExtension(arguments[1]).Equals(".wld", StringComparison.OrdinalIgnoreCase) ||
+            !ValheimSetup.ValidWorldId(Path.GetFileNameWithoutExtension(arguments[1])) ||
+            !Path.GetDirectoryName(Path.GetFullPath(arguments[1]))!.Equals(Path.GetFullPath(workingDirectory), StringComparison.OrdinalIgnoreCase))
+            return false;
+        return arguments.Count == 5 || arguments[5] == "-config" &&
+            Path.IsPathFullyQualified(arguments[6]) &&
+            Path.GetFullPath(arguments[6]).Equals(Path.Combine(Path.GetFullPath(workingDirectory), "serverconfig.txt"), StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task DrainStreamAsync(Stream input, string stream,

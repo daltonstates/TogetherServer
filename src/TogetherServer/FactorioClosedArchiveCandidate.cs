@@ -119,10 +119,12 @@ internal sealed class FactorioClosedArchiveCandidate(LocalData data)
         }
     }
 
-    // Kept separate for pure file checks. Production always opens the source
-    // with FileShare.None before calling this inspector.
-    internal static FactorioArchiveInspection InspectArchiveContents(FileStream file)
+    // Kept separate for focused file checks. Callers hold a read lease denying
+    // writers/deletion; the snapshot adapter also permits compatible readers.
+    internal static FactorioArchiveInspection InspectArchiveContents(FileStream file,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!file.CanRead || !file.CanSeek || file.Length is < 22 or > MaximumArchiveBytes)
             throw new InvalidDataException("The Factorio archive size is invalid.");
         var expectedEntries = ReadClosedCentralDirectory(file);
@@ -138,6 +140,7 @@ internal sealed class FactorioClosedArchiveCandidate(LocalData data)
         var nonemptyFiles = 0;
         foreach (var entry in archive.Entries)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var name = entry.FullName;
             var directory = name.EndsWith('/');
             var normalized = directory ? name[..^1] : name;
@@ -158,6 +161,7 @@ internal sealed class FactorioClosedArchiveCandidate(LocalData data)
             int read;
             while ((read = content.Read(buffer)) != 0)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 actual = checked(actual + read);
                 if (actual > entry.Length || actual > MaximumEntryBytes)
                     throw new InvalidDataException("The Factorio archive entry exceeded its declared size.");

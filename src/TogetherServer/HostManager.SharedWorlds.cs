@@ -322,7 +322,7 @@ public sealed partial class HostManager
         ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or
             System.Security.Cryptography.CryptographicException or InvalidOperationException or
             ArgumentException or FormatException or OverflowException or NotSupportedException or
-            System.Security.SecurityException;
+            System.Security.SecurityException or System.ComponentModel.Win32Exception;
 
     public async Task<SharedWorldLiveOrphanReview> SharedLiveOrphanReviewAsync(Guid profileId)
     {

@@ -7,5 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\TogetherServer\TogetherServer.csproj" />
+    <Compile Include="..\TogetherServer.Checks\GameConsoleSnapshotChecks.cs" Link="GameConsoleSnapshotChecks.cs" />
+    <Compile Include="..\TogetherServer.Checks\SnapshotReparseChecks.cs" Link="SnapshotReparseChecks.cs" />
   </ItemGroup>
 </Project>

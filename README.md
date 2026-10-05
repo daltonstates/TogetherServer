@@ -1,6 +1,6 @@
 # TogetherServer
 
-**Save and share now** is available only for a running synthetic fixture in the marked staging app. It uses exact-process completion, a sealed immutable copy and the normal signed transfer/receipt flow. Each real game's action stays disabled with its own acceptance checks and reason; real completion, immutable snapshot binding and another-PC load/restart are still unverified.
+**Save and share now** is available only for a running synthetic fixture in the marked staging app. It uses exact-process completion, a sealed immutable copy and the normal signed transfer/receipt flow. Real-game candidates implement fixed save controls, fresh completion checks and sealed copies; every real game's action stays disabled until its own save/copy/transfer/load/change/restart checks pass. See [live-save acceptance](docs/10-SHARED-WORLD-LIVE-SAVE-ACCEPTANCE.md).
 
 World safety includes **Test a copy in the game** for completed backups and verified received saves. It prepares a fresh disposable copy, offers an isolated Valheim driver trial when an owner-installed binary is available, and a manual path for other games. Load, saved-change and restart confirmations stay explicitly owner-reported. The original world, backup and received receipt stay intact; hash-only **Test restore** remains available.
 

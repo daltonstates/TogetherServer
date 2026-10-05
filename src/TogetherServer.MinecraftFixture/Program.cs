@@ -23,6 +23,7 @@ using var done = new CancellationTokenSource();
 using var loggingDone = new CancellationTokenSource();
 var server = java ? ServeJava(done.Token) : ServeBedrock(done.Token);
 var consoleOutput = EmitConsoleOutput(loggingDone.Token);
+var bedrockHeld = false;
 while (true)
 {
     var line = Console.ReadLine();
@@ -37,15 +38,18 @@ while (true)
     }
     if (!java && line == "save hold")
     {
+        bedrockHeld = true;
         File.WriteAllText(Path.Combine(root, "synthetic-save-hold.marker"), "fixture only");
         Console.WriteLine("[TogetherServer fixture/INFO]: synthetic hold received");
     }
     if (!java && line == "save query")
     {
+        if (!bedrockHeld) continue;
         var worldName = properties.Single(value => value.StartsWith("level-name=", StringComparison.Ordinal))["level-name=".Length..];
         var fileName = "db/synthetic.dat";
         var worldFile = Path.Combine(root, "worlds", worldName, "db", "synthetic.dat");
-        var operationId = File.ReadAllText(Path.Combine(root, "synthetic-save-operation-id.txt")).Trim();
+        var operationPath = Path.Combine(root, "synthetic-save-operation-id.txt");
+        var operationId = File.Exists(operationPath) ? File.ReadAllText(operationPath).Trim() : "";
         var evidence = System.Text.Json.JsonSerializer.Serialize(new
         {
             operationId,
@@ -55,9 +59,31 @@ while (true)
         });
         File.WriteAllText(Path.Combine(root, "synthetic-save-query.json"), evidence);
         Console.WriteLine("[TogetherServer fixture/INFO]: synthetic query evidence emitted");
+        // Candidate grammar only; this does not establish a real Bedrock
+        // version's console grammar or closed-file behavior while held.
+        var modePath = Path.Combine(root, "synthetic-snapshot-query-mode.txt");
+        var mode = File.Exists(modePath) ? File.ReadAllText(modePath).Trim() : "normal";
+        var query = mode switch
+        {
+            "size-mismatch" => $"worlds/{worldName}/{fileName}:{new FileInfo(worldFile).Length + 1}",
+            "traversal" => $"worlds/{worldName}/../outside.dat:4",
+            "ambiguous" => $"worlds/{worldName}/{fileName}:{new FileInfo(worldFile).Length}, worlds/{worldName}/{fileName}:4",
+            _ => $"worlds/{worldName}/{fileName}:{new FileInfo(worldFile).Length}"
+        };
+        if (mode != "missing")
+        {
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} INFO] Data saved. Files are now ready to be copied.");
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} INFO] {query}");
+        }
     }
     if (!java && line == "save resume")
     {
+        bedrockHeld = false;
+        if (File.Exists(Path.Combine(root, "synthetic-mutate-on-resume.marker")))
+        {
+            var worldName = properties.Single(value => value.StartsWith("level-name=", StringComparison.Ordinal))["level-name=".Length..];
+            File.WriteAllBytes(Path.Combine(root, "worlds", worldName, "db", "synthetic.dat"), [4, 3, 2, 1]);
+        }
         File.WriteAllText(Path.Combine(root, "synthetic-save-resume.marker"), "fixture only");
         // This disposable fixture echoes the test's exact-run, per-hold request
         // only after its console actually receives the fixed resume command.
@@ -70,6 +96,8 @@ while (true)
             File.Move(temporary, acknowledgement, true);
         }
         Console.WriteLine("[TogetherServer fixture/INFO]: synthetic resume received");
+        if (!File.Exists(Path.Combine(root, "synthetic-resume-withhold.marker")))
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} INFO] Changes to the world are resumed.");
     }
     if (line is null) await Task.Delay(50);
 }

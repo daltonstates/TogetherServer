@@ -103,7 +103,8 @@ internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
         return null;
     }
 
-    public void PrepareStart(ServerProfile profile, ManagedRun run) { }
+    public void PrepareStart(ServerProfile profile, ManagedRun run) =>
+        run.LogPath = data.NewRunLogPath(run.OperationId);
 
     public GameLaunchResult Start(ServerProfile profile, ManagedRun run)
     {
@@ -118,7 +119,7 @@ internal sealed class TerrariaServerDriver(LocalData data) : IGameServerDriver
             arguments.Add("-config");
             arguments.Add(configuration);
         }
-        var id = WindowsConsoleProcess.Start(run.ExecutablePath, arguments);
+        var id = WindowsConsoleProcess.StartMinecraftCaptured(run, arguments);
         return new("TerrariaStarting", "Terraria preview process launched. Waiting for a local TCP listener; real join and save acceptance remain pending.", id);
     }
 

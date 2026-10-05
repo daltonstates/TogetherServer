@@ -34,7 +34,9 @@ internal sealed partial class SharedWorldService
     internal Func<long>? FixtureLiveAvailableBytesForChecks { get; set; }
     internal Action? AfterLiveSignedDirectoryForChecks { get; set; }
     private GameServerRegistry? stagingFixtureRegistry;
+    private GameServerRegistry? managedLiveSnapshotRegistry;
     internal void EnableStagingLiveFixture(GameServerRegistry registry) => stagingFixtureRegistry = registry;
+    internal void ConfigureManagedLiveSnapshots(GameServerRegistry registry) => managedLiveSnapshotRegistry = registry;
 
     private bool LiveCaptureAccepted(string game) =>
         SharedWorldLiveSaveAdapters.ForGame(game)?.LiveCaptureAccepted == true ||
@@ -52,7 +54,8 @@ internal sealed partial class SharedWorldService
 
     private string ReviewedLiveSource(ServerProfile profile, ManagedRun run)
     {
-        var games = profile.Kind == GameKinds.Fixture ? stagingFixtureRegistry ?? LiveGameRegistryForChecks ?? new GameServerRegistry(data) : new GameServerRegistry(data);
+        var games = profile.Kind == GameKinds.Fixture ? stagingFixtureRegistry ?? LiveGameRegistryForChecks ?? new GameServerRegistry(data) :
+            managedLiveSnapshotRegistry ?? new GameServerRegistry(data);
         if (!games.TryGet(profile.Kind, out var driver) ||
             driver.ManagedSaveDirectory(profile) is not { } selected ||
             !Path.IsPathFullyQualified(selected))
@@ -123,14 +126,15 @@ internal sealed partial class SharedWorldService
     }
 
     private bool RecordedExactLiveRun(ServerProfile profile, Guid operationId,
-        int processId, long startTimeUtcTicks)
+        int processId, long startTimeUtcTicks, bool requireReady = true)
     {
         var recorded = data.LoadRuns().SingleOrDefault(item =>
             item.ProfileId == profile.Id && item.OperationId == operationId);
         return recorded is not null && recorded.Kind == profile.Kind &&
             recorded.WorldId == profile.WorldId && recorded.ProcessId == processId &&
             recorded.StartTimeUtcTicks == startTimeUtcTicks &&
-            recorded.StopRequestedUtc is null && (recorded.WasReady || profile.Kind == GameKinds.Fixture && stagingFixtureRegistry is not null) &&
+            recorded.StopRequestedUtc is null &&
+            (!requireReady || recorded.WasReady || profile.Kind == GameKinds.Fixture && stagingFixtureRegistry is not null) &&
             !string.IsNullOrWhiteSpace(recorded.WorldDirectory) &&
             !string.IsNullOrWhiteSpace(profile.WorldDirectory) &&
             Path.GetFullPath(recorded.WorldDirectory).Equals(
@@ -145,21 +149,47 @@ internal sealed partial class SharedWorldService
     // A partial directory is never a capture.
     internal Guid StageLiveCapture(ServerProfile profile, ManagedRun run,
         LiveSaveCompletionEvidence completion, CancellationToken cancellationToken = default, Guid? reservedCaptureId = null)
+        => StageLiveCaptureCore(profile, run, completion, null, cancellationToken, reservedCaptureId);
+
+    internal Guid StageLiveCapture(ServerProfile profile, ManagedRun run,
+        ImmutableLiveSaveSnapshot snapshot, CancellationToken cancellationToken = default, Guid? reservedCaptureId = null)
+    {
+        if (snapshot is null || snapshot.Completion is null)
+            throw new InvalidDataException("An adapter-owned immutable snapshot is required.");
+        return StageLiveCaptureCore(profile, run, snapshot.Completion, snapshot, cancellationToken, reservedCaptureId);
+    }
+
+    private static LiveSaveEvidence ExpectedLiveSnapshotEvidence(string game) => game switch
+    {
+        GameKinds.MinecraftBedrock => LiveSaveEvidence.FrozenSnapshotQuery,
+        GameKinds.Factorio => LiveSaveEvidence.ClosedSaveArchive,
+        GameKinds.Valheim or GameKinds.MinecraftJava or GameKinds.Terraria or GameKinds.Fixture =>
+            LiveSaveEvidence.RunScopedCompletion,
+        _ => LiveSaveEvidence.None
+    };
+
+    private Guid StageLiveCaptureCore(ServerProfile profile, ManagedRun run,
+        LiveSaveCompletionEvidence completion, ImmutableLiveSaveSnapshot? snapshot,
+        CancellationToken cancellationToken, Guid? reservedCaptureId)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
             lock (sync)
             {
-                // A completion timestamp does not bind the bytes scanned below
-                // to an immutable game snapshot. Keep this scanner fixture-only
-                // until a real adapter supplies a typed, immutable byte binding.
-                if (profile.Kind != GameKinds.Fixture)
+                // Completion alone permits only the synthetic fixture scanner.
+                // Every real game must supply its sealed adapter-owned bytes.
+                if (snapshot is null && profile.Kind != GameKinds.Fixture)
                     throw new InvalidDataException("Live save staging requires an immutable snapshot binding.");
+                // An accepted real adapter's completed sealed snapshot is the
+                // authority for this owner-requested save. It does not create
+                // readiness or occupancy evidence for remote/automatic Stop.
+                var requireReady = snapshot is null || profile.Kind == GameKinds.Fixture;
                 if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom ||
                     run.ProfileId != profile.Id || run.Kind != profile.Kind ||
                     run.WorldId != profile.WorldId || run.OperationId == Guid.Empty ||
                     run.ProcessId is not > 0 || run.StartTimeUtcTicks is not > 0 ||
-                    (!run.WasReady && stagingFixtureRegistry is null) || run.StopRequestedUtc is not null ||
-                    !completion.Complete || completion.Kind != LiveSaveEvidence.RunScopedCompletion ||
+                    (requireReady && !run.WasReady && stagingFixtureRegistry is null) || run.StopRequestedUtc is not null ||
+                    completion is null || !completion.Complete || completion.Kind == LiveSaveEvidence.None ||
+                    completion.Kind != ExpectedLiveSnapshotEvidence(profile.Kind) ||
                     completion.ProfileId != run.ProfileId ||
                     completion.OperationId != run.OperationId ||
                     completion.ProcessId != run.ProcessId ||
@@ -168,16 +198,22 @@ internal sealed partial class SharedWorldService
                     completion.CompletedUtc > DateTimeOffset.UtcNow.AddMinutes(1))
                     throw new InvalidDataException("An exact completed managed-run save is required.");
                 if (!RecordedExactLiveRun(profile, run.OperationId,
-                        run.ProcessId.Value, run.StartTimeUtcTicks.Value))
+                        run.ProcessId.Value, run.StartTimeUtcTicks.Value, requireReady))
                     throw new InvalidDataException("The completion does not match the recorded managed run.");
                 var source = ReviewedLiveSource(profile, run);
+                var snapshotStore = snapshot is null ? null : new ManagedLiveSnapshotStore(data,
+                    managedLiveSnapshotRegistry ?? stagingFixtureRegistry ?? LiveGameRegistryForChecks ?? new GameServerRegistry(data));
+                if (snapshot is not null && (!string.Equals(snapshot.SourceDirectory, source, StringComparison.OrdinalIgnoreCase) ||
+                    !snapshotStore!.Verify(profile, run, snapshot, cancellationToken)))
+                    throw new InvalidDataException("The adapter-owned immutable snapshot failed verification.");
+                var copySource = snapshot?.SnapshotDirectory ?? source;
                 var binding = ReadBinding(profile.Id);
                 if (binding is null || !BindingMatches(binding, profile) || ReadRoster(profile) is null)
                     throw new InvalidDataException("The signed shared source is missing or changed.");
                 var beforeSetup = ServerSetupSnapshots.Capture(profile, data);
                 var before = ServerSetupSnapshots.Read(profile, beforeSetup);
                 _ = SharedWorldPortableSetupReader.Capture(before);
-                var sourceFiles = ScanLiveTree(source, cancellationToken);
+                var sourceFiles = snapshot?.Files.ToArray() ?? ScanLiveTree(source, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 var bytes = BoundedTotalBytes(sourceFiles);
                 RequireLiveSpace(bytes, profile.Kind);
@@ -205,13 +241,15 @@ internal sealed partial class SharedWorldService
                         cancellationToken.ThrowIfCancellationRequested();
                         var destination = SafeChild(payload, file.Path);
                         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                        CopyLiveFile(SafeChild(source, file.Path), destination, cancellationToken);
+                        CopyLiveFile(SafeChild(copySource, file.Path), destination, cancellationToken);
                         VerifyLiveFile(destination, file, cancellationToken);
                     }
-                    if (!sourceFiles.SequenceEqual(ScanLiveTree(source, cancellationToken)))
+                    if (snapshot is null && !sourceFiles.SequenceEqual(ScanLiveTree(source, cancellationToken)))
                         throw new InvalidDataException("The live save source changed during capture.");
+                    if (snapshot is not null && !snapshotStore!.Verify(profile, run, snapshot, cancellationToken))
+                        throw new InvalidDataException("The adapter-owned immutable snapshot changed during staging.");
                     if (!RecordedExactLiveRun(profile, run.OperationId,
-                            run.ProcessId.Value, run.StartTimeUtcTicks.Value))
+                            run.ProcessId.Value, run.StartTimeUtcTicks.Value, requireReady))
                         throw new InvalidDataException("The managed run changed during capture.");
                     var afterSetup = ServerSetupSnapshots.Read(profile,
                         ServerSetupSnapshots.Capture(profile, data));
@@ -319,7 +357,7 @@ internal sealed partial class SharedWorldService
             capture.ProfileId != profile.Id || capture.OperationId == Guid.Empty ||
             capture.ProcessId <= 0 || capture.StartTimeUtcTicks <= 0 ||
             capture.Game != profile.Kind || capture.WorldId != profile.WorldId ||
-            capture.EvidenceKind != LiveSaveEvidence.RunScopedCompletion ||
+            capture.EvidenceKind == LiveSaveEvidence.None || capture.EvidenceKind != ExpectedLiveSnapshotEvidence(profile.Kind) ||
             capture.CapturedUtc.UtcTicks < capture.StartTimeUtcTicks ||
             capture.Files is null || capture.Files.Count is < 1 or > MaximumFiles ||
             capture.Files.Any(file => !SafePath(file.Path) || file.Length < 0 ||
@@ -377,7 +415,7 @@ internal sealed partial class SharedWorldService
                     if (approval.OperationId != capture.OperationId)
                         throw new InvalidDataException("The approval belongs to another managed run.");
                     if (!RecordedExactLiveRun(profile, capture.OperationId,
-                            capture.ProcessId, capture.StartTimeUtcTicks))
+                            capture.ProcessId, capture.StartTimeUtcTicks, requireReady: profile.Kind == GameKinds.Fixture))
                         throw new InvalidDataException("The exact managed process is no longer running.");
                     var successor = Authority.LocalAuthorizedHead(profile.Id);
                     if (Authority.GovernanceUnresolved(profile.Id) ||
@@ -442,6 +480,11 @@ internal sealed partial class SharedWorldService
                     var latestStage = LatestPath(profile.Id) + ".new";
                     cancellationToken.ThrowIfCancellationRequested();
                     File.WriteAllBytes(latestStage, versionBytes);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!RecordedExactLiveRun(profile, capture.OperationId,
+                            capture.ProcessId, capture.StartTimeUtcTicks, requireReady: profile.Kind == GameKinds.Fixture))
+                        throw new InvalidDataException("The exact managed process changed before publication. Keep the signed interrupted copy for review.");
+                    cancellationToken.ThrowIfCancellationRequested();
                     File.Move(latestStage, LatestPath(profile.Id), true);
                     // The published payload is verified and now has its own
                     // durable pointer. The private capture can be discarded.

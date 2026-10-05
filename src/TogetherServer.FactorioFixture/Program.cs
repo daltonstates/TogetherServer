@@ -23,11 +23,13 @@ bool Inside(string? path)
 }
 
 var savePath = Value("--start-server");
+var logPath = Value("--console-log");
 var password = Value("--rcon-password");
 var gamePortValid = int.TryParse(Value("--port"), out var gamePort) && gamePort is >= 1024 and <= 65535;
 var rconPortValid = int.TryParse(Value("--rcon-port"), out var rconPort) && rconPort is >= 1024 and <= 65535;
 var rejection = new List<string>();
-if (args.Length != 8) rejection.Add("argument-count");
+if (args.Length != (logPath is null ? 8 : 10)) rejection.Add("argument-count");
+if (logPath is not null && !Inside(logPath)) rejection.Add("log-outside-fixture-root");
 if (!Inside(savePath)) rejection.Add("save-outside-fixture-root");
 if (savePath is null || !File.Exists(savePath)) rejection.Add("save-missing");
 if (!gamePortValid) rejection.Add("game-port");
@@ -45,6 +47,12 @@ if (rejection.Count > 0)
     return 2;
 }
 
+if (logPath is not null)
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+    File.WriteAllText(logPath, "   0.000 Info MainLoop.cpp:1: Synthetic fixture started\n");
+}
+
 using var gameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
 { ExclusiveAddressUse = true };
 gameSocket.Bind(new IPEndPoint(IPAddress.Loopback, gamePort));
@@ -52,7 +60,7 @@ var listener = new TcpListener(IPAddress.Loopback, rconPort);
 listener.Start();
 using var lifetime = new CancellationTokenSource();
 var quit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-var serve = ServeRcon(listener, password!, savePath!, quit, lifetime.Token);
+var serve = ServeRcon(listener, password!, savePath!, logPath, quit, lifetime.Token);
 await quit.Task;
 lifetime.Cancel();
 listener.Stop();
@@ -61,7 +69,7 @@ catch (OperationCanceledException) { }
 catch (SocketException) when (lifetime.IsCancellationRequested) { }
 return 0;
 
-static async Task ServeRcon(TcpListener listener, string password, string savePath,
+static async Task ServeRcon(TcpListener listener, string password, string savePath, string? logPath,
     TaskCompletionSource quit, CancellationToken token)
 {
     while (!token.IsCancellationRequested)
@@ -105,6 +113,22 @@ static async Task ServeRcon(TcpListener listener, string password, string savePa
             using (var archive = new ZipArchive(file, ZipArchiveMode.Create))
             using (var writer = new StreamWriter(archive.CreateEntry("fixture-save/level.dat").Open()))
                 await writer.WriteAsync("synthetic live save".AsMemory(), token);
+            var modePath = Path.Combine(saveDirectory, "synthetic-snapshot-mode.txt");
+            var mode = File.Exists(modePath) ? File.ReadAllText(modePath).Trim() : "normal";
+            var target = mode == "different-target" ? closedArchive : savePath;
+            if (mode != "reply-only")
+            {
+                if (logPath is not null)
+                    await File.AppendAllTextAsync(logPath,
+                        $"   1.000 Info AppManager.cpp:394: Saving game as {target}\n", token);
+                if (mode == "partial-archive")
+                    await File.WriteAllBytesAsync(target, [0x50, 0x4b, 0x03, 0x04], token);
+                else if (target != closedArchive)
+                    File.Copy(closedArchive, target, overwrite: true);
+                if (logPath is not null)
+                    await File.AppendAllTextAsync(logPath,
+                        "   1.001 Info AppManagerStates.cpp:1802: Saving finished\n", token);
+            }
             await WritePacket(stream, command.Id, 0, "Save requested", token);
             continue;
         }

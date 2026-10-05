@@ -19,6 +19,9 @@ async Task Check(string name, Func<Task> test)
     catch (Exception ex) { Console.WriteLine("FAIL " + name + ": " + ex); failed++; }
 }
 
+await Check("Factorio exact completed archive and sealed snapshot",
+    () => BedrockFactorioSnapshotChecks.RunFactorioProcessAsync(root, fixture));
+
 (int Game, int Rcon) FreePorts()
 {
     for (var attempt = 0; attempt < 100; attempt++)

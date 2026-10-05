@@ -47,6 +47,9 @@ async Task Check(string name, Func<Task> test)
     catch (Exception ex) { Report("FAIL " + name + ": " + ex); failed++; }
 }
 
+await Check("Bedrock held query sealed copy and acknowledged resume",
+    () => BedrockFactorioSnapshotChecks.RunBedrockProcessAsync(root, fixture));
+
 int FreePort()
 {
     for (var attempt = 0; attempt < 100; attempt++)

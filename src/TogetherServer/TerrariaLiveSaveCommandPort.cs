@@ -16,10 +16,14 @@ internal sealed class ExactManagedTerrariaLiveSaveCommandPort(LocalData data)
         var run = data.LoadRuns().SingleOrDefault(item => item.OperationId == operationId);
         if (run is null || run.Kind != GameKinds.Terraria || run.ProfileId == Guid.Empty ||
             run.ProcessId is not > 0 || run.StartTimeUtcTicks is not > 0 ||
-            run.StopRequestedUtc is not null || run.ConsoleCaptureProcessId is not null ||
-            run.ConsoleCaptureStartTimeUtcTicks is not null ||
-            !string.IsNullOrEmpty(run.ConsoleCaptureExecutablePath))
+            run.StopRequestedUtc is not null)
             throw new InvalidOperationException("An active Terraria managed run is required.");
+
+        var hasCapture = run.ConsoleCaptureProcessId is not null || run.ConsoleCaptureStartTimeUtcTicks is not null ||
+            !string.IsNullOrEmpty(run.ConsoleCaptureExecutablePath);
+        if (hasCapture && (!WindowsConsoleProcess.CaptureIdentityMatches(run) ||
+            !SamePath(run.LogPath, data.RunLogPath(operationId))))
+            throw new InvalidOperationException("The exact Terraria owned console capture could not be verified.");
 
         var profile = data.LoadSettings().Profiles.SingleOrDefault(item => item.Id == run.ProfileId);
         var driver = new TerrariaServerDriver(data);

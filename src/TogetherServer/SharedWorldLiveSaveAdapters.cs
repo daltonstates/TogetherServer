@@ -14,11 +14,27 @@ internal sealed record LiveSaveCandidate(string Game, IReadOnlyList<LiveSaveStep
 {
     // Keep this separate from any command or log parser. Neither a response to
     // a command nor a file timestamp proves that another game process can load it.
-    public bool LiveCaptureAccepted => false;
+    public bool LiveCaptureAccepted => SharedWorldLiveSaveAdapters.IsGameAccepted(Game);
 }
 
 internal static class SharedWorldLiveSaveAdapters
 {
+    // Add an individual game only after its reviewed, version-specific external
+    // acceptance record exists. There is no flag that enables all candidates.
+    private static readonly IReadOnlySet<string> AcceptedGames = new HashSet<string>(StringComparer.Ordinal);
+    internal static bool IsGameAccepted(string game) => AcceptedGames.Contains(game);
+
+    internal static IManagedLiveSnapshotAdapter? CreateSnapshotAdapter(LocalData data,
+        GameServerRegistry games, string game) => game switch
+        {
+            GameKinds.Valheim => new ValheimManagedSnapshotAdapter(data, games),
+            GameKinds.MinecraftJava => new JavaManagedSnapshotAdapter(data, games),
+            GameKinds.MinecraftBedrock => new BedrockManagedSnapshotAdapter(data, games),
+            GameKinds.Factorio => new FactorioManagedSnapshotAdapter(data, games),
+            GameKinds.Terraria => new TerrariaManagedSnapshotAdapter(data, games),
+            _ => null
+        };
+
     private static readonly IReadOnlyDictionary<string, LiveSaveCandidate> Candidates =
         new Dictionary<string, LiveSaveCandidate>(StringComparer.Ordinal)
         {

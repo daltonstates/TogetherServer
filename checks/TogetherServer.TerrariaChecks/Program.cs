@@ -3,6 +3,12 @@ using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using TogetherServer;
 
+if (MinecraftConsoleCapture.IsCommand(args))
+{
+    Environment.ExitCode = await MinecraftConsoleCapture.RunAsync(args);
+    return Environment.ExitCode;
+}
+
 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("The Terraria console journey requires Windows.");
 var fixture = Path.GetFullPath("src/TogetherServer.TerrariaFixture/bin/Release/net10.0/TerrariaServer.exe");
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the synthetic Terraria fixture first.", fixture);
@@ -30,6 +36,9 @@ async Task Check(string name, Func<Task> test)
     try { await test(); Report("PASS " + name); passed++; }
     catch (Exception ex) { Report("FAIL " + name + ": " + ex); failed++; }
 }
+
+await Check("Terraria captured save completion and sealed snapshot",
+    () => GameConsoleSnapshotChecks.RunTerrariaProcessAsync(root, fixture));
 
 int FreePort()
 {
