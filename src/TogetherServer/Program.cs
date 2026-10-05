@@ -72,7 +72,7 @@ var root = instance.DataRoot;
 var desktopPreferences = data.LoadDesktopPreferences();
 var startupRegistration = new WindowsStartup(Environment.ProcessPath ?? "");
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
-var games = new GameServerRegistry(data);
+var games = new GameServerRegistry(data, includeFixture: instance.IsStaging);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
 using var hostingPower = new WindowsHostingPowerGuard();
@@ -693,6 +693,15 @@ ChatRoomView HostChatRoom(Guid profileId)
     return new(true, "ChatReady", "Messages are copied to connected members.", hostId,
         profileId, serverChat.Read(hostId, profileId), [], members);
 }
+app.MapPost("/api/local/rehearsal/prepare", async () => friendMode
+    ? Results.Conflict(new RemoteRehearsalSetup(false, "FriendMode", "Open the development Host first."))
+    : Results.Json(await manager.PrepareRemoteRehearsalAsync(instance.IsStaging)));
+app.MapPost("/api/local/friend/{id:guid}/rehearsal", async (HttpContext context, Guid id,
+    RemoteRehearsalRequest request) => friendMode
+    ? instance.IsStaging ? Results.Json(await friend.RunRemoteRehearsalAsync(id, request, context.RequestAborted))
+        : Results.Conflict(new { code = "StagingRequired", message = "Run the development Friend app for test access." })
+    : Results.Conflict(new { code = "HostMode" }));
+
 app.MapGet("/api/local/profiles/{id:guid}/chat", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Conflict(new { code = "FriendMode" }) : Results.Json(HostChatRoom(id)));

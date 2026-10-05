@@ -244,14 +244,20 @@ public sealed class ServerChat(LocalData data)
         }
     }
 
-    public ChatDraft Queue(Guid hostId, Guid profileId, Guid deviceId, string text)
+    public ChatDraft Queue(Guid hostId, Guid profileId, Guid deviceId, string text, Guid? id = null)
     {
         if (!ValidText(text)) throw new ArgumentException("Write a chat message of at most 500 characters.");
         lock (sync)
         {
             var drafts = Pending(hostId, profileId, deviceId).ToList();
+            if (id is { } retry && drafts.SingleOrDefault(item => item.Id == retry) is { } pending)
+            {
+                if (pending.Text != text) throw new InvalidDataException("The draft ID was already used.");
+                return pending;
+            }
             if (drafts.Count >= MaximumDrafts) throw new InvalidOperationException("Send queued messages before adding more.");
-            var draft = new ChatDraft(Guid.NewGuid(), text);
+            var draft = new ChatDraft(id ?? Guid.NewGuid(), text);
+            if (draft.Id == Guid.Empty) throw new ArgumentException("The draft ID is invalid.");
             drafts.Add(draft);
             data.SaveProtected(PendingFile(hostId, profileId, deviceId),
                 JsonSerializer.SerializeToUtf8Bytes(drafts, Json));

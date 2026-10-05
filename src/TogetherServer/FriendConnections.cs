@@ -117,6 +117,14 @@ public sealed class FriendService : IDisposable
         foreach (var (_, link) in current) link.ScheduleSharedCatchUp(shutdown);
     }
 
+    public Task<RemoteRehearsalReport> RunRemoteRehearsalAsync(Guid profileId,
+        RemoteRehearsalRequest request, CancellationToken cancellationToken = default)
+    {
+        var link = SelectedLink();
+        return link is null ? Task.FromResult(FriendLink.EmptyRehearsal("Unspecified")) :
+            link.RunRemoteRehearsalAsync(profileId, request, cancellationToken);
+    }
+
     public Task WaitForSharedCatchUpAsync()
     {
         lock (sync) return Task.WhenAll(links.Select(item => item.Link.ScheduledSharedCatchUp()));

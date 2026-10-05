@@ -31,6 +31,8 @@ async Task Check(string name, Func<Task> test)
 }
 
 HostSettings Settings(params ServerProfile[] profiles) => new() { MaxConcurrentServers = 2, Profiles = [.. profiles] };
+await Check("remote rehearsal staging, exact signed receipt, expiry and redaction boundaries",
+    () => RemoteRehearsalSafetyChecks.RunAsync(root));
 ServerProfile Profile(string name, string world, int port, string? directory = null)
 {
     var path = directory ?? Path.Combine(root, name);

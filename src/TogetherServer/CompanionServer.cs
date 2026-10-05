@@ -687,6 +687,33 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
             return Results.Json(status);
         });
+        companion.MapPost("/servers/{profileId:guid}/rehearsal/exchange", async
+            (HttpContext context, Guid profileId, RemoteRehearsalExchangeRequest request) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol))
+                return Results.Json(new { code = "RehearsalUpdateRequired" }, statusCode: 409);
+            if (request.RequestId == Guid.Empty)
+                return Results.BadRequest(new { code = "InvalidRehearsalRequest" });
+            var auth = await AuthorizeShared(device!, profileId);
+            if (!auth.Decision.Ok || auth.Current is null || !chat.IsMember(profileId, auth.Current.Id))
+                return Results.Json(new { code = "RehearsalAccessDenied" }, statusCode: 403);
+            try
+            {
+                var result = await manager.RehearsalExchangeAsync(profileId, auth.Current.Id,
+                    request.RequestId, request.ChatMessageId, chat, identity.State()?.HostId ?? Guid.Empty,
+                    Active && ListenerState == CompanionListenerStates.Listening);
+                var recheck = await AuthorizeShared(auth.Current, profileId);
+                if (!recheck.Decision.Ok || recheck.Current is null || !chat.IsMember(profileId, recheck.Current.Id))
+                    return Results.Json(new { code = "RehearsalAccessDenied" }, statusCode: 403);
+                return Results.Json(result);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or
+                CryptographicException or JsonException or ArgumentException)
+            { return Results.Json(new RemoteRehearsalExchange(false, "RehearsalUnavailable")); }
+        });
         companion.MapPost("/servers/{profileId:guid}/chat/sync",
             (HttpContext context, Guid profileId, ChatSyncRequest request) =>
         {

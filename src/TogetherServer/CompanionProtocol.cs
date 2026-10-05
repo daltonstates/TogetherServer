@@ -9,6 +9,7 @@ public static class CompanionProtocol
     public const string HeaderName = "X-TogetherServer-Protocol";
     public const string ServerLogsCapability = "server-logs-v1";
     public const string ServerChatCapability = "server-chat-v1";
+    public const string RemoteRehearsalCapability = "remote-rehearsal-v1";
     public const string SharedWorldsCapability = "shared-worlds-v2";
     public const int Current = 3;
     public const int Minimum = 3;
@@ -26,6 +27,7 @@ public static class CompanionProtocol
         "action-protocol-header",
         ServerLogsCapability,
         ServerChatCapability,
+        RemoteRehearsalCapability,
         SharedWorldsCapability
     ];
 

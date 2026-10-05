@@ -147,7 +147,7 @@ internal sealed partial class SharedWorldService
     }
 
     internal SharedWorldReceipt? VerifiedReceipt(ServerProfile profile, SharedWorldVersion version,
-        Guid deviceId, SharedWorldRoster roster)
+        Guid deviceId, SharedWorldRoster roster, bool requireEligibleHost = true)
     {
         lock (sync)
         {
@@ -156,7 +156,8 @@ internal sealed partial class SharedWorldService
                 roster.GroupId != version.GroupId || roster.ProfileId != profile.Id) return null;
             var member = roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
             var receipt = set.Receipts.SingleOrDefault(item => item.DeviceId == deviceId);
-            return member is { Revoked: false, Grants: { Receive: true, EligibleHost: true } } &&
+            return member is { Revoked: false, Grants.Receive: true } &&
+                   (!requireEligibleHost || member.Grants.EligibleHost) &&
                    (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow) &&
                    receipt is not null && receipt.GroupId == version.GroupId &&
                    receipt.ProfileId == profile.Id && receipt.VersionHash == version.VersionHash &&

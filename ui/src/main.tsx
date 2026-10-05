@@ -6,6 +6,7 @@ import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessEx
 import { Button, Input, Select } from './Controls'
 import { ConnectionDoctor } from './ConnectionDoctor'
 import { FriendConnectionDoctor } from './FriendConnectionDoctor'
+import { FriendRemoteRehearsal, HostRemoteRehearsal } from './RemoteRehearsal'
 import { ConnectionDetails } from './ConnectionDetails'
 import { JoinGuide } from './JoinGuide'
 import { MaintenanceGuide } from './MaintenanceGuide'
@@ -1414,6 +1415,7 @@ function App() {
           {snapshot.endpoint && !showPairing && <FriendConnectionDoctor snapshot={snapshot}
             gameResults={gameEndpointResults} busy={!!pending}
             onRefresh={() => void checkFriendConnection()} onProbe={profileId => void probeGameEndpoint(profileId)} />}
+          {appInstance?.isStaging && snapshot.endpoint && !showPairing && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
           {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
           {snapshot.profiles.map(profile => {
@@ -1499,6 +1501,7 @@ function App() {
 
       {(workspacePage === 'host' || workspacePage === 'settings') && snapshot?.mode === 'Host' && draft && <>
         {workspacePage === 'host' && <>
+        {appInstance?.isStaging && <HostRemoteRehearsal />}
         {savedProfiles.length > 0 && <>
         <section className="host-workspace-shell">
           <div className={hostMobileDetail ? 'host-master-detail detail-open' : 'host-master-detail'}>

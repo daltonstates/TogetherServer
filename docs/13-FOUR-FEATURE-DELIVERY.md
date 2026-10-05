@@ -55,6 +55,17 @@ Starting points: `src/TogetherServer/SharedWorldLiveCapture.cs`, `src/TogetherSe
 
 ## Verification and handoff
 
+### Delivery record
+
+| Slice | Repository implementation | Acceptance boundary |
+| --- | --- | --- |
+| Remote rehearsal | Implemented; 148 UI tests, source safety group, eight packaged core groups and two packaged staging rehearsal groups passed | Loopback and synthetic evidence only. Separate-PC/network and real game acceptance unavailable; browser/viewport skipped. |
+| All-server overview | Pending | No implementation claim yet. |
+| Guided world-load rehearsal | Pending | No implementation claim yet. |
+| Game-specific live save sharing | Pending | Every real game remains disabled. |
+
+This table records implementation separately from external acceptance. The approved program continues through the remaining slices.
+
 - Before each slice, inspect current contracts and recent commits so existing work is reused rather than duplicated. Update strict .NET/TypeScript decoders and capability negotiation when a wire shape changes. Older peers must fail with a typed unsupported/update state, not parse partial data.
 - Use focused tests for authorization, lifecycle, file integrity, retry, and UI state. Run the relevant packaged journeys and `scripts/verify-release.ps1 -Build` on an isolated candidate when safe. Check the exact executable and data roots before process tests; do not replace or stop the installed production app.
 - Inspect the rendered Host/Friend flows at supported desktop and narrow widths when a browser is available. Record visual checks as skipped if only component or served-asset tests ran.

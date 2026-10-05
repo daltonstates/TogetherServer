@@ -6,7 +6,7 @@ using System.Text.Json;
 using TogetherServer;
 using TogetherServer.CompanionChecks;
 
-internal static class CoreRemoteJourney
+internal static partial class CoreRemoteJourney
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -242,6 +242,7 @@ internal static class CoreRemoteJourney
             passes++;
 
             Console.WriteLine($"Core remote journey: {passes} groups passed, 0 failed. Disposable data: {root}");
+            await RunRehearsalAsync(appPath);
         }
         catch (Exception ex)
         {
@@ -257,13 +258,13 @@ internal static class CoreRemoteJourney
         }
     }
 
-    private static async Task<FriendView> WaitForConnectedAsync(HttpClient friend)
+    private static async Task<FriendView> WaitForConnectedAsync(HttpClient friend, bool allowDisabled = false)
     {
         FriendView? latest = null;
         for (var attempt = 0; attempt < 40; attempt++)
         {
             latest = await PostAsync<object, FriendView>(friend, "/api/local/friend/poll", new { });
-            if (latest.State == "Connected") return latest;
+            if (latest.State == "Connected" || allowDisabled && latest.State == "Disabled") return latest;
             await Task.Delay(100);
         }
         throw new Exception($"saved Friend connection did not recover: {latest?.State} {latest?.ConnectionCode} {latest?.Detail}");
@@ -320,7 +321,7 @@ internal static class CoreRemoteJourney
         }
     }
 
-    private static Process StartApp(string path, string mode, int port, string data)
+    private static Process StartApp(string path, string mode, int port, string data, bool staging = false)
     {
         Directory.CreateDirectory(data);
         var info = new ProcessStartInfo(path)
@@ -331,9 +332,15 @@ internal static class CoreRemoteJourney
             RedirectStandardError = true
         };
         info.ArgumentList.Add(mode);
+        if (staging) info.ArgumentList.Add("--staging");
         info.ArgumentList.Add("--port");
         info.ArgumentList.Add(port.ToString());
         info.Environment["TOGETHERSERVER_DATA_DIR"] = data;
+        if (staging)
+        {
+            info.Environment["TOGETHERSERVER_DATA_DIR"] = data + "-production-unused";
+            info.Environment["TOGETHERSERVER_STAGING_DATA_DIR"] = data;
+        }
         info.Environment["TOGETHERSERVER_FIXTURE_ROOT"] = data;
         info.Environment[GameServerRegistry.FixtureOptInEnvironmentVariable] = "1";
         info.Environment["Logging__LogLevel__Default"] = "Warning";
