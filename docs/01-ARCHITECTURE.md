@@ -24,6 +24,8 @@ The production installer is a single per-user setup EXE. It places `TogetherServ
 
 ## Host internals
 
+The React all-server overview projects the already decoded Host snapshot and existing one-second display clock. It adds no API, poller or telemetry store. It refuses to display stale/untrusted counts or their old deadline, maps Attention categories to the existing fixed destinations, and does not show raw diagnostics, private paths, Friend-only events or warning text. Sorting its rows does not reorder settings or select a server.
+
 The Host and Friend capabilities may run concurrently in the same process. Host and Join select which local page is visible; they do not start or stop a capability. A configured Host listener starts from saved owner settings even when the app reopens on Join. Quit remains blocked by any managed game run from either page.
 
 - A local loopback GUI listener serves bundled React files and local-owner API actions. It must not become the public management interface.

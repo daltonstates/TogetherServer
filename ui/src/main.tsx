@@ -16,6 +16,7 @@ import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { PlayersPanel } from './PlayersPanel'
 import { RecentSessions } from './RecentSessions'
+import { AllServerOverview } from './AllServerOverview'
 import {
   HostSetupDialog
 } from './features/setup/HostSetupDialog'
@@ -48,6 +49,7 @@ import {
 import {
   activityAfterMarker,
   activityDestination,
+  type ActivityDestination,
   collapseRepeatedActivity,
   readActivityClearMarkersFrom,
   withActivityClearMarker,
@@ -1174,9 +1176,7 @@ function App() {
   }
   workspaceNavigationRef.current = navigateWorkspace
 
-  const openActivity = (item: NonNullable<Snapshot['activity']>[number]) => {
-    const destination = activityDestination(item)
-    if (!destination) return
+  const openActivityDestination = (destination: ActivityDestination) => {
     if (destination.profileId) setSelectedHostProfileId(destination.profileId)
     if (destination.workspace === 'settings') {
       setHostSettingsSection(destination.section)
@@ -1186,6 +1186,10 @@ function App() {
     setHostServerTab(destination.section)
     setHostMobileDetail(true)
     setWorkspacePage('host')
+  }
+  const openActivity = (item: NonNullable<Snapshot['activity']>[number]) => {
+    const destination = activityDestination(item)
+    if (destination) openActivityDestination(destination)
   }
 
   const detectedGameIp = snapshot?.mode === 'Host' && snapshot.settings.publicGameIpCheckedUtc &&
@@ -1502,6 +1506,10 @@ function App() {
       {(workspacePage === 'host' || workspacePage === 'settings') && snapshot?.mode === 'Host' && draft && <>
         {workspacePage === 'host' && <>
         {appInstance?.isStaging && <HostRemoteRehearsal />}
+        <PaneErrorBoundary title="All servers" resetKey={snapshot.settings.profiles.length}>
+          <AllServerOverview snapshot={snapshot} selectedProfileId={selectedHostProfileId} nowMs={nowMs}
+            error={loadError} onOpen={openActivityDestination} />
+        </PaneErrorBoundary>
         {savedProfiles.length > 0 && <>
         <section className="host-workspace-shell">
           <div className={hostMobileDetail ? 'host-master-detail detail-open' : 'host-master-detail'}>
