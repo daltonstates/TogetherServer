@@ -132,7 +132,9 @@ internal static class SnapshotReparseChecks
         substitute.CopyTo(buffer, 16); print.CopyTo(buffer, 18 + substitute.Length);
         // Attribute-only access is intentionally used: sharing denies GENERIC_WRITE
         // but does not deny FILE_WRITE_ATTRIBUTES, which can authorize this FSCTL.
-        using var handle = CreateFile(path, 0x100, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        // Native Win32 calls need the extended local path for a deeply nested
+        // disposable trial. A MAX_PATH failure must never count as safe denial.
+        using var handle = CreateFile(@"\\?\" + path, 0x100, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
         if (handle.IsInvalid) return Denied(Marshal.GetLastWin32Error());
         if (DeviceIoControl(handle, 0x000900A4, buffer, checked((uint)buffer.Length), IntPtr.Zero, 0, out _, IntPtr.Zero)) return true;
         return Denied(Marshal.GetLastWin32Error());
@@ -141,7 +143,7 @@ internal static class SnapshotReparseChecks
     private static bool Denied(int error)
     {
         if (error is 5 or 32 or 145 or 1314) return false;
-        throw new Win32Exception(error, "The attribute-only mount-point probe failed unexpectedly.");
+        throw new Win32Exception(error, $"The attribute-only mount-point probe failed unexpectedly (Windows error {error}).");
     }
 
     private static string Owned(string root, string path)
