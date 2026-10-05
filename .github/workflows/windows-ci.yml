@@ -32,6 +32,6 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Build and verify one exact candidate serially
+      - name: Build and verify one exact candidate on the dedicated CI runner
         shell: pwsh
-        run: ./scripts/verify-release.ps1 -Build
+        run: ./scripts/verify-release.ps1 -Build -AllowInteractiveTests

@@ -1,9 +1,13 @@
 param(
     [string]$SigningCertificateThumbprint = $env:TOGETHERSERVER_SIGNING_THUMBPRINT,
     [string]$SignToolPath = '',
-    [uri]$TimestampUrl = 'https://timestamp.digicert.com'
+    [uri]$TimestampUrl = 'https://timestamp.digicert.com',
+    [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
+if (!$AllowInteractiveTests) {
+    throw 'ForegroundSafety: Release preparation includes full process and desktop verification. -AllowInteractiveTests requires explicit owner approval for a separate test PC or dedicated unattended Windows session.'
+}
 $repository = Split-Path -Parent $PSScriptRoot
 
 Push-Location $repository
@@ -76,11 +80,11 @@ try {
     }
 
     if ($signed) {
-        & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source -RequireSignature
+        & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source -RequireSignature -AllowInteractiveTests
     }
     else {
         Write-Warning 'Preparing an unsigned release. Windows may show Unknown Publisher; in-app updates will rely on the fixed GitHub release URL, version, size, and SHA-256 digest without independent publisher verification.'
-        & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source
+        & (Join-Path $PSScriptRoot 'verify-release.ps1') -AppPath $source -AllowInteractiveTests
     }
     if ($LASTEXITCODE -ne 0) { throw 'Exact release-candidate verification failed.' }
 

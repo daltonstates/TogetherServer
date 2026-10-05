@@ -1,5 +1,8 @@
-param([string]$InstallerPath = '', [string]$ExpectedAppPath = '')
+param([string]$InstallerPath = '', [string]$ExpectedAppPath = '', [switch]$AllowInteractiveTests)
 $ErrorActionPreference = 'Stop'
+if (!$AllowInteractiveTests) {
+    throw 'ForegroundSafety: Installer smoke can launch windows and change focus. -AllowInteractiveTests requires explicit owner approval for a separate test PC or dedicated unattended Windows session.'
+}
 $repository = Split-Path -Parent $PSScriptRoot
 if (!$InstallerPath) { $InstallerPath = Join-Path $repository 'local-data/installer/TogetherServer-Setup-win-x64.exe' }
 if (!$ExpectedAppPath) { $ExpectedAppPath = Join-Path $repository 'local-data/release-candidate/TogetherServer.exe' }

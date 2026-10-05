@@ -1,13 +1,16 @@
-param([string]$AppPath = '', [int]$Port = 5127, [switch]$Interactive)
+param([string]$AppPath = '', [int]$Port = 5127, [switch]$Interactive, [switch]$AllowInteractiveTests)
 $ErrorActionPreference = 'Stop'
+if (!$AllowInteractiveTests) {
+    throw 'ForegroundSafety: Desktop smoke can change focus even in tray mode. -AllowInteractiveTests requires explicit owner approval for a separate test PC or dedicated unattended Windows session.'
+}
 $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release/TogetherServer.exe' }
 $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $fixturePath = Join-Path $repository 'src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe'
 if (!(Test-Path -LiteralPath $appPath) -or !(Test-Path -LiteralPath $fixturePath)) { throw 'Run scripts/build.ps1 first.' }
 
-# Routine runs stay in the tray so they do not interrupt the desktop. -Interactive exercises the visible
-# no-argument Explorer path, custom window controls, sizing, and native file pickers.
+# Tray and visible runs both require a dedicated approved session. -Interactive
+# exercises the Explorer path, window controls, sizing and native file pickers.
 if ($Port -eq 0) {
     $activeTcp = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
         ForEach-Object { $_.Port }

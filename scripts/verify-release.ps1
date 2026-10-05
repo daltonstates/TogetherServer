@@ -2,9 +2,13 @@ param(
     [string]$AppPath = '',
     [switch]$Build,
     [switch]$RequireSignature,
-    [switch]$SkipDesktop
+    [switch]$SkipDesktop,
+    [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
+if (!$AllowInteractiveTests) {
+    throw 'ForegroundSafety: Full verification can change desktop focus, including console fixtures when -SkipDesktop is set. Use scripts/verify-code-only.ps1 on the active desktop. -AllowInteractiveTests requires explicit owner approval for a separate test PC or dedicated unattended Windows session.'
+}
 $repository = Split-Path -Parent $PSScriptRoot
 
 function Invoke-Checked([string]$Name, [scriptblock]$Command) {
@@ -148,7 +152,7 @@ try {
     Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
     Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
     if (!$SkipDesktop) {
-        Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 }
+        Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -AllowInteractiveTests }
     }
     else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
 

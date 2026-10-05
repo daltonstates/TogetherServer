@@ -25,6 +25,13 @@ Read `README.md`, `docs/00-PRODUCT.md`, `docs/01-ARCHITECTURE.md`, `docs/02-NETW
 - The primary agent remains responsible for integrating findings, validating each completed vertical slice, committing authorized work, and continuing through the full requested scope. Record completed work, remaining checks, and acceptance boundaries in the repository's delivery document so another worker can resume safely.
 - Use the configured workhorse model and disclose the worker model when known. Do not select `gpt-6-astra` unless the owner explicitly requests it. Delegation does not authorize access to production data, credentials, or real worlds, or relax any security, lifecycle, or hard-stop rule below.
 
+## Preserve the owner's focus during testing
+
+- Automated work must not take keyboard focus or change the foreground window. Preserve the game or application the owner is using. Use `scripts/verify-code-only.ps1` and other checks that do not launch app windows, game processes, console fixtures, native dialogs or browser automation on the active desktop.
+- Hidden windows, tray mode, headless labels and `-SkipDesktop` do not prove focus safety. Console creation/attachment, graceful console commands, app relaunch and native desktop checks can still disturb the foreground. Do not run the full release gate, direct process-check runners, desktop smoke or installer smoke on the owner's active desktop.
+- Run those checks only on a separate test PC or a dedicated unattended Windows session with explicit owner approval. The guarded scripts require `-AllowInteractiveTests`; setting that switch is not permission to bypass this rule. Hosted Windows CI may opt in explicitly because it uses a separate runner; do not infer approval from environment variables.
+- Include this constraint in every worker handoff. If a test takes focus or the owner reports interference, stop the exact identified test runner and its disposable processes, keep production and unrelated processes running, and record unfinished checks. Do not keep retrying, restore focus after stealing it, or mark skipped checks passed.
+
 ## Hard stops
 
 Do not accept Valheim or other game terms, download a terms-gated game binary, spend money, change public firewall/router/DNS settings, request real credentials, or delete/overwrite real worlds without explicit owner authorization. No public listener is enabled by default. Keep secrets, personal identifiers, worlds, binaries, and production logs out of Git.
