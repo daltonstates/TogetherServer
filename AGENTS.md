@@ -18,6 +18,13 @@ Read `README.md`, `docs/00-PRODUCT.md`, `docs/01-ARCHITECTURE.md`, `docs/02-NETW
 - Do not claim a fixture or process-exists check proves game readiness, remote reachability, a friend join, world-save integrity, or restart recovery.
 - Use focused meaningful tests, then real Windows/process/browser and friend-network tests for the surface changed. Record passes, failures, and skips honestly.
 
+## Large tasks and delegation
+
+- For large tasks, use Codex CLI workers and subagents to complete the authorized scope without overloading the coordinator's context. Give each worker a bounded task, the relevant repository instructions, and a compact handoff rather than the full conversation history.
+- Keep worker ownership explicit. Use separate files or isolated worktrees for concurrent edits, and use read-only reviews when a shared build or package check is running. Serialize shared builds, package output, integration, and commits.
+- The primary agent remains responsible for integrating findings, validating each completed vertical slice, committing authorized work, and continuing through the full requested scope. Record completed work, remaining checks, and acceptance boundaries in the repository's delivery document so another worker can resume safely.
+- Use the configured workhorse model and disclose the worker model when known. Do not select `gpt-6-astra` unless the owner explicitly requests it. Delegation does not authorize access to production data, credentials, or real worlds, or relax any security, lifecycle, or hard-stop rule below.
+
 ## Hard stops
 
 Do not accept Valheim or other game terms, download a terms-gated game binary, spend money, change public firewall/router/DNS settings, request real credentials, or delete/overwrite real worlds without explicit owner authorization. No public listener is enabled by default. Keep secrets, personal identifiers, worlds, binaries, and production logs out of Git.
