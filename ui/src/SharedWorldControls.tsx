@@ -4,6 +4,7 @@ import { Button, Input, Select, TextArea } from './Controls'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
+import { WorldLoadRehearsalPanel } from './WorldLoadRehearsal'
 
 type CaptureKind = 'PostStopBackup' | 'LiveSave'
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string; captureKind: CaptureKind | null } | null; error: string | null; confirmedCopies: number;
@@ -991,6 +992,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       <SharedWorldSeparateRoutePanel profileId={profileId}
         separateCopies={recovery?.separateCopies ?? 0} />}
     <FriendSharingManager profileId={profileId} available={available} />
+    {status?.consented && status.thisPcVersion != null && <WorldLoadRehearsalPanel profileId={profileId} received />}
     {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId}
       onHostingSetupChange={setHostingSetupReady} />}
     {available && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>

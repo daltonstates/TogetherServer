@@ -24,6 +24,10 @@ public sealed class FriendService : IDisposable
         lock (sync) return disposed ? null : links.FirstOrDefault(item => item.Id == selectedId).Link;
     }
 
+    public Task<WorldLoadRehearsalResult> PrepareWorldLoadAsync(Guid profileId, HostManager manager,
+        CancellationToken cancellationToken = default) => SelectedLink()?.PrepareWorldLoadAsync(profileId, manager, cancellationToken) ??
+        Task.FromResult(new WorldLoadRehearsalResult(false, "NotPaired", "Choose a saved Host connection."));
+
     public FriendService(LocalData data) : this(data, null) { }
 
     internal FriendService(LocalData data,

@@ -409,6 +409,15 @@ public sealed partial class HostManager
         next.ConnectionRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
         if (next.Profiles is null)
             return Result(false, "InvalidSettings", "At least one valid profile collection is required.");
+        foreach (var trial in previous.Profiles.Where(profile => profile.WorldLoadRehearsalId is not null))
+        {
+            var submitted = next.Profiles.SingleOrDefault(profile => profile.Id == trial.Id);
+            if (submitted is null || System.Text.Json.JsonSerializer.Serialize(submitted) != System.Text.Json.JsonSerializer.Serialize(trial))
+                return Result(false, "WorldLoadSetupReadOnly", "Use the disposable rehearsal's fixed actions and cleanup before changing its setup.");
+        }
+        if (next.Profiles.Any(profile => profile.WorldLoadRehearsalId is not null &&
+            previous.Profiles.All(prior => prior.Id != profile.Id || prior.WorldLoadRehearsalId != profile.WorldLoadRehearsalId)))
+            return Result(false, "WorldLoadSetupReadOnly", "Prepare a disposable rehearsal through World safety.");
         foreach (var profile in next.Profiles)
         {
             profile.CrashRecovery ??= new CrashRecoveryOptions();
@@ -1047,17 +1056,17 @@ public sealed partial class HostManager
     }
 
     private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt,
-        string? separateBranchHash = null)
+        string? separateBranchHash = null, bool worldLoadTrial = false)
     {
         // Pairing revocation does not take the lifecycle semaphore. Hold its
         // shared gate through the managed launch so a completed revoke cannot
         // be followed by a Start authorized with an older roster.
         lock (SharedWorldMutationGate.For(data.RootPath))
-            return StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash);
+            return StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash, worldLoadTrial);
     }
 
     private ActionResult StartWithMembershipGate(Guid profileId, bool crashRecoveryAttempt,
-        string? separateBranchHash)
+        string? separateBranchHash, bool worldLoadTrial)
     {
         if (data.Recovery.LifecycleBlocked)
             return Result(false, "DataRecoveryRequired",
@@ -1066,6 +1075,11 @@ public sealed partial class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved profile.");
+        if (profile.WorldLoadRehearsalId is not null && !worldLoadTrial)
+            return Result(false, "WorldLoadFixedStartRequired", "Start this disposable copy from its world-load rehearsal.");
+        try { if (WorldLoadStartBlock(profile) is { } trialBlock) return trialBlock; }
+        catch (Exception ex) when (WorldLoadFailure(ex))
+        { return Result(false, "WorldLoadReviewRequired", "Disposable rehearsal records need review before Start."); }
         if (profile.SeparateCopySourceProfileId is not null)
         {
             if (separateBranchHash is null ||
@@ -2170,6 +2184,12 @@ public sealed partial class HostManager
                     FriendAddedMinutes = 0,
                     AddedShutdownMinutes = 0
                 };
+                continue;
+            }
+            if (settings.Profiles.SingleOrDefault(profile => profile.Id == view.ProfileId)?.WorldLoadRehearsalId is not null)
+            {
+                if (advance) CancelCountdown(view.ProfileId, "Disposable rehearsals require an owner-controlled Stop.", true);
+                views[index] = view with { AutoShutdownReason = "Disposable rehearsal: stop it from the load guide.", AutoShutdownAtUtc = null };
                 continue;
             }
             if (view.OnlinePlayers is null)

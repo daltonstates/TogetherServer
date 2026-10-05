@@ -254,6 +254,8 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+            if (profile.WorldLoadRehearsalId is not null)
+                return new(false, "WorldLoadCannotShare", "A disposable load rehearsal cannot publish or change shared-world authority.");
             if (profile.SeparateCopySourceProfileId is not null)
                 return new(false, "SeparateCopyCannotShare",
                     "This warned separate copy cannot share as the group's authoritative world. Keep both histories for review.");

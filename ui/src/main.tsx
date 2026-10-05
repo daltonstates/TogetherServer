@@ -17,6 +17,7 @@ import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { PlayersPanel } from './PlayersPanel'
 import { RecentSessions } from './RecentSessions'
 import { AllServerOverview } from './AllServerOverview'
+import { WorldLoadRehearsalPanel } from './WorldLoadRehearsal'
 import {
   HostSetupDialog
 } from './features/setup/HostSetupDialog'
@@ -1649,6 +1650,7 @@ function App() {
                       currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
                         ? snapshot.settings.companionEndpoint : ''}
                       onGrantChanged={refreshCompanion} />
+                    {!profile.worldLoadRehearsalId && <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} />}
                     {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
                       const verification = backupVerifications[backup.id]
                       const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'

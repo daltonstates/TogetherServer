@@ -53,6 +53,7 @@ public sealed class ServerProfile
     public bool PublicListing { get; set; }
     public string WorldId { get; set; } = "";
     public bool SharedSavesEnabled { get; set; }
+    public Guid? WorldLoadRehearsalId { get; set; }
     // A restored warned fork keeps its source and signed branch visible. It
     // cannot inherit ordinary or remote Start/sharing authority.
     public Guid? SeparateCopySourceProfileId { get; set; }

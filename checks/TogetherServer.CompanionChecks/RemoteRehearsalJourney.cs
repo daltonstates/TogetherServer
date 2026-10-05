@@ -57,6 +57,16 @@ internal static partial class CoreRemoteJourney
             var report = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", request);
             AssertRehearsal(report);
+            var load = await PostAsync<object, WorldLoadRehearsalResult>(test,
+                $"/api/local/friend/{profileId}/world-load/prepare", new { });
+            Require(load.Ok && load.Rehearsal is { CanLaunch: false, SourceKind: "Received" } &&
+                load.Rehearsal.LoadOutcome == "Unobserved", "received copy did not prepare as an isolated manual drill");
+            Require((await PostAsync<WorldLoadConfirmationRequest, WorldLoadRehearsalResult>(test,
+                $"/api/local/world-load/{load.Rehearsal!.Id}/confirm", new("Load", false))).Rehearsal?.LoadOutcome == "OwnerFailed",
+                "failed received-copy load was not retained accurately");
+            Require((await PostAsync<WorldLoadCleanupRequest, WorldLoadRehearsalResult>(test,
+                $"/api/local/world-load/{load.Rehearsal.Id}/cleanup", new(true))).Ok,
+                "received disposable copy cleanup failed");
             var repeat = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", request);
             AssertRehearsal(repeat);

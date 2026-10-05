@@ -61,7 +61,7 @@ Starting points: `src/TogetherServer/SharedWorldLiveCapture.cs`, `src/TogetherSe
 | --- | --- | --- |
 | Remote rehearsal | Implemented; 148 UI tests, source safety group, eight packaged core groups and two packaged staging rehearsal groups passed | Loopback and synthetic evidence only. Separate-PC/network and real game acceptance unavailable; browser/viewport skipped. |
 | All-server overview | Implemented; five focused projection/component tests, lint, production bundle and packaged served smoke passed | Browser/viewport acceptance unavailable. Existing lifecycle authority unchanged. |
-| Guided world-load rehearsal | Pending | No implementation claim yet. |
+| Guided world-load rehearsal | Implemented; source safety group, three UI cases and packaged isolated process/copy and received-copy drills passed | Real game load/change/restart remains unavailable. Owner confirmations stay separate from observed process checks; other games use the manual path. |
 | Game-specific live save sharing | Pending | Every real game remains disabled. |
 
 This table records implementation separately from external acceptance. The approved program continues through the remaining slices.

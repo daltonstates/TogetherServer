@@ -1,5 +1,7 @@
 # Small v1 architecture
 
+`WorldLoadRehearsal` extends hash-only Test restore with a fresh working directory derived from a new app-owned profile ID. Backup manifests are reverified; received copies also recheck pinned signed source, roster group and current received head under the per-vault receive gate. Automated Valheim/fixture trials remain in the canonical HostManager run registry, use fixed reviewed drivers and distinct ports, and have immutable setup, maintenance, no sharing, no crash restart and no idle Stop. A changed binary blocks launch and confirmations. Interrupted preparation stays reviewable; explicit stopped cleanup refuses unresolved runs, links or another profile's directory reference. Protected metadata retains at most 20 results and eight unfinished copies. No companion action or caller-selected path is added.
+
 ```text
 Friend PC                                      Owner PC
 TogetherServer.exe (Friend mode)              TogetherServer.exe (Host mode)

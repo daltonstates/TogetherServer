@@ -23,6 +23,7 @@ export type Profile = {
   publicListing: boolean
   worldId: string
   sharedSavesEnabled?: boolean
+  worldLoadRehearsalId?: string | null
   worldSource: 'Existing' | 'New'
   worldDirectory: string
   gamePort: number

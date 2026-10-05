@@ -1,5 +1,7 @@
 # Implementation order and acceptance
 
+Guided world-load rehearsal validation on 2026-10-04: PASS source safety group (wrong backup/profile, payload damage, links, low space, changed binary, failed load, ordering, durable results and interrupted preparation); PASS three UI cases, lint and production bundle. PASS packaged disposable fixture process/copy drill with distinct roots and ports, original process still running, exact Start/Stop, app restart and cleanup. The packaged remote rehearsal additionally exercises verified received-copy preparation, owner-reported failure and cleanup without losing the source receipt. These are synthetic and loopback results. Separate-PC/network, real-game load and saved restart, and visual/viewport acceptance remain UNAVAILABLE or SKIPPED. No automatic game-load proof or live-capture acceptance was recorded.
+
 Keep the project small and deliver working vertical slices. Start implementation in the new chat; these documents are the handoff, not the implementation.
 
 ## Slice 1 — Local Host app and GUI

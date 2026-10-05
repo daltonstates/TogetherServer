@@ -1,5 +1,7 @@
 # Product scope: TogetherServer v1
 
+The owner-only **Test a copy in the game** guide can prepare a completed backup or currently verified received save into fresh disposable storage. It records exact copy identity and preparation app/installed game versions, with separate optional owner-reported game version and load/change/restart results. Valheim can use its reviewed driver with a fresh password, isolated save root and new ports; fixture trials exercise process control only. Other games or missing binaries use manual steps. Nothing grants takeover authority or certifies real-game support.
+
 ## Goal
 
 Let the owner host a dedicated game server on a Windows PC and let a small, known group of friends see its status and request approved actions from their own Windows PCs. Valheim was first; Minecraft Java, Minecraft Bedrock, Factorio, and Terraria now have built-in local Host drivers. Factorio and Terraria remain previews with automatic crash restart disabled. Terraria has no trusted player count, so its Friend and automatic Stop remain blocked. An advanced custom-game profile lets the local owner supply protected Start, Status/players, and Stop scripts without widening the Friend API. Real Minecraft, Factorio, and Terraria joins and saved-world restart checks remain acceptance gates. Keep the program understandable: one installable app with Host and Friend modes, a bundled GUI, approved actions, and local settings. No cloud control plane or separate database service.

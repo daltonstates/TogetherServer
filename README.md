@@ -1,5 +1,7 @@
 # TogetherServer
 
+World safety includes **Test a copy in the game** for completed backups and verified received saves. It prepares a fresh disposable copy, offers an isolated Valheim driver trial when an owner-installed binary is available, and a manual path for other games. Load, saved-change and restart confirmations stay explicitly owner-reported. The original world, backup and received receipt stay intact; hash-only **Test restore** remains available.
+
 TogetherServer is one Windows app for hosting Valheim, Minecraft Java, Minecraft Bedrock, the Factorio and Terraria previews, or an owner-scripted custom game server and connecting to a friend's server. The same EXE runs on every PC. It opens a borderless native window with app-styled minimize, maximize, and close controls around its bundled interface; Node and the .NET SDK are needed only to build it.
 
 ## Install and open the app

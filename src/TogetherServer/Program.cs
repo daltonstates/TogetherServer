@@ -842,6 +842,26 @@ app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/rehearse", as
     friendMode
         ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." })
         : Results.Json(await manager.RehearseRestoreAsync(id, backupId)));
+app.MapPost("/api/local/profiles/{id:guid}/world-load/prepare", async (Guid id, WorldLoadPreparationRequest request) =>
+    friendMode ? Results.Conflict(new WorldLoadRehearsalResult(false, "FriendMode", "Switch to Host mode first.")) :
+        Results.Json(await manager.PrepareWorldLoadRehearsalAsync(id, request.BackupId)));
+app.MapPost("/api/local/friend/{id:guid}/world-load/prepare", async (Guid id, HttpContext context) =>
+    !friendMode ? Results.Conflict(new WorldLoadRehearsalResult(false, "HostMode", "Switch to Friend mode first.")) :
+        Results.Json(await friend.PrepareWorldLoadAsync(id, manager, context.RequestAborted)));
+app.MapGet("/api/local/world-load/source/{id:guid}", async (Guid id, HttpContext context) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+        Results.Json(await manager.WorldLoadRehearsalsAsync(id)));
+app.MapGet("/api/local/world-load/{id:guid}", async (Guid id, HttpContext context) =>
+    !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
+        Results.Json(await manager.WorldLoadRehearsalAsync(id)));
+app.MapPost("/api/local/world-load/{id:guid}/start", async (Guid id) =>
+    Results.Json(await manager.WorldLoadRehearsalAsync(id, "start")));
+app.MapPost("/api/local/world-load/{id:guid}/stop", async (Guid id) =>
+    Results.Json(await manager.WorldLoadRehearsalAsync(id, "stop")));
+app.MapPost("/api/local/world-load/{id:guid}/confirm", async (Guid id, WorldLoadConfirmationRequest request) =>
+    Results.Json(await manager.WorldLoadRehearsalAsync(id, "confirm", request)));
+app.MapPost("/api/local/world-load/{id:guid}/cleanup", async (Guid id, WorldLoadCleanupRequest request) =>
+    Results.Json(await manager.WorldLoadRehearsalAsync(id, "cleanup", confirmStopped: request.ConfirmStopped)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore", (Guid id, Guid backupId) =>
     HostOnly(() => manager.RestoreBackupAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/resume-hosting", (Guid id) => HostOnly(async () =>
@@ -1262,6 +1282,8 @@ app.MapPost("/api/local/servers/{profileId:guid}/invite", async (Guid profileId,
         var settings = data.LoadSettings();
         if (!settings.Profiles.Any(profile => profile.Id == profileId))
             return Results.NotFound(new { ok = false, code = "UnknownServer", message = "Choose a saved server." });
+        if (settings.Profiles.Any(profile => profile.Id == profileId && profile.WorldLoadRehearsalId is not null))
+            return Results.Conflict(new { ok = false, code = "WorldLoadOwnerOnly", message = "Disposable load rehearsals have no Friend invitations." });
         if (string.IsNullOrWhiteSpace(settings.CompanionEndpoint))
         {
             var route = ConnectionRoutes.Normalize(settings.ConnectionRoute);

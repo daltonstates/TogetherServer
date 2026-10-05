@@ -164,7 +164,7 @@ internal sealed class BackupManifest
 
 internal sealed record BackupManifestFile(string Path, long Length, string Sha256);
 
-internal sealed class WorldBackupService
+internal sealed partial class WorldBackupService
 {
     private const string RestoreTransactionsFile = "restore-transactions.json";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };

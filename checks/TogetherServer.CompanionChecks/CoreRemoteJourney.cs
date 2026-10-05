@@ -311,7 +311,7 @@ internal static partial class CoreRemoteJourney
             if (host.HasExited) return;
             using var owner = LocalClient(hostPort);
             var snapshot = await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
-            if (snapshot?.Runs.Single(run => run.ProfileId == profileId).State != "Offline")
+            if (snapshot?.Runs.SingleOrDefault(run => run.ProfileId == profileId) is { State: not "Offline" })
                 _ = await PostAsync<object, ActionResult>(owner,
                     $"/api/local/profiles/{profileId}/stop", new { });
         }

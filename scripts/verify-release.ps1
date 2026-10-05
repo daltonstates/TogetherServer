@@ -128,6 +128,9 @@ try {
     Invoke-Checked 'Core remote journey' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
     }
+    Invoke-Checked 'World-load packaged rehearsal' {
+        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --world-load-rehearsal
+    }
     Invoke-Checked 'Shared Worlds packaged journey' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-world-journey
     }
