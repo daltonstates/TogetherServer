@@ -529,6 +529,10 @@ internal sealed class FixtureServerDriver : IGameServerDriver
         };
         process.StartInfo.ArgumentList.Add("--stop-pipe");
         process.StartInfo.ArgumentList.Add(run.StopPipeName);
+        process.StartInfo.ArgumentList.Add("--profile-id");
+        process.StartInfo.ArgumentList.Add(run.ProfileId.ToString("N"));
+        process.StartInfo.ArgumentList.Add("--operation-id");
+        process.StartInfo.ArgumentList.Add(run.OperationId.ToString("N"));
         if (!process.Start()) throw new InvalidOperationException("The fixture did not start.");
         return new("FixtureStarted", "Fixture process started. Game readiness and world saving are unverified.", process.Id);
     }

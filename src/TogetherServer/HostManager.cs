@@ -1208,6 +1208,7 @@ public sealed partial class HostManager
 
     public async Task<ActionResult> StopAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
     {
+        if (remoteStillSafe is null) CancelLiveSave(profileId);
         await gate.WaitAsync();
         try
         {

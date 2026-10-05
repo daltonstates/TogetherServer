@@ -50,6 +50,11 @@ if (args.Skip(1).Contains("--world-load-rehearsal", StringComparer.OrdinalIgnore
     await CoreRemoteJourney.RunWorldLoadAsync(appPath, fixturePath);
     return 0;
 }
+if (args.Skip(1).Contains("--live-save-action", StringComparer.OrdinalIgnoreCase))
+{
+    await CoreRemoteJourney.RunLiveSaveActionAsync(appPath, fixturePath);
+    return 0;
+}
 if (args.Skip(1).Contains("--shared-world-journey", StringComparer.OrdinalIgnoreCase))
 {
     await SharedWorldJourney.RunAsync(appPath, valheimFixturePath);

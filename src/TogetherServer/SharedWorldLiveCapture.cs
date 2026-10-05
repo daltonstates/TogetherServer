@@ -32,10 +32,13 @@ internal sealed partial class SharedWorldService
     internal Action? AfterLiveSourceScanForChecks { get; set; }
     internal Func<ManagedRun, bool>? FixtureLiveRunIdentityForChecks { get; set; }
     internal Func<long>? FixtureLiveAvailableBytesForChecks { get; set; }
+    internal Action? AfterLiveSignedDirectoryForChecks { get; set; }
+    private GameServerRegistry? stagingFixtureRegistry;
+    internal void EnableStagingLiveFixture(GameServerRegistry registry) => stagingFixtureRegistry = registry;
 
     private bool LiveCaptureAccepted(string game) =>
         SharedWorldLiveSaveAdapters.ForGame(game)?.LiveCaptureAccepted == true ||
-        game == GameKinds.Fixture && FixtureLiveCaptureAcceptedForChecks;
+        game == GameKinds.Fixture && (FixtureLiveCaptureAcceptedForChecks || stagingFixtureRegistry is not null);
 
     private string LiveCaptureProfileRoot(Guid profileId)
     {
@@ -49,8 +52,7 @@ internal sealed partial class SharedWorldService
 
     private string ReviewedLiveSource(ServerProfile profile, ManagedRun run)
     {
-        var games = profile.Kind == GameKinds.Fixture && LiveGameRegistryForChecks is not null
-            ? LiveGameRegistryForChecks : new GameServerRegistry(data);
+        var games = profile.Kind == GameKinds.Fixture ? stagingFixtureRegistry ?? LiveGameRegistryForChecks ?? new GameServerRegistry(data) : new GameServerRegistry(data);
         if (!games.TryGet(profile.Kind, out var driver) ||
             driver.ManagedSaveDirectory(profile) is not { } selected ||
             !Path.IsPathFullyQualified(selected))
@@ -128,7 +130,7 @@ internal sealed partial class SharedWorldService
         return recorded is not null && recorded.Kind == profile.Kind &&
             recorded.WorldId == profile.WorldId && recorded.ProcessId == processId &&
             recorded.StartTimeUtcTicks == startTimeUtcTicks &&
-            recorded.StopRequestedUtc is null && recorded.WasReady &&
+            recorded.StopRequestedUtc is null && (recorded.WasReady || profile.Kind == GameKinds.Fixture && stagingFixtureRegistry is not null) &&
             !string.IsNullOrWhiteSpace(recorded.WorldDirectory) &&
             !string.IsNullOrWhiteSpace(profile.WorldDirectory) &&
             Path.GetFullPath(recorded.WorldDirectory).Equals(
@@ -142,7 +144,7 @@ internal sealed partial class SharedWorldService
     // adapter-owned staging before those evidence kinds may publish.
     // A partial directory is never a capture.
     internal Guid StageLiveCapture(ServerProfile profile, ManagedRun run,
-        LiveSaveCompletionEvidence completion)
+        LiveSaveCompletionEvidence completion, CancellationToken cancellationToken = default, Guid? reservedCaptureId = null)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
             lock (sync)
@@ -156,7 +158,7 @@ internal sealed partial class SharedWorldService
                     run.ProfileId != profile.Id || run.Kind != profile.Kind ||
                     run.WorldId != profile.WorldId || run.OperationId == Guid.Empty ||
                     run.ProcessId is not > 0 || run.StartTimeUtcTicks is not > 0 ||
-                    !run.WasReady || run.StopRequestedUtc is not null ||
+                    (!run.WasReady && stagingFixtureRegistry is null) || run.StopRequestedUtc is not null ||
                     !completion.Complete || completion.Kind != LiveSaveEvidence.RunScopedCompletion ||
                     completion.ProfileId != run.ProfileId ||
                     completion.OperationId != run.OperationId ||
@@ -175,11 +177,15 @@ internal sealed partial class SharedWorldService
                 var beforeSetup = ServerSetupSnapshots.Capture(profile, data);
                 var before = ServerSetupSnapshots.Read(profile, beforeSetup);
                 _ = SharedWorldPortableSetupReader.Capture(before);
-                var sourceFiles = ScanLiveTree(source);
+                var sourceFiles = ScanLiveTree(source, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 var bytes = BoundedTotalBytes(sourceFiles);
                 RequireLiveSpace(bytes, profile.Kind);
                 AfterLiveSourceScanForChecks?.Invoke();
-                var captureId = Guid.NewGuid();
+                cancellationToken.ThrowIfCancellationRequested();
+                var captureId = reservedCaptureId ?? Guid.NewGuid();
+                if (captureId == Guid.Empty || Directory.Exists(LiveCaptureDirectory(profile.Id, captureId)))
+                    throw new InvalidDataException("A fresh capture identity is required.");
                 var profileRoot = LiveCaptureProfileRoot(profile.Id);
                 Directory.CreateDirectory(profileRoot);
                 // Crash leftovers have no completion marker and can never be
@@ -196,12 +202,13 @@ internal sealed partial class SharedWorldService
                     Directory.CreateDirectory(payload);
                     foreach (var file in sourceFiles)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var destination = SafeChild(payload, file.Path);
                         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                        File.Copy(SafeChild(source, file.Path), destination, false);
-                        VerifyFile(destination, file);
+                        CopyLiveFile(SafeChild(source, file.Path), destination, cancellationToken);
+                        VerifyLiveFile(destination, file, cancellationToken);
                     }
-                    if (!sourceFiles.SequenceEqual(ScanLiveTree(source)))
+                    if (!sourceFiles.SequenceEqual(ScanLiveTree(source, cancellationToken)))
                         throw new InvalidDataException("The live save source changed during capture.");
                     if (!RecordedExactLiveRun(profile, run.OperationId,
                             run.ProcessId.Value, run.StartTimeUtcTicks.Value))
@@ -229,7 +236,8 @@ internal sealed partial class SharedWorldService
                     if (manifestBytes.Length > MaximumManifestBytes)
                         throw new InvalidDataException("The live capture manifest is too large.");
                     File.WriteAllBytes(Path.Combine(partial, "complete.json"), manifestBytes);
-                    VerifyLiveTree(payload, sourceFiles);
+                    VerifyLiveTree(payload, sourceFiles, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     Directory.Move(partial, LiveCaptureDirectory(profile.Id, captureId));
                     return captureId;
                 }
@@ -237,7 +245,7 @@ internal sealed partial class SharedWorldService
             }
     }
 
-    private static SharedWorldFile[] ScanLiveTree(string root)
+    private static SharedWorldFile[] ScanLiveTree(string root, CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(root) || (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("The live save source is missing or linked.");
@@ -248,6 +256,7 @@ internal sealed partial class SharedWorldService
         pending.Push(root);
         while (pending.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (++directories > 1024)
                 throw new InvalidDataException("The live save has too many directories.");
             var directory = pending.Pop();
@@ -266,7 +275,7 @@ internal sealed partial class SharedWorldService
                 if (stream.Length > MaximumSharedWorldBytes)
                     throw new InvalidDataException("The live save exceeds the transfer limit.");
                 files.Add(new SharedWorldFile(relative, stream.Length,
-                    Convert.ToHexString(SHA256.HashData(stream))));
+                    HashLiveFile(stream, cancellationToken)));
             }
         }
         if (files.Count == 0) throw new InvalidDataException("The live save has no complete files.");
@@ -275,9 +284,9 @@ internal sealed partial class SharedWorldService
         return ordered;
     }
 
-    private static void VerifyLiveTree(string root, IReadOnlyList<SharedWorldFile> expected)
+    private static void VerifyLiveTree(string root, IReadOnlyList<SharedWorldFile> expected, CancellationToken cancellationToken = default)
     {
-        var actual = ScanLiveTree(root);
+        var actual = ScanLiveTree(root, cancellationToken);
         if (!actual.SequenceEqual(expected))
             throw new InvalidDataException("The staged live save payload changed.");
     }
@@ -294,7 +303,7 @@ internal sealed partial class SharedWorldService
     }
 
     private (LiveSaveCaptureManifest Capture, ServerSetupSnapshot Setup, string PayloadRoot)
-        ReadVerifiedLiveCapture(ServerProfile profile, Guid captureId)
+        ReadVerifiedLiveCapture(ServerProfile profile, Guid captureId, CancellationToken cancellationToken = default)
     {
         if (captureId == Guid.Empty) throw new InvalidDataException("The live capture ID is missing.");
         var root = LiveCaptureDirectory(profile.Id, captureId);
@@ -340,16 +349,16 @@ internal sealed partial class SharedWorldService
                 JsonSerializer.SerializeToUtf8Bytes(currentSetup, Json)))
             throw new InvalidDataException("The reviewed setup changed after live capture.");
         var payload = Path.Combine(root, PayloadDirectory);
-        VerifyLiveTree(payload, capture.Files);
+        VerifyLiveTree(payload, capture.Files, cancellationToken);
         if (Directory.EnumerateFileSystemEntries(root).Count() != 3)
             throw new InvalidDataException("The live capture contains unexpected entries.");
         return (capture, setup, payload);
     }
 
-    // This is deliberately internal and has no HostManager, UI, local HTTP or
-    // companion route. Its approval is tied to the sealed exact-run capture.
+    // The owner staging fixture action is the only surfaced caller. There is no
+    // companion capture action; approval remains tied to this sealed exact run.
     internal SharedWorldResult PublishLiveCapture(ServerProfile profile, Guid captureId,
-        LiveSavePublicationApproval approval)
+        LiveSavePublicationApproval approval, CancellationToken cancellationToken = default)
     {
         if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
             return new(false, "SharingOff", "Shared saves are off for this server.");
@@ -363,7 +372,8 @@ internal sealed partial class SharedWorldService
                         throw new InvalidDataException("Live save publication has not passed game acceptance.");
                     if (!approval.Approved || approval.CaptureId != captureId)
                         throw new InvalidDataException("The exact live capture has no publication approval.");
-                    var (capture, setup, payload) = ReadVerifiedLiveCapture(profile, captureId);
+                    var (capture, setup, payload) = ReadVerifiedLiveCapture(profile, captureId, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (approval.OperationId != capture.OperationId)
                         throw new InvalidDataException("The approval belongs to another managed run.");
                     if (!RecordedExactLiveRun(profile, capture.OperationId,
@@ -413,12 +423,13 @@ internal sealed partial class SharedWorldService
                     Directory.CreateDirectory(destinationPayload);
                     foreach (var file in files)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var destination = SafeChild(destinationPayload, file.Path);
                         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                        File.Copy(SafeChild(payload, file.Path), destination, false);
-                        VerifyFile(destination, file);
+                        CopyLiveFile(SafeChild(payload, file.Path), destination, cancellationToken);
+                        VerifyLiveFile(destination, file, cancellationToken);
                     }
-                    VerifyLiveTree(destinationPayload, files);
+                    VerifyLiveTree(destinationPayload, files, cancellationToken);
                     File.WriteAllBytes(Path.Combine(stage, "version.json"), versionBytes);
                     var destinationRoot = VersionRoot(version);
                     Directory.CreateDirectory(Path.GetDirectoryName(destinationRoot)!);
@@ -426,8 +437,10 @@ internal sealed partial class SharedWorldService
                         throw new InvalidDataException("Shared version already exists.");
                     Directory.Move(stage, destinationRoot);
                     stage = null;
-                    VerifyLiveTree(Path.Combine(destinationRoot, PayloadDirectory), files);
+                    AfterLiveSignedDirectoryForChecks?.Invoke();
+                    VerifyLiveTree(Path.Combine(destinationRoot, PayloadDirectory), files, cancellationToken);
                     var latestStage = LatestPath(profile.Id) + ".new";
+                    cancellationToken.ThrowIfCancellationRequested();
                     File.WriteAllBytes(latestStage, versionBytes);
                     File.Move(latestStage, LatestPath(profile.Id), true);
                     // The published payload is verified and now has its own
@@ -451,6 +464,43 @@ internal sealed partial class SharedWorldService
                 }
                 finally { if (stage is not null) TryDeleteStage(stage); }
             }
+    }
+
+    internal void DiscardLiveCapture(Guid profileId, Guid captureId)
+    {
+        if (profileId == Guid.Empty || captureId == Guid.Empty) throw new InvalidDataException("A fixed capture is required.");
+        lock (SharedWorldMutationGate.For(data.RootPath))
+            lock (sync) TryDeleteStage(LiveCaptureDirectory(profileId, captureId));
+    }
+
+    private static void CopyLiveFile(string source, string destination, CancellationToken cancellationToken)
+    {
+        using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        var buffer = new byte[1024 * 1024]; int read;
+        while ((read = input.Read(buffer)) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            output.Write(buffer, 0, read);
+        }
+    }
+    private static string HashLiveFile(Stream input, CancellationToken cancellationToken)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[1024 * 1024]; int read;
+        while ((read = input.Read(buffer)) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            hash.AppendData(buffer, 0, read);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+    private static void VerifyLiveFile(string path, SharedWorldFile expected, CancellationToken cancellationToken)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("The copy is linked.");
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (input.Length != expected.Length || HashLiveFile(input, cancellationToken) != expected.Sha256)
+            throw new InvalidDataException("The immutable copy failed verification.");
     }
 
     // Read-only owner projection. It deliberately returns no candidate hash when

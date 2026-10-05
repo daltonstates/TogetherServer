@@ -26,6 +26,18 @@ internal sealed class BedrockLiveSaveCandidate(LocalData data)
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     internal bool HasPendingResume => File.Exists(markerPath);
+    internal BedrockPendingResume? ReadPending()
+    {
+        if (!HasPendingResume) return null;
+        var info = new FileInfo(markerPath);
+        if (info.Length is <= 0 or > 4096 || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Pending Bedrock resume needs review.");
+        var marker = JsonSerializer.Deserialize<BedrockPendingResume>(File.ReadAllBytes(markerPath), Json);
+        if (marker is null || marker.ProfileId == Guid.Empty || marker.OperationId == Guid.Empty || marker.AttemptNonce == Guid.Empty ||
+            marker.ProcessId <= 0 || marker.StartTimeUtcTicks <= 0)
+            throw new InvalidDataException("Pending Bedrock resume needs review.");
+        return marker;
+    }
 
     internal void Hold(ManagedRun requestedRun)
     {

@@ -78,6 +78,8 @@ pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile
 using var hostingPower = new WindowsHostingPowerGuard();
 var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
 var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery, pairing);
+if (instance.IsStaging) manager.EnableStagingLiveFixture();
+await manager.RecoverPendingBedrockResumeAsync();
 async Task<SharedWorldRoster> PublishRosterAndConfirmAsync(Guid profileId,
     bool? ownerOverride = null, bool reviewSourceChange = false,
     SharedWorldOwnerEdit? ownerEdit = null)
@@ -781,6 +783,15 @@ app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/cancel",
     (Guid id) => HostOnly(() => manager.CancelPlannedHandoffAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/live/save", async (Guid id, LiveSaveRequest request, HttpContext context) =>
+    friendMode ? Results.Conflict(new LiveSaveActionResult(false, "FriendMode", "Switch to Host mode first.")) :
+        Results.Json(await manager.SaveAndShareAsync(id, request, context.RequestAborted)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/live/withdraw", async (Guid id, LiveSaveRequest request) =>
+    friendMode ? Results.Conflict(new LiveSaveActionResult(false, "FriendMode", "Switch to Host mode first.")) :
+        Results.Json(await manager.WithdrawLiveSaveAsync(id, request)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/live/resume", async (Guid id) =>
+    friendMode ? Results.Conflict(new LiveSaveActionResult(false, "FriendMode", "Switch to Host mode first.")) :
+        Results.Json(await manager.RecoverPendingBedrockResumeAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/setup", (Guid id) =>
     HostOnly(() => manager.CreateCompleteSetupBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore-setup", (Guid id, Guid backupId) =>

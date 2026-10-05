@@ -105,3 +105,7 @@ dotnet checks/TogetherServer.Checks/bin/Release/net10.0-windows/TogetherServer.C
 ```
 
 Before relying on a valued world, use a disposable copied/staging world on separate Windows PCs to prove a recognizable change survives graceful Stop, transfer, successor load, and restart; test both planned handoff and recovery, interruption/retry, intended control and game routes, and the original Host returning. Record those results separately from the checks above. See [live-save acceptance](10-SHARED-WORLD-LIVE-SAVE-ACCEPTANCE.md) for each game's additional live-capture gate.
+
+## Four-feature follow-up
+
+The 2026-10-04 delivery adds a staged owner fixture capture action under the canonical lifecycle gate, a per-game disabled acceptance matrix and exact-run Bedrock resume recovery. Capture IDs are durable before copying, copying and hashes honor cancellation, and a signed directory without its current pointer remains fenced for explicit review. The normal pinned transfer, signed receipt, roster grants, manual guarded takeover and old-Host authority fences are reused. Guided load copies use the actual received-vault lock and cannot publish authority. New source/UI/packaged checks are recorded in docs 04 and 13. No real game or separate-PC acceptance is claimed.

@@ -62,9 +62,9 @@ Starting points: `src/TogetherServer/SharedWorldLiveCapture.cs`, `src/TogetherSe
 | Remote rehearsal | Implemented; 148 UI tests, source safety group, eight packaged core groups and two packaged staging rehearsal groups passed | Loopback and synthetic evidence only. Separate-PC/network and real game acceptance unavailable; browser/viewport skipped. |
 | All-server overview | Implemented; five focused projection/component tests, lint, production bundle and packaged served smoke passed | Browser/viewport acceptance unavailable. Existing lifecycle authority unchanged. |
 | Guided world-load rehearsal | Implemented; source safety group, three UI cases and packaged isolated process/copy and received-copy drills passed | Real game load/change/restart remains unavailable. Owner confirmations stay separate from observed process checks; other games use the manual path. |
-| Game-specific live save sharing | Pending | Every real game remains disabled. |
+| Game-specific live save sharing | Implemented staging fixed fixture action, durable retries/cancellation, per-game matrix and pending-resume recovery; source safety, 47 focused UI tests, live core and three packaged action groups passed | Every real game remains disabled. Real adapters still need game-specific completion, immutable byte binding and owner-controlled save/transfer/load/change/restart evidence. Loopback fixtures certify none of those real-game claims. |
 
-This table records implementation separately from external acceptance. The approved program continues through the remaining slices.
+All four repository slices are implemented. This table separates their delivered fixture/guided paths from unverified external acceptance and the real-game adapter gates.
 
 - Before each slice, inspect current contracts and recent commits so existing work is reused rather than duplicated. Update strict .NET/TypeScript decoders and capability negotiation when a wire shape changes. Older peers must fail with a typed unsupported/update state, not parse partial data.
 - Use focused tests for authorization, lifecycle, file integrity, retry, and UI state. Run the relevant packaged journeys and `scripts/verify-release.ps1 -Build` on an isolated candidate when safe. Check the exact executable and data roots before process tests; do not replace or stop the installed production app.

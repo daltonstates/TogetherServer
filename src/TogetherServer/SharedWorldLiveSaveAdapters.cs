@@ -59,10 +59,23 @@ internal static class SharedWorldLiveSaveAdapters
     public static SharedWorldLiveSaveStatus Status(string? game)
     {
         var candidate = ForGame(game);
-        return new(false, candidate is null
-            ? "Live save sharing is unavailable for this server."
-            : "Live save sharing is unavailable for this game. Use its hash-verified post-Stop file copy. Game load has not been checked.");
+        var reason = candidate?.MissingProof ?? "This game has no accepted live-save adapter.";
+        return new(false, reason + " Use a verified post-Stop copy.", game ?? "Unknown", "GameAcceptanceRequired",
+            AcceptanceStages(game));
     }
+
+    internal static IReadOnlyList<LiveSaveAcceptanceStage> AcceptanceStages(string? game) =>
+    [
+        new("completion", "Unverified", ForGame(game)?.MissingProof ?? (game == GameKinds.Fixture ? "Synthetic fixture completion only." : "No reviewed completion signal exists for this game.")),
+        new("snapshot", "Unverified", "A game-specific immutable byte binding is required; a stable timestamp or hash is insufficient."),
+        new("transfer", "Unverified", "Transfer the exact live copy with a verified receipt to another owner-controlled PC."),
+        new("load", "Unverified", "Load the exact copy in the owner-installed game on that PC."),
+        new("change", "Unverified", "Confirm the recognizable change made before the running save."),
+        new("restart", "Unverified", "Gracefully save, stop and restart the disposable game; confirm the change remains.")
+    ];
 }
 
-public sealed record SharedWorldLiveSaveStatus(bool Available, string Message);
+public sealed record LiveSaveAcceptanceStage(string Id, string State, string Detail);
+public sealed record SharedWorldLiveSaveStatus(bool Available, string Message, string? Game = null,
+    string? Code = null, IReadOnlyList<LiveSaveAcceptanceStage>? Stages = null, bool ResumePending = false,
+    LiveSaveAttemptView? LastAttempt = null);

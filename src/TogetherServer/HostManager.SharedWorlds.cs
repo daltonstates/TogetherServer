@@ -298,6 +298,7 @@ public sealed partial class HostManager
             var status = sharedWorlds.Status(profile);
             return status with
             {
+                LiveSave = LiveSaveStatusUnderGate(profile),
                 CanManageSharing = profile.SeparateCopySourceProfileId is null &&
                     authorityStatus.State == "NoTakeover",
                 Error = profile.SeparateCopySourceProfileId is not null ?

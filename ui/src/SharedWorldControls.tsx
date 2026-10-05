@@ -5,10 +5,11 @@ import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 import { WorldLoadRehearsalPanel } from './WorldLoadRehearsal'
+import { LiveSaveControls, parseLiveSaveStatus, type LiveSaveStatus } from './LiveSaveControls'
 
 type CaptureKind = 'PostStopBackup' | 'LiveSave'
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string; captureKind: CaptureKind | null } | null; error: string | null; confirmedCopies: number;
-  liveSave: { available: boolean; message: string }; canManageSharing: boolean; authority: AuthorityStatus | null }
+  liveSave: LiveSaveStatus; canManageSharing: boolean; authority: AuthorityStatus | null }
 type LiveOrphanReview = { code: 'None' | 'Verified' | 'ReviewRequired'; versionHash: string | null; message: string }
 type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versionHash: string;
   hostDeviceId: string; hostPublicKey: string; hostAddress: string }
@@ -175,9 +176,7 @@ function parseRosterMember(value: unknown): RosterMember {
 export function parseHostSharedWorldStatus(value: unknown): HostStatus {
   const source = record(value, 'Shared save status')
   const live = source.liveSave === undefined || source.liveSave === null ? null : record(source.liveSave, 'Live save status')
-  const liveSave = live === null ? { available: false, message: 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.' } :
-    { available: boolean(live.available, 'Live save availability'), message: textOrNull(live.message, 'Live save message') ?? '' }
-  if (liveSave.available || liveSave.message.length === 0) throw new Error('Live save status is invalid.')
+  const liveSave = parseLiveSaveStatus(live ?? { available: false, message: 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.' })
   let latest: HostStatus['latest'] = null
   if (source.latest !== null) {
     const item = record(source.latest, 'Published version')
@@ -547,8 +546,10 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       <p role="status">{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' :
         status?.enabled ? 'No shared save has been published yet.' : 'Sharing is off. No shared save has been published yet.'}</p>}
     {authority?.state === 'ThisPcHost' && <p role="status">This PC holds the verified current hosting decision.</p>}
-    {!fenced && !review && <><p>Current production sharing copies world files after a graceful Stop. A live save is a verified snapshot captured while the game is running; creating one is currently unavailable. Hash verification does not prove game load or playability. Automatic takeover is unavailable.</p>
-      <p className="helper-text">{status?.liveSave.message ?? 'Live save sharing is unavailable. Use a hash-verified post-Stop file copy. Game load has not been checked.'}</p></>}
+    {!fenced && !review && <><p>Shared saves can copy completed world files after a graceful Stop. Live sharing needs an accepted game-specific snapshot. Hash verification does not prove game load or playability. Automatic takeover is unavailable.</p>
+      {status && <LiveSaveControls profileId={profileId} status={status.liveSave} onUpdated={async () => {
+        setStatus(await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus))
+      }} />}</>}
     <label><Input type="checkbox" checked={status?.enabled ?? false} disabled={busy || !rollingBackupEnabled || status?.canManageSharing === false || fenced || review}
       onChange={event => void changeSharing(event.target.checked)} /> Share completed saves from this server</label>
     {status?.canManageSharing === false && <p className="helper-text">This PC can host and share verified saves with current members. Owner controls stay with the original owner; a Friend with Manage sharing can edit permitted member grants from Join.</p>}

@@ -1,5 +1,7 @@
 # Product scope: TogetherServer v1
 
+Live save sharing has an owner-only staging fixture action, bounded durable attempts, fixed completion requests and a separate six-stage acceptance matrix per game. Valheim, Java, Bedrock, Factorio and Terraria remain disabled with concrete completion/snapshot/load reasons. Post-Stop sharing and manual guarded takeover continue unchanged. A pending Bedrock hold automatically attempts exact-run resume after app restart, stays visible until acknowledged, and blocks another capture; the owner can retry the fixed resume action.
+
 The owner-only **Test a copy in the game** guide can prepare a completed backup or currently verified received save into fresh disposable storage. It records exact copy identity and preparation app/installed game versions, with separate optional owner-reported game version and load/change/restart results. Valheim can use its reviewed driver with a fresh password, isolated save root and new ports; fixture trials exercise process control only. Other games or missing binaries use manual steps. Nothing grants takeover authority or certifies real-game support.
 
 ## Goal
