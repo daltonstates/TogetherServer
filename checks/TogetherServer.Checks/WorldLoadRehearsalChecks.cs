@@ -30,6 +30,69 @@ internal static class WorldLoadRehearsalChecks
             "source was swapped or working copy not exact");
         Require(trial.LoadOutcome == "Unobserved" && trial.RestartOutcome == "Unobserved", "hash copy promoted to load proof");
         Require(!(await manager.StartAsync(trial.RehearsalProfileId!.Value)).Ok, "ordinary Start bypassed fixed guide");
+        async Task RequireRejectedLaunchAsync(HostManager current, string phase)
+        {
+            var launches = 0;
+            current.BeforeManagedLaunchForChecks = () =>
+            {
+                launches++;
+                throw new InvalidOperationException("A substituted rehearsal path reached the launch boundary.");
+            };
+            try
+            {
+                var rejected = await current.WorldLoadRehearsalAsync(trial.Id, "start");
+                Require(!rejected.Ok && rejected.Code == "WorldLoadReviewRequired" && launches == 0,
+                    phase + " did not reject the substituted path before launch: " + rejected.Code);
+                var run = (await current.SnapshotAsync()).Runs.Single(item => item.ProfileId == trial.RehearsalProfileId);
+                Require(run.State == "Offline" && run.ProcessId is null, phase + " created a managed run");
+                Require(rejected.Rehearsal?.CopyIdentity == trial.CopyIdentity &&
+                    File.ReadAllText(Path.Combine(sourceRoot, "copy.bin")) == "synthetic baseline" && backups.Verify(profile, backup.Id).Ok,
+                    phase + " changed the source copy or its identity");
+            }
+            finally { current.BeforeManagedLaunchForChecks = null; }
+        }
+        async Task RequireRootSwapRejectedAsync(HostManager current, string phase)
+        {
+            var preserved = trial.WorldDirectory + ".plain";
+            Require(trial.WorldDirectory == data.NewWorldDirectory(trial.RehearsalProfileId!.Value) &&
+                Path.GetDirectoryName(preserved) == data.ManagedWorldsRoot && !Directory.Exists(preserved),
+                "root substitution must stay inside the exact disposable world directory");
+            Directory.Move(trial.WorldDirectory, preserved);
+            try
+            {
+                await RequireRejectedLaunchAsync(current, phase + " with a missing working copy");
+                createJunction(trial.WorldDirectory, sourceRoot);
+                await RequireRejectedLaunchAsync(current, phase + " with a substituted root");
+                Require(!(await current.WorldLoadRehearsalAsync(trial.Id, "cleanup", confirmStopped: true)).Ok &&
+                    Directory.Exists(preserved) && File.ReadAllText(Path.Combine(sourceRoot, "copy.bin")) == "synthetic baseline",
+                    phase + " cleanup followed the substituted root");
+            }
+            finally
+            {
+                if (Directory.Exists(trial.WorldDirectory))
+                {
+                    Require((File.GetAttributes(trial.WorldDirectory) & FileAttributes.ReparsePoint) != 0,
+                        "refuse to remove a replacement plain directory during junction cleanup");
+                    Directory.Delete(trial.WorldDirectory); // Remove only this exact disposable junction.
+                }
+                Directory.Move(preserved, trial.WorldDirectory);
+            }
+        }
+        async Task RequireSubtreeSwapRejectedAsync(HostManager current, string phase)
+        {
+            var subtree = Path.Combine(trial.WorldDirectory, "worlds_local");
+            createJunction(subtree, sourceRoot);
+            try
+            {
+                await RequireRejectedLaunchAsync(current, phase + " with a substituted save subtree");
+                Require(!(await current.WorldLoadRehearsalAsync(trial.Id, "cleanup", confirmStopped: true)).Ok &&
+                    File.ReadAllText(Path.Combine(sourceRoot, "copy.bin")) == "synthetic baseline",
+                    phase + " cleanup followed a linked save subtree");
+            }
+            finally { Directory.Delete(subtree); } // Remove only the disposable junction, without recursion.
+        }
+        await RequireRootSwapRejectedAsync(manager, "First Start");
+        await RequireSubtreeSwapRejectedAsync(manager, "First Start");
         Require(!(await manager.SetSharedSavesAsync(trial.RehearsalProfileId.Value, true)).Ok, "rehearsal can share authority");
         static HostSettings Copy(HostSettings settings) => JsonSerializer.Deserialize<HostSettings>(JsonSerializer.Serialize(settings))!;
         var changed = Copy((await manager.SnapshotAsync()).Settings);
@@ -49,6 +112,29 @@ internal static class WorldLoadRehearsalChecks
         Directory.Delete(linked); // Delete this exact disposable junction only, without recursion.
         var freshManager = new HostManager(data, games);
         Require((await freshManager.WorldLoadRehearsalAsync(trial.Id)).Rehearsal?.LoadOutcome == "OwnerConfirmed", "rehearsal result was not durable");
+        manager = freshManager;
+        Require((await manager.WorldLoadRehearsalAsync(trial.Id, "start")).Ok, "restored plain copy cannot start");
+        try
+        {
+            File.WriteAllText(Path.Combine(trial.WorldDirectory, "copy.bin"), "recognizable synthetic change");
+            Require((await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Change", true))).Ok,
+                "synthetic saved-change confirmation failed");
+        }
+        finally { Require((await manager.WorldLoadRehearsalAsync(trial.Id, "stop")).Ok, "first exact trial Stop failed"); }
+        manager = new HostManager(data, games);
+        var stoppedTrial = (await manager.WorldLoadRehearsalAsync(trial.Id)).Rehearsal;
+        Require(stoppedTrial is { ManagedStarts: 1, GracefulStops: 1 },
+            "the first exact Start/Stop was not retained across Host reconstruction");
+        await RequireRootSwapRejectedAsync(manager, "Restart after exact Stop and Host reconstruction");
+        await RequireSubtreeSwapRejectedAsync(manager, "Restart after exact Stop and Host reconstruction");
+        Require((await manager.WorldLoadRehearsalAsync(trial.Id, "start")).Ok, "restored plain copy cannot restart");
+        try
+        {
+            Require(File.ReadAllText(Path.Combine(trial.WorldDirectory, "copy.bin")) == "recognizable synthetic change" &&
+                (await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Restart", true))).Ok,
+                "a normal restart did not preserve the changed disposable copy and owner-reported result");
+        }
+        finally { Require((await manager.WorldLoadRehearsalAsync(trial.Id, "stop")).Ok, "second exact trial Stop failed"); }
         var referenced = Copy((await manager.SnapshotAsync()).Settings);
         var other = new ServerProfile { Name = "Other disposable reference", WorldId = "other", WorldDirectory = trial.WorldDirectory, ExecutablePath = fixture };
         referenced.Profiles.Add(other);

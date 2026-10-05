@@ -4740,13 +4740,14 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
     Require((await manager.StartAsync(profile.Id)).Ok, "handoff fixture Start failed");
     driver.StopBehavior = FixtureStopBehavior.Failed;
-    Require((await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://127.0.0.1:5132")).Code == "FinalSaveUnconfirmed" &&
-        !data.HasProtected($"planned-handoff-{profile.Id:N}.protected"),
-        "failed Stop left a prepared handoff");
+    var failedHandoffStop = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
+        "https://192.0.2.1:5132");
+    var failedHandoffPersisted = data.HasProtected($"planned-handoff-{profile.Id:N}.protected");
+    Require(failedHandoffStop.Code == "FinalSaveUnconfirmed" && !failedHandoffPersisted,
+        $"failed Stop left a prepared handoff: code={failedHandoffStop.Code}, persisted={failedHandoffPersisted}");
     driver.StopBehavior = FixtureStopBehavior.Normal;
     var prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://127.0.0.1:5132");
+        "https://192.0.2.1:5132");
     var pendingStart = await manager.StartAsync(profile.Id);
     Require(prepared.Ok && prepared.Version is { Number: 1 } &&
         pendingStart.Code == "PlannedHandoffPending",
@@ -4770,7 +4771,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "owner could not cancel an unsigned handoff and resume its exact world");
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second final marker");
     prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://127.0.0.1:5132");
+        "https://192.0.2.1:5132");
     Require(prepared.Ok && prepared.Version is { Number: 2 } &&
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
         "retry did not capture a fresh final save and hold Start");
@@ -5114,6 +5115,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     }
     var manualStart = await routeManager.StartAsync(profile.Id);
     Require(manualStart.Ok, $"planned successor manual Start failed: {manualStart.Code} {manualStart.Message}");
+    routeManager.SuccessorFreeBytesForChecks = null;
     File.WriteAllText(Path.Combine(destination, "world.dat"), "successor saved change");
     Require((await routeManager.StopAsync(profile.Id)).Ok,
         "planned successor fixture could not stop gracefully");

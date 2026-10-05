@@ -123,11 +123,13 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
     {selected && <section aria-label="World load steps">
       <p>{selected.game} · {selected.state}</p><p>{selected.launchReason}</p>
       {!selected.cleaned && <>
-        {selected.canLaunch ? <><p>Start this isolated copy. Connect your game to 127.0.0.1:{selected.gamePort}. A listener or Ready state does not confirm world load.</p>
-          <div className="actions"><Button disabled={busy} onClick={() => void action('start')}>Start disposable copy</Button>
-            <Button className="secondary" disabled={busy} onClick={() => void action('stop')}>Stop disposable copy</Button></div></> :
+        {selected.canLaunch ? <p>Start this isolated copy. Connect your game to 127.0.0.1:{selected.gamePort}. A listener or Ready state does not confirm world load.</p> :
           selected.rehearsalProfileId ? <p>Review this isolated setup before another launch. Keep the source and prepare a new rehearsal if the game binary changed.</p> :
             <p>Manual path: use an owner-installed game in a fresh setup with this working copy as its save folder. Use a separate port and connect locally. Keep the live world and original received or backup files separate. Stop the manual game before cleanup.</p>}
+        {(selected.canLaunch || selected.rehearsalProfileId != null) && <div className="actions">
+          {selected.canLaunch && <Button disabled={busy} onClick={() => void action('start')}>Start disposable copy</Button>}
+          {selected.rehearsalProfileId != null && <Button className="secondary" disabled={busy} onClick={() => void action('stop')}>Stop disposable copy</Button>}
+        </div>}
         <label>Game version you observed (optional)<Input value={gameVersion} maxLength={40} onChange={event => setGameVersion(event.target.value)} /></label>
         <ol><li>Load: {outcomeLabel[selected.loadOutcome]} <Button className="secondary" disabled={busy} onClick={() => confirm('Load', true)}>I loaded this copy</Button>
           <Button className="text-button" disabled={busy} onClick={() => confirm('Load', false)}>Load failed</Button></li>

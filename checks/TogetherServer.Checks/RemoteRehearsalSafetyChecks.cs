@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text.Json;
 using TogetherServer;
 
 internal static class RemoteRehearsalSafetyChecks
@@ -62,5 +65,72 @@ internal static class RemoteRehearsalSafetyChecks
         Require(RemoteRehearsal.Context("https://127.0.0.1:5132", "SeparateNetwork") == "Loopback" &&
             RemoteRehearsal.Context("https://192.0.2.1:5132", "SeparateNetwork") == "OwnerReportedSeparateNetwork",
             "network evidence inferred a WAN route");
+        await FreshStatusAsync(root);
+    }
+
+    private static async Task FreshStatusAsync(string root)
+    {
+        foreach (var failure in new[] { "unassigned", "denied", "malformed" })
+        {
+            using var receiver = new LocalData(Path.Combine(root,
+                "rehearsal-status-" + failure));
+            var profileId = Guid.NewGuid();
+            var pendingProfileId = Guid.NewGuid();
+            var operationId = Guid.NewGuid();
+            var configuration = new FriendConfiguration
+            {
+                Endpoint = "https://127.0.0.1:5132",
+                Fingerprint = new string('A', 64),
+                DeviceId = Guid.NewGuid(),
+                Credential = new string('B', 64),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
+                CachedProfiles = [new(profileId, "Disposable rehearsal", "Offline", null, Kind: GameKinds.Fixture)],
+                PendingOperations = [new() { RequestId = Guid.NewGuid(), ProfileId = pendingProfileId,
+                    Action = "start", OperationId = operationId }]
+            };
+            receiver.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(configuration,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            var statusReads = 0;
+            using var friend = new FriendLink(receiver, "friend.protected", (endpoint, pins) =>
+            {
+                if (endpoint != configuration.Endpoint || !pins.Contains(configuration.Fingerprint))
+                    throw new Exception("rehearsal status did not use the saved pinned connection");
+                return new HttpClient(new RehearsalStatusHandler(request =>
+                {
+                    if (request.RequestUri!.AbsolutePath == $"/api/companion/operations/{operationId}")
+                        return new(HttpStatusCode.OK)
+                        {
+                            Content = JsonContent.Create(new RemoteOperationView(
+                            operationId, pendingProfileId, "start", RemoteOperationStates.Running, null,
+                            "OperationRunning", "Synthetic operation", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null))
+                        };
+                    if (request.RequestUri.AbsolutePath != "/api/companion/status")
+                        throw new Exception("unexpected rehearsal status request");
+                    statusReads++;
+                    if (failure == "denied") return new(HttpStatusCode.Forbidden);
+                    if (failure == "malformed") return new(HttpStatusCode.OK) { Content = new StringContent("{") };
+                    return new(HttpStatusCode.OK)
+                    {
+                        Content = JsonContent.Create(new CompanionStatus(true, null,
+                            [new(pendingProfileId, "Other assigned server", "Starting", null)],
+                            false, false, DateTimeOffset.UtcNow, CompanionProtocol.Describe()))
+                    };
+                }))
+                { BaseAddress = new Uri(endpoint + "/") };
+            });
+            var cached = await friend.PollAsync();
+            if (cached.State != "Connected" || !cached.Profiles.Any(profile => profile.Id == profileId) || statusReads != 0)
+                throw new Exception("pending-operation regression did not retain the old server assignment");
+            var report = await friend.RunRemoteRehearsalAsync(profileId, new(Guid.NewGuid()));
+            if (statusReads != 1 || report.Stages.Single(stage => stage.Id == "connection").State != "Failed" ||
+                report.Stages.Any(stage => stage.State == "Passed"))
+                throw new Exception("cached operation status passed a rehearsal after current assignment or access was denied");
+        }
+    }
+
+    private sealed class RehearsalStatusHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(respond(request));
     }
 }

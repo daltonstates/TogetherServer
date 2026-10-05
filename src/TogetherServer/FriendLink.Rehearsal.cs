@@ -26,6 +26,8 @@ internal sealed partial class FriendLink
         var stages = initial.Stages.ToArray();
         RemoteRehearsalReport Report() => initial with { GeneratedUtc = DateTimeOffset.UtcNow, Stages = stages };
         void Stage(int index, string state, string detail) => stages[index] = stages[index] with { State = state, Detail = detail };
+        int InterruptedStage() => stages[2].State != "Passed" ? 2 : stages[3].State != "Passed" ? 3 :
+            stages[4].State != "Passed" ? 4 : 5;
         if (request.RequestId == Guid.Empty || !RemoteRehearsal.ValidContext(request.NetworkContext) || !TryRetain())
             return Report();
         var entered = false;
@@ -35,8 +37,8 @@ internal sealed partial class FriendLink
         {
             entered = await rehearsalGate.WaitAsync(0, timeout.Token);
             if (!entered) { Stage(2, "Failed", "A rehearsal is already running on this connection."); return Report(); }
-            var fresh = await PollAsync();
-            if (fresh.State is not ("Connected" or "Disabled") ||
+            var fresh = await FreshRehearsalStatusAsync(timeout.Token);
+            if (fresh is null || fresh.State is not ("Connected" or "Disabled") ||
                 fresh.LastConnectedUtc is null || !fresh.Profiles.Any(profile => profile.Id == profileId))
             { Stage(2, "Failed", "The saved connection or server assignment was not authenticated."); return Report(); }
             Stage(2, "Passed", "A fresh status reply matched pinned HTTPS and authenticated saved access.");
@@ -108,10 +110,33 @@ internal sealed partial class FriendLink
             return Report();
         }
         catch (OperationCanceledException)
-        { Stage(stages[3].State == "Passed" ? 4 : 3, "Failed", "The rehearsal was interrupted or timed out. Retry uses verified copies."); return Report(); }
+        { Stage(InterruptedStage(), "Failed", "The rehearsal was interrupted or timed out. Retry uses verified copies."); return Report(); }
         catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
-        { Stage(stages[3].State == "Passed" ? 4 : 3, "Failed", "The rehearsal could not finish safely. Review staging access and retry."); return Report(); }
+        { Stage(InterruptedStage(), "Failed", "The rehearsal could not finish safely. Review staging access and retry."); return Report(); }
         finally { if (entered) rehearsalGate.Release(); ReleaseRetained(); }
+    }
+
+    private async Task<FriendView?> FreshRehearsalStatusAsync(CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (config is null) return null;
+            // Ordinary polling may return only an operation reply with cached
+            // profiles. A rehearsal needs this fixed status route to confirm
+            // the current assignment, including while an operation is pending.
+            using var response = await HostClient().GetAsync("api/companion/status",
+                HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            ObserveSharedHost(HostReachabilityObservation.OtherResponse);
+            if (!response.IsSuccessStatusCode) return null;
+            var bytes = await ReadBoundedSharedAsync(response.Content, 1024 * 1024, cancellationToken);
+            var status = bytes is null ? null : JsonSerializer.Deserialize<CompanionStatus>(bytes, Json);
+            if (status?.Profiles is null) return null;
+            ObserveSharedHost(HostReachabilityObservation.Authenticated);
+            ApplyStatus(status);
+            return view;
+        }
+        finally { gate.Release(); }
     }
 }

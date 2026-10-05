@@ -268,13 +268,39 @@ public sealed partial class HostManager
         var record = WorldLoadRecords().SingleOrDefault(item => item.WorkingProfileId == profile.Id && !item.Cleaned);
         if (record is null) return profile.WorldLoadRehearsalId is null ? null :
             Result(false, "WorldLoadReviewRequired", "The disposable rehearsal record is missing.");
-        return record.Automated && record.State != "Preparing" && record.State != "Preparation interrupted" &&
+        if (!(record.Automated && record.State != "Preparing" && record.State != "Preparation interrupted" &&
             profile.WorldLoadRehearsalId == record.Id && profile.Kind == record.Game &&
             profile.WorldId == record.WorldId && profile.WorldDirectory == record.WorldDirectory &&
             profile.ExecutablePath == record.BinaryPath && profile.GamePort == record.GamePort &&
             profile.Maintenance.Enabled && !profile.SharedSavesEnabled && !profile.Backups.Enabled &&
-            !profile.CrashRecovery.Enabled && WorldLoadBinaryMatches(record)
-            ? null : Result(false, "WorldLoadSetupChanged", "The exact rehearsal setup or game binary changed. Prepare another disposable copy.");
+            !profile.CrashRecovery.Enabled && WorldLoadBinaryMatches(record)))
+            return Result(false, "WorldLoadSetupChanged", "The exact rehearsal setup or game binary changed. Prepare another disposable copy.");
+        // Preparation does not make later path substitutions safe. Recheck the
+        // owned root, its ancestors and every child before each launch/restart.
+        EnsureWorldLoadTreeUnlinked(record.WorldDirectory);
+        return null;
+    }
+
+    private void EnsureWorldLoadTreeUnlinked(string root, bool allowMissing = false)
+    {
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+        FileAttributes rootAttributes;
+        try { rootAttributes = File.GetAttributes(root); }
+        catch (Exception ex) when (allowMissing && ex is (FileNotFoundException or DirectoryNotFoundException))
+        { return; }
+        if ((rootAttributes & FileAttributes.Directory) == 0)
+            throw new InvalidDataException("The disposable rehearsal root is not a directory.");
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out var path))
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Disposable rehearsal files cannot contain links or reparse points.");
+            // Check a directory before enumerating it so the walk never follows a link.
+            if ((attributes & FileAttributes.Directory) != 0)
+                foreach (var child in Directory.EnumerateFileSystemEntries(path)) pending.Push(child);
+        }
     }
 
     public async Task<WorldLoadRehearsalResult> WorldLoadRehearsalAsync(Guid id, string action = "status",
@@ -348,18 +374,9 @@ public sealed partial class HostManager
                     (CanonicalWorldPath(profile.WorldDirectory).Equals(working, StringComparison.OrdinalIgnoreCase) ||
                     CanonicalWorldPath(profile.WorldDirectory).StartsWith(working + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))))
                     return new(false, "WorldLoadDirectoryInUse", "Another saved server refers to this working directory. Keep it for review.", WorldLoadView(record));
-                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, record.WorldDirectory);
+                EnsureWorldLoadTreeUnlinked(record.WorldDirectory, allowMissing: true);
                 if (Directory.Exists(record.WorldDirectory))
-                {
-                    var pending = new Stack<string>(); pending.Push(record.WorldDirectory);
-                    while (pending.TryPop(out var path))
-                    {
-                        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                            throw new InvalidDataException("Linked rehearsal files cannot be cleaned up automatically.");
-                        if (Directory.Exists(path)) foreach (var child in Directory.EnumerateFileSystemEntries(path)) pending.Push(child);
-                    }
                     Directory.Delete(record.WorldDirectory, true);
-                }
                 settings.Profiles.RemoveAll(profile => profile.Id == record.WorkingProfileId);
                 data.SaveSettings(settings);
                 data.DeleteProtected($"valheim-password-{record.WorkingProfileId:N}.protected");

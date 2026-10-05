@@ -35,6 +35,9 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
     const backupFailed = !!backup?.lastFailureUtc &&
       (!backup.lastSuccessfulUtc || Date.parse(backup.lastFailureUtc) >= Date.parse(backup.lastSuccessfulUtc))
     const state = run?.state ?? 'Unknown'
+    // The Host projects an expired player observation as Unknown. An Unknown
+    // run without that observation still needs the lifecycle review action.
+    const stalePlayerObservation = state === 'Unknown' && stale
     let warning = ''
     let priority = 0
     let destination: ActivityDestination = { workspace: 'host', section: 'overview', profileId: profile.id, label: 'Open server' }
@@ -44,11 +47,11 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
     if (snapshot.recovery?.lifecycleBlocked) {
       warning = 'Local data needs review'; priority = 100
       destination = { workspace: 'settings', section: 'diagnostics', profileId: profile.id, label: 'Review recovery' }
-    } else if (state === 'Unknown' || state === 'Failed') problem('Server state needs review', 90, 'overview', 'Review server')
+    } else if (state === 'Failed' || (state === 'Unknown' && !stalePlayerObservation)) problem('Server state needs review', 90, 'overview', 'Review server')
     else if (snapshot.crashRecovery?.[profile.id]?.state === 'Suspended') problem('Crash recovery is suspended', 85, 'overview', 'Review recovery')
     else if (profile.maintenance?.enabled) problem('Maintenance is active', 70, 'overview', 'Continue maintenance')
     else if (backupFailed) problem('Latest backup attempt failed', 60, 'backups', 'Review backups')
-    else if (state === 'Ready' && !trusted) problem(stale ? 'Player observation is stale' : 'Player count unavailable', 50, 'players', 'Review players')
+    else if ((state === 'Ready' || stalePlayerObservation) && !trusted) problem(stale ? 'Player observation is stale' : 'Player count unavailable', 50, 'players', 'Review players')
     else if (profile.kind !== 'Custom' && !backup) problem('Backup status unavailable', 35, 'backups', 'Review backups')
     else if (profile.kind !== 'Custom' && backup?.completedCount === 0) problem('No completed backup', 30, 'backups', 'Protect world')
     else {

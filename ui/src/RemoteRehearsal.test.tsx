@@ -18,6 +18,14 @@ describe('remote rehearsal evidence', () => {
     const value = report(); value.stages[index].state = 'Passed'
     expect(() => parseRehearsalReport(value)).toThrow()
   })
+  it.each([0, 1, 6])('rejects array-valued evidence states at stage %s', index => {
+    const value = report()
+    const stages = value.stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, state: ['Passed'] } : stage)
+    expect(() => parseRehearsalReport({ ...value, stages })).toThrow()
+  })
+  it('rejects an array-valued network context', () => {
+    expect(() => parseRehearsalReport({ ...report(), networkContext: ['Loopback'] })).toThrow()
+  })
   it('rejects partial, reordered and unbounded stage data', () => {
     const value = report(); value.stages.reverse()
     expect(() => parseRehearsalReport(value)).toThrow()

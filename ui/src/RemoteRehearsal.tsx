@@ -20,11 +20,11 @@ function record(value: unknown, context: string): Record<string, unknown> {
 export const parseRehearsalReport: Decoder<RehearsalReport> = (value, context = 'rehearsal') => {
   const source = record(value, context)
   if (source.schema !== 1 || typeof source.generatedUtc !== 'string' || source.generatedUtc.length > 50 || !Number.isFinite(Date.parse(source.generatedUtc)) ||
-    !['Loopback', 'OwnerReportedSameLan', 'OwnerReportedSeparateNetwork', 'Unspecified'].includes(String(source.networkContext)) ||
+    typeof source.networkContext !== 'string' || !['Loopback', 'OwnerReportedSameLan', 'OwnerReportedSeparateNetwork', 'Unspecified'].includes(source.networkContext) ||
     !Array.isArray(source.stages) || source.stages.length !== 7) throw new ContractError(`${context}: invalid rehearsal report`)
   const stages = source.stages.map((value, index) => {
     const item = record(value, context)
-    if (item.id !== Object.keys(labels)[index] || !['Passed', 'Failed', 'Unverified', 'Unavailable'].includes(String(item.state)) ||
+    if (item.id !== Object.keys(labels)[index] || typeof item.state !== 'string' || !['Passed', 'Failed', 'Unverified', 'Unavailable'].includes(item.state) ||
       typeof item.detail !== 'string' || item.detail.length > 500) throw new ContractError(`${context}: invalid rehearsal stage`)
     return { id: String(item.id), state: item.state as RehearsalReport['stages'][number]['state'], detail: item.detail }
   })
