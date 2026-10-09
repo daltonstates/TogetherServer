@@ -1,0 +1,88 @@
+/* Hosting and joining lead; every selected-server tab shares the same inset. */
+:root { --server-inset: 1.25rem; --server-gap: .875rem; }
+:root[data-density="compact"] { --server-inset: 1rem; --server-gap: .75rem; }
+.topbar { height: 62px; }
+.page-heading { min-height: 0; gap: 1rem; margin-block-end: 1rem; }
+.page-heading-actions { flex-wrap: wrap; }
+.page-heading-actions .ui-button { display: inline-flex; align-items: center; gap: .45rem; }
+.host-master-detail { min-height: 0; }
+.server-detail-pane { padding: 0; }
+.server-detail-card.profile-card,
+:root[data-density="compact"] .server-detail-card.profile-card { padding: 0; margin: 0; }
+.server-command-header { padding: var(--server-inset); }
+.server-command-header .profile-top { flex-direction: row; align-items: center; min-height: 0; gap: 1rem; }
+.server-identity { min-width: 0; overflow-wrap: anywhere; }
+.server-identity h3 { font-size: 1.125rem; letter-spacing: -.02em; margin: 0 0 .25rem; }
+.server-identity p { font-size: .8125rem; line-height: 1.5; }
+.server-current-state { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; flex-shrink: 0; }
+.server-player-link.ui-button { display: inline-flex; align-items: center; gap: .4rem; min-height: 28px; padding: .2rem 0; font-size: .75rem; }
+.server-player-count, .server-compact-countdown { display: inline-flex; align-items: center; gap: .4rem; font-size: .75rem; }
+.server-player-count { color: var(--color-text-muted); }
+.server-compact-countdown { color: var(--color-accent-text); font-variant-numeric: tabular-nums; }
+.server-command-header .server-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin: .875rem 0 0; }
+.server-command-header .server-actions .ui-button { min-height: 44px; padding-inline: 1rem; white-space: normal; }
+.server-command-header .server-primary-action { min-width: 170px; font-size: .9375rem; font-weight: 750; }
+.server-command-header .server-primary-action .icon { width: 20px; height: 20px; }
+.server-command-header .inline-blocker, .server-progress { margin: .75rem 0 0; }
+.server-progress { color: var(--color-text-muted); font-size: .8125rem; line-height: 1.5; }
+.server-command-header .action-feedback { margin-block: .75rem 0; }
+.server-tabs { flex-wrap: nowrap; gap: .25rem; padding-inline: var(--server-inset); scrollbar-width: thin; }
+.server-tabs .ui-button { display: inline-flex; align-items: center; gap: .45rem; min-height: 46px; padding: .65rem .7rem; font-size: .8125rem; }
+.server-tabs .icon { flex-shrink: 0; width: 16px; height: 16px; opacity: .8; }
+.server-tab-content { display: flex; flex-direction: column; gap: var(--server-gap); min-width: 0; padding: var(--server-inset); }
+.server-tab-content > * { min-width: 0; max-width: 100%; margin-block: 0; }
+.server-tab-content > .ui-button { align-self: flex-start; }
+.server-tab-content .connection-details-card { margin: 0; }
+.server-tab-content .local-game-address { margin: 0; }
+.server-idle-hint { margin: 0; color: var(--color-text-muted); font-size: .8125rem; line-height: 1.5; }
+.server-support-disclosure { border: 1px solid var(--color-border-subtle); border-radius: .6rem; background: var(--color-field); overflow: hidden; }
+.server-support-disclosure > summary { display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem; color: var(--color-text-secondary); font-weight: 600; cursor: pointer; list-style: none; }
+.server-support-disclosure > summary::-webkit-details-marker { display: none; }
+.server-support-disclosure > summary::after { content: ''; width: .4rem; height: .4rem; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+.server-support-disclosure[open] > summary { border-bottom: 1px solid var(--color-border-subtle); }
+.server-support-disclosure[open] > summary::after { transform: rotate(225deg); }
+.server-support-disclosure > :not(summary) { margin: .875rem 1rem; }
+.server-tab-content .inline-blocker { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; line-height: 1.5; }
+.server-tab-content .card-manage { padding: .8rem 1rem; border: 1px solid var(--color-border-subtle); border-radius: .6rem; }
+.server-tab-content .card-manage > summary { margin: 0; }
+.server-tab-content .card-manage .actions { gap: .65rem; margin-top: .8rem; }
+.server-tab-content .server-chat-card-summary { padding: .875rem 1rem; }
+.session-history { padding: 1rem; }
+.session-history > [role="status"] { margin: .875rem 0; }
+.recent-session-list { padding: 0; }
+.recent-sessions-toolbar, .recent-sessions-boundary { padding-inline: 1rem; }
+.server-chat-sync { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.server-chat-sync-feedback { display: inline-flex; align-items: center; gap: .4rem; color: var(--color-text-muted); font-size: .75rem; }
+.server-chat-sync-feedback.warning-text { color: var(--color-warning-text); }
+.host-first-server-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.host-first-server-actions .ui-button { justify-content: center; min-height: 50px; font-size: .9375rem; background: var(--color-accent-soft); color: var(--color-accent-text); border: 1px solid var(--color-accent-border); }
+.host-first-server-actions .ui-button:hover:not(:disabled) { background: var(--color-accent-soft-strong); }
+.friend-play-flow .friend-primary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-block: .5rem .875rem; }
+.friend-play-flow .server-primary-action { min-height: 44px; min-width: 170px; font-size: .9375rem; }
+.friend-play-flow .connection-details-card { margin-block: .75rem; }
+.friend-play-flow .friend-permissions { margin-block: .875rem 0; }
+.friend-server-list > .profile-card { padding: var(--server-inset); }
+.friend-server-list .profile-top { flex-direction: row; min-height: 0; align-items: center; }
+.friend-server-support { margin-block: .875rem 0; }
+.friend-server-support > summary { cursor: pointer; color: var(--color-text-muted); font-weight: 600; }
+.friend-server-support > :not(summary) { margin-top: .875rem; }
+@media (max-width: 820px) {
+  .page-heading-actions .secondary { display: inline-flex; }
+}
+@media (max-width: 640px) {
+  :root { --server-inset: 1rem; }
+  .topbar { height: 56px; }
+  .server-tabs { flex-wrap: nowrap; }
+  .page-heading { align-items: flex-start; flex-wrap: wrap; }
+  .page-heading-actions { width: 100%; }
+  .page-heading-actions .ui-button { flex: 1 1 auto; }
+  .server-current-state { max-width: 45%; }
+}
+@media (max-width: 420px) {
+  .server-command-header .server-actions .ui-button { flex: 1 1 120px; min-width: 0; }
+  .server-command-header .profile-top { align-items: flex-start; }
+  .server-current-state { max-width: 40%; }
+  .server-player-link.ui-button { text-align: right; }
+  .host-first-server-actions { grid-template-columns: 1fr; }
+  .session-history { padding: .875rem; }
+}

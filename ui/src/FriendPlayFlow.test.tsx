@@ -112,8 +112,8 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('button', { name: 'Open game' })).toBeInTheDocument()
     expect(screen.getByText('Masked connection controls')).toBeInTheDocument()
     expect(screen.getByText('Requirements slot')).toBeInTheDocument()
-    expect(screen.getByText('Requirements slot').compareDocumentPosition(screen.getByRole('button', { name: 'Open game' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByText('Requirements slot').compareDocumentPosition(screen.getByText('Masked connection controls')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open game' }).compareDocumentPosition(screen.getByText('Requirements slot')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('Masked connection controls').compareDocumentPosition(screen.getByText('Requirements slot')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText('How to join in Valheim')).toBeInTheDocument()
     expect(fetcher).not.toHaveBeenCalled()
   })
@@ -158,5 +158,30 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('button', { name: 'Open game' })).toBeEnabled()
     expect(screen.getByText('Manual copy controls')).toBeInTheDocument()
     expect(screen.getByText('Version: Unknown · Add-ons: Unknown')).toBeInTheDocument()
+  })
+
+  it('leads with game and connection actions while keeping supporting requirements findable', () => {
+    render(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs}
+      requirements={<p>Version checks</p>} connectionDetails={<section aria-label="Join details">Copy connection</section>} />)
+    const details = screen.getByRole('region', { name: 'Join details' })
+    expect(screen.getByRole('button', { name: 'Open game' }).compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(details.compareDocumentPosition(screen.getByText('Version checks')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('How to join in the game').closest('details')).not.toHaveAttribute('open')
+  })
+
+  it('keeps granted Stop visible and blocks it for an occupied, stale or paused Host', () => {
+    const stop = vi.fn()
+    const occupied = { ...profile, onlinePlayers: 1 }
+    const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [occupied] }} profile={occupied} nowMs={nowMs} onStop={stop} />)
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop server' }))
+    expect(stop).not.toHaveBeenCalled()
+    view.rerender(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs + 46_000} onStop={stop} />)
+    expect(screen.queryByRole('button', { name: 'Stop server' })).not.toBeInTheDocument()
+    view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, state: 'Disabled', remoteControlsEnabled: false }} profile={profile} nowMs={nowMs} onStop={stop} />)
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    view.rerender(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs} onStop={stop} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop server' }))
+    expect(stop).toHaveBeenCalledOnce()
   })
 })

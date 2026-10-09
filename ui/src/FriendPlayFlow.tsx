@@ -1,5 +1,6 @@
 import { useId, type ReactNode } from 'react'
 import { Button } from './Controls'
+import { Icon } from './Icon'
 import type { FriendSnapshot, PublicProfile } from './contracts'
 import { friendCheckFreshness } from './FriendConnectionDoctor'
 import { JoinGuide } from './JoinGuide'
@@ -140,9 +141,11 @@ export type FriendPlayFlowProps = {
   snapshot: FriendSnapshot
   profile: PublicProfile
   busy?: boolean
+  pendingAction?: 'start' | 'stop' | 'refresh' | null
   nowMs?: number
   identityKey?: string | number
   onStart?: () => void
+  onStop?: () => void
   onRefresh?: () => void
   onOpenConnectionDoctor?: () => void
   startNotice?: ReactNode
@@ -152,7 +155,7 @@ export type FriendPlayFlowProps = {
 }
 
 // Compose the existing actions. No polling, implicit Start, query or game launch is added.
-export function FriendPlayFlow({ snapshot, profile, busy = false, nowMs, identityKey, onStart, onRefresh,
+export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction = null, nowMs, identityKey, onStart, onStop, onRefresh,
   onOpenConnectionDoctor, startNotice, connectionDetails, requirements, children }: FriendPlayFlowProps) {
   const headingId = useId()
   const connection = friendConnectionExplanation(snapshot, nowMs)
@@ -165,25 +168,26 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, nowMs, identit
       : !onStart ? 'The game server is stopped. Ask the Host to start this server.' : 'The game server is stopped.'
     : friendServerStateExplanation(currentProfile?.state ?? 'Unknown')
   return <section className="friend-play-flow" aria-labelledby={headingId} aria-busy={busy}>
-    <div className="panel-heading"><h4 id={headingId}>Play</h4>
-      {onRefresh && <Button className="text-button" disabled={busy} onClick={onRefresh}>Refresh server status</Button>}</div>
+    <div className="panel-heading"><h4 id={headingId} className="sr-only">Play</h4>
+      {onRefresh && <Button className="text-button" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} />{pendingAction === 'refresh' ? 'Refreshing…' : 'Refresh server status'}</Button>}</div>
     <p role="status">{playExplanation}</p>
-    {currentProfile?.state === 'Offline' && permissions.currentAccess && <>
-      {permissions.actions.start.available && startNotice}
-      {onStart ? <Button disabled={busy || !permissions.actions.start.available}
-        onClick={() => { if (!busy && permissions.actions.start.available) onStart() }}>Start server</Button>
-        : null}
-    </>}
-    {requirements}
-    {canJoin && currentProfile && <>
-      <OpenGameButton profileId={profile.id} kind={currentProfile.gameKind ?? currentProfile.kind}
+    <div className="friend-primary-actions">
+      {(currentProfile?.state === 'Offline' || pendingAction === 'start' && currentProfile?.state === 'Starting') && permissions.currentAccess && onStart && <Button className="server-primary-action" disabled={busy || !permissions.actions.start.available}
+        title={!permissions.actions.start.available ? permissions.actions.start.reason : undefined}
+        onClick={() => { if (!busy && permissions.actions.start.available) onStart() }}><Icon name={pendingAction === 'start' ? 'loader' : 'play'} />{pendingAction === 'start' ? 'Starting…' : 'Start server'}</Button>}
+      {canJoin && currentProfile && <OpenGameButton profileId={profile.id} kind={currentProfile.gameKind ?? currentProfile.kind}
         connectionId={snapshot.connectionId} identityKey={identityKey} available={!busy}
-        disabledReason="Wait for the current action to finish." />
-      {connectionDetails}
-      <JoinGuide kind={currentProfile.gameKind ?? currentProfile.kind} />
-    </>}
+        disabledReason="Wait for the current action to finish." />}
+      {(currentProfile?.state === 'Ready' || pendingAction === 'stop' && currentProfile?.state === 'Stopping') && permissions.currentAccess && permissions.grants.stop && onStop && <Button className="secondary" disabled={busy || !permissions.actions.stop.available}
+        title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
+        onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
+    </div>
+    {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}
+    {canJoin && currentProfile && <details className="server-support-disclosure"><summary><Icon name="game" />How to join in the game</summary><JoinGuide kind={currentProfile.gameKind ?? currentProfile.kind} /></details>}
+    {requirements}
+    {currentProfile?.state === 'Offline' && permissions.currentAccess && permissions.actions.start.available && startNotice && <details className="server-support-disclosure"><summary><Icon name="plug" />Connection checks before Start</summary>{startNotice}</details>}
     {onOpenConnectionDoctor && <Button className="text-button" onClick={onOpenConnectionDoctor}>Open Connection Doctor</Button>}
     <FriendPermissionExplanation snapshot={snapshot} profile={profile} nowMs={nowMs} />
     {children}

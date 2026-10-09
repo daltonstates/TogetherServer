@@ -10,9 +10,10 @@ import themeCss from './theme.css?inline'
 import baseCss from './style.css?inline'
 import companionCss from './companion.css?inline'
 import qolCss from './qol.css?inline'
+import coreCss from './core.css?inline'
 
 // vitest.config.ts explicitly enables these inline imports; load the whole cascade.
-const shellCss = [themeCss, baseCss, companionCss, qolCss].join('\n')
+const shellCss = [themeCss, baseCss, companionCss, qolCss, coreCss].join('\n')
 
 // Exercise the real shell, selection, guards and handlers. Leaf data/workflows have their own suites.
 const transport = vi.hoisted(() => ({ read: vi.fn(), change: vi.fn(), flush: vi.fn(), failures: { logs: false, sessions: false, files: false } }))
@@ -155,7 +156,7 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
-  it('shows one Start, keeps its preflight before it and places lifecycle controls before supporting content', async () => {
+  it('leads with one Start before tabs and keeps connection checks available on demand', async () => {
     transport.change.mockImplementation(async (path: string) => {
       if (path.endsWith('/start')) {
         const next = structuredClone(host())
@@ -168,13 +169,17 @@ describe('Host task structure', () => {
     const workspace = await openHost()
     const start = within(workspace).getByRole('button', { name: 'Start server' })
     expect(screen.getAllByRole('button', { name: 'Start server' })).toHaveLength(1)
-    before(within(workspace).getByRole('note', { name: 'Connection check before Start' }), start)
+    before(start, within(workspace).getByRole('navigation', { name: 'Selected server sections' }))
     before(start, within(workspace).getByText('Chat summary'))
+    const checks = within(workspace).getByText('Status & connection checks').closest('details')!
+    expect(checks).not.toHaveAttribute('open')
+    fireEvent.click(checks.querySelector('summary')!)
+    expect(within(checks).getByRole('note', { name: 'Connection check before Start' })).toBeVisible()
     expectNoServerAction()
     fireEvent.click(start)
     await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/profiles/${id}/start`, 'POST', expect.any(Function), undefined, undefined))
     expect(await within(workspace).findByText('Request accepted.')).toBeInTheDocument()
-    expect(within(workspace).getByText('Waiting for a real readiness observation.')).toBeVisible()
+    expect(within(workspace.querySelector('.server-command-header')!).getByText('Waiting for a real readiness observation.')).toBeVisible()
     expect(within(workspace).getByRole('button', { name: 'Stop server' })).toBeInTheDocument()
   })
 
@@ -206,6 +211,43 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
+  it('leads Overview with Stop and join details before supporting content', async () => {
+    host().runs[0].state = 'Ready'
+    host().runs[0].onlinePlayers = 0
+    const workspace = await openHost()
+    const primary = within(workspace.querySelector('.server-command-header')!)
+    before(primary.getByRole('button', { name: 'Stop server' }), within(workspace).getByRole('navigation', { name: 'Selected server sections' }))
+    before(within(workspace).getByRole('region', { name: 'Connection details' }), within(workspace).getByText('Chat summary'))
+    expectNoServerAction()
+    vi.mocked(window.confirm).mockReturnValue(false)
+    fireEvent.click(primary.getByRole('button', { name: 'Stop server' }))
+    expect(window.confirm).toHaveBeenCalled()
+    expectNoServerAction()
+  })
+
+  it.each(['Players', 'Chat', 'Logs', 'Sessions', 'Backups'])('keeps the same primary Stop available while browsing %s', async tab => {
+    host().runs[0].state = 'Ready'
+    host().runs[0].onlinePlayers = 0
+    const workspace = await openHost()
+    fireEvent.click(within(workspace).getByRole('button', { name: tab }))
+    await waitFor(() => expect(within(workspace).getByRole('button', { name: tab })).toHaveAttribute('aria-current', 'page'))
+    expect(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Stop server' })).toBeVisible()
+    expectNoServerAction()
+  })
+
+  it('keeps an active empty-server countdown visible while browsing other tabs', async () => {
+    host().runs[0].state = 'Ready'
+    host().runs[0].onlinePlayers = 0
+    host().runs[0].autoShutdownAtUtc = new Date(Date.now() + 300_000).toISOString()
+    const workspace = await openHost()
+    const header = within(workspace.querySelector('.server-command-header')!)
+    expect(header.getByRole('timer')).toHaveTextContent('Stops in')
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Chat' }))
+    await waitFor(() => expect(within(workspace).getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-current', 'page'))
+    expect(header.getByRole('timer')).toBeVisible()
+    expectNoServerAction()
+  })
+
   it('keeps comparison out of a single-server flow and makes it available without changing the selected server', async () => {
     host().settings.profiles.push({ ...host().settings.profiles[0], id: '22222222-2222-4222-8222-222222222222', name: 'Second synthetic server' })
     await openHost()
@@ -225,7 +267,7 @@ describe('Host task structure', () => {
     expect(await within(workspace).findByRole('region', { name: 'Backup catalog' })).toBeInTheDocument()
     expect(within(workspace).getByRole('button', { name: 'Back up now' })).toBeEnabled()
     expect(within(workspace).getByRole('region', { name: 'Shared saves' })).toBeInTheDocument()
-    expect(within(workspace).queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
+    expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeEnabled()
     fireEvent.click(within(workspace).getByRole('button', { name: 'Chat' }))
     expect(await within(workspace).findByRole('region', { name: 'Server chat' })).toBeInTheDocument()
     expect(within(workspace).queryByRole('button', { name: 'Back up now' })).not.toBeInTheDocument()
@@ -236,7 +278,7 @@ describe('Host task structure', () => {
     expect(await within(workspace).findByRole('region', { name: 'Seven-day summary' })).toBeInTheDocument()
     fireEvent.click(within(workspace).getByRole('button', { name: 'Maintenance & setup' }))
     expect(await within(workspace).findByText('Update the game server safely')).toBeInTheDocument()
-    expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeDisabled()
+    expect(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' })).toBeEnabled()
     expect(within(workspace).getByRole('button', { name: 'Begin maintenance' })).toBeEnabled()
     expectNoServerAction()
   })
@@ -246,6 +288,20 @@ describe('Host task structure', () => {
     const workspace = await openHost()
     expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeDisabled()
     expect(within(workspace).getByRole('button', { name: 'Review recovery' })).toBeInTheDocument()
+    expectNoServerAction()
+  })
+
+  it('blocks the persistent Start until unsaved server file changes are saved or discarded', async () => {
+    const workspace = await openHost()
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Settings & files' }))
+    const editor = await within(workspace).findByRole('textbox', { name: 'Test file draft' })
+    fireEvent.change(editor, { target: { value: 'An unsaved configuration change' } })
+    const start = within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' })
+    expect(start).toBeDisabled()
+    fireEvent.click(start)
+    expectNoServerAction()
+    fireEvent.change(editor, { target: { value: '' } })
+    await waitFor(() => expect(start).toBeEnabled())
     expectNoServerAction()
   })
 
@@ -341,7 +397,7 @@ describe('Host task structure', () => {
     transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/instance'
       ? { ...instance, kind: 'Staging', isStaging: true, freshWorldsOnly: true } : read(path, ...args))
     render(<App />)
-    expect(await screen.findByRole('region', { name: 'Set up a server' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Host or join a server' })).toBeInTheDocument()
     expect(screen.queryByText('Test with another owned PC')).not.toBeInTheDocument()
     const workspaces = screen.getByRole('navigation', { name: 'TogetherServer workspaces' })
     const settings = within(workspaces).getByRole('button', { name: 'Settings' })
@@ -363,7 +419,7 @@ describe('Host task structure', () => {
     vi.mocked(readProtectedDraft).mockResolvedValue({ ok: true, revision: 2, message: '',
       text: serializeProtectedSetupDraft([recoveredProfile], 'world', recoveredProfile.id) })
     render(<App />)
-    const entry = await screen.findByRole('region', { name: 'Set up a server' })
+    const entry = await screen.findByRole('region', { name: 'Host or join a server' })
     const recovery = await within(entry).findByRole('region', { name: 'Recovered server setup' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.click(within(recovery).getByRole('button', { name: 'Review saved setup' }))

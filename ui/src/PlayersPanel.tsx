@@ -1,6 +1,8 @@
 import { Button } from './Controls'
+import { Icon } from './Icon'
 import type { ActivityEvent, Run } from './contracts'
 import type { Profile } from './GameProfile'
+import './players.css'
 
 export function playerCountAvailability(run: Run, nowMs: number): {
   count: number | null; reason: string; state: 'Fresh' | 'Stale' | 'Unavailable' | 'DisplayOnly'
@@ -100,31 +102,81 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
   const evidence = playerCountAvailability(run, nowMs)
   const trustedNow = evidence.count !== null
   const deadline = evidence.count === 0 ? run.autoShutdownAtUtc : null
+  const deadlineMs = deadline ? Date.parse(deadline) : NaN
+  const remainingMinutes = Number.isFinite(deadlineMs) && Number.isFinite(nowMs)
+    ? Math.max(0, Math.ceil((deadlineMs - nowMs) / 60000)) : null
+  const timerValue = !deadline ? 'No countdown' : remainingMinutes === null ? 'Unavailable'
+    : remainingMinutes === 0 ? 'Deadline reached' : `About ${remainingMinutes} min`
   const friendMinutes = Math.min(run.friendAddedMinutes, run.addedShutdownMinutes)
   const hostMinutes = Math.max(0, run.addedShutdownMinutes - friendMinutes)
-  return <section className="players-workspace" aria-labelledby={`players-${run.profileId}`}>
-    <div className="players-heading"><div><h3 id={`players-${run.profileId}`}>Players & empty-server safety</h3><p>Counts come from the game-server driver. Friend app presence never controls automatic shutdown.</p></div><Button className="secondary" disabled={disabled || refreshing} onClick={onRefresh}>{refreshing ? 'Refreshing…' : 'Refresh count'}</Button></div>
-    <div className="players-metrics">
-      <div><span>Trusted player count</span><strong>{countLabel(run, evidence.count)}</strong><small>{trustedNow ? 'Authoritative for this driver.' : 'Automatic Stop remains fail-closed.'}</small></div>
-      <div><span>Observation source</span><strong>{sourceLabel(run.playerObservationSource)}</strong><small>{freshness(run.playerCountObservedUtc, nowMs)}</small></div>
-      <div><span>Empty-server timer</span><strong>{timerLabel(deadline, nowMs)}</strong><small>{trustedNow ? run.autoShutdownReason ?? 'Waiting for the Host’s current timer state.' : evidence.reason}</small></div>
-      <div><span>Saved added time</span><strong>{run.addedShutdownMinutes} minute{run.addedShutdownMinutes === 1 ? '' : 's'}</strong><small>{hostMinutes} from the Host · {friendMinutes} from Friends.</small></div>
+  return <section className="players-workspace players-panel" data-count-state={evidence.state}
+    aria-labelledby={`players-${run.profileId}`}>
+    <div className="players-heading">
+      <h3 id={`players-${run.profileId}`}>Players</h3>
+      <Button className="secondary" disabled={disabled || refreshing} onClick={onRefresh}>
+        <Icon name={refreshing ? 'loader' : 'refresh'} />{refreshing ? 'Refreshing…' : 'Refresh count'}
+      </Button>
     </div>
-    {!trustedNow && <div className="player-count-help">
-      <strong>{evidence.state === 'Stale' ? 'Player observation is stale' : 'Player count unavailable'}</strong>
-      <p className="helper-text">{playerCountDriverHelp(profile)}</p>
-      <p className="helper-text">Friend Stop and automatic Stop stay blocked until a fresh trusted count is exactly zero. The local owner can review a Stop separately.</p>
-      <div className="actions">
-        {onOpenLogs && <Button className="secondary" onClick={onOpenLogs}>Open logs</Button>}
-        {onCheckHealth && <Button className="secondary" disabled={disabled || refreshing} onClick={onCheckHealth}>Check server health</Button>}
-        {onOpenHelp && <Button className="text-button" onClick={onOpenHelp}>Player-count help</Button>}
+    <div className="players-overview">
+      <div className="players-stat" role="group" aria-labelledby={`players-count-${run.profileId}`}>
+        <div className="players-stat-heading"><Icon name="users" size={19} /><h4 id={`players-count-${run.profileId}`}>Players online</h4></div>
+        <strong className="players-count-value">{countLabel(run, evidence.count)}</strong>
+      </div>
+      <div className="players-stat" role="group" aria-labelledby={`players-timer-${run.profileId}`}>
+        <div className="players-stat-heading"><Icon name="clock" size={19} /><h4 id={`players-timer-${run.profileId}`}>Empty-server timer</h4></div>
+        <strong className="players-timer-value">{timerValue}</strong>
+        <p className="players-timer-context">{remainingMinutes === 0
+          ? 'The Host must recheck players before Stop.'
+          : deadline && remainingMinutes === null ? 'A valid countdown deadline is not available.'
+          : trustedNow ? run.autoShutdownReason ?? 'Waiting for the Host’s current timer state.'
+          : 'Waiting for a fresh trusted count.'}</p>
+      </div>
+    </div>
+    {!trustedNow && <div className="players-warning" role="note">
+      <Icon name="warning" size={19} />
+      <div>
+        <strong>{evidence.state === 'Stale' ? 'Player observation is stale'
+          : evidence.state === 'DisplayOnly' ? 'Custom player count is display only' : 'Player count unavailable'}</strong>
+        <p>Friend and automatic Stop remain blocked.</p>
       </div>
     </div>}
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{trustedNow
       ? `${evidence.count} players reported by the game server.`
       : 'Player count unavailable. Friend and automatic Stop remain blocked.'}</span>
-    <div className="player-activity"><strong>Recent count changes</strong><small>Count signals only; this history does not store player identities.</small>
-      {recent.length === 0 ? <p className="helper-text">No trusted count changes are recorded for this session yet.</p> : <ol>{recent.map(item => <li key={item.id}><span>{item.message}</span><time dateTime={item.occurredUtc}>{new Date(item.occurredUtc).toLocaleString()}</time></li>)}</ol>}
+    <div className="players-disclosures">
+      <details className="players-disclosure">
+        <summary>Count source & timer details</summary>
+        <div className="players-detail-content">
+          <dl className="players-detail-list">
+            <dt>Observation source</dt><dd>{sourceLabel(run.playerObservationSource)}</dd>
+            <dt>Freshness</dt><dd>{freshness(run.playerCountObservedUtc, nowMs)}</dd>
+            <dt>Count status</dt><dd>{evidence.reason}</dd>
+            <dt>Countdown</dt><dd>{timerLabel(deadline, nowMs)}</dd>
+            <dt>Saved added time</dt><dd>{run.addedShutdownMinutes} minute{run.addedShutdownMinutes === 1 ? '' : 's'}<small>{hostMinutes} from the Host · {friendMinutes} from Friends.</small></dd>
+          </dl>
+          <p>Counts come from the game-server driver. Friend app presence never controls automatic shutdown.</p>
+        </div>
+      </details>
+      <details className="players-disclosure">
+        <summary>Player-count help</summary>
+        <div className="players-detail-content">
+          <p>{playerCountDriverHelp(profile)}</p>
+          <p>Friend Stop and automatic Stop stay blocked until a fresh trusted count is exactly zero. The local owner can review a Stop separately.</p>
+          {!trustedNow && <div className="players-help-actions">
+            {onOpenLogs && <Button className="secondary" onClick={onOpenLogs}><Icon name="logs" />Open logs</Button>}
+            {onCheckHealth && <Button className="secondary" disabled={disabled || refreshing} onClick={onCheckHealth}><Icon name="server" />Check server health</Button>}
+            {onOpenHelp && <Button className="text-button" onClick={onOpenHelp}>Player-count help</Button>}
+          </div>}
+        </div>
+      </details>
+      <details className="players-disclosure">
+        <summary>Recent count changes</summary>
+        <div className="players-detail-content players-history">
+          <p>Count signals only; this history does not store player identities.</p>
+          {recent.length === 0 ? <p>No trusted count changes are recorded for this session yet.</p>
+            : <ol>{recent.map(item => <li key={item.id}><span>{item.message}</span><time dateTime={item.occurredUtc}>{new Date(item.occurredUtc).toLocaleString()}</time></li>)}</ol>}
+        </div>
+      </details>
     </div>
   </section>
 }

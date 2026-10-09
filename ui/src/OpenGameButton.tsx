@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button } from './Controls'
+import { Icon } from './Icon'
 import { parseBasicResult } from './contracts'
 
 export type OpenGameButtonProps = {
@@ -28,7 +29,7 @@ function ScopedOpenGameButton({ profileId, kind, available, disabledReason }: Op
     } catch (failure) { if (!controller.signal.aborted) { setMessage(errorMessage(failure)); setFailed(true) } }
     finally { if (pending.current === controller) pending.current = null; if (!controller.signal.aborted) setBusy(false) }
   }
-  return <div className="open-game-action"><Button className="secondary" disabled={busy || !available} onClick={() => void open()}>{busy ? 'Opening game…' : 'Open game'}</Button>
+  return <div className="open-game-action"><Button className="server-primary-action" disabled={busy || !available} onClick={() => void open()}><Icon name={busy ? 'loader' : 'game'} />{busy ? 'Opening game…' : 'Open game'}</Button>
     <small>Opens an installed game through Steam. Join in the game; opening it does not join the server.</small>
     {!available && <small>{disabledReason ?? 'Reconnect for fresh access and wait for the server before opening the game.'}</small>}
     {message && <p className={failed ? 'error-text' : 'helper-text'} role={failed ? 'alert' : 'status'}>{message}</p>}

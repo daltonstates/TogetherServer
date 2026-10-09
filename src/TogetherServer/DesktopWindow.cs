@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -368,6 +367,8 @@ internal sealed class DesktopWindow
             TrySetLoadState(GuiLoadState.WindowStarting);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            using var windowIconImage = DesktopIcon.Load(isStaging, SystemInformation.IconSize);
+            using var trayIconImage = DesktopIcon.Load(isStaging, SystemInformation.SmallIconSize);
             var placement = localPreferences?.LoadWindowPlacement();
             using var window = new ChromeForm(startInTray, placement)
             {
@@ -377,6 +378,8 @@ internal sealed class DesktopWindow
                 MinimumSize = new Size(380, 560),
                 BackColor = WindowBorderColor,
                 FormBorderStyle = FormBorderStyle.None,
+                Icon = windowIconImage,
+                ShowIcon = true,
                 Padding = new Padding(1),
                 ShowInTaskbar = !startInTray
             };
@@ -393,8 +396,6 @@ internal sealed class DesktopWindow
             if (startInTray) window.Location = OutsideVirtualDesktop(window.Size);
             form = window;
             var content = BuildChrome(window);
-            using var trayIconImage = CreateTrayIcon(isStaging);
-            window.Icon = trayIconImage;
             using var trayMenu = new ContextMenuStrip();
             using var tray = new NotifyIcon
             {
@@ -940,25 +941,6 @@ internal sealed class DesktopWindow
             false, "Lifecycle", null, null, new("settings", "app"));
     }
 
-    private static Icon CreateTrayIcon(bool staging)
-    {
-        using var bitmap = new Bitmap(32, 32);
-        using (var graphics = Graphics.FromImage(bitmap))
-        using (var background = new SolidBrush(AccentColor))
-        using (var foreground = new SolidBrush(AccentInkColor))
-        using (var font = new Font("Segoe UI", 20, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-        {
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            if (staging) graphics.FillRectangle(background, 2, 2, 28, 28);
-            else graphics.FillEllipse(background, 1, 1, 30, 30);
-            graphics.DrawString(staging ? "D" : "T", font, foreground, new RectangleF(0, 1, 32, 30), centered);
-        }
-        var handle = bitmap.GetHicon();
-        try { return (Icon)Icon.FromHandle(handle).Clone(); }
-        finally { DestroyIcon(handle); }
-    }
-
     private async Task<bool> FlushDraftsForQuitAsync(Form window)
     {
         // No editor could have been used before the first successful local render.
@@ -1024,10 +1006,6 @@ internal sealed class DesktopWindow
 
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DestroyIcon(IntPtr icon);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);

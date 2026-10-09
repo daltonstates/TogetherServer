@@ -26,6 +26,12 @@ const notice: PinnedServerNotice = { hostId, profileId, revision: 1, updatedUtc:
 function noticeRoom(current: typeof notice | null = notice, cached = false) {
   return { ...room(), notice: current, noticeSupported: true, noticeCached: cached }
 }
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((complete, fail) => { resolve = complete; reject = fail })
+  return { promise, resolve, reject }
+}
 
 beforeEach(() => {
   localStorage.clear()
@@ -185,6 +191,147 @@ describe('ServerChat', () => {
     expect(screen.queryByText(/Leave spawn clear/)).not.toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent('different server room')
     expect(screen.queryByRole('button', { name: 'Edit notice' })).not.toBeInTheDocument()
+  })
+})
+
+describe('manual chat sync feedback', () => {
+  it('shows pending immediately, prevents duplicate clicks and awaits the user request through background polling', async () => {
+    vi.useFakeTimers()
+    const manual = deferred<Response>()
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ...room(), code: 'ChatSynced' }))
+      .mockImplementationOnce(async () => Response.json({ ...room(), code: 'ChatSynced' }))
+      .mockImplementationOnce(() => manual.promise)
+    vi.stubGlobal('fetch', fetch)
+    await act(async () => { render(<ServerChat profileId={profileId} host={false} visible />) })
+    expect(screen.getByText(entry.text)).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Chat sync' })).toBeEmptyDOMElement()
+    const sync = screen.getByRole('button', { name: 'Sync now' })
+    fireEvent.click(sync)
+    expect(screen.getByRole('button', { name: 'Syncing\u2026' })).toBeDisabled()
+    expect(sync).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('status', { name: 'Chat sync' })).toHaveTextContent('Syncing chat\u2026')
+    expect(sync).toHaveAttribute('aria-describedby', screen.getByRole('status', { name: 'Chat sync' }).id)
+    fireEvent.click(sync)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(sync).toBeDisabled()
+    expect(screen.getByRole('status', { name: 'Chat sync' })).toHaveTextContent('Syncing chat\u2026')
+    expect(screen.queryByText('Chat synced.')).not.toBeInTheDocument()
+    const later = { ...entry, id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', text: 'The requested sync finished' }
+    await act(async () => { manual.resolve(Response.json({ ...room(true, [entry, later]), code: 'ChatSynced' })) })
+    expect(screen.getByText(later.text)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled()
+    expect(sync).toHaveAttribute('aria-busy', 'false')
+    expect(screen.getByRole('status', { name: 'Chat sync' })).toHaveTextContent('Chat synced.')
+  })
+
+  it('reports a failed request, preserves the cached notice and composer, and completes an explicit retry', async () => {
+    const manual = deferred<Response>()
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ...noticeRoom(), code: 'ChatSynced' }))
+      .mockImplementationOnce(async () => Response.json({ ...noticeRoom(), code: 'ChatSynced' }))
+      .mockImplementationOnce(() => manual.promise)
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat profileId={profileId} host={false} visible connectionId="11111111-1111-1111-1111-111111111111" />)
+    await screen.findByText(/Leave spawn clear/)
+    await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Keep my unfinished question' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    expect(screen.getByRole('button', { name: 'Syncing\u2026' })).toBeDisabled()
+    await act(async () => { manual.reject(new Error('offline')) })
+    expect(screen.getByRole('alert', { name: 'Chat sync' })).toHaveTextContent('Sync failed. LocalAppUnavailable:')
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled()
+    expect(screen.getByText(/Cached on this PC/)).toBeInTheDocument()
+    expect(screen.getByText(/Leave spawn clear/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Message')).toHaveValue('Keep my unfinished question')
+    expect(screen.queryByText('Chat synced.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Chat sync' })).toHaveTextContent('Chat synced.'))
+    expect(screen.queryByRole('alert', { name: 'Chat sync' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Cached on this PC/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Message')).toHaveValue('Keep my unfinished question')
+  })
+
+  it.each([
+    { code: 'ChatOffline', ok: true, message: 'Showing the copy on this PC. Messages will sync after reconnection.' },
+    { code: 'ChatUnavailable', ok: true, message: 'The Host could not sync chat. Messages on this PC are kept.' },
+    { code: 'ChatAccessDenied', ok: false, message: 'The Host removed this PC from the chat room.' }
+  ])('does not claim a successful sync for $code', async result => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ...room(), ...result,
+      entries: result.ok ? [entry] : [] }))
+      .mockImplementationOnce(async () => Response.json({ ...room(), code: 'ChatSynced' }))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat profileId={profileId} host={false} visible />)
+    await screen.findByText(entry.text)
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    expect(await screen.findByRole('alert', { name: 'Chat sync' })).toHaveTextContent(result.message)
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled()
+    expect(screen.queryByText('Chat synced.')).not.toBeInTheDocument()
+    if (!result.ok) {
+      expect(screen.queryByText(entry.text)).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Message')).not.toBeInTheDocument()
+    } else expect(screen.getByText(entry.text)).toBeInTheDocument()
+  })
+
+  it('confirms a completed Host refresh without claiming a remote chat exchange', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(room()))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat profileId={profileId} host visible />)
+    await screen.findByText(entry.text)
+    expect(screen.getByRole('status', { name: 'Chat sync' })).toBeEmptyDOMElement()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Chat sync' })).toHaveTextContent('Chat refreshed.'))
+    expect(fetch.mock.calls.every(call => String(call[0]) === `/api/local/profiles/${profileId}/chat` &&
+      !call[1]?.method)).toBe(true)
+  })
+
+  it('aborts a sync from the previous saved connection and ignores its late content and completion', async () => {
+    const connectionId = '11111111-1111-1111-1111-111111111111'
+    const otherConnection = '22222222-2222-2222-2222-222222222222'
+    const manual = deferred<Response>()
+    const later = { ...entry, text: 'The other saved connection' }
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ...room(true, [later]), code: 'ChatSynced' }))
+      .mockImplementationOnce(async () => Response.json({ ...room(), code: 'ChatSynced' }))
+      .mockImplementationOnce(() => manual.promise)
+    vi.stubGlobal('fetch', fetch)
+    const { rerender } = render(<ServerChat profileId={profileId} host={false} visible connectionId={connectionId} />)
+    await screen.findByText(entry.text)
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    const signal = fetch.mock.calls[1][1]?.signal
+    rerender(<ServerChat profileId={profileId} host={false} visible connectionId={otherConnection} />)
+    expect(signal?.aborted).toBe(true)
+    await screen.findByText(later.text)
+    await act(async () => { manual.resolve(Response.json({ ...room(), code: 'ChatSynced' })) })
+    expect(screen.queryByText(entry.text)).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Chat sync' })).toBeEmptyDOMElement()
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled()
+  })
+
+  it.each(['hidden', 'unsupported', 'unmounted'] as const)('aborts when the room is %s and ignores a late result', async transition => {
+    const manual = deferred<Response>()
+    const onRoomChange = vi.fn()
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(room()))
+      .mockImplementationOnce(async () => Response.json(room()))
+      .mockImplementationOnce(() => manual.promise)
+    vi.stubGlobal('fetch', fetch)
+    const view = render(<ServerChat profileId={profileId} host visible onRoomChange={onRoomChange} />)
+    await screen.findByText(entry.text)
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    const signal = fetch.mock.calls[1][1]?.signal
+    if (transition === 'unmounted') view.unmount()
+    else view.rerender(<ServerChat profileId={profileId} host visible={transition !== 'hidden'}
+      supported={transition !== 'unsupported'} onRoomChange={onRoomChange} />)
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { manual.resolve(Response.json(room(true, [{ ...entry, text: 'Late cancelled sync' }]))) })
+    expect(onRoomChange).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Late cancelled sync')).not.toBeInTheDocument()
+    expect(screen.queryByText('Chat refreshed.')).not.toBeInTheDocument()
+    if (transition === 'hidden') {
+      view.rerender(<ServerChat profileId={profileId} host visible onRoomChange={onRoomChange} />)
+      await waitFor(() => expect(onRoomChange).toHaveBeenCalledTimes(2))
+      expect(screen.getByRole('status', { name: 'Chat sync' })).toBeEmptyDOMElement()
+      expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled()
+    }
   })
 })
 

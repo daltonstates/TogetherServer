@@ -14,8 +14,8 @@ export function HostFirstServer({ busy, resume, recovered, recovery, onCreate, o
 }) {
   const headingId = useId()
   return <section className="panel host-first-server" aria-labelledby={headingId}>
-    <div className="section-heading"><div><h2 id={headingId}>Set up a server</h2>
-      <p>Choose a game, a world and its server app. Review everything before starting.</p></div></div>
+    <div className="section-heading"><div><h2 id={headingId}>Host or join a server</h2>
+      <p>Create a server on this PC, or connect with a code from a friend.</p></div></div>
     {recovery}
     {resume && <div className="host-setup-continuation"><strong>Setup in progress</strong>
       <p>Your unfinished setup is still here. Enter the game password again before saving.</p>

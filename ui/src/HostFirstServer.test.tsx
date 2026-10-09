@@ -26,7 +26,7 @@ describe('First Host task', () => {
     render(<HostFirstServer {...actions()} busy={false} resume={false} recovered
       recovery={<EditorDraftRecovery purpose="setup" recovered="protected nonsecret setup" message="Draft could not be saved. Retry before leaving."
         onRecover={recover} onDiscard={discard} />} />)
-    const entry = screen.getByRole('region', { name: 'Set up a server' })
+    const entry = screen.getByRole('region', { name: 'Host or join a server' })
     const recovery = within(entry).getByRole('region', { name: 'Recovered server setup' })
     expect(within(recovery).getByText(/Enter the game password again/)).toBeInTheDocument()
     expect(within(recovery).getByText('Draft could not be saved. Retry before leaving.')).toBeInTheDocument()

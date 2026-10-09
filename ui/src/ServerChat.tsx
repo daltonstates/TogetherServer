@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
 import { ContractError, type ChatDraft } from './contracts'
@@ -6,6 +6,7 @@ import { maximumNoticeTextLength, parseChatRoomWithNotice, validPinnedNoticeText
   parsePinnedNoticeFields, type ChatRoomWithNotice, type PinnedNoticeFields } from './pinnedNoticeContracts'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft, type DraftIdentity } from './protectedUiDrafts'
+import { Icon } from './Icon'
 
 const messageLimit = 500
 const messageIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -274,6 +275,14 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   const lifetime = useChatLifetime()
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const syncScope = useMemo(() => ({ base, hostId, visible, supported }), [base, hostId, visible, supported])
+  const [syncState, setSyncState] = useState<{
+    scope: typeof syncScope; status: 'pending' | 'success' | 'error'; message: string
+  } | null>(null)
+  const syncRequest = useRef<AbortController | null>(null)
+  const syncFeedbackId = useId()
+  const currentSync = syncState?.scope === syncScope ? syncState : null
+  const syncing = currentSync?.status === 'pending'
   const [queueEdit, setQueueEdit] = useState<{ id: string; text: string; expectedText: string } | null>(null)
   const [queueError, setQueueError] = useState('')
   const [following, setFollowing] = useState(true)
@@ -295,21 +304,29 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
     if (lifetime.current.signal.aborted) return
     setRoomState({ base, room: next }); onRoomChange?.(next)
   }, [base, lifetime, onRoomChange])
+  const readRoom = useCallback((signal: AbortSignal) => host ? getLocalJson(base, decodeRoom, signal) :
+    changeJson(`${base}/sync`, 'POST', decodeRoom, undefined, signal), [base, host, decodeRoom])
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    const next = host ? await getLocalJson(base, decodeRoom, signal ?? lifetime.current.signal) :
-      await changeJson(`${base}/sync`, 'POST', decodeRoom, undefined, signal ?? lifetime.current.signal)
+    const next = await readRoom(signal ?? lifetime.current.signal)
     if (signal?.aborted || lifetime.current.signal.aborted) return
     keepRoom(next)
     setError('')
-  }, [base, host, decodeRoom, keepRoom, lifetime])
+  }, [readRoom, keepRoom, lifetime])
+  const markNoticeCached = useCallback(() => {
+    if (!host) setRoomState(current => current?.base === base ?
+      { ...current, room: { ...current.room, noticeCached: true } } : current)
+  }, [base, host])
   const refreshFailure = useCallback((failure: unknown) => {
     if (lifetime.current.signal.aborted) return
     setError(errorMessage(failure))
-    if (!host) setRoomState(current => current?.base === base ?
-      { ...current, room: { ...current.room, noticeCached: true } } : current)
-  }, [base, host, lifetime])
+    markNoticeCached()
+  }, [lifetime, markNoticeCached])
   useSingleFlightPolling(refresh, 5000, refreshFailure,
     visible && supported, base)
+  useLayoutEffect(() => () => {
+    syncRequest.current?.abort()
+    syncRequest.current = null
+  }, [syncScope])
   useEffect(() => {
     onDraftStateChange?.({ dirty: draft.dirty, saving: draft.working, recovering: draft.recovering, flush: draft.flush })
   }, [draft.dirty, draft.working, draft.recovering, draft.flush, onDraftStateChange])
@@ -344,6 +361,32 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   function jumpLatest() {
     if (messages.current) messages.current.scrollTop = messages.current.scrollHeight
     follow.current = true; setFollowing(true); markRead()
+  }
+
+  async function syncNow() {
+    if (busy || !visible || !supported || syncRequest.current || lifetime.current.signal.aborted) return
+    const request = new AbortController()
+    syncRequest.current = request
+    setSyncState({ scope: syncScope, status: 'pending', message: 'Syncing chat\u2026' })
+    setError('')
+    try {
+      const next = await readRoom(request.signal)
+      if (request.signal.aborted || lifetime.current.signal.aborted || syncRequest.current !== request) return
+      keepRoom(next)
+      setError('')
+      // An offline Friend copy can be ok for reading without a completed Host
+      // exchange. Only ChatSynced confirms that this request actually synced.
+      const succeeded = next.ok && (host || next.code === 'ChatSynced')
+      setSyncState({ scope: syncScope, status: succeeded ? 'success' : 'error',
+        message: succeeded ? (host ? 'Chat refreshed.' : 'Chat synced.') :
+          next.message || 'Chat could not be synced. Try again.' })
+    } catch (failure) {
+      if (request.signal.aborted || lifetime.current.signal.aborted || syncRequest.current !== request) return
+      markNoticeCached()
+      setSyncState({ scope: syncScope, status: 'error', message: `Sync failed. ${errorMessage(failure)}` })
+    } finally {
+      if (syncRequest.current === request) syncRequest.current = null
+    }
   }
 
   async function send(event: React.FormEvent) {
@@ -423,7 +466,16 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   return <section className="server-chat" aria-label="Server chat">
     <div className="server-chat-heading"><div><h3>Server chat</h3>
       <p>Talk about this server with the people who have access to its room.</p></div>
-      <Button className="secondary" disabled={busy} onClick={() => void refresh().catch(refreshFailure)}>Sync now</Button></div>
+      <div className="server-chat-sync">
+        <Button className="secondary" disabled={busy || syncing || !visible} aria-busy={syncing}
+          aria-describedby={syncFeedbackId} onClick={() => void syncNow()}>
+          <Icon name={syncing ? 'loader' : 'refresh'} />{syncing ? 'Syncing\u2026' : 'Sync now'}</Button>
+        <span id={syncFeedbackId} className={`server-chat-sync-feedback${currentSync?.status === 'error' ? ' warning-text' : ''}`}
+          role={currentSync?.status === 'error' ? 'alert' : 'status'} aria-label="Chat sync" aria-atomic="true">
+          {currentSync?.status === 'success' && <Icon name="check" />}
+          {currentSync?.status === 'error' && <Icon name="warning" />}{currentSync?.message}
+        </span>
+      </div></div>
     {room && !room.ok && <p className="warning-text" role="status">{room.message}</p>}
     {error && <p className="warning-text" role="alert">{error}</p>}
     {room && <section className="server-chat-notice" aria-label="Pinned notice">

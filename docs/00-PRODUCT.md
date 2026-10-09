@@ -6,6 +6,8 @@ The owner-only **Test a copy in the game** guide can prepare a completed backup 
 
 ## Goal
 
+The primary interface tasks are to create or join a server, start or stop it, and get its connection details. Those actions lead each workspace. Supporting diagnostics, compatibility inventories, history, maintenance and safety tools remain findable through named secondary sections. Visible blockers and active shutdown countdowns stay beside the core actions. See the [2026-10-09 core UX delivery](19-CORE-UX-DELIVERY.md).
+
 Let the owner host a dedicated game server on a Windows PC and let a small, known group of friends see its status and request approved actions from their own Windows PCs. Valheim was first; Minecraft Java, Minecraft Bedrock, Factorio, and Terraria now have built-in local Host drivers. Factorio and Terraria remain previews with automatic crash restart disabled. Terraria has no trusted player count, so its Friend and automatic Stop remain blocked. An advanced custom-game profile lets the local owner supply protected Start, Status/players, and Stop scripts without widening the Friend API. Real Minecraft, Factorio, and Terraria joins and saved-world restart checks remain acceptance gates. Keep the program understandable: one installable app with Host and Friend modes, a bundled GUI, approved actions, and local settings. No cloud control plane or separate database service.
 
 ## People and modes

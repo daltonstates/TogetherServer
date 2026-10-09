@@ -6,7 +6,7 @@ import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessEx
 import { Button, Input, Select } from './Controls'
 import { ConnectionDoctor } from './ConnectionDoctor'
 import { FriendConnectionDoctor, FriendGameCheckResult, friendGameCheckIdentity } from './FriendConnectionDoctor'
-import { FriendPlayFlow } from './FriendPlayFlow'
+import { FriendPlayFlow, friendConnectionExplanation } from './FriendPlayFlow'
 import { FriendRemoteRehearsal, HostRemoteRehearsal } from './RemoteRehearsal'
 import { ConnectionDetails } from './ConnectionDetails'
 import { GameCompatibilityPanel } from './GameCompatibilityPanel'
@@ -18,7 +18,6 @@ import { parseNotificationPreferences } from './desktopPreferencesWire'
 import { subscribeToDesktopNotifications, subscribeToDesktopDraftFlush, type DesktopNotificationTarget } from './desktopNotificationBridge'
 import { AttentionWorkspace, readAttentionHistory, withAttentionHistorySource } from './AttentionWorkspace'
 import { FriendAccessReview, FriendAccessSummary, FriendPcFilters, defaultFriendPcFilters, filterFriendPcs } from './FriendAccessSummary'
-import { HostLifecycleSummary } from './HostLifecycleSummary'
 import { HostFirstServer } from './HostFirstServer'
 import { EditorDraftRecovery, type EditorDraftGuard } from './editorProtectedDraft'
 import { SetupFirstSessionGuide } from './setupFirstSessionGuide'
@@ -50,7 +49,7 @@ import {
   type FriendSnapshot, type GameEndpointResult, type PublicIpDetection, type PublicProfile, type RouteDiscovery, type Settings,
   type Snapshot, type WorldBackupList, type HostMoveKitResult
 } from './contracts'
-import { Icon } from './Icon'
+import { Icon, type IconName } from './Icon'
 import { ServerReadiness, currentOutsideResult, type PortDiagnostics, type InternetRouteCheck } from './ServerReadiness'
 import { FriendStartConnectionNotice, HostStartConnectionNotice } from './StartConnectionNotice'
 import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
@@ -80,12 +79,17 @@ import './theme.css'
 import './style.css'
 import './companion.css'
 import './qol.css'
+import './core.css'
 
 type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
 type HostServerTab = 'overview' | 'chat' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
 const hostServerTabLabels: Record<HostServerTab, string> = {
   overview: 'Overview', chat: 'Chat', players: 'Players', logs: 'Logs', sessions: 'Sessions',
   backups: 'Backups', files: 'Settings & files', setup: 'Maintenance & setup'
+}
+const hostServerTabIcons: Record<HostServerTab, IconName> = {
+  overview: 'server', chat: 'chat', players: 'users', logs: 'logs', sessions: 'clock',
+  backups: 'archive', files: 'settings', setup: 'plug'
 }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
@@ -170,7 +174,7 @@ function countdownLabel(deadline: string | null, nowMs: number) {
   const target = Date.parse(deadline)
   if (!Number.isFinite(target)) return null
   const seconds = Math.max(0, Math.ceil((target - nowMs) / 1000))
-  if (seconds === 0) return 'Stopping now…'
+  if (seconds === 0) return 'Rechecking players…'
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   const remainder = seconds % 60
@@ -185,6 +189,11 @@ function formatBytes(bytes: number) {
   let index = 0
   while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1 }
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`
+}
+
+function ServerCountdown({ deadline, nowMs }: { deadline: string | null; nowMs: number }) {
+  const label = countdownLabel(deadline, nowMs)
+  return label ? <span className="server-compact-countdown" role="timer" title="The Host rechecks players before automatic Stop."><Icon name="clock" size={14} />{label}</span> : null
 }
 
 function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs, players,
@@ -282,11 +291,13 @@ export function App() {
   const restoringScroll = useRef(false)
   const currentOperationProfile = useRef<Record<string, string>>({})
   const draftGuards = useRef<Map<string, EditorDraftGuard>>(new Map())
+  const [hasUnsavedServerEdits, setHasUnsavedServerEdits] = useState(false)
   const navigationEpoch = useRef(0)
   const modeSwitchesInFlight = useRef(0)
   const keepEditorGuard = useCallback((source: string, guard: EditorDraftGuard | null) => {
     if (guard) draftGuards.current.set(source, guard)
     else draftGuards.current.delete(source)
+    setHasUnsavedServerEdits([...draftGuards.current].some(([key, current]) => key !== 'chat' && (current.dirty || current.saving)))
   }, [])
   const keepChatGuard = useCallback((guard: ChatDraftState) => {
     if (guard.dirty || guard.saving) draftGuards.current.set('chat', guard)
@@ -1616,8 +1627,8 @@ export function App() {
   }
   const pageTitle = workspacePage === 'host' ? 'Host' : workspacePage === 'join' ? 'Join' : workspacePage === 'attention' ? 'Attention Center' : 'Settings'
   const pageDescription = workspacePage === 'host'
-    ? savedProfiles.length === 0 ? 'Manage game servers on this PC.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server, then act from its focused workspace.'
-    : workspacePage === 'join' ? 'Connect to a server without interrupting anything you host on this PC.'
+    ? savedProfiles.length === 0 ? 'Create a server to play with friends.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server to start hosting.'
+    : workspacePage === 'join' ? 'Connect to a friend’s server and get ready to play.'
       : workspacePage === 'attention' ? 'Updates, notices, and recent Host or Friend activity in one place.'
         : 'Application preferences and Host controls stay in one full-window workspace.'
 
@@ -1668,8 +1679,9 @@ export function App() {
       <WorkspaceNavigation page={workspacePage} activeRuns={activeRuns} unread={notificationUnread} onNavigate={navigateWorkspace} />
       <main className="workspace-main"><div className="workspace-scroll" ref={scrollContainer}
         onScroll={event => { if (!restoringScroll.current) scrollPositions.current[currentScrollKey.current] = event.currentTarget.scrollTop }}>
-      <div className="page-heading"><div><span className="workspace-eyebrow">Workspace</span><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
-        {workspacePage === 'host' && savedProfiles.length > 0 && <div className="page-heading-actions"><Button disabled={!!pending || dirty} onClick={addProfile}>Add server</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}><Icon name="invite" />Friend access</Button></div>}
+      <div className="page-heading"><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
+        {workspacePage === 'host' && savedProfiles.length > 0 && <div className="page-heading-actions"><Button className="secondary" disabled={!!pending || dirty} onClick={addProfile}><Icon name="plus" />Add server</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => navigateWorkspace('join')}><Icon name="link" />Join a server</Button></div>}
+        {workspacePage === 'join' && <div className="page-heading-actions"><Button className="secondary" disabled={!!pending} onClick={() => navigateWorkspace('host')}><Icon name="server" />Host a server</Button></div>}
       </div>
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
@@ -1773,17 +1785,20 @@ export function App() {
             const operationConflict = profile.operation?.code === 'PortConflict' && profile.operation.portConflicts?.length
               ? { message: profile.operation.message, conflicts: profile.operation.portConflicts } : null
             return <article className="profile-card" id={`friend-server-${profile.id}`} key={connectionKey} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
-              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p><ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
-                refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
-                onRefresh={() => void friendAction(profile.id, 'refresh')} /></div><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span></div>
+              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p></div><div className="server-current-state"><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span>
+                {profile.state === 'Ready' && <span className="server-player-count"><Icon name="users" size={14} />{playerCount(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.onlinePlayers : null, profile.maxPlayers)}</span>}
+                {profile.state === 'Ready' && profile.onlinePlayers === 0 && friendConnectionExplanation(snapshot, nowMs).currentAccess && <ServerCountdown deadline={profile.autoShutdownAtUtc} nowMs={nowMs} />}
+              </div></div>
               {profile.operation && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
               <ActionFeedback notice={actionNotices[profile.id] ?? null} />
 
 
               {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
               <FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs} busy={!!pending || operationBusy}
+                pendingAction={pending === `friend-start-${profile.id}` || operationBusy && profile.operation?.action === 'start' ? 'start' : pending === `friend-stop-${profile.id}` || operationBusy && profile.operation?.action === 'stop' ? 'stop' : pending === `friend-refresh-${profile.id}` ? 'refresh' : null}
                 identityKey={friendGameCheckIdentity(snapshot, profile)}
                 onStart={() => void friendAction(profile.id, 'start')}
+                onStop={() => void friendAction(profile.id, 'stop')}
                 onRefresh={() => void friendAction(profile.id, 'refresh')}
                 onOpenConnectionDoctor={openFriendConnectionDoctor}
                 startNotice={<FriendStartConnectionNotice />}
@@ -1803,12 +1818,16 @@ export function App() {
                 ['Connected', 'Disabled'].includes(snapshot.state) && <PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
                   <GameCompatibilityPanel key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} host={false} />
                 </PaneErrorBoundary>} />
-              <div className="actions server-actions">
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canStop && profile.canStopNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'stop')}>{pending === `friend-stop-${profile.id}` ? <><Icon name="loader" />Stopping…</> : <><Icon name="stop" />Stop server</>}</Button>}
+              <details className="friend-server-support"><summary>Players & server tools</summary>
+                <ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
+                  refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
+                  onRefresh={() => void friendAction(profile.id, 'refresh')} />
+                <div className="actions server-actions">
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {['Ready', 'Listening'].includes(profile.state) && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
+              </details>
                 {logAvailability.visible && <div className="friend-log-surface">
                   <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
                   onClick={() => setFriendLogProfileId(current => current === profile.id ? '' : profile.id)}>
@@ -1895,7 +1914,7 @@ export function App() {
           <div className={hostMobileDetail ? 'host-master-detail detail-open' : 'host-master-detail'}>
             <aside className="server-master" aria-label="Saved servers"><div className="server-master-heading"><strong>Saved servers</strong><span>{savedProfiles.length}</span></div>
               <label className="server-search">Find server<Input value={serverSearch} placeholder="Name, game, or world" onChange={event => setServerSearch(event.target.value)} /></label>
-              <Button className="text-button" aria-pressed={reorderServers} onClick={() => setReorderServers(current => !current)}>{reorderServers ? 'Finish ordering' : 'Reorder servers'}</Button>
+              {savedProfiles.length > 1 && <Button className="text-button" aria-pressed={reorderServers} onClick={() => setReorderServers(current => !current)}>{reorderServers ? 'Finish ordering' : 'Reorder servers'}</Button>}
               <div className="server-master-list">{visibleHostProfiles.map(profile => {
                 const run = snapshot.runs.find(item => item.profileId === profile.id)
                 return <div className="server-master-entry" key={profile.id}><Button className={selectedHostProfile?.id === profile.id ? 'server-master-item selected' : 'server-master-item'}
@@ -1907,9 +1926,6 @@ export function App() {
             </aside>
             <section className="server-detail" data-server-tab={hostServerTab} aria-label={selectedHostProfile ? `${selectedHostProfile.name} workspace` : 'Server workspace'}>
               <Button className="mobile-back secondary" onClick={() => setHostMobileDetail(false)}>Back to all servers</Button>
-              <nav className="server-tabs" aria-label="Selected server sections">
-                {(['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => selectHostTab(tab)}>{hostServerTabLabels[tab]}</Button>)}
-              </nav>
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
@@ -1938,37 +1954,33 @@ export function App() {
                 onHide: () => hideConnectionDetails(passwordKey),
                 onCopy: () => void copyGamePassword(profile, passwordKey) }] : [])]
               return <article className="profile-card server-detail-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
-              <div className="profile-top"><div><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · World {profile.worldId}</p><ServerActivity state={status?.state ?? 'Unknown'} online={count} capacity={status?.maxPlayers ?? null} deadline={count === 0 ? status?.autoShutdownAtUtc ?? null : null} timerReason={count === null ? 'Refresh the unavailable player observation.' : status?.autoShutdownReason ?? null} nowMs={nowMs} players={count !== null ? status?.playerNames : null}
-                refreshing={pending === `players-${profile.id}`} refreshDisabled={!!pending || dirty}
-                onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></div>
-                  <span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span></div>
-
-
-                {hostServerTab === 'overview' && <>
-                  <HostLifecycleSummary compact profile={profile} run={status ?? null} nowMs={nowMs} busy={!!pending}
-                    lifecycleBlocked={!!dataRecovery?.lifecycleBlocked} startGate={{ allowed: !dirty && !pending && !dataRecovery?.lifecycleBlocked,
-                      reason: dirty ? 'Save or discard setup changes first.' : pending ? 'Wait for the current action.' : null }}
-                    onStart={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}
-                    onOpen={openActivityDestination} />
-
+                <div className="server-command-header">
+                  <div className="profile-top"><div className="server-identity"><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · {profile.worldId}</p></div>
+                    <div className="server-current-state"><span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
+                      {['Ready', 'Listening'].includes(status?.state ?? '') && <Button className="text-button server-player-link" onClick={() => selectHostTab('players')}><Icon name="users" />{count === null ? 'Players unknown' : `${count}${status?.maxPlayers !== null && status?.maxPlayers !== undefined ? ` / ${status.maxPlayers}` : ''} online`}</Button>}
+                      {count === 0 && <ServerCountdown deadline={status?.autoShutdownAtUtc ?? null} nowMs={nowMs} />}
+                    </div>
+                  </div>
+                  <div className="actions server-actions" aria-label="Server controls">
+                    {(status?.state === 'Offline' || pending === `start-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || hasUnsavedServerEdits || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : dirty ? 'Save or cancel setup changes first.' : hasUnsavedServerEdits ? 'Save or discard file changes before starting.' : undefined} onClick={() => {
+                      if ([...draftGuards.current].some(([key, guard]) => key !== 'chat' && (guard.dirty || guard.saving))) return
+                      void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')
+                    }}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
+                    {pending !== `start-${profile.id}` && (['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(status?.state ?? '') || pending === `stop-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || status?.state === 'Stopping'} onClick={() => { if (!confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` || status?.state === 'Stopping' ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
+                    {['Unknown', 'Failed'].includes(status?.state ?? 'Unknown') && <Button className="secondary" onClick={() => selectHostTab('logs')}><Icon name="warning" />Review server</Button>}
+                    <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void changeScope(() => { setHostServerTab('overview'); setUiPreferences(current => ({ ...current, serverTabs: { ...current.serverTabs, [profile.id]: 'overview' } })); void inviteFriend(profile.id) })}><Icon name="invite" /><span>Invite friends</span></Button>
+                  </div>
+                  {status && !['Offline', 'Ready'].includes(status.state) && <p className="server-progress" role="status">{status.detail}</p>}
                   {dirty && <p className="inline-blocker">Save or cancel setup changes before server actions.</p>}
-                  {dataRecovery?.lifecycleBlocked && <p className="inline-blocker">Review local data recovery before Start or Restart.</p>}
-                  {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <p className="warning-text" role="status">The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></p>}
-                  {profile.kind === 'Custom' && <Button className="text-button" onClick={() => selectHostTab('setup')}>Review Custom control certification</Button>}
-                  {status?.state === 'Ready' && (!status.playerCountTrusted || status.onlinePlayers === null) && <p className="inline-blocker">Game player count is unavailable. <Button className="text-button" onClick={() => selectHostTab('players')}>Review player evidence</Button><Button className="text-button" onClick={() => selectHostTab('logs')}>Open logs</Button></p>}
-                </>}
-                {status?.state === 'Offline' && (hostServerTab === 'overview' || hostServerTab === 'files') &&
-                  <HostStartConnectionNotice profile={profile} ports={portDiagnostics} routeCheck={internetRouteCheck}
-                    onOpenConnection={() => openHostSettings('network')}
-                    onTestControl={() => void checkInternetRoute()} testingControl={checkingInternetRoute} />}
-                <div hidden={hostServerTab !== 'overview'} className="actions server-actions">
-                  {status?.state === 'Offline' && <Button disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
-                  {['Process running', 'Starting', 'Listening', 'Ready'].includes(status?.state ?? '') && <Button className="secondary" disabled={!!pending || dirty} onClick={() => { if (!confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
-                  {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => { if (!confirmOwnerLifecycle(profile.id, 'Restart')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}>{pending === `restart-${profile.id}` ? <><Icon name="loader" /><span>Restarting…</span></> : <><Icon name="refresh" /><span>Restart server</span></>}</Button>}
-                  <Button className={['Ready', 'Listening'].includes(status?.state ?? '') ? 'server-invite-button' : 'secondary server-invite-button'} disabled={!!pending || dirty || !friendAppAddress} onClick={() => void inviteFriend(profile.id)}><Icon name="invite" /><span>Invite friends</span></Button>
-                  {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>Safe restart with checkpoint</Button>}
+                  {!dirty && hasUnsavedServerEdits && <p className="inline-blocker">Save or discard file changes before starting.</p>}
+                  {dataRecovery?.lifecycleBlocked && <p className="inline-blocker">Start and Restart need local data recovery. <Button className="text-button" onClick={() => openHostSettings('diagnostics')}>Review recovery</Button></p>}
+                  {profile.maintenance?.enabled && <p className="inline-blocker">Maintenance is on; Friend controls are paused. <Button className="text-button" onClick={() => selectHostTab('setup')}>Continue maintenance</Button></p>}
+                  <ActionFeedback notice={actionNotices[profile.id] ?? null} />
                 </div>
-                <ActionFeedback notice={actionNotices[profile.id] ?? null} />
+                <nav className="server-tabs" aria-label="Selected server sections">
+                  {(['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => selectHostTab(tab)}><Icon name={hostServerTabIcons[tab]} /><span>{hostServerTabLabels[tab]}</span></Button>)}
+                </nav>
+                <div className="server-tab-content">
                 {hostServerTab === 'overview' && inviteProfileId === profile.id && <div className="inline-invite">
                   {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Server code ready, connection needs attention' : 'Server code ready'}</strong><p>{activeInviteWarning ? 'Fix the connection below before sending the code.' : 'Send it privately. The same code keeps working until you replace it.'}</p></div></div>
                     {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
@@ -1989,6 +2001,11 @@ export function App() {
                   note={status?.state === 'Listening' ? 'Only the local listener was detected. A real join and saved change still need checking.' : undefined} />}
                 {hostServerTab === 'overview' && ['Ready', 'Listening'].includes(status?.state ?? '') && <p className="helper-text local-game-address">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>}
                 {hostServerTab === 'overview' && status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && <Button className="text-button" onClick={() => selectHostTab('players')}>Add shutdown time</Button>}
+                {hostServerTab === 'overview' && <>
+                  {status?.state === 'Offline' && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
+                  {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <p className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></p>}
+                  {status?.state === 'Ready' && count === null && <p className="inline-blocker"><Icon name="warning" />Players are unknown; Friend and automatic Stop are blocked. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></p>}
+                </>}
                 {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   onNavigateIssue={destination => destination === 'health' ? void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST') : selectHostTab('files')}
                   visible={workspacePage === 'host' && hostServerTab === 'logs'} /></PaneErrorBoundary>}
@@ -1996,7 +2013,7 @@ export function App() {
                   <ServerChat profileId={profile.id} host onDraftStateChange={keepChatGuard} visible={workspacePage === 'host' && hostServerTab === 'chat'} />
                 </PaneErrorBoundary>}
                 {hostServerTab === 'overview' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) &&
-                  <PaneErrorBoundary title="Pre-join requirements" resetKey={profile.id}><GameCompatibilityPanel key={profile.id} profileId={profile.id} host /></PaneErrorBoundary>}
+                  <details className="server-support-disclosure"><summary><Icon name="game" />Game version & add-ons</summary><PaneErrorBoundary title="Pre-join requirements" resetKey={profile.id}><GameCompatibilityPanel key={profile.id} profileId={profile.id} host /></PaneErrorBoundary></details>}
                 {hostServerTab === 'overview' && <ServerChatCardSummary profileId={profile.id} host authorized
                   visible={workspacePage === 'host'} pollWhenClosed onOpenChat={() => selectHostTab('chat')} />}
                 {hostServerTab === 'files' && <PaneErrorBoundary title="Game settings" resetKey={profile.id}><GameSettingsPanel
@@ -2029,18 +2046,26 @@ export function App() {
                   } : undefined}
                   renderActions={backup => <Button className="secondary" disabled={!!pending || dirty || status?.state !== 'Offline'}
                     onClick={() => void prepareMoveKit(profile.id, backup.backupId)}>Prepare move kit</Button>} /></PaneErrorBoundary>}
-                <div hidden={hostServerTab !== 'overview'}><PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
-                  busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary></div>
-                {hostServerTab === 'players' && status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && count !== null && <div className="timer-extension"><label>Add shutdown time<Input type="number" min="1" max="1440" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /><small>Saved if players join and applied when the server next reaches 0 players.</small></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? 'Adding…' : 'Add time'}</Button></div>}
-                  {hostServerTab === 'players' && status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && count !== null &&
-                    <TimerPresets minutes={countdownExtensions[profile.id] ?? '15'} deadline={count === 0 ? status.autoShutdownAtUtc : null} savedMinutes={status.addedShutdownMinutes}
-                      busy={!!pending || dirty} onChange={minutes => setCountdownExtensions(current => ({ ...current, [profile.id]: minutes }))}
-                      onAdd={minutes => void extendCountdown(profile.id, minutes)} />}
+                {(hostServerTab === 'overview' || hostServerTab === 'files') && <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
+                  {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}
+                  {status?.state === 'Ready' && <small>{profile.kind === 'Fixture' ? 'Synthetic fixture evidence.' : 'Readiness was observed locally; confirm a real game join separately.'}</small>}
+                  {status?.state === 'Offline' && <HostStartConnectionNotice profile={profile} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                    onOpenConnection={() => openHostSettings('network')}
+                    onTestControl={() => void checkInternetRoute()} testingControl={checkingInternetRoute} />}
+                  <PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                    busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary>
+                </details>}
                 {hostServerTab === 'players' && status && <PaneErrorBoundary title="Players workspace" resetKey={profile.id}><PlayersPanel run={status} activity={snapshot.activity} nowMs={nowMs}
                   profile={profile} onOpenLogs={() => selectHostTab('logs')} onOpenHelp={() => openHostSettings('network')}
                   onCheckHealth={() => void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST')}
                   refreshing={pending === `players-${profile.id}`} disabled={!!pending || dirty}
                   onRefresh={() => void run(`players-${profile.id}`, `/api/local/profiles/${profile.id}/players/refresh`, 'POST')} /></PaneErrorBoundary>}
+                {hostServerTab === 'players' && status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && count !== null && <details className="server-support-disclosure"><summary><Icon name="clock" />Add shutdown time</summary>
+                  <TimerPresets minutes={countdownExtensions[profile.id] ?? '15'} deadline={count === 0 ? status.autoShutdownAtUtc : null} savedMinutes={status.addedShutdownMinutes}
+                    busy={!!pending || dirty} onChange={minutes => setCountdownExtensions(current => ({ ...current, [profile.id]: minutes }))}
+                    onAdd={minutes => void extendCountdown(profile.id, minutes)} />
+                  <div className="timer-extension"><label>Custom minutes<Input type="number" min="1" max="1440" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? <><Icon name="loader" />Adding…</> : 'Add time'}</Button></div>
+                </details>}
                 {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote Start, Stop, and Restart are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
                 <div hidden={hostServerTab !== 'setup'}><MaintenanceGuide enabled={!!profile.maintenance?.enabled}
                   message={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''}
@@ -2088,7 +2113,12 @@ export function App() {
                   </div></PaneErrorBoundary></div>}
                 <details hidden={hostServerTab !== 'overview' && hostServerTab !== 'setup'} className="advanced-block card-manage"><summary>More server actions</summary>
 
-                  <div className="actions"><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}>Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}>Check server health</Button>
+                  <div className="actions">
+                    {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => { if (!confirmOwnerLifecycle(profile.id, 'Restart')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}><Icon name={pending === `restart-${profile.id}` ? 'loader' : 'refresh'} />{pending === `restart-${profile.id}` ? 'Restarting…' : 'Restart server'}</Button>}
+                    {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}><Icon name={pending === `safe-restart-${profile.id}` ? 'loader' : 'archive'} />{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart with checkpoint'}</Button>}
+                    <Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}><Icon name="settings" />Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}><Icon name="refresh" />Check server health</Button>
+                    <Button className="secondary" onClick={() => openHostSettings('access')}><Icon name="users" />Friend access</Button>
+                    {profile.kind === 'Custom' && <Button className="text-button" onClick={() => selectHostTab('setup')}>Review Custom control certification</Button>}
                     {status?.state === 'Failed' && <Button className="text-button" disabled={!!pending || dirty} onClick={() => {
                       if (window.confirm('Archive this session only if TogetherServer confirms that its saved server process is no longer running?'))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
@@ -2097,6 +2127,7 @@ export function App() {
                 </details>
                   {hostServerTab === 'setup' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <details className="advanced-block"><summary>Update the game server safely</summary><ol className="update-game-steps"><li>Stop this server, then choose Back up now while it is Offline.</li><li>Verify the backup. Copy it to another location or test restore if needed.</li><li>Use the game provider's installer or update action yourself.</li><li>Start the updated server. Test a real Friend join and a saved change, then record those checks again in Connection Doctor. Changed game files make earlier confirmations stale.</li></ol><Button className="text-button" onClick={() => openHostSettings('network')}>Open Connection Doctor</Button></details>}
 
+                </div>
               </article>
             })}
               </div>

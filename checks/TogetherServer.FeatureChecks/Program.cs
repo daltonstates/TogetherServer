@@ -24,6 +24,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Shared save display projections", () => { SharedWorldProjectionChecks.Run(root); return Task.CompletedTask; }),
     ("Local QoL endpoint scopes and run identity", () => { QolLocalEndpointInputChecks.Run(); return Task.CompletedTask; }),
     ("Canonical tray projection", () => { DesktopTrayProjectionChecks.Run(root); return Task.CompletedTask; }),
+    ("Bundled desktop icon assets", () => { DesktopIconChecks.Run(); return Task.CompletedTask; }),
     ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
     ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root))
 };
