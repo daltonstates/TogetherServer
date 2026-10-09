@@ -80,7 +80,9 @@ export function CommandPalette({ open, commands, onClose }: {
     <div className="command-palette-search">
       <Icon name="search" size={18} />
       <Input ref={inputRef} value={query} onChange={event => { setQuery(event.target.value); setActiveIndex(0) }}
-        aria-label="Search commands" placeholder="Type a command or workspace"
+        aria-label="Search commands" placeholder="Type a server, command, or workspace"
+        role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls="workspace-command-options"
+        aria-activedescendant={visible[activeIndex] ? `workspace-command-${visible[activeIndex].id}` : undefined}
         onKeyDown={event => {
           if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex(index => Math.min(index + 1, visible.length - 1)) }
           if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex(index => Math.max(index - 1, 0)) }
@@ -89,9 +91,9 @@ export function CommandPalette({ open, commands, onClose }: {
       <kbd>Esc</kbd>
     </div>
     <h2 id="command-palette-title" className="sr-only">Command palette</h2>
-    <div className="command-list" role="listbox" aria-label="Commands">
-      {visible.map((command, index) => <Button key={command.id} role="option" aria-selected={index === activeIndex}
-        className={index === activeIndex ? 'command-item selected' : 'command-item'} disabled={command.disabled}
+    <div className="command-list" id="workspace-command-options" role="listbox" aria-label="Commands">
+      {visible.map((command, index) => <Button key={command.id} id={`workspace-command-${command.id}`} role="option" aria-selected={index === activeIndex}
+        className={index === activeIndex ? 'command-item selected' : 'command-item'} aria-disabled={command.disabled} tabIndex={-1}
         onMouseEnter={() => setActiveIndex(index)} onClick={() => run(command)}>
         <span className="command-icon"><Icon name={command.icon} /></span>
         <span><strong>{command.label}</strong><small>{command.detail}</small></span>
@@ -112,7 +114,7 @@ export function StatusStrip({ hostText, friendText, pending, version }: {
     <span><span className="status-strip-dot" />{hostText}</span>
     <span><Icon name="link" size={13} />{friendText}</span>
     <span className="status-strip-spacer" />
-    {pending && <span className="status-strip-busy"><Icon name="loader" size={13} />Working</span>}
+    {pending && <span className="status-strip-busy" role="status" aria-live="polite"><Icon name="loader" size={13} />{pending}</span>}
     <span>v{version}</span>
   </footer>
 }

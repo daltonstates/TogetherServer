@@ -10,9 +10,14 @@ using System.Text.RegularExpressions;
 namespace TogetherServer;
 
 public sealed record UpdateView(string State, string CurrentVersion, string? LatestVersion, string Message,
-    string PublisherTrust = "Checking");
+    string PublisherTrust = "Checking", string ReleaseNotes = "", string? ReleaseNotesUrl = null,
+    DateTimeOffset? SnoozedUntilUtc = null, bool PromptSnoozed = false, bool VersionSkipped = false,
+    UpdatePreparationView? Preparation = null);
 public sealed record UpdateResult(bool Ok, string Code, string Message);
-public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256);
+public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256,
+    string ReleaseNotes = "", Uri? ReleaseNotesUrl = null);
+public sealed record UpdatePreparationView(string Stage, string Message, long DownloadedBytes = 0,
+    long? TotalBytes = null, string? Blocker = null);
 public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message, bool IsUnsigned = false);
 
 public interface IAuthenticodeVerifier
@@ -22,23 +27,64 @@ public interface IAuthenticodeVerifier
 
 public sealed class AppUpdater(HttpClient client, string dataRoot, string executablePath, Version currentVersion,
     IAuthenticodeVerifier? authenticodeVerifier = null, bool enabled = true,
-    string disabledMessage = "Automatic updates are disabled for this app instance.")
+    string disabledMessage = "Automatic updates are disabled for this app instance.", UpdateUiPreferences? uiPreferences = null)
 {
     public const string AssetName = "TogetherServer-win-x64.exe";
     public const long MaximumBytes = 200L * 1024 * 1024;
+    public const int MaximumReleaseNotesCharacters = 4000;
     public static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromMinutes(30);
     private const string LatestUrl = "https://api.github.com/repos/daltonstates/TogetherServer/releases/latest";
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly IAuthenticodeVerifier signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
-    private UpdateView view = enabled
+    private readonly UpdateUiPreferences preferences = uiPreferences ?? new UpdateUiPreferences();
+    private volatile UpdateView view = enabled
         ? new("Checking", currentVersion.ToString(3), null, "Checking for updates.")
         : new("Unsupported", currentVersion.ToString(3), null, disabledMessage, "Development build");
     private UpdateRelease? available;
     private string? preparedPath;
     private string? publisherKey;
     private DateTimeOffset checkedUtc;
+    private volatile UpdatePreparationView preparation = new("Idle", "An update starts only when you choose Update and restart.");
 
-    public UpdateView View => view;
+    public UpdateView View
+    {
+        get
+        {
+            var current = view;
+            var notes = current.LatestVersion is { } version ? preferences.NotesFor(version) : null;
+            var until = current.LatestVersion is { } target ? preferences.SnoozedUntil(target) : null;
+            return current with { ReleaseNotes = notes?.Text ?? "", ReleaseNotesUrl = notes?.Url,
+                SnoozedUntilUtc = until, PromptSnoozed = until is not null,
+                VersionSkipped = current.LatestVersion is { } latest && preferences.IsVersionSkipped(latest), Preparation = preparation };
+        }
+    }
+    public UpdatePreparationView Preparation => preparation;
+    public void ReportPreparation(string stage, string message, string? blocker = null)
+    {
+        if (stage is not ("Idle" or "Checking" or "Checkpoint" or "Restarting" or "Blocked" or "Failed") ||
+            message.Length > 600 || blocker?.Length > 600) throw new ArgumentException("Update preparation phase is invalid.");
+        preparation = new(stage, message, preparation.DownloadedBytes, preparation.TotalBytes, blocker);
+    }
+
+    public async Task<UpdateResult> SnoozeAsync(UpdateSnoozeRequest request)
+    {
+        if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
+        await gate.WaitAsync();
+        try
+        {
+            if (available is null || request.Version != available.Version.ToString(3))
+                return new(false, "VersionChanged", "Check the currently available version before changing its reminder.");
+            var until = preferences.Snooze(request);
+            return new(true, "ReminderSaved", request.Duration == "SkipVersion" ? "This version's reminder is skipped. A different release will be shown." :
+                until is null ? "Update reminders are back on." :
+                "Update reminders are snoozed for this version. You can still update at any time.");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { return new(false, "ReminderFailed", "Could not save the update reminder. Try again."); }
+        finally { gate.Release(); }
+    }
+
+    private UpdateView SetView(UpdateView next) { view = next; return View; }
     public string? PreparedVersion => available is not null && preparedPath is not null && File.Exists(preparedPath)
         ? available.Version.ToString(3) : null;
     public bool IsStandalone => File.Exists(executablePath) &&
@@ -50,12 +96,12 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         await gate.WaitAsync();
         try
         {
-            if (!enabled) return view;
-            if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < AutomaticCheckInterval) return view;
+            if (!enabled) return View;
+            if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < AutomaticCheckInterval) return View;
             checkedUtc = DateTimeOffset.UtcNow;
             if (!IsStandalone)
-                return view = new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.",
-                    "Development build");
+                return SetView(new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.",
+                    "Development build"));
             var installedSignature = signatureVerifier.Verify(executablePath);
             var signed = installedSignature.Valid && !string.IsNullOrWhiteSpace(installedSignature.PublisherKey);
             if (!signed && !installedSignature.IsUnsigned)
@@ -63,9 +109,9 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 available = null;
                 preparedPath = null;
                 publisherKey = null;
-                return view = new("Unsupported", currentVersion.ToString(3), null,
+                return SetView(new("Unsupported", currentVersion.ToString(3), null,
                     "Automatic updates are disabled because Windows found an invalid or unverifiable signature on this EXE.",
-                    "Signature rejected");
+                    "Signature rejected"));
             }
             var nextPublisherKey = signed
                 ? installedSignature.PublisherKey
@@ -82,8 +128,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 {
                     available = null;
                     preparedPath = null;
-                    return view = new("NoRelease", currentVersion.ToString(3), null, "No published TogetherServer release yet.",
-                        signed ? "Verified publisher" : "GitHub digest only");
+                    return SetView(new("NoRelease", currentVersion.ToString(3), null, "No published TogetherServer release yet.",
+                        signed ? "Verified publisher" : "GitHub digest only"));
                 }
                 response.EnsureSuccessStatusCode();
                 await using var releaseStream = await response.Content.ReadAsStreamAsync();
@@ -98,27 +144,29 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 var json = Encoding.UTF8.GetString(releaseBytes.ToArray());
                 var release = ParseRelease(json);
                 if (release is null)
-                    return view = new("Unavailable", currentVersion.ToString(3), null,
+                    return SetView(new("Unavailable", currentVersion.ToString(3), null,
                         "The latest release has no valid Windows EXE and SHA-256 digest.",
-                        signed ? "Verified publisher" : "GitHub digest only");
+                        signed ? "Verified publisher" : "GitHub digest only"));
+                preferences.RememberNotes(release);
                 if (release.Version.CompareTo(currentVersion) <= 0)
                 {
                     available = null;
                     preparedPath = null;
-                    return view = new("Current", currentVersion.ToString(3), release.Version.ToString(3), "TogetherServer is up to date.",
-                        signed ? "Verified publisher" : "GitHub digest only");
+                    return SetView(new("Current", currentVersion.ToString(3), release.Version.ToString(3), "TogetherServer is up to date.",
+                        signed ? "Verified publisher" : "GitHub digest only"));
                 }
                 if (available?.Tag != release.Tag || available.Sha256 != release.Sha256) preparedPath = null;
                 available = release;
-                return view = new("Available", currentVersion.ToString(3), release.Version.ToString(3),
+                return SetView(new("Available", currentVersion.ToString(3), release.Version.ToString(3),
                     $"TogetherServer {release.Version.ToString(3)} is available.",
-                    signed ? "Verified publisher" : "GitHub digest only");
+                    signed ? "Verified publisher" : "GitHub digest only"));
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException or
+                                      InvalidDataException or UnauthorizedAccessException)
             {
-                return view = new("Unavailable", currentVersion.ToString(3), null,
+                return SetView(new("Unavailable", currentVersion.ToString(3), available?.Version.ToString(3),
                     "Could not check GitHub Releases. Your current app keeps working.",
-                    signed ? "Verified publisher" : "GitHub digest only");
+                    signed ? "Verified publisher" : "GitHub digest only"));
             }
         }
         finally { gate.Release(); }
@@ -126,30 +174,32 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
 
     public async Task<UpdateResult> PrepareAsync()
     {
-        if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
+        if (!enabled) return PreparationResult(false, "UpdatesDisabled", disabledMessage);
+        preparation = new("Checking", "Checking the release and installed app trust before downloading.");
         await CheckAsync(true);
         await gate.WaitAsync();
         try
         {
             if (available is null || view.State != "Available")
-                return new(false, "NoUpdate", view.Message);
+                return PreparationResult(false, "NoUpdate", view.Message);
             if (preparedPath is not null && File.Exists(preparedPath) &&
                 await HasHashAsync(preparedPath, available.Sha256) &&
                 HasRequiredPublisher(preparedPath))
-                return new(true, "Ready", ReadyMessage());
+                return PreparationResult(true, "Ready", ReadyMessage());
             var directory = Path.Combine(dataRoot, "updates", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, AssetName);
             var valid = false;
             try
             {
+                preparation = new("Downloading", "Downloading the reviewed Windows update.", 0, available.Size);
                 using var request = new HttpRequestMessage(HttpMethod.Get, available.DownloadUrl);
                 request.Headers.UserAgent.ParseAdd("TogetherServer/" + currentVersion.ToString(3));
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
                 if (response.Content.Headers.ContentLength is > MaximumBytes or < 1 ||
                     response.Content.Headers.ContentLength is { } length && length != available.Size)
-                    return new(false, "InvalidDownload", "Release size did not match GitHub's release record.");
+                    return PreparationResult(false, "InvalidDownload", "Release size did not match GitHub's release record.");
                 long total = 0;
                 await using (var source = await response.Content.ReadAsStreamAsync())
                 await using (var target = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
@@ -160,28 +210,30 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                     {
                         total += read;
                         if (total > MaximumBytes || total > available.Size)
-                            return new(false, "InvalidDownload", "Release download exceeded its declared size.");
+                            return PreparationResult(false, "InvalidDownload", "Release download exceeded its declared size.");
                         await target.WriteAsync(buffer.AsMemory(0, read));
+                        preparation = new("Downloading", "Downloading the reviewed Windows update.", total, available.Size);
                     }
                     await target.FlushAsync();
                 }
+                preparation = new("Verifying", "Verifying the download size, SHA-256, release version and required publisher.", total, available.Size);
                 if (total != available.Size || !await HasHashAsync(path, available.Sha256))
-                    return new(false, "InvalidDownload", "Release download failed its size or SHA-256 check.");
+                    return PreparationResult(false, "InvalidDownload", "Release download failed its size or SHA-256 check.");
                 var fileVersion = FileVersionInfo.GetVersionInfo(path).FileVersion;
                 if (!Version.TryParse(fileVersion, out var packagedVersion) ||
                     packagedVersion.Major != available.Version.Major ||
                     packagedVersion.Minor != available.Version.Minor ||
                     packagedVersion.Build != available.Version.Build)
-                    return new(false, "InvalidDownload", "The release EXE version does not match its tag.");
+                    return PreparationResult(false, "InvalidDownload", "The release EXE version does not match its tag.");
                 if (!HasRequiredPublisher(path))
-                    return new(false, "InvalidSignature",
+                    return PreparationResult(false, "InvalidSignature",
                         "The release EXE is not validly signed by the same publisher as this installed app.");
                 preparedPath = path;
                 valid = true;
-                return new(true, "Ready", ReadyMessage());
+                return PreparationResult(true, "Ready", ReadyMessage());
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
-            { return new(false, "DownloadFailed", "Could not download the update. Your current app keeps working."); }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or UnauthorizedAccessException)
+            { return PreparationResult(false, "DownloadFailed", "Could not download the update. Your current app keeps working."); }
             finally
             {
                 if (!valid)
@@ -192,35 +244,44 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 }
             }
         }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { return PreparationResult(false, "PrepareFailed", "Could not prepare the update. Your current app keeps working."); }
         finally { gate.Release(); }
     }
 
     public UpdateResult StartReplacement() => StartReplacement(null);
 
+    private UpdateResult PreparationResult(bool ok, string code, string message)
+    {
+        preparation = new(ok ? code == "Restarting" ? "Restarting" : "Ready" : "Failed", message,
+            preparation.DownloadedBytes, preparation.TotalBytes, ok ? null : message);
+        return new(ok, code, message);
+    }
+
     internal UpdateResult StartReplacement(StateCheckpointReference? checkpoint)
     {
-        if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
+        if (!enabled) return PreparationResult(false, "UpdatesDisabled", disabledMessage);
         if (!IsStandalone || view.State != "Available" || available is null || preparedPath is null || !File.Exists(preparedPath))
-            return new(false, "NotReady", "No verified update is ready.");
+            return PreparationResult(false, "NotReady", "No verified update is ready.");
         try
         {
             var verification = publisherKey ?? UpdateInstaller.HashOnlyVerification;
             var helper = Path.Combine(Path.GetDirectoryName(preparedPath)!, "TogetherServer-updater.exe");
             if (!HasHashAsync(preparedPath, available.Sha256).GetAwaiter().GetResult())
-                return new(false, "InvalidDownload", "The downloaded update changed before installation.");
+                return PreparationResult(false, "InvalidDownload", "The downloaded update changed before installation.");
             if (publisherKey is not null && (!HasMatchingPublisher(executablePath, publisherKey) ||
                 !HasMatchingPublisher(preparedPath, publisherKey)))
-                return new(false, "InvalidSignature", "The installed app or downloaded update failed publisher verification.");
+                return PreparationResult(false, "InvalidSignature", "The installed app or downloaded update failed publisher verification.");
             var installedHash = HashAsync(executablePath).GetAwaiter().GetResult();
             if (checkpoint is not null && !StateCheckpointService.TryValidate(dataRoot,
                     checkpoint.Directory, checkpoint.ManifestSha256, out _, installedHash))
-                return new(false, "CheckpointInvalid",
+                return PreparationResult(false, "CheckpointInvalid",
                     "The verified local-state recovery checkpoint changed before update handoff.");
             File.Copy(preparedPath, helper, true);
             if (!HasHashAsync(helper, available.Sha256).GetAwaiter().GetResult())
-                return new(false, "InvalidDownload", "The updater copy failed its SHA-256 check.");
+                return PreparationResult(false, "InvalidDownload", "The updater copy failed its SHA-256 check.");
             if (publisherKey is not null && !HasMatchingPublisher(helper, publisherKey))
-                return new(false, "InvalidSignature", "The updater copy failed publisher verification.");
+                return PreparationResult(false, "InvalidSignature", "The updater copy failed publisher verification.");
             var ready = Path.Combine(Path.GetDirectoryName(preparedPath)!, "ready.signal");
             if (File.Exists(ready)) File.Delete(ready);
             using var process = Process.GetCurrentProcess();
@@ -236,18 +297,18 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 start.ArgumentList.Add(checkpoint.ManifestSha256);
             }
             using var launched = Process.Start(start);
-            if (launched is null) return new(false, "LaunchFailed", "Could not start the updater.");
+            if (launched is null) return PreparationResult(false, "LaunchFailed", "Could not start the updater.");
             for (var attempt = 0; attempt < 100 && !File.Exists(ready) && !launched.HasExited; attempt++)
                 Thread.Sleep(50);
             if (!File.Exists(ready) || launched.HasExited)
             {
                 if (!launched.HasExited) launched.Kill();
-                return new(false, "LaunchFailed", "The update helper could not start safely. Your current app keeps running.");
+                return PreparationResult(false, "LaunchFailed", "The update helper could not start safely. Your current app keeps running.");
             }
-            return new(true, "Restarting", "TogetherServer is closing to install the update.");
+            return PreparationResult(true, "Restarting", "TogetherServer is closing to install the update.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
-        { return new(false, "LaunchFailed", "Could not start the updater: " + ex.Message); }
+        { return PreparationResult(false, "LaunchFailed", "Could not start the updater. Your current app keeps running."); }
     }
 
     public static UpdateRelease? ParseRelease(string json)
@@ -277,10 +338,23 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (!Regex.IsMatch(digest, @"^sha256:[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant) ||
                 !string.Equals(urlValue.GetString(), expectedUrl, StringComparison.Ordinal) ||
                 !Uri.TryCreate(expectedUrl, UriKind.Absolute, out var url)) continue;
-            return new(version, tag, url, size, digest[7..].ToUpperInvariant());
+            var notes = release.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String
+                ? NormalizeReleaseNotes(body.GetString() ?? "") : "";
+            var notesUrl = release.TryGetProperty("html_url", out var page) && page.ValueKind == JsonValueKind.String &&
+                ValidReleaseNotesLink(page.GetString(), tag) && Uri.TryCreate(page.GetString(), UriKind.Absolute, out var approvedPage)
+                ? approvedPage : null;
+            return new(version, tag, url, size, digest[7..].ToUpperInvariant(), notes, notesUrl);
         }
         return null;
     }
+
+    internal static string NormalizeReleaseNotes(string value) => new(value
+        .Where(character => character is '\n' or '\t' || !char.IsControl(character))
+        .Take(MaximumReleaseNotesCharacters).ToArray());
+
+    public static bool ValidReleaseNotesLink(string? value, string tag) => value is null ||
+        (Regex.IsMatch(tag, @"^v\d+\.\d+\.\d+$", RegexOptions.CultureInvariant) &&
+         string.Equals(value, $"https://github.com/daltonstates/TogetherServer/releases/tag/{tag}", StringComparison.Ordinal));
 
     public static async Task<bool> HasHashAsync(string path, string expected)
     {

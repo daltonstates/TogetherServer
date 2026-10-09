@@ -81,11 +81,11 @@ describe('setup draft helpers', () => {
     expect(reconcileProfileRemoval(settings, saved)).toEqual({ committed: true, settings: authoritative })
   })
 
-  it('writes the versioned profiles-only payload through an acquired store', () => {
+  it('keeps browser persistence limited to harmless step metadata', () => {
     const setItem = vi.fn()
 
     writeSetupDraftTo(() => ({ setItem }), 'draft', [])
 
-    expect(setItem).toHaveBeenCalledWith('draft', '{"version":2,"profiles":[]}')
+    expect(setItem).toHaveBeenCalledWith('draft', '{"version":3,"step":"world"}')
   })
 })

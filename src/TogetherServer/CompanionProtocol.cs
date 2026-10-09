@@ -53,4 +53,10 @@ public static class CompanionProtocol
 
     public static string CompatibilityMessage(int peerProtocol) => Describe(peerProtocol).CompatibilityMessage ??
         "Update required before remote controls can be used.";
+
+    // Display/cache identity only. A matched canonical run supplies this value;
+    // missing or uncertain process identity must never invent a replacement ID.
+    internal static Guid? ProjectRunOperationId(ManagedRun? run, string identity) =>
+        identity == "Matched" && run is { OperationId: var operationId } && operationId != Guid.Empty
+            ? operationId : null;
 }

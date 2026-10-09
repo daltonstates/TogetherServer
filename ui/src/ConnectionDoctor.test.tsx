@@ -6,7 +6,7 @@ import type { Profile } from './GameProfile'
 import type { PortDiagnostics } from './ServerReadiness'
 
 const profile = { id: 'server', kind: 'Valheim', name: 'Weekend', serverName: 'Weekend', worldId: 'world' } as Profile
-const run = { profileId: 'server', state: 'Ready', detail: 'Ready', processId: 1, onlinePlayers: 0,
+const run = { profileId: 'server', state: 'Ready', detail: 'Ready', runOperationId: null, processId: 1, onlinePlayers: 0,
   maxPlayers: 10, autoShutdownAtUtc: null, autoShutdownReason: null, hostAddedTime: false,
   playerNames: null, playerCountTrusted: true, friendAddedMinutes: 0, addedShutdownMinutes: 0,
   playerObservationSource: 'ValheimQuery', playerCountObservedUtc: '2026-09-29T12:00:00Z' } satisfies Run

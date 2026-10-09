@@ -28,8 +28,12 @@ import {
   readSetupDraftFrom,
   reconcileProfileRemoval,
   removeSetupDraftFrom,
-  writeSetupDraftTo
+  parseProtectedSetupDraft,
+  serializeProtectedSetupDraft
 } from '../../setupDraft'
+import { useEditorDirtyGuard, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftStateChange, type EditorDraftGuardChange } from '../../editorProtectedDraft'
+import { setupTemplate } from '../../setupImprovements'
+import { parseSetupImportPreview, type SetupImportReview, type SetupSourceFile } from '../../setupImportPreview'
 import { getSetupIssues, getStepIssues, isValidGamePassword, type SetupStep } from './HostSetupDialog'
 
 export type SetupNotice = { good: boolean; text: string }
@@ -42,6 +46,9 @@ type UseHostSetupOptions = {
   applySnapshot: (snapshot: Snapshot) => void
   dataRecoveryBlocked: boolean
   instance: AppInstanceView | null
+  onDraftStateChange?: EditorDraftStateChange
+  onDraftGuardChange?: EditorDraftGuardChange
+  onSetupCompleted?: (profileId: string, started: boolean) => void
 }
 
 const setupDraftKey = 'togetherserver-first-server-draft-v2'
@@ -78,7 +85,7 @@ function useModalDialog(open: boolean) {
 }
 
 export function useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot,
-  dataRecoveryBlocked, instance }: UseHostSetupOptions) {
+  dataRecoveryBlocked, instance, onDraftStateChange, onDraftGuardChange, onSetupCompleted }: UseHostSetupOptions) {
   const [draft, setDraft] = useState<Settings | null>(null)
   const [dirty, setDirty] = useState(false)
   const [passwords, setPasswords] = useState<Record<string, string>>({})
@@ -94,6 +101,10 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const [minecraftSetupMode, setMinecraftSetupMode] = useState<Record<string, 'existing' | 'install'>>({})
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({})
   const [activeProfileId, setActiveProfileId] = useState('')
+  const [legacyDraft, setLegacyDraft] = useState<Profile[] | null>(null)
+  const [firstSessionProfileId, setFirstSessionProfileId] = useState<string | null>(null)
+  const [importReview, setImportReview] = useState<SetupImportReview | null>(null)
+  const [pausedSetupProfileId, setPausedSetupProfileId] = useState<string | null>(null)
   const initialDraftSet = useRef(false)
   const dirtyRef = useRef(false)
   const customScriptEditVersionRef = useRef<Record<string, number>>({})
@@ -105,6 +116,12 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const hasMinecraftDraft = draft?.profiles.some(profile =>
     profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') ?? false
   const hostProfileCount = snapshot?.mode === 'Host' ? snapshot.settings.profiles.length : -1
+  const protectedSetup = useEditorProtectedDraft(currentMode === 'Host' ? { purpose: 'settings',
+    profileId: '00000000-0000-0000-0000-000000000000', key: 'host-setup', connectionId: null } : null,
+  legacyDraft?.length ? serializeProtectedSetupDraft(legacyDraft, 'world', legacyDraft[0].id)
+    : dirty && draft?.profiles.length ? serializeProtectedSetupDraft(draft.profiles, setupStep, activeProfileId, sourceRoots[activeProfileId] ?? '') : null)
+  useEditorDirtyGuard('setup', dirty || hasSensitiveSetupDraft(passwords, customScripts, customScriptsSaved), onDraftStateChange)
+  useEditorDraftGuard('setup', dirty || hasSensitiveSetupDraft(passwords, customScripts, customScriptsSaved), protectedSetup, onDraftGuardChange)
 
   useEffect(() => {
     if (currentMode !== 'Host' || !showSetup || !draft || !discovery) return
@@ -143,9 +160,8 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   }, [currentMode, showSetup, draft, minecraftDiscovery, freshWorldsOnly])
 
   useEffect(() => {
-    if (currentMode !== 'Host' || hostProfileCount !== 0 || !dirty || !draft) return
-    writeSetupDraftTo(() => window.localStorage, setupDraftKey, draft.profiles)
-  }, [currentMode, hostProfileCount, dirty, draft])
+    if (protectedSetup.status === 'saved') removeSetupDraftFrom(() => window.localStorage, setupDraftKey)
+  }, [protectedSetup.status])
 
   const edit = (next: Settings) => {
     setDraft(next)
@@ -184,12 +200,8 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       if (!dirtyRef.current) {
         const restoredProfiles = next.settings.profiles.length === 0
           ? readSetupDraftFrom(() => window.localStorage, setupDraftKey) : null
-        if (restoredProfiles?.length) {
-          setDraft({ ...next.settings, profiles: restoredProfiles })
-          setActiveProfileId(restoredProfiles[0].id)
-          dirtyRef.current = true
-          setDirty(true)
-        } else setDraft(next.settings)
+        if (restoredProfiles?.length) setLegacyDraft(restoredProfiles)
+        setDraft(next.settings)
       }
     } else if (!dirtyRef.current) setDraft(next.settings)
   }, [])
@@ -199,6 +211,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     setDraft(next.mode === 'Host' ? next.settings : null)
     clearSetupSecrets()
     setShowSetup(false)
+    setPausedSetupProfileId(null)
     dirtyRef.current = false
     setDirty(false)
   }
@@ -273,9 +286,14 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
         if (!started.ok) return
       } else setNotice({ good: true, text: needsPassword ? 'Add a game password before starting.' : 'Server setup saved.' })
       if (!needsPassword) {
+        await protectedSetup.clear()
         removeSetupDraftFrom(() => window.localStorage, setupDraftKey)
+        setLegacyDraft(null)
         clearSetupSecrets()
         setShowSetup(false)
+        setPausedSetupProfileId(null)
+        if (hostProfileCount === 0) setFirstSessionProfileId(profile.id)
+        onSetupCompleted?.(profile.id, startAfterSave)
         window.scrollTo({ top: 0, behavior: 'smooth' })
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
@@ -284,7 +302,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
 
   const updateProfile = (id: string, patch: Partial<Profile>) => {
     if (!draft) return
-    edit({ ...draft, profiles: draft.profiles.map(profile => profile.id === id ? { ...profile, ...patch } : profile) })
+    setDraft(current => current ? { ...current, profiles: current.profiles.map(profile => profile.id === id ? { ...profile, ...patch } : profile) } : current)
+    dirtyRef.current = true
+    setDirty(true)
   }
 
   const editCustomScripts = (id: string, patch: Partial<CustomScriptBundle>) => {
@@ -346,15 +366,16 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const browseFactorio = async (profile: Profile, target: 'executable' | 'save') => {
     setPending(profile.id)
     try {
-      const result = target === 'executable'
-        ? await changeJson('/api/local/factorio/browse-executable', 'POST', parseBrowseResult)
-        : await changeJson('/api/local/factorio/import-save', 'POST', parseFactorioImportResult,
-          { profileId: profile.id })
-      if (target === 'executable' && result.ok && 'path' in result && result.path)
-        updateProfile(profile.id, { executablePath: result.path })
-      if (target === 'save' && result.ok && 'worldId' in result && result.worldId && result.worldDirectory)
-        updateProfile(profile.id, { worldId: result.worldId, worldDirectory: result.worldDirectory })
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+      if (target === 'save') {
+        const result = await changeJson('/api/local/factorio/preview-save', 'POST', parseSetupImportPreview, { profileId: profile.id })
+        if (result.preview && (result.preview.profileId !== profile.id || result.preview.kind !== 'Factorio')) throw new Error('The selected save does not match this server.')
+        if (result.ok && result.preview) setImportReview(result.preview)
+        if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+      } else {
+        const result = await changeJson('/api/local/factorio/browse-executable', 'POST', parseBrowseResult)
+        if (result.ok && result.path) updateProfile(profile.id, { executablePath: result.path })
+        if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+      }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -362,15 +383,16 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const browseTerraria = async (profile: Profile, target: 'executable' | 'world') => {
     setPending(profile.id)
     try {
-      const result = target === 'executable'
-        ? await changeJson('/api/local/terraria/browse-executable', 'POST', parseBrowseResult)
-        : await changeJson('/api/local/terraria/import-world', 'POST', parseTerrariaImportResult,
-          { profileId: profile.id })
-      if (target === 'executable' && result.ok && 'path' in result && result.path)
-        updateProfile(profile.id, { executablePath: result.path })
-      if (target === 'world' && result.ok && 'worldId' in result && result.worldId && result.worldDirectory)
-        updateProfile(profile.id, { worldId: result.worldId, worldDirectory: result.worldDirectory })
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+      if (target === 'world') {
+        const result = await changeJson('/api/local/terraria/preview-world', 'POST', parseSetupImportPreview, { profileId: profile.id })
+        if (result.preview && (result.preview.profileId !== profile.id || result.preview.kind !== 'Terraria')) throw new Error('The selected world does not match this server.')
+        if (result.ok && result.preview) setImportReview(result.preview)
+        if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+      } else {
+        const result = await changeJson('/api/local/terraria/browse-executable', 'POST', parseBrowseResult)
+        if (result.ok && result.path) updateProfile(profile.id, { executablePath: result.path })
+        if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
+      }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -410,6 +432,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
 
   const changeGameKind = (profile: Profile, kind: Profile['kind']) => {
     if (profile.kind === kind || snapshot?.mode !== 'Host') return
+    setImportReview(null)
     if (freshWorldsOnly && (kind === 'Custom' || kind === 'Factorio' || kind === 'Terraria')) {
       setNotice({ good: false, text: kind === 'Custom'
         ? 'Custom scripts are disabled in staging so they cannot reference production files.'
@@ -445,6 +468,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
 
   const addProfile = () => {
     if (!draft || snapshot?.mode !== 'Host') return
+    if (pausedSetupProfileId) { continueSetup(); setNotice({ good: false, text: 'Resume or discard this unfinished setup before adding another server.' }); return }
     setNotice(null)
     const id = crypto.randomUUID()
     edit({ ...draft, profiles: [...draft.profiles, { id, kind: 'Valheim', name: '', serverName: '', crossplay: false,
@@ -458,6 +482,58 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     setMinecraftSetupMode(current => ({ ...current, [id]: freshWorldsOnly ? 'install' : 'existing' }))
     setShowSetup(true)
     if (!discovery) void scanValheim()
+  }
+
+  const reuseProfile = (sourceId: string) => {
+    if (!draft || snapshot?.mode !== 'Host') return
+    const source = snapshot.settings.profiles.find(profile => profile.id === sourceId)
+    if (!source || (freshWorldsOnly && ['Custom', 'Factorio', 'Terraria'].includes(source.kind))) return
+    const active = draft.profiles.find(profile => profile.id === activeProfileId)
+    const replacing = active && !snapshot.settings.profiles.some(profile => profile.id === active.id)
+    const id = replacing ? active.id : crypto.randomUUID()
+    const profile = setupTemplate(source, id, snapshot.managedWorldsRoot, draft.profiles)
+    edit({ ...draft, profiles: replacing ? draft.profiles.map(current => current.id === id ? profile : current) : [...draft.profiles, profile] })
+    clearSetupSecrets()
+    setActiveProfileId(id)
+    setSetupStep('world')
+    setMinecraftSetupMode(current => ({ ...current, [id]: 'install' }))
+    setShowSetup(true)
+    setNotice({ good: true, text: 'Nonsecret setup reused with a separate world and suggested ports. Choose a new world or source; enter passwords and custom scripts separately.' })
+  }
+
+  const recoverSetupDraft = () => {
+    try {
+      const text = protectedSetup.recovered ?? (legacyDraft?.length ? serializeProtectedSetupDraft(legacyDraft, 'world', legacyDraft[0].id) :
+        pausedSetupProfileId && draft ? serializeProtectedSetupDraft(draft.profiles, setupStep, pausedSetupProfileId, sourceRoots[pausedSetupProfileId] ?? '') : null)
+      if (!text || snapshot?.mode !== 'Host') return
+      const recovered = parseProtectedSetupDraft(text)
+      const selected = recovered.profiles[0]
+      const profiles = snapshot.settings.profiles.some(profile => profile.id === selected.id)
+        ? snapshot.settings.profiles.map(profile => profile.id === selected.id ? selected : profile)
+        : [...snapshot.settings.profiles, selected]
+      edit({ ...snapshot.settings, profiles })
+      setActiveProfileId(recovered.activeProfileId)
+      setSetupStep(recovered.step)
+      setSourceRoots(current => ({ ...current, [selected.id]: recovered.sourceRoot }))
+      setLegacyDraft(null)
+      setPausedSetupProfileId(null)
+      protectedSetup.acceptRecovery()
+      setShowSetup(true)
+      setNotice({ good: true, text: 'Setup draft restored for review. Re-enter passwords and unsaved custom scripts; game terms are not accepted by recovery.' })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+  }
+
+  const discardSetupDraft = async () => {
+    if (!(await protectedSetup.clear({ keepCurrent: pausedSetupProfileId === null }))) return false
+    setLegacyDraft(null)
+    if (pausedSetupProfileId && snapshot?.mode === 'Host') {
+      acceptSavedSettings(snapshot.settings)
+      clearSetupSecrets()
+      setActiveProfileId(snapshot.settings.profiles[0]?.id ?? '')
+      setPausedSetupProfileId(null)
+    }
+    removeSetupDraftFrom(() => window.localStorage, setupDraftKey)
+    return true
   }
 
   const removeProfile = async (profile: Profile) => {
@@ -475,6 +551,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
         return
       }
       acceptSavedSettings(reconciled.settings)
+      await protectedSetup.clear()
       clearSetupSecrets()
       setShowSetup(false)
       setNotice({ good: true, text: 'Server removed from TogetherServer. Its world files were left in place.' })
@@ -482,10 +559,11 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     finally { setPending('') }
   }
 
-  const cancelSetup = () => {
+  const cancelSetup = async () => {
     if (snapshot?.mode !== 'Host' || pending) return
     if ((dirty || hasSensitiveSetupDraft(passwords, customScripts, customScriptsSaved)) &&
         !window.confirm('Discard these setup changes, including any entered password or unsaved custom scripts?')) return
+    const cleared = await discardSetupDraft()
     acceptSavedSettings(snapshot.settings)
     setActiveProfileId(snapshot.settings.profiles[0]?.id ?? '')
     clearSetupSecrets()
@@ -493,31 +571,37 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     setSourceRoots({})
     removeSetupDraftFrom(() => window.localStorage, setupDraftKey)
     setShowSetup(false)
-    setNotice(null)
+    setPausedSetupProfileId(null)
+    setNotice(cleared ? null : { good: false, text: 'Local setup changes were discarded. The protected draft could not be cleared; review it if it appears again.' })
   }
 
-  const finishSetupLater = () => {
+  const finishSetupLater = async () => {
     if (pending) return
     if (hasSensitiveSetupDraft(passwords, customScripts, customScriptsSaved) &&
         !window.confirm('Finish later clears the entered game password and unsaved custom scripts from this window. Continue?')) return
+    if (dirty && !(await protectedSetup.persistNow())) { setNotice({ good: false, text: 'The draft could not be kept. Keep setup open or review the recovered draft before finishing later.' }); return }
     clearSetupSecrets()
+    setPausedSetupProfileId(dirty ? activeProfileId : null)
     setShowSetup(false)
-    setNotice({ good: true, text: 'Setup is paused. Non-secret setup fields stay on this PC; re-enter passwords and custom scripts when you continue.' })
+    setNotice({ good: true, text: 'Setup is paused at this step. Nonsecret setup fields are kept in Windows-protected storage on this PC; re-enter passwords and custom scripts when you continue.' })
   }
 
   const openSetup = (id: string) => {
+    if (pausedSetupProfileId && pausedSetupProfileId !== id) { setNotice({ good: false, text: 'Resume or discard the unfinished setup before editing another server.' }); return }
     setNotice(null)
     setActiveProfileId(id)
-    setSetupStep('review')
+    if (pausedSetupProfileId !== id) setSetupStep('review')
+    setPausedSetupProfileId(null)
     setShowSetup(true)
     if (snapshot?.mode === 'Host' && snapshot.settings.profiles.some(profile => profile.id === id && profile.kind === 'Custom'))
       void loadCustomScripts(id)
   }
 
   const continueSetup = () => {
-    if (!draft?.profiles[0]) return
-    setActiveProfileId(draft.profiles[0].id)
-    setSetupStep('world')
+    const selected = draft?.profiles.find(profile => profile.id === (pausedSetupProfileId ?? activeProfileId)) ?? draft?.profiles[0]
+    if (!selected) return
+    setActiveProfileId(selected.id)
+    setPausedSetupProfileId(null)
     setShowSetup(true)
   }
 
@@ -529,7 +613,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     finally { setPending('') }
   }
 
-  const importWorld = async (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local') => {
+  const copyValheimWorld = async (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local') => {
     if (sourceFolder === 'worlds' && !window.confirm('Close Valheim and wait for Steam Cloud to finish syncing before copying this cached world folder. Continue?')) return
     setPending(profile.id)
     try {
@@ -541,6 +625,43 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
         name: profile.name || worldId, serverName: profile.serverName || worldId,
         worldId, worldSource: 'Existing', worldDirectory: result.worldDirectory
       })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+  }
+
+  const importWorld = (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local',
+    facts?: { sourceFiles?: SetupSourceFile[] | null; totalBytes?: number | null; modifiedUtc?: string | null }) => {
+    if (pending || freshWorldsOnly || profile.kind !== 'Valheim') return
+    const known = discovery?.worlds.find(world => world.name === worldId && world.saveRoot === sourceSaveRoot && world.sourceFolder === sourceFolder) as
+      (Discovery['worlds'][number] & { sourceFiles?: SetupSourceFile[] | null; totalBytes?: number | null; modifiedUtc?: string | null }) | undefined
+    setImportReview({ profileId: profile.id, kind: 'Valheim', worldId, sourceSaveRoot, sourceFolder,
+      format: known?.format, sourceFiles: facts?.sourceFiles ?? known?.sourceFiles ?? null,
+      totalBytes: facts?.totalBytes ?? known?.totalBytes ?? null, modifiedUtc: facts?.modifiedUtc ?? known?.modifiedUtc ?? null })
+  }
+
+  const confirmImport = async () => {
+    if (!importReview || pending || freshWorldsOnly) return
+    const profile = draft?.profiles.find(item => item.id === importReview.profileId)
+    if (!profile || profile.kind !== importReview.kind) { setImportReview(null); return }
+    if (importReview.kind === 'Valheim') {
+      if (!importReview.sourceSaveRoot) return
+      await copyValheimWorld(profile, importReview.sourceSaveRoot, importReview.worldId, importReview.sourceFolder)
+      setImportReview(null)
+      setSourceRoots(current => ({ ...current, [profile.id]: importReview.sourceSaveRoot! }))
+      return
+    }
+    if (!importReview.selectionId || !importReview.expiresUtc || Date.parse(importReview.expiresUtc) <= Date.now()) {
+      setNotice({ good: false, text: 'This source selection expired. Browse again before copying.' }); return
+    }
+    setPending(profile.id)
+    try {
+      const result = await changeJson('/api/local/setup/import-confirm', 'POST', importReview.kind === 'Factorio' ? parseFactorioImportResult : parseTerrariaImportResult,
+        { selectionId: importReview.selectionId, profileId: profile.id, kind: importReview.kind })
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok && result.worldId && result.worldDirectory) {
+        updateProfile(profile.id, { worldId: result.worldId, worldDirectory: result.worldDirectory })
+        setImportReview(null)
+      }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -581,7 +702,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       if (result.ok && result.sourceSaveRoot && result.worldId) {
         if (result.sourceFolder === 'worlds_local')
           setSourceRoots(current => ({ ...current, [profile.id]: result.sourceSaveRoot! }))
-        await importWorld(profile, result.sourceSaveRoot, result.worldId, result.sourceFolder)
+        // Native selection prepares a review; copying happens only after Confirm copy.
+        importWorld(profile, result.sourceSaveRoot, result.worldId, result.sourceFolder, result as typeof result & {
+          sourceFiles?: SetupSourceFile[] | null; totalBytes?: number | null; modifiedUtc?: string | null })
       } else if (result.code !== 'Canceled') setNotice({ good: false, text: `${result.code}: ${result.message}` })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
@@ -639,6 +762,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     installMinecraft,
     changeGameKind,
     addProfile,
+    reuseProfile,
     removeProfile,
     cancelSetup,
     finishSetupLater,
@@ -649,8 +773,22 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     browseServer,
     browseMinecraft,
     browseWorld,
+    importReview,
+    confirmImport,
+    cancelImport: () => setImportReview(null),
     setSetupStep,
-    setSourceRoot: (profileId: string, value: string) => setSourceRoots(current => ({ ...current, [profileId]: value })),
+    setupDraftRecovery: { recovered: protectedSetup.recovered ?? (legacyDraft?.length ? serializeProtectedSetupDraft(legacyDraft, 'world', legacyDraft[0].id) :
+      pausedSetupProfileId && draft ? serializeProtectedSetupDraft(draft.profiles, setupStep, pausedSetupProfileId, sourceRoots[pausedSetupProfileId] ?? '') : null), message: protectedSetup.message },
+    recoverSetupDraft,
+    discardSetupDraft,
+    firstSessionProfileId,
+    pausedSetupProfileId,
+    dismissFirstSessionGuide: () => setFirstSessionProfileId(null),
+    setSourceRoot: (profileId: string, value: string) => {
+      setSourceRoots(current => ({ ...current, [profileId]: value }))
+      dirtyRef.current = true
+      setDirty(true)
+    },
     setPassword: (profileId: string, value: string) => setPasswords(current => ({ ...current, [profileId]: value })),
     setShowPassword: (profileId: string, value: boolean) => setShowPasswords(current => ({ ...current, [profileId]: value })),
     setMinecraftSetupModeFor: (profileId: string, mode: 'existing' | 'install') =>

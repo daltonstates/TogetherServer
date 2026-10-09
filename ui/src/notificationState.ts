@@ -5,7 +5,7 @@ type WritableStorage = Pick<Storage, 'setItem'>
 type StorageProvider<T> = () => T
 
 export type ActivityDestination =
-  | { workspace: 'host'; section: 'overview' | 'players' | 'backups' | 'sessions'; profileId?: string | null; label: string }
+  | { workspace: 'host'; section: 'overview' | 'players' | 'backups' | 'sessions' | 'setup' | 'files' | 'logs'; profileId?: string | null; label: string }
   | { workspace: 'settings'; section: 'access' | 'network' | 'stop' | 'diagnostics'; profileId?: string | null; label: string }
 
 type RoutedActivity = {
@@ -65,7 +65,8 @@ export function activityDestination(item: RoutedActivity): ActivityDestination |
   switch (item.category) {
     case 'Backup': return { workspace: 'host', section: 'backups', profileId: item.profileId, label: 'Open world protection' }
     case 'Countdown': case 'Players': return { workspace: 'host', section: 'players', profileId: item.profileId, label: 'Open players & timer' }
-    case 'Lifecycle': case 'Maintenance': return { workspace: 'host', section: 'overview', profileId: item.profileId, label: 'Open server' }
+    case 'Lifecycle': return { workspace: 'host', section: 'overview', profileId: item.profileId, label: 'Open server' }
+    case 'Maintenance': return { workspace: 'host', section: 'setup', profileId: item.profileId, label: 'Continue maintenance' }
     case 'Remote': return { workspace: 'host', section: 'sessions', profileId: item.profileId, label: 'Review server activity' }
     case 'Connections': case 'Access': return { workspace: 'settings', section: 'access', profileId: item.profileId, label: 'Review Friend access' }
     case 'Network': return { workspace: 'settings', section: 'network', profileId: item.profileId, label: 'Open Connection Doctor' }

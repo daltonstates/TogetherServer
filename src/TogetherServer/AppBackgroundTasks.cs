@@ -93,8 +93,12 @@ internal sealed class AppBackgroundTasks(
                         .OrderBy(item => item.OccurredUtc)
                         .ToList();
                     foreach (var item in visible.Where(item => notifiedActivity.Add(item.Id)))
-                        desktop.Notify($"{instance.DisplayName} - {item.Category}", item.Message,
-                            item.Severity == ActivitySeverity.Warning);
+                        desktop.Notify(item, friendMode(), friendMode() ? friend.View().ConnectionId : null);
+                    var hostSnapshot = await manager.SnapshotAsync();
+                    desktop.SetTraySummary(new DesktopTraySummary(
+                        hostSnapshot.Runs.Count(run => run.State is "Ready" or "Starting" or "Process running" or "Listening" or "Stopping"),
+                        hostSnapshot.Runs.Count(run => run.State is "Unknown" or "Failed"),
+                        friend.View().State));
                     if (notifiedActivity.Count > 1000)
                         notifiedActivity.IntersectWith(visible.Select(item => item.Id));
                 }

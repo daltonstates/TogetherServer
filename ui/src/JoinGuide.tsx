@@ -13,7 +13,7 @@ const steps: Record<string, string[]> = {
   ],
   MinecraftBedrock: [
     'Open Minecraft: Bedrock Edition, choose Play, then Servers and Add Server.',
-    'Use the address before the final colon in Server IP above as Server Address, and the number after it as Port.',
+    'Use Copy beside Server address for Server Address, then Copy beside Port for the separate Port field.',
     'Save the entry and choose Join. An Outdated Client or Outdated Server message means the game versions need to match.'
   ],
   Factorio: [
@@ -22,7 +22,7 @@ const steps: Record<string, string[]> = {
   ],
   Terraria: [
     'Open Terraria and choose Multiplayer, then Join via IP.',
-    'Use the address before the final colon in Server IP above, then enter the port after it.',
+    'Use Copy beside Server address for the IP address, then Copy beside Port when Terraria asks for the port.',
     'Choose your character and join the server. The Host should check a real saved change after play.'
   ]
 }

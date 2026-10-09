@@ -203,18 +203,76 @@ public sealed partial class FriendService : IDisposable
 
     public Task<GameEndpointProbeResult> ProbeGameEndpointAsync(Guid profileId)
     {
-        FriendLink? link;
+        Guid connectionId;
+        Guid? runOperationId;
         lock (sync)
         {
             if (disposed)
                 return Task.FromResult(new GameEndpointProbeResult(false, "ConnectionClosed",
                     "Saved Host connections are closing.", DateTimeOffset.UtcNow));
-            var matching = links.Where(item => item.Link.View().Profiles.Any(profile => profile.Id == profileId)).ToList();
-            link = matching.FirstOrDefault(item => item.Id == selectedId).Link ?? matching.FirstOrDefault().Link;
+            connectionId = selectedId;
+            var selected = links.FirstOrDefault(item => item.Id == connectionId).Link;
+            var assigned = selected?.View().Profiles.Where(profile => profile.Id == profileId).Take(2).ToArray();
+            if (assigned is not { Length: 1 })
+                return Task.FromResult(new GameEndpointProbeResult(false, "UnknownProfile",
+                    "This server is not currently assigned by the selected Host connection.", DateTimeOffset.UtcNow));
+            runOperationId = assigned[0].RunOperationId;
         }
-        return Task.Run(() => link is null
-            ? new GameEndpointProbeResult(false, "UnknownProfile", "This server is not available from a saved Host connection.", DateTimeOffset.UtcNow)
-            : link.ProbeGameEndpoint(profileId));
+        return ProbeGameEndpointAsync(connectionId, profileId, runOperationId);
+    }
+
+    public async Task<GameEndpointProbeResult> ProbeGameEndpointAsync(Guid connectionId, Guid profileId,
+        Guid? expectedRunOperationId)
+    {
+        static GameEndpointProbeResult Refused(string code) => new(false, code, code switch
+        {
+            "ConnectionClosed" => "Saved Host connections are closing.",
+            "UnknownProfile" => "This server is not currently assigned by the selected Host connection.",
+            _ => "The selected Host or server run changed. Open the current server and run the check again."
+        }, DateTimeOffset.UtcNow);
+        if (!TryRetain()) return Refused("ConnectionClosed");
+        try
+        {
+            FriendLink link;
+            PublicProfile measured;
+            lock (sync)
+            {
+                if (disposed) return Refused("ConnectionClosed");
+                var selected = links.FirstOrDefault(item => item.Id == connectionId && item.Id == selectedId).Link;
+                if (selected is null) return Refused("GameProbeScopeChanged");
+                var current = selected.View() with { ConnectionId = connectionId };
+                if (QolLocalEndpointInputs.GameProbeScopeFailure(selectedId, connectionId, current,
+                    profileId, expectedRunOperationId) is { } failure) return Refused(failure);
+                link = selected;
+                measured = current.Profiles.Single(profile => profile.Id == profileId);
+            }
+            // Probe the captured assigned profile, never a reselected or fallback
+            // Host. The fixed local probe cannot accept a caller-supplied address.
+            var result = await Task.Run(() =>
+            {
+                lock (sync)
+                {
+                    if (disposed || selectedId != connectionId ||
+                        !links.Any(item => item.Id == connectionId && ReferenceEquals(item.Link, link)))
+                        return Refused("GameProbeScopeChanged");
+                    var current = link.View() with { ConnectionId = connectionId };
+                    if (QolLocalEndpointInputs.GameProbeScopeFailure(selectedId, connectionId, current,
+                        profileId, expectedRunOperationId, measured) is { } failure) return Refused(failure);
+                }
+                return GameEndpointProbe.Check(measured);
+            });
+            lock (sync)
+            {
+                if (disposed || selectedId != connectionId ||
+                    !links.Any(item => item.Id == connectionId && ReferenceEquals(item.Link, link)))
+                    return Refused("GameProbeScopeChanged");
+                var current = link.View() with { ConnectionId = connectionId };
+                if (QolLocalEndpointInputs.GameProbeScopeFailure(selectedId, connectionId, current,
+                    profileId, expectedRunOperationId, measured) is { } failure) return Refused(failure);
+                return result;
+            }
+        }
+        finally { ReleaseRetained(); }
     }
 
     public Task<ServerLogResult> ReadLogsAsync(Guid profileId, ServerLogQuery query,

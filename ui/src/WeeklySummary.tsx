@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button } from './Controls'
 import { parseWeeklyServerSummary, type WeeklyServerSummaryResult } from './weeklySummaryWire'
+import { emptySessionFilters, SessionHistory, type SessionFilters, type SessionMetric } from './RecentSessions'
 
 export type WeeklySummaryLoader = (profileId: string, signal?: AbortSignal) => Promise<WeeklyServerSummaryResult>
 const defaultLoader: WeeklySummaryLoader = (profileId, signal) =>
@@ -23,6 +24,8 @@ export function WeeklySummary({ profileId, visible, refreshKey = 0, loader = def
   const [result, setResult] = useState<WeeklyServerSummaryResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
+  const [sessionFilters, setSessionFilters] = useState<SessionFilters>({ ...emptySessionFilters })
+  const [browsing, setBrowsing] = useState(false)
   const pending = useRef<AbortController | null>(null)
   const load = useCallback(async () => {
     pending.current?.abort()
@@ -48,11 +51,24 @@ export function WeeklySummary({ profileId, visible, refreshKey = 0, loader = def
     return () => pending.current?.abort()
   }, [load, refreshKey, visible])
 
-  const summary = result?.summary
+  useEffect(() => {
+    setSessionFilters({ ...emptySessionFilters })
+    setBrowsing(false)
+  }, [profileId])
+
+  const summary = result?.profileId.toLowerCase() === profileId.toLowerCase() ? result.summary : null
+  const explore = (metric: SessionMetric, day = '') => {
+    setSessionFilters({ ...emptySessionFilters, metric, fromDate: day, throughDate: day })
+    setBrowsing(true)
+  }
+  const metric = (label: string, view: SessionMetric, value: string | number, unavailable = false) =>
+    <div><dt>{label}</dt><dd>{summary?.sessions ? <Button className="text-button"
+      aria-label={`${label}: ${value}. Show contributing sessions`} disabled={unavailable}
+      aria-pressed={browsing && sessionFilters.metric === view} onClick={() => explore(view)}>{value}</Button> : value}</dd></div>
   return <section hidden={!visible} className="recent-sessions weekly-summary" aria-labelledby={titleId} aria-busy={loading}>
     <div className="recent-sessions-toolbar"><div><h4 id={titleId}>Seven-day summary</h4>
       <p>Retained session evidence for this server on this Host.</p></div>
-      <Button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh summary'}</Button></div>
+      <Button className="secondary" disabled={loading || !visible} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh summary'}</Button></div>
     {loading && !result && <p role="status">Loading seven-day summary…</p>}
     {error && <div className="error" role="alert"><strong>Seven-day summary unavailable</strong>
       <p>Could not read this Host’s retained session evidence.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
@@ -60,13 +76,42 @@ export function WeeklySummary({ profileId, visible, refreshKey = 0, loader = def
       <p>{new Date(summary.windowStartUtc).toLocaleString()} – {new Date(summary.windowEndUtc).toLocaleString()}</p>
       {summary.archivedSessionCount === 0 && <p>No completed session evidence in these seven days.</p>}
       <dl className="recent-session-facts">
-        <div><dt>Recorded runtime</dt><dd>{duration(summary.recordedRuntimeSeconds)}</dd></div>
-        <div><dt>Completed sessions</dt><dd>{summary.completedSessionCount}</dd></div>
-        <div><dt>Failed before Ready</dt><dd>{summary.failedStarts}</dd></div>
-        <div><dt>Unexpected exits</dt><dd>{summary.unexpectedExits}</dd></div>
-        <div><dt>Trusted player peak</dt><dd>{summary.peakTrustedOnlinePlayers === null ? 'Unavailable' : summary.peakTrustedOnlinePlayers}</dd></div>
-        <div><dt>Rolling backups</dt><dd>{summary.rollingBackupsCompleted} completed · {summary.rollingBackupsFailed} failed</dd></div>
+        {metric('Recorded runtime', 'runtime', duration(summary.recordedRuntimeSeconds))}
+        {metric('Completed sessions', 'completed', summary.completedSessionCount)}
+        {metric('Failed before Ready', 'failedStarts', summary.failedStarts)}
+        {metric('Unexpected exits', 'unexpectedExits', summary.unexpectedExits)}
+        {metric('Trusted player peak', 'peak', summary.peakTrustedOnlinePlayers === null ? 'Unavailable' : summary.peakTrustedOnlinePlayers,
+          summary.peakTrustedOnlinePlayers === null)}
+        {metric('Rolling backups', 'backups', `${summary.rollingBackupsCompleted} completed · ${summary.rollingBackupsFailed} failed`)}
       </dl>
+      <figure className="weekly-runtime-chart">
+        <figcaption>Recorded activity by day</figcaption>
+        <p>UTC dates; the first and last days are clipped to this window. Bars show recorded runtime out of 24 hours, not availability. Missing timing stays unavailable.</p>
+        {summary.runtimeByDay ? <ol>
+          {summary.runtimeByDay.map(day => {
+            const date = day.startUtc.slice(0, 10)
+            return <li key={day.startUtc}>
+              <Button className="text-button" disabled={day.recordedRuntimeSeconds === null} onClick={() => explore('runtime', date)}
+                aria-label={`Show recorded sessions on ${date} (UTC)`}>{date}</Button>
+              {day.recordedRuntimeSeconds === null ? <span>No timed evidence</span> : <>
+                <svg width="100%" height="8" viewBox="0 0 100 8" preserveAspectRatio="none" role="img"
+                  aria-label={`${date}: ${duration(day.recordedRuntimeSeconds)} recorded runtime`}>
+                  <rect width="100" height="8" fill="#31343a" />
+                  <rect width={day.recordedRuntimeSeconds / 86400 * 100} height="8" fill="#9ca3af" />
+                </svg>
+                <span>{duration(day.recordedRuntimeSeconds)} recorded · {day.timedSessionCount} timed session{day.timedSessionCount === 1 ? '' : 's'}</span>
+              </>}
+            </li>
+          })}
+        </ol> : <p>Daily timing detail is unavailable in this summary. Refresh after updating the app.</p>}
+        <small>Only retained, known start/end intervals contribute. Overlaps count once. Durations round down to whole seconds, so daily and weekly totals can differ by a few seconds.</small>
+      </figure>
+      {summary.sessions && <details open={browsing} onToggle={event => setBrowsing(event.currentTarget.open)}>
+        <summary>Explore retained sessions</summary>
+        <p>These are the retained records used by the summary. Runtime is clipped; player peaks from sessions that began before this window are excluded.</p>
+        <SessionHistory key={profileId} entries={summary.sessions} filters={sessionFilters} onFiltersChange={setSessionFilters}
+          window={summary} showMetrics />
+      </details>}
       <details><summary>Coverage and missing evidence</summary>
         <p>Runtime uses saved start and end times, clipped to these seven days. It does not measure continuous availability or time at Ready.</p>
         <ul>

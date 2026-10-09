@@ -33,6 +33,16 @@ Native Steam handler behavior, real installed-client version discovery, real add
 - One signed owner notice per room has at most 2000 plain-text characters and no chat-age cutoff. Expected revisions protect edit/clear races. Signed tombstones and monotonic verified Friend copies prevent resurrection. Cached copies are visibly labeled; no Friend mutation, log/support/activity export or lifecycle effect is added.
 - Weekly summaries use at most the newest 500/30-day archived records. Known intervals are clipped to seven days and unioned; completed outcomes/backups and trusted peaks are scoped honestly. Unfinished, legacy, undated, clipped, overlap and retention-cap gaps remain visible. No logs/process reads or player identities are used.
 
+## Current workspace presentation
+
+The later [QoL delivery](15-QOL-UX-DELIVERY.md) builds on these six features. Its validation is recorded separately; the passing checks below certify the six-feature snapshot described here.
+
+**Backups** now presents one completed-copy catalog with search, pin/kind/local-date filters, names, pins, existing guarded actions, comparison of two recorded summaries, and explicit review before Restore. Local integrity, vault transfer, hash restore test, and owner-reported game load/change/restart stay separate evidence. The pin quotas, immutable payloads and restore gates remain unchanged. **Sessions** adds daily recorded runtime and links to matching retained runs without converting gaps into uptime claims.
+
+Setup shows source/destination and available source-file sizes and dates before **Confirm copy**; unavailable metadata stays labeled, and originals remain untouched. Simple settings, typed lists and the raw file editor offer bounded Windows-protected local drafts with explicit recovery against the current file, plus before/after review. A recovered draft does not apply a server change. Save and Undo still require maintenance, definite Offline state, a current file hash and a complete setup checkpoint. Passwords and custom scripts do not enter recoverable setup drafts.
+
+The access-deadline editor accepts a local date/time in the displayed time zone and previews the exact UTC submission. Missing or repeated times during clock changes are rejected; the loopback API continues to require a future UTC deadline within 365 days. Shared worlds separates **Receive saves** from **Host on this PC**, presents canonical manual checklists and distinct copy/receipt evidence, and can review route details together. Signed lineage, explicit grants, owner override and manual guarded takeover remain authoritative. Real-game live-save capture remains disabled; real Friend-PC/game/load/save/restart acceptance remains external.
+
 ## API integration
 
 All following local routes require the exact local header, current page role and update/mode gate; query strings and GET bodies are refused. Mutating payloads have declared/streamed byte caps and strict fixed fields.

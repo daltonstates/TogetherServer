@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button } from './Controls'
 import { ContractError, type Decoder } from './contracts'
+import { futureHostFields, liveSaveDisabledReason } from './sharedWorldUx'
 
 const stageLabels = { completion: 'Game save completion', snapshot: 'Immutable copy', transfer: 'Other-PC transfer and receipt',
   load: 'Game load on that PC', change: 'Recognizable change', restart: 'Saved restart' }
@@ -63,6 +64,7 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
   const [message, setMessage] = useState('')
   const retry = useRef<{ profileId: string; id: string } | null>(null)
   const act = async (action: 'save' | 'withdraw' | 'resume') => {
+    if (action === 'save' && !status.available) return
     setBusy(true)
     if (!retry.current || retry.current.profileId !== profileId) retry.current = { profileId, id: crypto.randomUUID() }
     try {
@@ -75,15 +77,18 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
     finally { setBusy(false) }
   }
   return <section aria-label="Live save sharing">
+    <p><strong>{status.available ? 'Development fixture only' : `${futureHostFields(status.game).gameName}: live save sharing unavailable`}</strong></p>
     <div className="actions"><Button className="secondary" disabled={busy || !status.available} title={status.message}
       onClick={() => void act('save')}>{busy ? 'Working…' : 'Save and share now'}</Button>
       {status.resumePending && <Button className="secondary" disabled={busy} onClick={() => void act('resume')}>Retry save resume</Button>}
       {status.lastAttempt && status.lastAttempt.state !== 'Published' && status.lastAttempt.state !== 'Withdrawn' &&
         <Button className="text-button" disabled={busy} onClick={() => void act('withdraw')}>Withdraw this attempt</Button>}</div>
     <p className="helper-text">{status.message}</p>
+    {!status.available && <p className="helper-text">{liveSaveDisabledReason(status.game)} Use the verified copy after a graceful Stop while these checks remain open.</p>}
     {status.lastAttempt && <p>Last attempt: {status.lastAttempt.state}. {status.lastAttempt.message}</p>}
     {message && <p role="status">{message}</p>}
     {status.stages.length > 0 && <details><summary>Game acceptance checks</summary>
+      <p>0 of {status.stages.length} real-game stages accepted. Each stage needs separate evidence.</p>
       <p>Each real game needs its own save, transfer, load and restart evidence. Owner load confirmations do not enable live capture.</p>
       <ul>{status.stages.map(stage => <li key={stage.id}>{stageLabels[stage.id as keyof typeof stageLabels]}: {stage.state}. {stage.detail}</li>)}</ul>
     </details>}

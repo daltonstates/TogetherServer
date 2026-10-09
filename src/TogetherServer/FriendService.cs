@@ -59,7 +59,8 @@ public sealed record PublicProfile(Guid Id, string Name, string State, string? J
     RemoteOperationView? Operation = null,
     bool MaintenanceEnabled = false, string? MaintenanceMessage = null,
     bool CanExtendTimer = false, int TimerExtensionMinutes = 0,
-    int TimerExtensionRemainingMinutes = 0, bool CanViewLogs = false, string? GameKind = null);
+    int TimerExtensionRemainingMinutes = 0, bool CanViewLogs = false, string? GameKind = null,
+    Guid? RunOperationId = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null,
     HostCertificateState? Certificates = null, ConnectionRoute? Route = null,

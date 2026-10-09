@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContractError, parseAcceptanceView, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseHostMoveKitResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, parseWorldBackupList, parseWorldBackupVerificationResult, type Settings } from './contracts'
+import { ContractError, parseAcceptanceView, parseAppInstance, parseCompanionInfo, parseDataRecoveryView, parseDeviceAccessExpiryResult, parseDiscovery, parseHostMoveKitResult, parseInviteResult, parseMinecraftBrowseResult, parsePortDiagnostics, parseRecentServerSessions, parseServerLogResult, parseSettings, parseSnapshot, parseSupportReportExport, parseWorldBackupList, parseWorldBackupVerificationResult, parseWorldBrowseResult, type Settings } from './contracts'
 import { readSetupDraft, serializeSetupDraft } from './setupDraft'
 import hostSnapshotFixture from '../../contracts/host-snapshot.v1.json'
 
@@ -22,6 +22,64 @@ const settings: Settings = {
 }
 
 describe('runtime contracts', () => {
+  it('preserves canonical Valheim discovery and native selection facts without deriving missing values', () => {
+    const facts = { sourceFiles: [{ name: 'home.db', bytes: 42, modifiedUtc: '2026-10-08T22:00:00+00:00' },
+      { name: 'home.fwl', bytes: null, modifiedUtc: null }], totalBytes: null, modifiedUtc: null }
+    const world = { name: 'home', saveRoot: 'C:\\synthetic\\source', sourceFolder: 'worlds_local', format: 'Pair', ...facts }
+    expect(parseDiscovery({ installations: [], worlds: [world] }).worlds[0]).toEqual(world)
+    const selected = { ok: true, code: 'WorldSelected', message: 'Review before copying.', worldId: 'home', sourceSaveRoot: 'C:\\synthetic\\source', sourceFolder: 'worlds_local', ...facts }
+    expect(parseWorldBrowseResult(selected)).toEqual(selected)
+    expect(parseDiscovery({ installations: [], worlds: [{ ...world, sourceFiles: undefined, totalBytes: undefined, modifiedUtc: undefined }] }).worlds[0])
+      .toMatchObject({ sourceFiles: null, totalBytes: null, modifiedUtc: null })
+    expect(parseWorldBrowseResult({ ok: false, code: 'Canceled', message: 'No selection.', worldId: null, sourceSaveRoot: null, sourceFolder: 'worlds_local' }))
+      .toMatchObject({ sourceFiles: null, totalBytes: null, modifiedUtc: null })
+    expect(parseWorldBrowseResult({ ...selected, totalBytes: 42, modifiedUtc: '2026-10-08T22:00:00Z' }))
+      .toMatchObject({ totalBytes: 42, modifiedUtc: '2026-10-08T22:00:00Z' })
+  })
+
+  it('rejects malformed, unbounded or path-bearing Valheim source facts in both response shapes', () => {
+    const world = { name: 'home', saveRoot: 'C:\\synthetic\\source', sourceFolder: 'worlds_local', format: 'Pair' }
+    const selected = { ok: true, code: 'WorldSelected', message: 'Selected.', worldId: 'home', sourceSaveRoot: 'C:\\synthetic\\source', sourceFolder: 'worlds_local' }
+    const invalid = [
+      { sourceFiles: 'not-a-list' },
+      { sourceFiles: [{ name: 'C:\\private\\home.db', bytes: 1, modifiedUtc: null }] },
+      { sourceFiles: [{ name: 'home.db', bytes: -1, modifiedUtc: null }] },
+      { sourceFiles: [{ name: 'home.db', bytes: 1, modifiedUtc: '2026-10-08T22:00:00-04:00' }] },
+      { sourceFiles: Array(513).fill({ name: 'home.db', bytes: null, modifiedUtc: null }) },
+      { sourceFiles: [{ name: 'home.db', bytes: 1, modifiedUtc: null, content: 'not source metadata' }] },
+      { totalBytes: -1 }, { totalBytes: 1.5 }, { totalBytes: Number.MAX_SAFE_INTEGER + 1 }, { totalBytes: '42' },
+      { modifiedUtc: false }, { modifiedUtc: '2026-10-08 22:00:00' }, { modifiedUtc: 'not-a-date' }
+    ]
+    for (const facts of invalid) {
+      expect(() => parseDiscovery({ installations: [], worlds: [{ ...world, ...facts }] })).toThrow(ContractError)
+      expect(() => parseWorldBrowseResult({ ...selected, ...facts })).toThrow(ContractError)
+    }
+  })
+
+  it('retains a canonical run identity on Host and Friend snapshots and normalizes legacy absence to unavailable', () => {
+    const operationId = '33333333-3333-4333-8333-333333333333'
+    const host = parseSnapshot({ ...hostSnapshotFixture, runs: [{ ...hostSnapshotFixture.runs[0], runOperationId: operationId }] })
+    expect(host.mode === 'Host' && host.runs[0].runOperationId).toBe(operationId)
+    const legacy = parseSnapshot(hostSnapshotFixture)
+    expect(legacy.mode === 'Host' && legacy.runs[0].runOperationId).toBeNull()
+    const publicProfile = { id: '11111111-1111-4111-8111-111111111111', name: 'Synthetic server', state: 'Ready', joinAddress: null,
+      canStopNow: false, stopReason: 'Players Unknown', kind: 'Valheim', gameKind: 'Valheim', onlinePlayers: null, maxPlayers: null,
+      autoShutdownAtUtc: null, autoShutdownReason: null, canStart: true, canStop: false, canRestartNow: false, restartReason: null,
+      maintenanceEnabled: false, maintenanceMessage: null, canExtendTimer: false, timerExtensionMinutes: 15, timerExtensionRemainingMinutes: 60, canViewLogs: false }
+    const friend = { mode: 'Friend', state: 'Connected', detail: 'Synthetic response.', endpoint: '', lastConnectedUtc: null,
+      remoteControlsEnabled: false, canStart: false, canStop: false, profiles: [publicProfile], connectionId: '22222222-2222-4222-8222-222222222222', connections: [] }
+    const oldPeer = parseSnapshot(friend)
+    expect(oldPeer.mode === 'Friend' && oldPeer.profiles[0].runOperationId).toBeNull()
+    const scoped = parseSnapshot({ ...friend, profiles: [{ ...publicProfile, runOperationId: operationId }] })
+    expect(scoped.mode === 'Friend' && scoped.profiles[0].runOperationId).toBe(operationId)
+    const unavailable = parseSnapshot({ ...friend, profiles: [{ ...publicProfile, runOperationId: null }] })
+    expect(unavailable.mode === 'Friend' && unavailable.profiles[0].runOperationId).toBeNull()
+    for (const runOperationId of ['', '00000000-0000-0000-0000-000000000000', 'not-a-guid', 42, {}, `${operationId} `]) {
+      expect(() => parseSnapshot({ ...hostSnapshotFixture, runs: [{ ...hostSnapshotFixture.runs[0], runOperationId }] })).toThrow(ContractError)
+      expect(() => parseSnapshot({ ...friend, profiles: [{ ...publicProfile, runOperationId }] })).toThrow(ContractError)
+    }
+  })
+
   it('decodes verified Host move-kit details without private access fields', () => {
     const result = parseHostMoveKitResult({ ok: true, code: 'MoveKitVerified', message: 'Verified.',
       kit: { version: 1, kind: 'Terraria', name: 'Friends world', worldId: 'home', gamePort: 7777,

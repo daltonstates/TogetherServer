@@ -3,6 +3,8 @@ import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
 import { ContractError, parseBasicResult, type BasicResult, type Decoder } from './contracts'
 import { ServerAddOnsPanel } from './ServerAddOnsPanel'
+import { editorFileDiff } from './editorChanges'
+import { EditorDraftRecovery, useEditorDirtyGuard, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftStateChange, type EditorDraftGuardChange } from './editorProtectedDraft'
 
 type Location = { key: string; label: string; path: string; available: boolean }
 type FileEntry = { key: string; label: string; path: string; available: boolean }
@@ -65,8 +67,7 @@ const parseSetupBackups: Decoder<SetupBackups> = (value, context = 'setup backup
   }) }
 }
 
-export function ServerFilesPanel({ profileId, state, maintenance, busy, recoveryBlocked,
-  onPrepareMaintenance, onStart, onOpenDoctor }: {
+export type ServerFilesPanelProps = {
   profileId: string
   state: string
   maintenance: boolean
@@ -75,7 +76,16 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
   onPrepareMaintenance: () => void
   onStart: () => void
   onOpenDoctor: () => void
-}) {
+  onDraftStateChange?: EditorDraftStateChange
+  onDraftGuardChange?: EditorDraftGuardChange
+}
+
+export function ServerFilesPanel(props: ServerFilesPanelProps) {
+  return <ServerFilesContent key={props.profileId} {...props} />
+}
+
+function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlocked,
+  onPrepareMaintenance, onStart, onOpenDoctor, onDraftStateChange, onDraftGuardChange }: ServerFilesPanelProps) {
   const [view, setView] = useState<FilesView | null>(null)
   const [loaded, setLoaded] = useState<FileContent | null>(null)
   const [draft, setDraft] = useState('')
@@ -83,6 +93,7 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
   const [backups, setBackups] = useState<SetupBackup[]>([])
   const [revision, setRevision] = useState(0)
+  const [reviewed, setReviewed] = useState<{ key: string; sha256: string; content: string } | null>(null)
   const base = `/api/local/profiles/${profileId}`
   useEffect(() => {
     let active = true
@@ -101,13 +112,35 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
   }, [base])
   const editAllowed = maintenance && state === 'Offline' && !busy && !pending && !recoveryBlocked
   const changed = loaded?.content !== null && loaded?.content !== undefined && draft !== loaded.content
+  const protectedDraft = useEditorProtectedDraft(loaded ? { purpose: 'file', profileId, key: `file:${loaded.key}` } : null,
+    changed && loaded ? JSON.stringify({ version: 1, key: loaded.key, sha256: loaded.sha256, content: draft }) : null)
+  useEditorDirtyGuard(`file:${profileId}`, changed, onDraftStateChange)
+  useEditorDraftGuard(`file:${profileId}`, changed, protectedDraft, onDraftGuardChange)
+  const diff = changed && loaded?.content !== null && loaded?.content !== undefined ? editorFileDiff(loaded.content, draft) : null
+  const reviewMatches = reviewed !== null && loaded !== null && reviewed.key === loaded.key && reviewed.sha256 === loaded.sha256 && reviewed.content === draft
+  const recoverDraft = () => {
+    try {
+      const value: unknown = JSON.parse(protectedDraft.recovered ?? '')
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('This draft has an unsupported format.')
+      const saved = value as Record<string, unknown>
+      if (saved.version !== 1 || saved.key !== loaded?.key || typeof saved.content !== 'string' || saved.content.length > 256 * 1024)
+        throw new Error('This draft does not match the selected reviewed file.')
+      setDraft(saved.content)
+      setReviewed(null)
+      protectedDraft.acceptRecovery()
+      if (saved.sha256 !== loaded?.sha256) setNotice({ good: false, text: 'The file changed since this draft was kept. Review the draft against the current file before saving.' })
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+  }
 
   const loadFile = async (key: string) => {
-    if (changed && !window.confirm('Discard your unsaved file changes?')) return
+    if (pending || busy) return
+    if (changed && !window.confirm('Reloading replaces the editor contents. Keep your protected draft and reload this file?')) return
     setPending(`read-${key}`)
     setNotice(null)
     try {
+      if (changed && !(await protectedDraft.persistNow())) return
       const result = await getLocalJson(`${base}/files/${key}`, parseFileContent)
+      if (result.key !== key) throw new Error('The file response does not match the selected reviewed file.')
       if (!result.ok || result.content === null || result.sha256 === null) {
         setLoaded(null)
         setNotice({ good: false, text: result.message })
@@ -115,6 +148,8 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
       }
       setLoaded(result)
       setDraft(result.content)
+      setReviewed(null)
+      if (loaded?.key === key && changed) await protectedDraft.reloadRecovery()
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -124,23 +159,25 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
       getLocalJson(`${base}/files/${key}`, parseFileContent),
       getLocalJson(`${base}/files`, parseFilesView)
     ])
+    if (result.key !== key) throw new Error('The refreshed file does not match the reviewed file.')
     if (listing.ok) setView(listing)
     if (result.ok && result.content !== null && result.sha256 !== null) {
       setLoaded(result)
       setDraft(result.content)
+      setReviewed(null)
     } else setLoaded(null)
   }
 
   const save = async () => {
-    if (!loaded?.sha256 || !changed || !editAllowed) return
-    if (!window.confirm('Save this file? TogetherServer will first make an offline world checkpoint and keep the previous file version for Undo.')) return
+    if (!loaded?.sha256 || !changed || !editAllowed || !reviewMatches || protectedDraft.recovered !== null) return
     setPending('save')
     setNotice(null)
     try {
       const result = await changeJson(`${base}/files/${loaded.key}`, 'PUT', parseChangeResult,
         { expectedSha256: loaded.sha256, content: draft })
+      if (result.key !== loaded.key) throw new Error('The saved result does not match the reviewed file.')
       setNotice({ good: result.ok, text: result.message })
-      if (result.ok) await refreshFile(loaded.key)
+      if (result.ok) { await protectedDraft.clear(); await refreshFile(loaded.key) }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -249,7 +286,13 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
   return <section className="server-files-panel" aria-label="Server files and settings">
     <div className="section-heading"><div><h3>Files &amp; settings</h3><p>Open the folders and edit the files this server actually uses.</p></div></div>
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-    <div className="next-action"><span>Safe change: pause Friend controls, stop at zero players, checkpoint, edit, then Start and check a real join.</span>
+    <section aria-label="Prepare for editing"><ol>
+      <li>{maintenance ? 'Friend lifecycle controls are paused.' : 'Pause Friend lifecycle controls with Prepare changes.'}</li>
+      <li>{state === 'Offline' ? 'Server is offline. Prepare changes still verifies the setup checkpoint.' : 'Prepare changes needs a fresh exact zero-player count before graceful Stop. Positive or Unknown counts block it.'}</li>
+      <li>Create a complete setup checkpoint, review edits, and save with the matching file version.</li>
+      <li>Start, join from a real game client, then confirm Finish maintenance.</li>
+    </ol></section>
+    <div className="next-action"><span>{editAllowed ? 'Ready to review and save guarded edits.' : recoveryBlocked ? 'Resolve local recovery before preparing changes.' : 'Prepare changes creates the offline checkpoint required for safe editing.'}</span>
       <div className="actions"><Button className="secondary" disabled={busy || !!pending || recoveryBlocked}
         onClick={() => void prepareChanges()}>Prepare changes</Button>
         {maintenance && state === 'Ready' && <Button className="secondary" disabled={busy || !!pending || !!changed || recoveryBlocked}
@@ -257,14 +300,18 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
     {!view && !notice && <p className="helper-text">Loading server files…</p>}
     {view && <>
       <div className="server-file-locations">{view.locations.map(location =>
-        <div className="server-file-row" key={location.key}><div><strong>{location.label}</strong><code>{location.path}</code></div>
+        <div className="server-file-row" key={location.key}><div><strong>{location.label}</strong><code>{location.path}</code>
+          {!location.available && <small>This folder is unavailable at the saved location. Check the server setup; Open folder does not create it.</small>}</div>
           <Button className="secondary" disabled={!location.available || !!pending || busy}
             onClick={() => void openFolder(location.key)}>Open folder</Button></div>)}</div>
       {!view.locations.some(location => location.key === 'behavior-packs' || location.key === 'mods') &&
         <p className="helper-text">This saved server has no reviewed mod or add-on folder assigned by its current driver.</p>}
       {view.files.length === 0 ? <p className="helper-text">This driver has no reviewed text configuration file in use. Edit its saved setup in TogetherServer.</p> :
         <div className="server-file-list"><h4>Editable files</h4>{view.files.map(file =>
-          <div className="server-file-row" key={file.key}><div><strong>{file.label}</strong><code>{file.path}</code></div>
+          <div className="server-file-row" key={file.key}><div><strong>{file.label}</strong><code>{file.path}</code>
+            {!file.available && <small>{file.key === 'factorio-settings' || file.key === 'terraria-config'
+              ? 'This configuration is not available. Prepare changes, then use Create config to create the reviewed file.'
+              : 'This reviewed file is unavailable. Check the saved server folder or start the game once, then stop and reload.'}</small>}</div>
             <div className="actions">
               {!file.available && (file.key === 'factorio-settings' || file.key === 'terraria-config') &&
                 <Button className="secondary" disabled={!editAllowed}
@@ -278,9 +325,15 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
         busy={busy} recoveryBlocked={recoveryBlocked} />
       <section className="server-setup-checkpoints" aria-label="Complete setup checkpoints">
         <div className="section-heading"><div><h4>Setup checkpoints</h4>
-          <p>Each complete checkpoint includes the world, reviewed configuration, and managed add-on files.</p></div>
+          <p>Complete setup checkpoints include the world, reviewed configuration, and managed add-on files.</p></div>
           <Button className="secondary" disabled={!editAllowed} onClick={() => void createSetupCheckpoint()}>
             Create checkpoint</Button></div>
+        <details className="advanced-block"><summary>What a setup checkpoint covers</summary>
+          <p>Included: this server's world files, reviewed configuration files shown above when present, managed add-ons, game ports and listing settings.</p>
+          <p>Excluded: game executables and runtimes, Friend credentials, Windows app preferences, custom scripts, and packs outside the managed world.</p>
+          <p>Active shared Bedrock packs outside this world block a complete setup checkpoint. Use the reviewed world-local pack flow before creating one.</p>
+          <p>Undo last change restores one file. Restore setup restores the complete saved world and supported setup, with a pre-restore checkpoint.</p>
+        </details>
         {backups.filter(backup => backup.setupIncluded).slice(0, 5).map(backup =>
           <div className="server-file-row" key={backup.id}><div><strong>{new Date(backup.createdUtc).toLocaleString()}</strong>
             <small>{backup.backupKind} · Complete setup</small></div>
@@ -291,8 +344,23 @@ export function ServerFilesPanel({ profileId, state, maintenance, busy, recovery
       </section>
       {loaded && <div className="server-file-editor"><h4>{view.files.find(file => file.key === loaded.key)?.label ?? 'Server file'}</h4>
         <p className="helper-text">Changes are saved only while maintenance is on and the server is offline. A matching on-disk version is required.</p>
-        <label>File contents<TextArea rows={15} spellCheck={false} value={draft} onChange={event => setDraft(event.target.value)} /></label>
-        <div className="actions"><Button disabled={!editAllowed || !changed} onClick={() => void save()}>{pending === 'save' ? 'Saving…' : 'Save with checkpoint'}</Button>
+        <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} disabled={!!pending}
+          onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
+        <label>File contents<TextArea rows={15} spellCheck={false} value={draft} disabled={!!pending || protectedDraft.recovered !== null} onChange={event => { setDraft(event.target.value); setReviewed(null) }} /></label>
+        {changed && <Button className="secondary" disabled={!!pending || protectedDraft.recovered !== null} onClick={() => loaded.sha256 && setReviewed({ key: loaded.key, sha256: loaded.sha256, content: draft })}>Review file changes</Button>}
+        {diff && reviewMatches && <section aria-label="Review raw file changes"><h4>Before and after</h4>
+          <p>{diff.unchangedStart} unchanged leading lines · {diff.unchangedEnd} unchanged trailing lines</p>
+          <p>Line endings before: {(loaded.content?.match(/\r\n/gu) ?? []).length} CRLF, {(loaded.content?.match(/(?<!\r)\n/gu) ?? []).length} LF. After: {(draft.match(/\r\n/gu) ?? []).length} CRLF, {(draft.match(/(?<!\r)\n/gu) ?? []).length} LF.</p>
+          <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Change</th><th>Before line</th><th>After line</th><th>Exact text</th></tr></thead>
+            <tbody>{diff.lines.map((line, index) => <tr key={index}><td>{line.type}</td><td>{line.before ?? '—'}</td><td>{line.after ?? '—'}</td><td><pre>{line.text || '(empty line)'}</pre></td></tr>)}</tbody></table></div>
+          {diff.omitted > 0 && <p>{diff.omitted} more lines changed. The editor above contains the complete proposed file; only this comparison is shortened.</p>}
+          <p>Save first checkpoints the offline world and supported setup, then keeps the previous file version for Undo.</p>
+        </section>}
+        <div className="actions"><Button disabled={!editAllowed || !changed || !reviewMatches || protectedDraft.recovered !== null} onClick={() => void save()}>{pending === 'save' ? 'Saving…' : 'Save with checkpoint'}</Button>
+          <Button className="text-button" disabled={!changed || !!pending} onClick={() => {
+            if (!window.confirm('Discard the unsaved contents of this editor? The current saved file stays unchanged.')) return
+            setDraft(loaded.content ?? ''); setReviewed(null); void protectedDraft.clear()
+          }}>Discard unsaved file edits</Button>
           <Button className="secondary" disabled={!editAllowed || !loaded.canUndo || !!changed} onClick={() => void undo()}>Undo last change</Button></div>
         {changed && <small>Unsaved changes in this editor.</small>}</div>}
       {!maintenance || state !== 'Offline' ? <div className="next-action"><span>{!maintenance ? 'Begin maintenance before changing files.' : 'Stop or resolve this server before changing files.'}</span>

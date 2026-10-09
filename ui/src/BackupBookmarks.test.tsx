@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError } from './api'
 import { BackupBookmarks } from './BackupBookmarks'
@@ -60,7 +60,7 @@ describe('BackupBookmarks', () => {
     expect(updater).not.toHaveBeenCalled()
     fireEvent.change(input, { target: { value: 'New safe name' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save name and pin' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('at most 50 GB')
+    expect(await screen.findByRole('alert')).toHaveTextContent('at most 50 GiB')
     expect(screen.getByText('Pinned')).toBeInTheDocument()
     expect(screen.queryByText(/password=secret|C:\\private/)).not.toBeInTheDocument()
   })
@@ -117,6 +117,40 @@ describe('BackupBookmarks', () => {
     render(<BackupBookmarks profileId={profileId} visible loader={async () => { throw new Error('C:\\private\\secret') }} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Backup names and pins unavailable')
     expect(screen.queryByText(/private\\secret/)).not.toBeInTheDocument()
+  })
+
+  it('aborts an unfinished bookmark mutation and ignores its late reply after the scope changes', async () => {
+    let finish!: (value: { ok: boolean; code: string; message: string; profileId: string; backupId: string; backup: typeof named.backups[0] }) => void
+    let signal: AbortSignal | undefined
+    const updater = vi.fn((_profile: string, _backup: string, _change: { label: string; pinned: boolean }, current?: AbortSignal) => {
+      signal = current
+      return new Promise<{ ok: boolean; code: string; message: string; profileId: string; backupId: string; backup: typeof named.backups[0] }>(resolve => { finish = resolve })
+    })
+    const onChanged = vi.fn()
+    const loader = async () => named
+    const { rerender } = render(<BackupBookmarks profileId={profileId} visible loader={loader} updater={updater} onChanged={onChanged} />)
+    await screen.findByText('Before a game update')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'Unsaved name' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save name and pin' }))
+    expect(signal?.aborted).toBe(false)
+    rerender(<BackupBookmarks profileId="33333333-3333-4333-8333-333333333333" visible={false} loader={loader} updater={updater} onChanged={onChanged} />)
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { finish({ ok: true, code: 'BackupBookmarkUpdated', message: 'Saved.', profileId, backupId,
+      backup: { ...named.backups[0], label: 'Unsaved name' } }) })
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(screen.queryByText('Unsaved name')).not.toBeInTheDocument()
+  })
+
+  it('rejects a mutation that swaps immutable size, kind or completion time', async () => {
+    const onChanged = vi.fn()
+    const updater = vi.fn(async () => ({ ok: true, code: 'BackupBookmarkUpdated', message: 'Saved.', profileId, backupId,
+      backup: { ...named.backups[0], sizeBytes: 9999 } }))
+    render(<BackupBookmarks profileId={profileId} visible loader={async () => named} updater={updater} onChanged={onChanged} />)
+    await screen.findByText('Before a game update')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'Changed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save name and pin' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The completed backup changed')
+    expect(onChanged).not.toHaveBeenCalled()
   })
 })
 

@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import type { Profile } from './GameProfile'
 import { Button, Input } from './Controls'
 
@@ -55,13 +55,13 @@ export function MinecraftWorldSetup({ profile, busy, onChange }: ProfileProps) {
     <p className="helper-text">Give this server a friendly name. A new install uses the world and port below; choosing an existing server fills them from server.properties.</p>
     <div className="settings-grid">
       <label>Server name
-        <Input disabled={busy} value={profile.name} onChange={event => onChange({ name: event.target.value })} placeholder="My Minecraft server" />
+        <Input id={`setup-${profile.id}-server-name`} disabled={busy} value={profile.name} onChange={event => onChange({ name: event.target.value })} placeholder="My Minecraft server" />
       </label>
       <label>World name
-        <Input disabled={busy} value={profile.worldId} onChange={event => onChange({ worldId: event.target.value })} placeholder="world" />
+        <Input id={`setup-${profile.id}-world-id`} disabled={busy} value={profile.worldId} onChange={event => onChange({ worldId: event.target.value })} placeholder="world" />
       </label>
       <label>Game port
-        <Input disabled={busy} type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => onChange({ gamePort: Number(event.target.value) })} />
+        <Input id={`setup-${profile.id}-game-port`} disabled={busy} type="number" min="1024" max="65535" value={profile.gamePort} onChange={event => onChange({ gamePort: Number(event.target.value) })} />
       </label>
     </div>
   </>
@@ -74,7 +74,9 @@ function InstallationChoice({ item, busy, selected, onSelect }: {
   onSelect: (item: MinecraftInstallation) => void
 }) {
   return <div className="choice">
-    <span>{item.artifactPath}<small>{item.source} · {item.note}</small></span>
+    <div><strong>{item.worldName || 'Unnamed world'} · {item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'}</strong>
+      <small>Port {item.gamePort} · {item.source}</small><p className="helper-text">{item.note}</p>
+      <details><summary>Install location</summary><code>{item.serverDirectory}</code><small>Server file: {item.artifactPath}</small></details></div>
     <Button type="button" aria-pressed={selected} className="secondary" disabled={busy || selected} onClick={() => onSelect(item)}>
       {selected ? 'Selected' : 'Use this server'}
     </Button>
@@ -85,6 +87,7 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
   acceptedTerms, onTermsChange, installBusy, mode }: MinecraftServerSetupProps) {
   const edition = profile.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'
   const termsId = useId()
+  const [search, setSearch] = useState('')
 
   if (mode === 'install') {
     return <div className="settings-grid">
@@ -107,6 +110,7 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
 
   const found = discovery?.installations.filter(item => item.kind === profile.kind) ?? []
   const selectedPath = profile.kind === 'MinecraftJava' ? profile.minecraft?.serverJarPath : profile.executablePath
+  const matches = found.filter(item => `${item.worldName} ${item.source} ${item.serverDirectory} ${item.artifactPath}`.toLowerCase().includes(search.trim().toLowerCase()))
 
   return <>
     <p className="helper-text">Choose a server TogetherServer found, or browse to its folder. Setup reads its world name and port without changing the existing server or world.</p>
@@ -118,8 +122,10 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
       <strong>Servers found on this PC</strong>
       {!discovery && <p>Search the common folders on this PC, or browse directly to the server folder.</p>}
       {discovery && found.length === 0 && <p>No {edition} server was found in the common folders. Browse to its folder or use Manual setup.</p>}
-      {found.map(item => <InstallationChoice key={item.artifactPath} item={item} busy={busy}
-        selected={item.artifactPath === selectedPath} onSelect={onSelect} />)}
+      {(found.length > 1 || search.trim()) && <label>Find a server installation<Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="World, location, or source" /></label>}
+      {found.length > 0 && search.trim() && <p role="status">{matches.length} of {found.length} installations match.</p>}
+      {matches.map(item => <InstallationChoice key={item.artifactPath} item={item} busy={busy}
+        selected={item.artifactPath.toLowerCase() === selectedPath?.toLowerCase()} onSelect={onSelect} />)}
     </div>
     <div className="setup-tools">
       <Button type="button" className="secondary" disabled={busy} onClick={onScan}>{discovery ? 'Search this PC again' : 'Search this PC'}</Button>

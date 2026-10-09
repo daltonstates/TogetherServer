@@ -8,7 +8,9 @@ namespace TogetherServer;
 public sealed record ReceivedSharedWorldStatus(bool Consented, long? HostVersion, long? ThisPcVersion,
     string State, string? Error = null, long ReceivedBytes = 0, long TotalBytes = 0,
     long? RosterRevision = null, string Trust = "Roster not verified",
-    string? CapacityNotice = null, string? CapacityState = null);
+    string? CapacityNotice = null, string? CapacityState = null,
+    DateTimeOffset? CompletedUtc = null, DateTimeOffset? ReceivedUtc = null,
+    string? TransferPhase = null, bool? ReceiptConfirmed = null);
 public sealed record ReceivedSharedWorldResult(bool Ok, string Code, string Message,
     ReceivedSharedWorldStatus? Status = null);
 public sealed record WorldAuthorityOfferResult(bool Ok, string Code, string Message,
@@ -71,6 +73,48 @@ public sealed record WorldHistoryReviewResult(bool Ok, string Code, string Messa
     Guid? GroupId = null, string? OwnerPublicKey = null);
 public sealed record WorldHistoryReviewRequest(Guid? ConfirmGroupId = null,
     string? ConfirmOwnerPublicKey = null);
+
+// Local display evidence only. The public signed receipt and every transfer/authority decision stay unchanged.
+internal sealed record ReceivedSharedWorldReceiptObservation(int Schema, Guid ReceiptId,
+    DateTimeOffset? ReceivedUtc, bool HostConfirmed, string Signature);
+
+internal static class ReceivedSharedWorldProjection
+{
+    internal static DateTimeOffset? CompletedUtc(SharedWorldVersion? verifiedReceived) =>
+        verifiedReceived is null || verifiedReceived.CreatedUtc == default
+            ? null : verifiedReceived.CreatedUtc.ToUniversalTime();
+
+    internal static ReceivedSharedWorldReceiptObservation Sign(SharedWorldReceipt receipt,
+        DateTimeOffset? receivedUtc, bool hostConfirmed, ECDsa key)
+    {
+        var observation = new ReceivedSharedWorldReceiptObservation(1, receipt.ReceiptId,
+            receivedUtc, hostConfirmed, "");
+        return observation with { Signature = Convert.ToBase64String(key.SignData(
+            Basis(receipt, observation), HashAlgorithmName.SHA256)) };
+    }
+
+    internal static bool Verify(SharedWorldReceipt receipt,
+        ReceivedSharedWorldReceiptObservation? observation, string publicKey)
+    {
+        if (observation is null || observation.Schema != 1 || observation.ReceiptId != receipt.ReceiptId ||
+            observation.Signature is not { Length: >= 64 and <= 256 } ||
+            observation.ReceivedUtc is { } received && (received == default || received.Offset != TimeSpan.Zero) ||
+            !SharedWorldReceiptTrust.Verify(receipt, publicKey)) return false;
+        try
+        {
+            using var key = ECDsa.Create();
+            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(publicKey), out _);
+            return key.VerifyData(Basis(receipt, observation),
+                Convert.FromBase64String(observation.Signature), HashAlgorithmName.SHA256);
+        }
+        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
+        { return false; }
+    }
+
+    private static byte[] Basis(SharedWorldReceipt receipt, ReceivedSharedWorldReceiptObservation observation) =>
+        System.Text.Encoding.UTF8.GetBytes(FormattableString.Invariant(
+            $"TogetherServer local received-copy display v1\n{receipt.GroupId:N}\n{receipt.ProfileId:N}\n{receipt.DeviceId:N}\n{receipt.VersionHash}\n{receipt.ReceiptId:N}\n{receipt.Signature}\n{observation.ReceivedUtc:O}\n{(observation.HostConfirmed ? 1 : 0)}"));
+}
 
 internal sealed partial class FriendLink
 {
@@ -1507,6 +1551,7 @@ internal sealed partial class FriendLink
         string? hostHash;
         SharedRosterFloor? floor;
         string? root;
+        Guid? deviceId;
         gate.Wait();
         try
         {
@@ -1517,17 +1562,26 @@ internal sealed partial class FriendLink
             hostHash = config?.LastSharedHostHashes?.GetValueOrDefault(profileId);
             floor = config?.SharedRosterFloors?.GetValueOrDefault(profileId);
             root = config is null ? null : ReceivedRoot(profileId);
+            deviceId = config?.DeviceId;
         }
         finally { gate.Release(); }
         if (root is null) return new(false, null, null, "Not paired");
         long? received = null;
         string? receivedHash = null;
         string? error = null;
+        DateTimeOffset? completedUtc = null;
+        DateTimeOffset? receivedUtc = null;
+        bool? receiptConfirmed = null;
         try
         {
             var latest = ReadReceivedLatest(root);
             received = latest?.Number;
             receivedHash = latest?.VersionHash;
+            completedUtc = latest?.ProfileId == profileId ? ReceivedSharedWorldProjection.CompletedUtc(latest) : null;
+            var observation = latest is null || deviceId is null ? null :
+                ReadLocalReceiptObservation(root, latest, deviceId.Value);
+            receivedUtc = observation?.ReceivedUtc;
+            receiptConfirmed = observation?.HostConfirmed;
         }
         catch (Exception ex) when (ex is IOException or JsonException or CryptographicException or InvalidDataException)
         { error = "The stored save failed verification. The live world was not changed."; }
@@ -1544,7 +1598,8 @@ internal sealed partial class FriendLink
             RosterRevision: floor?.Revision,
             Trust: floor is null ? "Roster not verified" : "Owner signature and this PC's Receive grant verified when last checked",
             CapacityNotice: historyNotice?.Message,
-            CapacityState: historyNotice?.State);
+            CapacityState: historyNotice?.State,
+            CompletedUtc: completedUtc, ReceivedUtc: receivedUtc, ReceiptConfirmed: receiptConfirmed);
     }
 
     internal static string DescribeReceivedHistory(bool consent, string? error, bool review,
@@ -1864,6 +1919,7 @@ internal sealed partial class FriendLink
             if (!conflict && resolvedAnchor is null)
                 config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             var approvedGroup = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+            var projectionRosterRevision = config.SharedRosterFloors?.GetValueOrDefault(profileId)?.Revision;
             SaveConfig();
             gate.Release();
             entered = false;
@@ -1882,6 +1938,15 @@ internal sealed partial class FriendLink
                 // The durable pointer can precede receipt signing if this PC
                 // exits during confirmation. ReadReceivedLatest verified the
                 // full payload, so retry may create the missing exact receipt.
+                var observation = ReadLocalReceiptObservation(root, old, deviceId);
+                var verifiedBytes = SharedWorldService.BoundedTotalBytes(old.Files);
+                sharedTransfers[profileId] = new(true, version.Number, old.Number,
+                    "Confirming receipt", ReceivedBytes: verifiedBytes, TotalBytes: verifiedBytes,
+                    RosterRevision: projectionRosterRevision,
+                    Trust: "Owner signature and this PC's Receive grant verified when last checked",
+                    CompletedUtc: ReceivedSharedWorldProjection.CompletedUtc(old),
+                    ReceivedUtc: observation?.ReceivedUtc, TransferPhase: "Receipt",
+                    ReceiptConfirmed: observation?.HostConfirmed);
                 var alreadyConfirmed = await SendSharedReceiptAsync(profileId, old, deviceId,
                     transferClient, transferToken, verifiedInThisTransfer: true);
                 return new(true, "AlreadyReceived", alreadyConfirmed ?
@@ -1899,10 +1964,15 @@ internal sealed partial class FriendLink
             var totalBytes = SharedWorldService.BoundedTotalBytes(version.Files);
             var receivedBytes = totalBytes - remaining;
             attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
-            sharedTransfers[profileId] = new(true, version.Number, old?.Number,
+            var priorObservation = old is null ? null : ReadLocalReceiptObservation(root, old, deviceId);
+            var progressStatus = new ReceivedSharedWorldStatus(true, version.Number, old?.Number,
                 "Receiving", null, receivedBytes, totalBytes,
-                config.SharedRosterFloors[profileId].Revision,
-                "Owner signature and this PC's Receive grant verified when last checked");
+                projectionRosterRevision,
+                "Owner signature and this PC's Receive grant verified when last checked",
+                CompletedUtc: ReceivedSharedWorldProjection.CompletedUtc(old),
+                ReceivedUtc: priorObservation?.ReceivedUtc, TransferPhase: "Receiving",
+                ReceiptConfirmed: priorObservation?.HostConfirmed);
+            sharedTransfers[profileId] = progressStatus;
             if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), remaining))
                 return SharedFailure("InsufficientSpace", "Keep at least 1 GiB free after receiving this save. Existing verified copies were kept.");
             for (var index = 0; index < version.Files.Count; index++)
@@ -1957,10 +2027,8 @@ internal sealed partial class FriendLink
                     offset += chunk.Length;
                     receivedBytes += chunk.Length;
                     attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
-                    sharedTransfers[profileId] = new(true, version.Number, old?.Number,
-                        "Receiving", null, receivedBytes, totalBytes,
-                        config.SharedRosterFloors[profileId].Revision,
-                        "Owner signature and this PC's Receive grant verified when last checked");
+                    progressStatus = progressStatus with { ReceivedBytes = receivedBytes };
+                    sharedTransfers[profileId] = progressStatus;
                     // Disposable fixture runs can hold a completed chunk open so the
                     // packaged journey exercises cancellation and control concurrency.
                     if (Environment.GetEnvironmentVariable(GameServerRegistry.FixtureOptInEnvironmentVariable) == "1" &&
@@ -1972,8 +2040,15 @@ internal sealed partial class FriendLink
                 }
                 await output.FlushAsync(transferToken);
                 await output.DisposeAsync();
+                if (receivedBytes >= totalBytes)
+                {
+                    progressStatus = progressStatus with { State = "Verifying", TransferPhase = "Verifying" };
+                    sharedTransfers[profileId] = progressStatus;
+                }
                 SharedWorldService.VerifyFile(path, file);
             }
+            progressStatus = progressStatus with { State = "Verifying", TransferPhase = "Verifying" };
+            sharedTransfers[profileId] = progressStatus;
             foreach (var file in version.Files)
                 SharedWorldService.VerifyFile(SharedWorldService.SafeChild(payloadStage, file.Path), file);
             using var latestResponse = await transferClient.GetAsync(
@@ -2359,9 +2434,18 @@ internal sealed partial class FriendLink
         // ReadReceivedLatest verifies every payload hash immediately before attesting.
         if (ReadReceivedLatest(root)?.VersionHash != version.VersionHash) return false;
         if (!AuthorizedVersionSigner(profileId, version)) return false;
+        if (verifiedInThisTransfer && sharedTransfers.TryGetValue(profileId, out var active) &&
+            active.HostVersion == version.Number)
+            sharedTransfers[profileId] = active with
+            {
+                State = "Confirming receipt", TransferPhase = "Receipt", ThisPcVersion = version.Number,
+                CompletedUtc = ReceivedSharedWorldProjection.CompletedUtc(version), ReceivedUtc = null,
+                ReceiptConfirmed = null
+            };
         using var key = LoadPcSigningKey(deviceId);
         var receiptFile = Path.Combine(root, version.VersionHash, "receipt.json");
         SharedWorldReceipt? receipt = null;
+        DateTimeOffset? signedUtc = null;
         if (File.Exists(receiptFile))
         {
             if (new FileInfo(receiptFile).Length > 4096 ||
@@ -2379,6 +2463,7 @@ internal sealed partial class FriendLink
             if (!verifiedInThisTransfer) return false;
             var draft = new SharedWorldReceipt(1, version.GroupId, profileId, version.VersionHash,
                 deviceId, floor.Epoch, floor.Revision, Guid.NewGuid(), "");
+            signedUtc = DateTimeOffset.UtcNow;
             receipt = draft with
             {
                 Signature = Convert.ToBase64String(key.SignData(
@@ -2388,14 +2473,147 @@ internal sealed partial class FriendLink
             File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
             File.Move(stage, receiptFile, true);
         }
+        var observation = ReadLocalReceiptObservation(root, version, deviceId,
+            Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()));
+        observation ??= TrySignReceiptObservation(receipt, signedUtc, false, key);
+        if (observation is not null)
+        {
+            TryWriteLocalReceiptObservation(root, version, observation);
+            UpdateReceiptProjection(profileId, version, observation);
+        }
         try
         {
             using var response = await client.PostAsJsonAsync(
                 $"api/companion/servers/{profileId}/shared-world/receipts", receipt, Json, cancellationToken);
-            return response.IsSuccessStatusCode && !withdrawnSharedConsent.ContainsKey(profileId);
+            var confirmed = response.IsSuccessStatusCode && !withdrawnSharedConsent.ContainsKey(profileId);
+            if (confirmed)
+            {
+                observation = TrySignReceiptObservation(receipt, observation?.ReceivedUtc ?? signedUtc, true, key);
+                if (observation is not null)
+                {
+                    TryWriteLocalReceiptObservation(root, version, observation);
+                    UpdateReceiptProjection(profileId, version, observation);
+                }
+            }
+            return confirmed;
         }
         catch (Exception ex) when (ex is IOException or HttpRequestException)
         { return false; }
+    }
+
+    private static ReceivedSharedWorldReceiptObservation? TrySignReceiptObservation(SharedWorldReceipt receipt,
+        DateTimeOffset? receivedUtc, bool confirmed, ECDsa key)
+    {
+        try { return ReceivedSharedWorldProjection.Sign(receipt, receivedUtc, confirmed, key); }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
+        { return null; } // Display signing failure cannot interrupt the public signed receipt.
+    }
+
+    private void UpdateReceiptProjection(Guid profileId, SharedWorldVersion version,
+        ReceivedSharedWorldReceiptObservation observation)
+    {
+        if (sharedTransfers.TryGetValue(profileId, out var active) && active.HostVersion == version.Number &&
+            active.ThisPcVersion == version.Number && active.TransferPhase == "Receipt")
+            sharedTransfers[profileId] = active with
+            {
+                ReceivedUtc = observation.ReceivedUtc, ReceiptConfirmed = observation.HostConfirmed
+            };
+    }
+
+    private ReceivedSharedWorldReceiptObservation? ReadLocalReceiptObservation(string root,
+        SharedWorldVersion version, Guid deviceId, string? publicKey = null)
+    {
+        try
+        {
+            // Bounded read of an existing key only. Do not use LoadProtected here: its recovery path
+            // can quarantine state, and optional display reads must never enroll or alter authority.
+            if (publicKey is null)
+            {
+                if (!OperatingSystem.IsWindows()) return null;
+                var encodedBytes = ReadLocalReceiptDisplayFile(Path.Combine(data.RootPath,
+                    $"shared-world-pc-signing-{deviceId:N}.protected"));
+                if (encodedBytes is null) return null;
+                var encoded = JsonSerializer.Deserialize<string>(encodedBytes, Json);
+                if (encoded is null) return null;
+                var bytes = ProtectedData.Unprotect(Convert.FromBase64String(encoded), null,
+                    DataProtectionScope.CurrentUser);
+                try
+                {
+                    using var key = ECDsa.Create();
+                    key.ImportPkcs8PrivateKey(bytes, out _);
+                    publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+                }
+                finally { CryptographicOperations.ZeroMemory(bytes); }
+            }
+            return ReadLocalReceiptObservationFiles(root, version, deviceId, publicKey);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or
+            InvalidDataException or CryptographicException or ArgumentException or FormatException or
+            NotSupportedException or System.Security.SecurityException)
+        { return null; } // Unavailable display facts cannot affect a verified copy or receipt authority.
+    }
+
+    internal static ReceivedSharedWorldReceiptObservation? ReadLocalReceiptObservationFiles(string root,
+        SharedWorldVersion version, Guid deviceId, string publicKey)
+    {
+        try
+        {
+            var directory = SharedWorldService.SafeChild(root, version.VersionHash);
+            var receiptPath = SharedWorldService.SafeChild(directory, "receipt.json");
+            var observationPath = SharedWorldService.SafeChild(directory, "receipt-display.json");
+            var receiptBytes = ReadLocalReceiptDisplayFile(receiptPath);
+            var observationBytes = ReadLocalReceiptDisplayFile(observationPath);
+            if (receiptBytes is null || observationBytes is null) return null;
+            var receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(receiptBytes, Json);
+            var observation = JsonSerializer.Deserialize<ReceivedSharedWorldReceiptObservation>(
+                observationBytes, Json);
+            if (receipt is null || receipt.GroupId != version.GroupId || receipt.ProfileId != version.ProfileId ||
+                receipt.VersionHash != version.VersionHash || receipt.DeviceId != deviceId ||
+                !ReceivedSharedWorldProjection.Verify(receipt, observation, publicKey)) return null;
+            return observation;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or
+            InvalidDataException or CryptographicException or ArgumentException or System.Security.SecurityException)
+        { return null; }
+    }
+
+    private static byte[]? ReadLocalReceiptDisplayFile(string path)
+    {
+        SetupImportSourceFacts.EnsurePlainFile(path);
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (input.Length > SharedWorldReceiptTrust.MaximumRequestBytes) return null;
+        var bytes = new byte[(int)input.Length];
+        input.ReadExactly(bytes);
+        return bytes;
+    }
+
+    private static void TryWriteLocalReceiptObservation(string root, SharedWorldVersion version,
+        ReceivedSharedWorldReceiptObservation observation)
+    {
+        string? stage = null;
+        try
+        {
+            var directory = SharedWorldService.SafeChild(root, version.VersionHash);
+            SetupImportSourceFacts.EnsurePlainFile(SharedWorldService.SafeChild(directory, "receipt.json"));
+            var path = SharedWorldService.SafeChild(directory, "receipt-display.json");
+            if (File.Exists(path)) SetupImportSourceFacts.EnsurePlainFile(path);
+            stage = path + "." + Guid.NewGuid().ToString("N") + ".new";
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(observation, Json);
+            if (bytes.Length > SharedWorldReceiptTrust.MaximumRequestBytes) return;
+            using (var output = new FileStream(stage, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                output.Write(bytes);
+            File.Move(stage, path, true);
+            stage = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or
+            InvalidDataException or CryptographicException or ArgumentException or System.Security.SecurityException)
+        { /* Optional local display persistence must never fail the normal signed receipt flow. */ }
+        finally
+        {
+            if (stage is not null)
+                try { if (ManagedImportFiles.PlainFile(stage)) File.Delete(stage); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
+        }
     }
 
     private ECDsa LoadPcSigningKey() => LoadPcSigningKey(config!.DeviceId);

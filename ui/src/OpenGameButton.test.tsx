@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenGameButton } from './OpenGameButton'
 
@@ -45,5 +45,27 @@ describe('explicit Open game action', () => {
     expect(signal?.aborted).toBe(false)
     view.unmount()
     expect(signal?.aborted).toBe(true)
+  })
+
+  it('cancels a click request across Host identity or access changes and ignores its old receipt', async () => {
+    let finish: ((response: Response) => void) | undefined
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve }))
+    vi.stubGlobal('fetch', fetcher)
+    const view = render(<OpenGameButton profileId="saved" kind="Valheim" connectionId="first" identityKey={1} available />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open game' }))
+    const signal = (fetcher.mock.calls[0][1] as RequestInit).signal
+    view.rerender(<OpenGameButton profileId="saved" kind="Valheim" connectionId="first" identityKey={2} available={false} />)
+    expect(signal?.aborted).toBe(true)
+    await act(async () => finish?.(new Response(JSON.stringify({ ok: true, code: 'GameOpenRequested', message: 'Old request receipt' }))))
+    expect(screen.queryByText('Old request receipt')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open game' })).toBeDisabled()
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('uses separate address and port instructions for the manual Bedrock path', () => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher)
+    render(<OpenGameButton profileId="saved" kind="MinecraftBedrock" available />)
+    expect(screen.getByText(/Copy Server address and Port/)).toBeInTheDocument()
+    expect(fetcher).not.toHaveBeenCalled()
   })
 })

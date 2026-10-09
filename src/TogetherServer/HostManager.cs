@@ -13,7 +13,7 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
     bool PlayerCountTrusted = false, int FriendAddedMinutes = 0,
     long AddedShutdownMinutes = 0, string? PlayerObservationSource = null,
-    DateTimeOffset? PlayerCountObservedUtc = null);
+    DateTimeOffset? PlayerCountObservedUtc = null, Guid? RunOperationId = null);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot,
     IReadOnlyDictionary<Guid, CustomCertificationState>? CustomCertifications = null,
@@ -2100,7 +2100,8 @@ public sealed partial class HostManager
                 return new RunView(profile.Id, "Unknown", "The game driver for this run is unavailable", run.ProcessId, run.DeclaredPorts);
             return identity switch
             {
-                "Matched" => DriverView(profile.Id, run, ObservedHealth(run)),
+                "Matched" => DriverView(profile.Id, run, ObservedHealth(run)) with
+                { RunOperationId = CompanionProtocol.ProjectRunOperationId(run, identity) },
                 "Missing" => new RunView(profile.Id, "Failed", "Recorded process exited; owner can clear the record", run.ProcessId, run.DeclaredPorts),
                 _ => new RunView(profile.Id, "Unknown", "Process identity cannot be proven; start and stop are blocked", run.ProcessId, run.DeclaredPorts)
             };
@@ -2116,7 +2117,8 @@ public sealed partial class HostManager
                     : identity == "Missing"
                         ? "A recorded run has exited, but its saved server profile is unavailable. Resolve the record locally."
                         : "A recorded run remains authoritative, but its saved server profile and exact process identity are unavailable.",
-                run.ProcessId, run.DeclaredPorts, PlayerCountTrusted: false));
+                run.ProcessId, run.DeclaredPorts, PlayerCountTrusted: false,
+                RunOperationId: CompanionProtocol.ProjectRunOperationId(run, identity)));
         }
         var currentRunIds = runs.Select(run => run.ProfileId).ToHashSet();
         if (advance) resumeRevalidationProfiles.RemoveWhere(id => !currentRunIds.Contains(id));

@@ -11,7 +11,7 @@ const recovery: DataRecoveryView = {
 }
 
 function run(profileId: string, state: string): Run {
-  return { profileId, state, detail: `${state} detail`, processId: null, onlinePlayers: null, maxPlayers: null,
+  return { profileId, state, detail: `${state} detail`, runOperationId: null, processId: null, onlinePlayers: null, maxPlayers: null,
     autoShutdownAtUtc: null, autoShutdownReason: null, hostAddedTime: false, playerNames: null,
     playerCountTrusted: false, friendAddedMinutes: 0, addedShutdownMinutes: 0,
     playerObservationSource: null, playerCountObservedUtc: null }
