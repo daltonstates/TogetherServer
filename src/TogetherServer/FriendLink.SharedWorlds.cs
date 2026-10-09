@@ -255,22 +255,27 @@ internal sealed partial class FriendLink
             if (firstRosterResponse.StatusCode == System.Net.HttpStatusCode.Forbidden &&
                 (group is null || owner is null || floor is null))
             {
-                using var challengeResponse = await client.GetAsync(
-                    $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
-                var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
-                    cancellationToken);
-                var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
-                    JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json) : null;
-                if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
-                    return new(false, "EnrollmentDenied", "The Host did not allow this PC to enroll for voting.");
-                var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
-                    Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
-                        config.DeviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
-                using var enrollment = await client.PostAsJsonAsync(
-                    $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json,
-                    cancellationToken);
-                if (!enrollment.IsSuccessStatusCode)
-                    return new(false, "EnrollmentDenied", "The Host did not accept this PC's voting identity.");
+                await sharedEnrollmentExchangeGate.WaitAsync(cancellationToken);
+                try
+                {
+                    using var challengeResponse = await client.GetAsync(
+                        $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
+                    var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512,
+                        cancellationToken);
+                    var challenge = challengeResponse.IsSuccessStatusCode && challengeBytes is not null ?
+                        JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json) : null;
+                    if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+                        return new(false, "EnrollmentDenied", "The Host did not allow this PC to enroll for voting.");
+                    var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+                        Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                            config.DeviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+                    using var enrollment = await client.PostAsJsonAsync(
+                        $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json,
+                        cancellationToken);
+                    if (!enrollment.IsSuccessStatusCode)
+                        return new(false, "EnrollmentDenied", "The Host did not accept this PC's voting identity.");
+                }
+                finally { sharedEnrollmentExchangeGate.Release(); }
             }
             else if (!firstRosterResponse.IsSuccessStatusCode)
                 return new(false, "RosterUnavailable", "Current signed membership is unavailable.");
@@ -828,6 +833,9 @@ internal sealed partial class FriendLink
     private readonly SharedWorldTransferHealth sharedTransferHealth = new();
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();
     private readonly object sharedReceiptSync = new();
+    // The Host keeps only the latest challenge for a device/profile. Hold this
+    // only across enrollment, never while roster verification waits for gate.
+    private readonly SemaphoreSlim sharedEnrollmentExchangeGate = new(1, 1);
     // Successor enrollment preserves the device ID and received vault. The
     // original and successor connections must not copy or prune it concurrently.
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SharedReceiveGates =
@@ -875,22 +883,27 @@ internal sealed partial class FriendLink
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         var client = HostClient();
         var path = $"api/companion/servers/{profileId}/shared-world";
-        using var challengeResponse = await client.GetAsync(path + "/enrollment", cancellationToken);
-        if (!challengeResponse.IsSuccessStatusCode)
-            return (null, SharingFailure(selfId, "EnrollmentDenied", "The Host has not approved this PC for the world."));
-        var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
-        var challenge = challengeBytes is null ? null :
-            JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json);
-        if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
-            return (null, SharingFailure(selfId, "InvalidChallenge", "The Host sent an invalid identity check."));
-        var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
-            Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
-                selfId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
-        using var enrollment = await client.PostAsJsonAsync(path + "/enrollment",
-            proof, Json, cancellationToken);
-        if (!enrollment.IsSuccessStatusCode)
-            return (null, SharingFailure(selfId, "KeyReviewRequired",
-                "The owner needs to review this PC's sharing identity."));
+        await sharedEnrollmentExchangeGate.WaitAsync(cancellationToken);
+        try
+        {
+            using var challengeResponse = await client.GetAsync(path + "/enrollment", cancellationToken);
+            if (!challengeResponse.IsSuccessStatusCode)
+                return (null, SharingFailure(selfId, "EnrollmentDenied", "The Host has not approved this PC for the world."));
+            var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
+            var challenge = challengeBytes is null ? null :
+                JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json);
+            if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+                return (null, SharingFailure(selfId, "InvalidChallenge", "The Host sent an invalid identity check."));
+            var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+                Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                    selfId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+            using var enrollment = await client.PostAsJsonAsync(path + "/enrollment",
+                proof, Json, cancellationToken);
+            if (!enrollment.IsSuccessStatusCode)
+                return (null, SharingFailure(selfId, "KeyReviewRequired",
+                    "The owner needs to review this PC's sharing identity."));
+        }
+        finally { sharedEnrollmentExchangeGate.Release(); }
         var roster = await FetchCurrentRosterAsync(profileId, client, cancellationToken);
         if (roster is null)
             return (null, SharingFailure(selfId, "RosterUnavailable", "The Host's sharing list is unavailable."));
@@ -1145,22 +1158,27 @@ internal sealed partial class FriendLink
     {
         using var pcKey = LoadPcSigningKey(deviceId);
         var publicKey = Convert.ToBase64String(pcKey.ExportSubjectPublicKeyInfo());
-        using var challengeResponse = await client.GetAsync(
-            $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
-        if (!challengeResponse.IsSuccessStatusCode)
-            return SharedFailure("EnrollmentDenied", "The Host did not allow this PC to enroll for this server.");
-        var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
-        var challenge = challengeBytes is null ? null :
-            JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json);
-        if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
-            return SharedFailure("InvalidChallenge", "The Host sent an invalid enrollment challenge.");
-        var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
-            Convert.ToBase64String(pcKey.SignData(SharedWorldRosterTrust.EnrollmentBasis(
-                deviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
-        using var enrollment = await client.PostAsJsonAsync(
-            $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json, cancellationToken);
-        if (!enrollment.IsSuccessStatusCode)
-            return SharedFailure("KeyReviewRequired", "The Host did not accept this PC's signing identity. Ask the owner to review it.");
+        await sharedEnrollmentExchangeGate.WaitAsync(cancellationToken);
+        try
+        {
+            using var challengeResponse = await client.GetAsync(
+                $"api/companion/servers/{profileId}/shared-world/enrollment", cancellationToken);
+            if (!challengeResponse.IsSuccessStatusCode)
+                return SharedFailure("EnrollmentDenied", "The Host did not allow this PC to enroll for this server.");
+            var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
+            var challenge = challengeBytes is null ? null :
+                JsonSerializer.Deserialize<SharedWorldEnrollmentChallenge>(challengeBytes, Json);
+            if (challenge?.Nonce is null || challenge.Nonce.Length != 44)
+                return SharedFailure("InvalidChallenge", "The Host sent an invalid enrollment challenge.");
+            var proof = new SharedWorldEnrollmentRequest(challenge.Nonce, publicKey,
+                Convert.ToBase64String(pcKey.SignData(SharedWorldRosterTrust.EnrollmentBasis(
+                    deviceId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
+            using var enrollment = await client.PostAsJsonAsync(
+                $"api/companion/servers/{profileId}/shared-world/enrollment", proof, Json, cancellationToken);
+            if (!enrollment.IsSuccessStatusCode)
+                return SharedFailure("KeyReviewRequired", "The Host did not accept this PC's signing identity. Ask the owner to review it.");
+        }
+        finally { sharedEnrollmentExchangeGate.Release(); }
         var roster = await FetchCurrentRosterAsync(profileId, client, cancellationToken);
         if (roster is null || roster.ProfileId != profileId ||
             !SharedWorldRosterTrust.VerifySignature(roster))

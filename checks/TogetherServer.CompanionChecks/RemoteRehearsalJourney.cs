@@ -56,7 +56,7 @@ internal static partial class CoreRemoteJourney
                 $"/api/local/friend/{profileId}/shared-world/consent", new(true))).Ok, "local Receive consent failed");
             var report = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", request);
-            AssertRehearsal(report);
+            await AssertRehearsalAsync(report, "initial", owner, test, profileId, deviceId, connected);
             var load = await PostAsync<object, WorldLoadRehearsalResult>(test,
                 $"/api/local/friend/{profileId}/world-load/prepare", new { });
             Require(load.Ok && load.Rehearsal is { CanLaunch: false, SourceKind: "Received" } &&
@@ -69,7 +69,7 @@ internal static partial class CoreRemoteJourney
                 "received disposable copy cleanup failed");
             var repeat = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", request);
-            AssertRehearsal(repeat);
+            await AssertRehearsalAsync(repeat, "repeat", owner, test, profileId, deviceId, connected);
             var room = await RehearsalOwnerGetAsync<ChatRoomView>(owner, $"/api/local/profiles/{profileId}/chat");
             Require(room?.Entries.Count == 2, "rehearsal retry duplicated signed messages");
             var shared = await RehearsalOwnerGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profileId}/shared-world");
@@ -96,8 +96,8 @@ internal static partial class CoreRemoteJourney
             friend = StartApp(appPath, "--friend", friendPort, friendData, staging: true);
             await Task.WhenAll(WaitLocalAsync(hostPort), WaitLocalAsync(friendPort));
             _ = await WaitForConnectedAsync(test, allowDisabled: true);
-            AssertRehearsal(await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
-                $"/api/local/friend/{profileId}/rehearsal", request));
+            await AssertRehearsalAsync(await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
+                $"/api/local/friend/{profileId}/rehearsal", request), "restart", owner, test, profileId, deviceId, connected);
             _ = await PostAsync<object, PairingDecision>(owner, $"/api/local/devices/{deviceId}/revoke", new { });
             var revoked = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", new(Guid.NewGuid()));
@@ -110,14 +110,124 @@ internal static partial class CoreRemoteJourney
         finally { StopApp(friend); StopApp(host); }
     }
 
-    private static void AssertRehearsal(RemoteRehearsalReport report)
+    private static async Task AssertRehearsalAsync(RemoteRehearsalReport report, string phase,
+        HttpClient owner, HttpClient test, Guid profileId, Guid deviceId, FriendView connected)
+    {
+        try { AssertRehearsal(report, phase); }
+        catch
+        {
+            // These are current GET-only facts after failure, not the lost
+            // preflight result. Never repeat Check/Receive or the rehearsal.
+            try
+            {
+                var selectedTask = ReadRehearsalFailureAsync<FriendView>(test, "/api/local/snapshot");
+                var receivedTask = ReadRehearsalFailureAsync<ReceivedSharedWorldStatus>(test,
+                    $"/api/local/friend/{profileId}/shared-world");
+                var devicesTask = ReadRehearsalFailureAsync<RehearsalCompanionDevices>(owner, "/api/local/companion");
+                var rosterTask = ReadRehearsalFailureAsync<SharedWorldRoster>(owner,
+                    $"/api/local/profiles/{profileId}/shared-world/governance");
+                await Task.WhenAll(selectedTask, receivedTask, devicesTask, rosterTask);
+                var selected = selectedTask.Result.Value;
+                var received = receivedTask.Result.Value;
+                var device = devicesTask.Result.Value?.Devices?.SingleOrDefault(item => item.Id == deviceId);
+                var roster = rosterTask.Result.Value;
+                var member = roster?.Members?.SingleOrDefault(item => item.DeviceId == deviceId);
+                Console.WriteLine("REHEARSAL_FAILURE_CURRENT_STATE " + JsonSerializer.Serialize(new
+                {
+                    phase,
+                    selectedRead = selectedTask.Result.ReadState,
+                    selectedHttp = selectedTask.Result.HttpState,
+                    selectedCode = selectedTask.Result.Code,
+                    selectedConnected = selected?.State == "Connected",
+                    selectedDisabled = selected?.State == "Disabled",
+                    selectedConnectionMatches = selected?.ConnectionId == connected.ConnectionId,
+                    selectedHostMatches = selected?.HostId == connected.HostId,
+                    selectedProfileAssigned = selected?.Profiles?.Any(item => item.Id == profileId) == true,
+                    sharingCapability = selected?.HostCapabilities?.Contains(CompanionProtocol.SharedWorldsCapability) == true,
+                    receivedRead = receivedTask.Result.ReadState,
+                    receivedHttp = receivedTask.Result.HttpState,
+                    receivedCode = receivedTask.Result.Code,
+                    consented = received?.Consented == true,
+                    hostVersionPresent = received?.HostVersion is not null,
+                    thisPcVersionPresent = received?.ThisPcVersion is not null,
+                    versionsMatch = received?.HostVersion is not null && received.HostVersion == received.ThisPcVersion,
+                    receiptConfirmed = received?.ReceiptConfirmed == true,
+                    receiveErrorPresent = received?.Error is not null,
+                    receivePhasePresent = received?.TransferPhase is not null,
+                    devicesRead = devicesTask.Result.ReadState,
+                    devicesHttp = devicesTask.Result.HttpState,
+                    devicesCode = devicesTask.Result.Code,
+                    deviceFound = device is not null,
+                    devicePaired = device?.Paired == true,
+                    deviceRevoked = device?.Revoked == true,
+                    deviceApprovalPending = device?.ApprovalPending == true,
+                    deviceAccessExpired = device?.AccessExpired == true,
+                    deviceProfileAssigned = device?.AssignedProfileIds?.Contains(profileId) == true,
+                    deviceReceiveGranted = device?.SharedWorldGrants?.GetValueOrDefault(profileId)?.Receive == true,
+                    deviceSigningEnrolled = device?.SharedWorldKeyEnrolled == true,
+                    rosterRead = rosterTask.Result.ReadState,
+                    rosterHttp = rosterTask.Result.HttpState,
+                    rosterCode = rosterTask.Result.Code,
+                    rosterProfileMatches = roster?.ProfileId == profileId,
+                    rosterSignatureVerified = roster is not null && SharedWorldRosterTrust.VerifySignature(roster),
+                    rosterFloorMatches = received?.RosterRevision is not null && received.RosterRevision == roster?.Revision,
+                    rosterMemberFound = member is not null,
+                    rosterMemberRevoked = member?.Revoked == true,
+                    rosterReceiveGranted = member?.Grants?.Receive == true,
+                    rosterMemberExpired = member?.AccessExpiresUtc is { } expiry && expiry <= DateTimeOffset.UtcNow
+                }));
+            }
+            catch { Console.WriteLine("REHEARSAL_FAILURE_CURRENT_STATE " + JsonSerializer.Serialize(new { phase, readState = "Unavailable" })); }
+            throw;
+        }
+    }
+
+    private sealed record RehearsalCompanionDevices(IReadOnlyList<DeviceView>? Devices);
+    private sealed record RehearsalFailureRead<T>(string ReadState, string HttpState, string Code, T? Value) where T : class;
+
+    private static async Task<RehearsalFailureRead<T>> ReadRehearsalFailureAsync<T>(HttpClient client, string path) where T : class
+    {
+        // Failure-only diagnostics have one bounded local GET, with no retries.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var httpState = "Unobserved";
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            request.Headers.Add("X-TogetherServer-Local", "1");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            httpState = response.StatusCode.ToString();
+            const int maximumBytes = 64 * 1024;
+            if (response.Content.Headers.ContentLength > maximumBytes) return new("Oversized", httpState, "Unobserved", null);
+            using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+            using var output = new MemoryStream();
+            var buffer = new byte[4096];
+            int read;
+            while ((read = await stream.ReadAsync(buffer, timeout.Token)) > 0)
+            {
+                if (output.Length + read > maximumBytes) return new("Oversized", httpState, "Unobserved", null);
+                output.Write(buffer, 0, read);
+            }
+            using var document = JsonDocument.Parse(output.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
+            var code = document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("code", out var field) &&
+                field.ValueKind == JsonValueKind.String && field.GetString() is { Length: > 0 and <= 64 } value &&
+                value.All(char.IsAsciiLetterOrDigit) ? value : "Absent";
+            return response.IsSuccessStatusCode
+                ? new("Read", httpState, code, document.RootElement.Deserialize<T>(Json))
+                : new("HttpDenied", httpState, code, null);
+        }
+        catch (OperationCanceledException) { return new("Cancelled", httpState, "Unobserved", null); }
+        catch (JsonException) { return new("InvalidJson", httpState, "Unobserved", null); }
+        catch { return new("Unavailable", httpState, "Unobserved", null); }
+    }
+
+    private static void AssertRehearsal(RemoteRehearsalReport report, string phase)
     {
         Require(report.Schema == 1 && report.NetworkContext == "Loopback" && report.Stages.Count == 7,
-            "loopback was mislabeled as a separate network");
+            $"{phase}: loopback was mislabeled as a separate network");
         Require(report.Stages.Where(stage => stage.Id is "listener" or "connection" or "chat" or "transfer")
-            .All(stage => stage.State == "Passed"), "rehearsal connection/chat/transfer failed: " + JsonSerializer.Serialize(report));
+            .All(stage => stage.State == "Passed"), $"{phase}: rehearsal connection/chat/transfer failed: " + JsonSerializer.Serialize(report));
         Require(report.Stages.Where(stage => stage.Id is "outsideTcp" or "gameEndpoint" or "humanJoinLoad")
-            .All(stage => stage.State == "Unverified"), "synthetic/TCP evidence was promoted to an external game claim");
+            .All(stage => stage.State == "Unverified"), $"{phase}: synthetic/TCP evidence was promoted to an external game claim");
     }
 
     private static async Task<T> RehearsalOwnerGetAsync<T>(HttpClient client, string path)

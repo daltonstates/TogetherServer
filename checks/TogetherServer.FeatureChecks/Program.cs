@@ -23,7 +23,9 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Native import selection previews", () => { SetupImportPreviewChecks.Run(root); return Task.CompletedTask; }),
     ("Shared save display projections", () => { SharedWorldProjectionChecks.Run(root); return Task.CompletedTask; }),
     ("Local QoL endpoint scopes and run identity", () => { QolLocalEndpointInputChecks.Run(); return Task.CompletedTask; }),
-    ("Canonical tray projection", () => { DesktopTrayProjectionChecks.Run(root); return Task.CompletedTask; })
+    ("Canonical tray projection", () => { DesktopTrayProjectionChecks.Run(root); return Task.CompletedTask; }),
+    ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
+    ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root))
 };
 foreach (var group in groups)
 {
