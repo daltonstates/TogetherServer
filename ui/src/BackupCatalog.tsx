@@ -48,11 +48,34 @@ function BackupEvidenceDetails({ backup, evidenceAvailable }: { backup: BackupSu
         `${kind === 'OwnerGameRehearsal' ? 'Owner reported: ' : ''}${fact.outcome === 'Passed' ? 'Passed' : fact.outcome === 'Failed' ? 'Failed' : 'Incomplete'} · ${new Date(fact.checkedUtc).toLocaleString()}` :
         evidenceAvailable ? 'Unknown — no retained result for this backup' : 'Unknown — saved evidence unavailable'}</span></small></div>
     })}</div>
-    <details><summary>Protection results</summary>
+    <strong>Protection results</strong>
     <p>Each dated result applies to this exact backup. A vault copy confirms transferred hashes at that time; its location and continued availability are unknown here.</p>
     <p>A hash restore test checks bytes in a disposable copy. Game load, a saved change and restart require separate owner confirmations. A passed hash check does not establish game save health.</p>
-    </details>
   </>
+}
+
+function BackupReviewTools({ backup, evidenceAvailable, children }: { backup: BackupSummary; evidenceAvailable: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+  return <div>
+    <Button className="secondary" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen(value => !value)}>Review backup</Button>
+    <div id={panelId} hidden={!open}>
+      <BackupEvidenceDetails backup={backup} evidenceAvailable={evidenceAvailable} />
+      <div className="actions">{children}</div>
+    </div>
+  </div>
+}
+
+function BackupEvidenceCue({ backup, evidenceAvailable }: { backup: BackupSummary; evidenceAvailable: boolean }) {
+  const failed = (Object.keys(evidenceNames) as BackupEvidenceKind[]).filter(kind => latestBackupEvidence(backup, kind)?.outcome === 'Failed')
+  const integrity = latestBackupEvidence(backup, 'Integrity')
+  const unknown = !evidenceAvailable ? 'Saved evidence unavailable' : !integrity ? 'Integrity not checked' :
+    integrity.outcome === 'Incomplete' ? 'Integrity check incomplete' : null
+  return <small className={failed.length ? 'warning-text' : undefined}>
+    {failed.length ? `Recorded check failed: ${failed.map(kind => evidenceNames[kind]).join(', ')}.` :
+      integrity?.outcome === 'Passed' && evidenceAvailable ? 'Recorded integrity passed; game save health unverified.' : ''}
+    {unknown && `${failed.length ? ' ' : ''}${unknown}.`}
+  </small>
 }
 
 function BackupComparison({ left, right }: { left: BackupSummary; right: BackupSummary }) {
@@ -121,6 +144,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
   const [notice, setNotice] = useState('')
   const [filters, setFilters] = useState(emptyBackupFilters)
   const [expanded, setExpanded] = useState(false)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [comparisonIds, setComparisonIds] = useState<string[]>([])
   const [restoreId, setRestoreId] = useState<string | null>(null)
   const [previewCount, setPreviewCount] = useState<number | undefined>()
@@ -148,6 +172,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
     setResult(null)
     setFilters(emptyBackupFilters)
     setExpanded(false)
+    setFiltersOpen(false)
     setComparisonIds([])
     setRestoreId(null)
     setNotice('')
@@ -189,6 +214,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
   }
   const catalog = result?.profileId.toLowerCase() === profileId.toLowerCase() ? result : null
   const filtered = catalog ? filterBackups(catalog.backups, filters) : []
+  const activeFilters = Number(filters.pin !== 'all') + Number(filters.kind !== 'all') + Number(!!filters.after) + Number(!!filters.before)
   const shown = filtered.slice(0, expanded ? undefined : 5)
   const summary = catalog ? protectionSummary(catalog) : null
   const retention = catalog ? retentionPreview(catalog, previewCount) : null
@@ -218,16 +244,22 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
     {!error && catalog && <>
       {summary && <div className="world-protection-summary" aria-label="Protection summary"><strong>Protection summary</strong>
         <p>{summary.newest ? `Newest catalog entry: ${new Date(summary.newest.createdUtc).toLocaleString()}.` : 'No completed backup recorded.'} {catalog.pinnedCount} pinned · {backupBytes(catalog.retainedSizeBytes)} retained · {backupBytes(catalog.availableSpaceBytes)} free.</p>
-        <p>Latest recorded passes across {catalog.backups.length} shown copies: {summary.integrity} local integrity, {summary.vault} vault transfers, {summary.hashRehearsal} hash restore tests, {summary.ownerGame} owner-reported game rehearsals.</p>
         {summary.incomplete && <p>Evidence coverage is incomplete. Missing results remain unknown.</p>}
+        <details><summary>Protection and retention details</summary>
+        <p>Latest recorded passes across {catalog.backups.length} shown copies: {summary.integrity} local integrity, {summary.vault} vault transfers, {summary.hashRehearsal} hash restore tests, {summary.ownerGame} owner-reported game rehearsals.</p>
         <p>A pin protects local retention. Each check measures a separate part of protection; no overall healthy-world claim is inferred.</p>
+        <p>{catalog.pinnedCount} of {catalog.maximumPinnedCount} pins · {backupBytes(catalog.pinnedSizeBytes)} of {backupBytes(catalog.maximumPinnedSizeBytes)} pinned. {Math.max(0, catalog.maximumPinnedCount - catalog.pinnedCount)} pins and {backupBytes(Math.max(0, catalog.maximumPinnedSizeBytes - catalog.pinnedSizeBytes))} remain.</p>
+        <small>Pins have separate count and byte limits. Available drive space is a separate measurement.</small>
+        </details>
       </div>}
-      <p>{catalog.pinnedCount} of {catalog.maximumPinnedCount} pins · {backupBytes(catalog.pinnedSizeBytes)} of {backupBytes(catalog.maximumPinnedSizeBytes)} pinned. {Math.max(0, catalog.maximumPinnedCount - catalog.pinnedCount)} pins and {backupBytes(Math.max(0, catalog.maximumPinnedSizeBytes - catalog.pinnedSizeBytes))} remain.</p>
-      <small>Pins have separate count and byte limits. Available drive space is a separate measurement.</small>
       {notice && <p role="status">{notice}</p>}
       <div className="backup-catalog-filters">
         <label htmlFor={`${titleId}-query`}>Search backups</label><Input id={`${titleId}-query`} value={filters.query} maxLength={128} placeholder="Name, pin, kind or date"
           onChange={event => { setFilters({ ...filters, query: event.target.value }); setExpanded(true) }} />
+        <Button className="secondary" aria-expanded={filtersOpen} aria-controls={`${titleId}-filters`} onClick={() => setFiltersOpen(value => !value)}>Filter backups{activeFilters ? ` (${activeFilters} active)` : ''}</Button>
+        <Button className="text-button" onClick={() => setFilters(emptyBackupFilters)}>Clear filters</Button>
+      </div>
+      <div id={`${titleId}-filters`} className="backup-catalog-filters" hidden={!filtersOpen}>
         <label htmlFor={`${titleId}-pin`}>Pins</label><Select id={`${titleId}-pin`} value={filters.pin}
           onChange={event => { setFilters({ ...filters, pin: event.target.value as typeof filters.pin }); setExpanded(true) }}>
           <option value="all">All backups</option><option value="pinned">Pinned only</option><option value="unpinned">Unpinned only</option></Select>
@@ -238,7 +270,6 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
           onChange={event => { setFilters({ ...filters, after: event.target.value }); setExpanded(true) }} />
         <label htmlFor={`${titleId}-before`}>Through date (local)</label><Input id={`${titleId}-before`} type="date" value={filters.before}
           onChange={event => { setFilters({ ...filters, before: event.target.value }); setExpanded(true) }} />
-        <Button className="text-button" onClick={() => setFilters(emptyBackupFilters)}>Clear filters</Button>
       </div>
       <details><summary>Retention preview</summary>
         {catalog.retention && <><p>Saved policy: {catalog.retention.retentionCount} unpinned copies. Rolling backup is {catalog.retention.rollingEnabled ? 'on' : 'off'}. Free-space reserve: {backupBytes(catalog.retention.minimumFreeSpaceBytes)}.</p>
@@ -251,9 +282,10 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
       {catalog.backups.length === 0 ? <p>No completed backups yet. Make an offline backup to name or pin it.</p> :
         filtered.length === 0 ? <p>No backups match these filters.</p> : <p>{filtered.length} of {catalog.backups.length} loaded backups match.</p>}
       <div className="recent-session-list">{shown.map(backup => <BackupBookmarkEditor
-        key={JSON.stringify([profileId, backup.backupId, backup.label, backup.pinned])} backup={backup} updater={updater} capacity={catalog} onSaved={saved} actions={actions(backup)}>
+        key={JSON.stringify([profileId, backup.backupId, backup.label, backup.pinned])} backup={backup} updater={updater} capacity={catalog} onSaved={saved}
+        actions={<BackupReviewTools backup={backup} evidenceAvailable={catalog.evidenceAvailable}>{actions(backup)}</BackupReviewTools>}>
         <small>World: {backup.worldId ?? 'Unknown'} · {backup.setupIncluded === true ? 'Includes protected setup' : backup.setupIncluded === false ? 'World only' : 'Setup coverage unknown'}.</small>
-        <BackupEvidenceDetails backup={backup} evidenceAvailable={catalog.evidenceAvailable} />
+        <BackupEvidenceCue backup={backup} evidenceAvailable={catalog.evidenceAvailable} />
         <label className="check"><Input type="checkbox" checked={comparisonIds.includes(backup.backupId)}
           disabled={comparisonIds.length === 2 && !comparisonIds.includes(backup.backupId)} onChange={event => setComparisonIds(current =>
             event.target.checked ? [...current, backup.backupId].slice(0, 2) : current.filter(id => id !== backup.backupId))} />Compare {backup.label || new Date(backup.createdUtc).toLocaleString()}</label>

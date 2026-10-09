@@ -25,6 +25,22 @@ function exposeDialog(props: ComponentProps<typeof HostSetupDialog>) {
   act(() => props.dialogRef.current!.setAttribute('open', ''))
 }
 describe('Host setup review', () => {
+  it('offers distinct Cancel setup and Finish later actions for the first server', () => {
+    const props = propsFor(profile)
+    const rendered = render(<HostSetupDialog {...props} />)
+    exposeDialog(props)
+    expect(props.onCancel).not.toHaveBeenCalled()
+    expect(props.onFinishLater).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel setup' }))
+    expect(props.onCancel).toHaveBeenCalledOnce()
+    expect(props.onSave).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Finish later' }))
+    expect(props.onFinishLater).toHaveBeenCalledOnce()
+    rendered.rerender(<HostSetupDialog {...props} pending="save" />)
+    expect(screen.getByRole('button', { name: 'Cancel setup' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Finish later' })).toBeDisabled()
+  })
+
   it('shows every setup blocker and moves the owner to its editable field', () => {
     const props = propsFor(profile)
     const rendered = render(<HostSetupDialog {...props} />)

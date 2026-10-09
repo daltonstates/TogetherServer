@@ -112,6 +112,8 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('button', { name: 'Open game' })).toBeInTheDocument()
     expect(screen.getByText('Masked connection controls')).toBeInTheDocument()
     expect(screen.getByText('Requirements slot')).toBeInTheDocument()
+    expect(screen.getByText('Requirements slot').compareDocumentPosition(screen.getByRole('button', { name: 'Open game' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('Requirements slot').compareDocumentPosition(screen.getByText('Masked connection controls')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText('How to join in Valheim')).toBeInTheDocument()
     expect(fetcher).not.toHaveBeenCalled()
   })
@@ -132,14 +134,29 @@ describe('the composed play flow', () => {
     const offline = { ...profile, state: 'Offline', maintenanceEnabled: true }
     const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [offline] }} profile={offline} nowMs={nowMs} onStart={onStart} />)
     expect(screen.getByRole('button', { name: 'Start server' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('paused lifecycle controls for maintenance')
     fireEvent.click(screen.getByRole('button', { name: 'Start server' }))
     expect(onStart).not.toHaveBeenCalled()
     const denied = { ...offline, maintenanceEnabled: false, canStart: false }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [denied] }} profile={denied} nowMs={nowMs} onStart={onStart} />)
     expect(screen.getByRole('button', { name: 'Start server' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('The Host has not granted Start for this server.')
     const pending = { ...denied, canStart: true, operation: { id: 'operation', action: 'start', state: 'Pending' as const,
       ok: null, code: 'Pending', message: '', requestedUtc: '2026-10-08T15:00:00Z', completedUtc: null } }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [pending] }} profile={pending} nowMs={nowMs} onStart={onStart} />)
     expect(screen.getByRole('button', { name: 'Start server' })).toBeDisabled()
+  })
+
+  it('keeps missing-address guidance visible and permits manual continuation despite unknown requirements', () => {
+    const missingAddress = { ...profile, joinAddress: null }
+    const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [missingAddress] }} profile={missingAddress} nowMs={nowMs}
+      requirements={<p>Version: Unknown · Add-ons: Unknown</p>} />)
+    expect(screen.getByText(/Wait for the Host to share a current game address/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
+    view.rerender(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs}
+      requirements={<p>Version: Unknown · Add-ons: Unknown</p>} connectionDetails={<p>Manual copy controls</p>} />)
+    expect(screen.getByRole('button', { name: 'Open game' })).toBeEnabled()
+    expect(screen.getByText('Manual copy controls')).toBeInTheDocument()
+    expect(screen.getByText('Version: Unknown · Add-ons: Unknown')).toBeInTheDocument()
   })
 })

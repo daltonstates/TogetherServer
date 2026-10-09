@@ -1322,6 +1322,7 @@ kbd {
 .server-master-item strong, .server-master-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-master-item strong { font-size:calc(12px * var(--qol-text-scale, 1)); }
 .server-master-item small { margin-top: 4px; color: var(--color-text-subtle); font-size:calc(10px * var(--qol-text-scale, 1)); font-weight: 500; }
+.server-master-item .warning-text { color: var(--color-warning-text); white-space: normal; overflow-wrap: anywhere; }
 .server-master-item .status { max-width: 82px; padding: 4px 6px; overflow: hidden; font-size:calc(9px * var(--qol-text-scale, 1)); text-overflow: ellipsis; }
 .server-master-add.ui-button { margin: 8px; }
 .server-detail { min-width: 0; background: var(--color-surface); }
@@ -1339,25 +1340,22 @@ kbd {
 .server-detail-pane { padding: 16px; }
 .server-detail-card { border: 0; padding: 0; background: transparent; }
 .server-detail-card .profile-top { min-height: 58px; }
-.server-detail[data-server-tab="overview"] .timer-extension,
-.server-detail[data-server-tab="overview"] .custom-certification,
-.server-detail[data-server-tab="overview"] .safety-status,
-.server-detail[data-server-tab="overview"] .card-manage,
-.server-detail[data-server-tab="players"] .next-action,
-.server-detail[data-server-tab="players"] .safety-status,
-.server-detail[data-server-tab="players"] .card-manage,
-.server-detail[data-server-tab="backups"] .timer-extension,
-.server-detail[data-server-tab="backups"] .next-action,
-.server-detail[data-server-tab="backups"] .custom-certification,
-.server-detail[data-server-tab="setup"] .timer-extension,
-.server-detail[data-server-tab="setup"] .next-action,
-.server-detail[data-server-tab="setup"] .custom-certification,
-.server-detail[data-server-tab="setup"] .safety-status { display: none; }
-.server-detail[data-server-tab="logs"] .server-detail-card > :not(.profile-top):not(.server-log-viewer) { display: none !important; }
-.server-detail[data-server-tab="sessions"] .server-detail-card > :not(.profile-top):not(.recent-sessions) { display: none !important; }
-.server-detail[data-server-tab="files"] .server-detail-card > :not(.profile-top):not(.server-files-panel):not(.game-settings-panel) { display: none !important; }
-.server-detail[data-server-tab="backups"] .card-manage { margin-top: 12px; }
-.server-detail[data-server-tab="backups"] .card-manage > summary { color: var(--color-accent-light); }
+.all-servers-comparison { margin-block: 0 16px; }
+.all-servers-comparison > summary { cursor: pointer; padding: 12px 0; color: var(--color-text-secondary); }
+.all-servers-comparison .all-server-overview { margin-block: 8px 0; }
+.comparison-attention { display: inline-block; margin-left: 12px; color: var(--color-warning-text); }
+.server-detail-card .host-lifecycle-summary { padding: 10px 0; border: 0; background: transparent; }
+.server-detail-card .host-lifecycle-summary .players-heading p { margin-block: 0; }
+.server-detail-card .server-actions { align-items: center; margin-block: 12px; }
+.server-detail-card .local-game-address { margin-block: 8px; overflow-wrap: anywhere; }
+.server-tabs { flex-wrap: wrap; }
+.server-tabs .ui-button { min-height: 44px; }
+.friend-connection-tools { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--color-border-subtle); }
+.friend-connection-tools > h3 { margin-block: 0 8px; }
+.compatibility-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-block: 8px; }
+.compatibility-facts dt { color: var(--color-text-muted); }
+.compatibility-facts dd { margin-inline-start: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .compatibility-facts { grid-template-columns: minmax(0, 1fr); } }
 .host-workspace-shell .access-strip { margin: 12px 16px 16px; }
 
 /* Full-window utility workspaces. */

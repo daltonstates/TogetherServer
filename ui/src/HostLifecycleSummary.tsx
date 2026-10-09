@@ -12,6 +12,7 @@ export type HostLifecycleSummaryProps = {
   startGate: { allowed: boolean; reason?: string | null }
   lifecycleBlocked?: boolean
   busy?: boolean
+  compact?: boolean
   onStart?: () => void
   onOpen: (destination: ActivityDestination) => void
 }
@@ -37,7 +38,7 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
   const state = observed?.state ?? 'Unknown'
   const phase = Object.hasOwn(phases, state) ? phases[state] : 'Unknown · Review needed'
   const detail = observed?.detail || 'The current server state is unavailable. Review it before starting another run.'
-  const navigate = (section: 'overview' | 'players', label: string, reason: string): HostLifecycleView => ({
+  const navigate = (section: 'overview' | 'players' | 'setup', label: string, reason: string): HostLifecycleView => ({
     phase, detail, next: { kind: 'navigate', label, reason,
       destination: { workspace: 'host', section, profileId: profile.id, label } }
   })
@@ -45,7 +46,7 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
     kind: 'navigate', label: 'Review recovery', reason: 'Local data recovery blocks new lifecycle actions.',
     destination: { workspace: 'settings', section: 'diagnostics', profileId: profile.id, label: 'Review recovery' }
   } }
-  if (profile.maintenance?.enabled) return navigate('overview', 'Continue maintenance', 'Review the maintenance guide and its remaining checks.')
+  if (profile.maintenance?.enabled) return navigate('setup', 'Continue maintenance', 'Review the maintenance guide and its remaining checks.')
   switch (observed?.state) {
     case 'Offline': return startGate.allowed
       ? { phase, detail, next: { kind: 'start', label: 'Start server', reason: 'Start rechecks the saved setup, process identity, world and ports.' } }
@@ -67,10 +68,12 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
 export function HostLifecycleSummary(props: HostLifecycleSummaryProps) {
   const headingId = useId()
   const view = hostLifecycleView(props)
+  const showAction = !props.compact || (view.next.kind === 'navigate' &&
+    !(view.next.destination.workspace === 'host' && view.next.destination.section === 'overview'))
   return <section className="players-workspace host-lifecycle-summary" aria-labelledby={headingId}>
-    <div className="players-heading"><div><h3 id={headingId}>{props.profile.name} · Next action</h3>
-      <small>Observed phase</small><p><strong>{view.phase}</strong></p></div>
-      {view.next.kind === 'start'
+    <div className="players-heading"><div><h3 id={headingId} className={props.compact ? 'sr-only' : undefined}>{props.compact ? 'Server status details' : `${props.profile.name} · Next action`}</h3>
+      {!props.compact && <small>Observed phase</small>}<p><strong>{view.phase}</strong></p></div>
+      {showAction && (view.next.kind === 'start'
         ? <Button disabled={props.busy || !props.startGate.allowed || !props.onStart} onClick={() => {
           if (view.next.kind === 'start' && props.run?.profileId === props.profile.id &&
               props.run.state === 'Offline' && props.startGate.allowed && !props.busy &&
@@ -78,10 +81,10 @@ export function HostLifecycleSummary(props: HostLifecycleSummaryProps) {
         }}>{view.next.label}</Button>
         : <Button className="secondary" onClick={() => {
           if (view.next.kind === 'navigate') props.onOpen(view.next.destination)
-        }}>{view.next.label}</Button>}
+        }}>{view.next.label}</Button>)}
     </div>
     <p className="helper-text">{view.detail}</p>
     <small>{view.next.reason}</small>
-    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{view.phase}. Next action: {view.next.label}.</span>
+    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{view.phase}. {showAction ? `Next action: ${view.next.label}.` : view.next.reason}</span>
   </section>
 }

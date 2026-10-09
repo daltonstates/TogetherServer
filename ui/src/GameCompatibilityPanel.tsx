@@ -78,29 +78,31 @@ function ScopedCompatibilityPanel({ profileId, host, available = true, nowMs }: 
     : comparison?.clientVersionSource === 'Observed' ? 'observed installation metadata' : 'not detected'
   return <section className="game-compatibility" aria-labelledby={titleId} aria-busy={busy}>
     <div className="panel-heading"><div><h4 id={titleId}>{host ? 'Before friends join' : 'Game requirements'}</h4>
-      <p>{requirements ? `${requirements.gameName} · ${requirements.requiredVersion ?? 'Version unknown'}`
+      <p>{requirements ? requirements.gameName
         : !available ? 'Reconnect for current requirements' : busy ? 'Reading saved game requirements…' : 'Requirements unavailable'}</p></div>
       <Button className="text-button" disabled={busy || !available} onClick={() => void refresh()}>Refresh requirements</Button></div>
     {error && <p className="error-text" role="alert">{error}</p>}
     {requirements && <>
       <div className="compatibility-summary" role="status">
-        <p>Required version: <strong>{requirements.requiredVersion ?? 'Unknown'}</strong> ({source}).</p>
+        <dl className="compatibility-facts">
+          <div><dt>Required version</dt><dd><strong>{requirements.requiredVersion ?? 'Unknown'}</strong> <small>({source})</small></dd></div>
+          {comparison && <div><dt>Current on this PC</dt><dd><strong>{comparison.clientVersion ?? 'Unknown'}</strong> <small>({clientSource})</small></dd></div>}
+        </dl>
         {comparison && <>
-          <p>Current on this PC: <strong>{comparison.clientVersion ?? 'Unknown'}</strong> ({clientSource}).</p>
           <p className={versionState === 'Mismatch' ? 'error-text' : 'helper-text'}>Version: <strong>{versionState}</strong> · Add-ons: <strong>{addOnState}</strong></p>
           {versionState === 'Mismatch' && <small>Version mismatch; check with the Host before joining.</small>}
-          {versionState === 'Match' && <small>Version text matches. Review add-ons separately.</small>}
-          {versionState === 'Unknown' && <small>Version compatibility unknown. Refresh or compare the version shown in the game.</small>}
+          {versionState === 'Unknown' && <small>Refresh or compare the version shown in your game.</small>}
         </>}
       </div>
-      <small>{busy ? 'Refreshing… Previous checks are informational.' : freshness === 'stale' ? 'Stale requirements. Refresh before comparing.'
-        : freshness === 'unknown' ? 'Check time cannot be verified. Refresh before comparing.' : 'Checked'}
-        {' '}<time dateTime={requirements.checkedUtc}>{new Date(requirements.checkedUtc).toLocaleString()}</time>. Refresh after the Host changes the game or add-ons.</small>
+      <small>{busy ? 'Refreshing · previous check' : freshness === 'stale' ? 'Stale requirements · refresh before comparing · checked'
+        : freshness === 'unknown' ? 'Check time unverified · refresh before comparing · reported' : 'Checked'}
+        {' '}<time dateTime={requirements.checkedUtc}>{new Date(requirements.checkedUtc).toLocaleString()}</time>.</small>
       <details className="advanced-block"><summary>Add-on inventory: {requirements.addOnState === 'Known'
         ? requirements.addOns.length ? `${requirements.addOns.length} enabled` : 'none enabled'
         : requirements.addOnState === 'NotReviewed' ? 'mod support not reviewed' : 'Unknown'}</summary>
         {requirements.addOns.length > 0 && <ul>{requirements.addOns.map(item => <li key={`${item.type}:${item.id}`}>{item.name} · {item.version}</li>)}</ul>}
         <p>{requirements.guidance}</p>
+        <small>Refresh after the Host changes the game or add-ons. Version text alone does not verify add-ons.</small>
         {comparison && <p>{addOnState === 'Match' ? 'The default Factorio mod-folder names and versions match. Custom launch options are not inspected.'
           : addOnState === 'Mismatch' ? 'The default Factorio mod set differs on this PC. Review the Host’s list.'
             : 'Installed add-on compatibility is Unknown. Review it in the game.'}</p>}
@@ -113,7 +115,7 @@ function ScopedCompatibilityPanel({ profileId, host, available = true, nowMs }: 
         <div className="actions"><Button className="secondary" disabled={busy || !validManualGameVersion(manual)} onClick={() => void save()}>Save version</Button>
           <Button className="text-button" disabled={busy} onClick={() => void save(true)}>Clear manual version</Button></div>
       </details>}
-    <small>These checks never install add-ons or prove readiness, a player count, a successful join or a saved world.</small>
+    <small>Informational only: no add-on installation or proof of readiness, player count, join or saved world.</small>
   </section>
 }
 

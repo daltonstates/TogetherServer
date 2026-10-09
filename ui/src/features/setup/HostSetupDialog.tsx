@@ -374,7 +374,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
       <ul>{setupIssues.map((message, index) => <li key={`${message}-${index}`}><Button className="text-button" disabled={!!pending} onClick={() => openBlocker(setupIssueTarget(message, editedProfile))}>{message}</Button></li>)}</ul>
     </section>}
     <div className="wizard-footer"><div className="actions"><Button className="text-button" disabled={!!pending} onClick={onFinishLater}>Finish later</Button>
-      {savedProfiles.length > 0 && <Button className="text-button" disabled={!!pending} onClick={onCancel}>Cancel</Button>}</div><div className="actions">
+      <Button className="text-button" disabled={!!pending} onClick={onCancel}>{savedProfiles.length > 0 ? 'Cancel' : 'Cancel setup'}</Button></div><div className="actions">
       {setupStepIndex > 0 && <Button className="secondary" disabled={!!pending} onClick={() => onStepChange(setupSteps[setupStepIndex - 1])}>Back</Button>}
       {setupStep !== 'review' && <Button disabled={stepIssues.length > 0 || !!pending} onClick={() => onStepChange(setupSteps[setupStepIndex + 1])}>Continue</Button>}
       {setupStep === 'review' && <><Button className="secondary" disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id] && !customScriptsChanged) || !!pending} onClick={() => onSave()}>Save for later</Button><Button disabled={setupIssues.length > 0 || (!dirty && !passwords[editedProfile.id] && !customScriptsChanged) || !!pending || dataRecoveryBlocked} title={dataRecoveryBlocked ? 'Resolve the local data recovery warning before starting.' : undefined} onClick={() => onSave(true)}><Icon name="play" />{pending === 'save' ? 'Starting…' : 'Save and start'}</Button></>}

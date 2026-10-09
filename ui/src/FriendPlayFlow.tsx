@@ -159,16 +159,20 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, nowMs, identit
   const permissions = effectiveFriendPermissions(snapshot, profile, nowMs)
   const currentProfile = snapshot.profiles.find(item => item.id === profile.id)
   const canJoin = permissions.currentAccess && !!currentProfile?.joinAddress && ['Ready', 'Listening'].includes(currentProfile.state)
+  const playExplanation = !permissions.currentAccess ? connection.detail
+    : currentProfile?.state === 'Offline' ? !permissions.actions.start.available
+      ? `The game server is stopped. ${permissions.actions.start.reason}`
+      : !onStart ? 'The game server is stopped. Ask the Host to start this server.' : 'The game server is stopped.'
+    : friendServerStateExplanation(currentProfile?.state ?? 'Unknown')
   return <section className="friend-play-flow" aria-labelledby={headingId} aria-busy={busy}>
     <div className="panel-heading"><h4 id={headingId}>Play</h4>
       {onRefresh && <Button className="text-button" disabled={busy} onClick={onRefresh}>Refresh server status</Button>}</div>
-    <p role="status">{permissions.currentAccess ? friendServerStateExplanation(currentProfile?.state ?? 'Unknown') : connection.detail}</p>
+    <p role="status">{playExplanation}</p>
     {currentProfile?.state === 'Offline' && permissions.currentAccess && <>
       {permissions.actions.start.available && startNotice}
       {onStart ? <Button disabled={busy || !permissions.actions.start.available}
         onClick={() => { if (!busy && permissions.actions.start.available) onStart() }}>Start server</Button>
-        : <p className="helper-text">Ask the Host to start this server.</p>}
-      {!permissions.actions.start.available && <small>{permissions.actions.start.reason}</small>}
+        : null}
     </>}
     {requirements}
     {canJoin && currentProfile && <>

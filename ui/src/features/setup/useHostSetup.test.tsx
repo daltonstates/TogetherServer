@@ -28,6 +28,72 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Host setup continuity and imports', () => {
+  it('keeps first-server setup, secret and terms when cancellation is declined, then clears them on accepted Cancel without saving or starting', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue(nextId)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const snapshot = host([])
+    const hook = renderHook(() => useHostSetup(options(snapshot)))
+    act(() => hook.result.current.synchronizeHostSnapshot(snapshot))
+    act(() => hook.result.current.addProfile())
+    await waitFor(() => expect(readProtectedDraft).toHaveBeenCalled())
+    act(() => {
+      hook.result.current.setPassword(nextId, 'synthetic-secret')
+      hook.result.current.setMinecraftTermsFor(nextId, true)
+    })
+    await act(async () => { await hook.result.current.cancelSetup() })
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(hook.result.current.showSetup).toBe(true)
+    expect(hook.result.current.passwords[nextId]).toBe('synthetic-secret')
+    expect(hook.result.current.minecraftTerms[nextId]).toBe(true)
+    expect(clearProtectedDraft).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await act(async () => { await hook.result.current.cancelSetup() })
+    expect(hook.result.current.showSetup).toBe(false)
+    expect(hook.result.current.passwords).toEqual({})
+    expect(hook.result.current.minecraftTerms).toEqual({})
+    expect(hook.result.current.draft?.profiles).toEqual([])
+    expect(clearProtectedDraft).toHaveBeenCalled()
+    for (const [url, request] of vi.mocked(fetch).mock.calls) {
+      expect(String(url)).not.toMatch(/\/settings$|\/start$/u)
+      expect(request?.method ?? 'GET').toBe('GET')
+    }
+  })
+
+  it('persists a nonsecret first-server draft before Finish later closes setup without a game action', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue(nextId)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const snapshot = host([])
+    const hook = renderHook(() => useHostSetup(options(snapshot)))
+    act(() => hook.result.current.synchronizeHostSnapshot(snapshot))
+    act(() => hook.result.current.addProfile())
+    await waitFor(() => expect(readProtectedDraft).toHaveBeenCalled())
+    act(() => {
+      hook.result.current.updateProfile(nextId, { name: 'Unfinished synthetic server' })
+      hook.result.current.setSetupStep('world')
+      hook.result.current.setPassword(nextId, 'synthetic-secret')
+    })
+    let complete!: () => void
+    vi.mocked(saveProtectedDraft).mockClear().mockImplementation((_identity, text, revision) => new Promise(resolve => {
+      complete = () => resolve({ ok: true, text, revision: revision + 1, message: '' })
+    }))
+    let finishing!: Promise<void>
+    act(() => { finishing = hook.result.current.finishSetupLater() })
+    await waitFor(() => expect(saveProtectedDraft).toHaveBeenCalled())
+    expect(hook.result.current.showSetup).toBe(true)
+    const savedText = vi.mocked(saveProtectedDraft).mock.calls.at(-1)![1]
+    expect(savedText).toContain('Unfinished synthetic server')
+    expect(savedText).not.toContain('synthetic-secret')
+    await act(async () => { complete(); await finishing })
+    expect(hook.result.current.showSetup).toBe(false)
+    expect(hook.result.current.passwords).toEqual({})
+    expect(hook.result.current.pausedSetupProfileId).toBe(nextId)
+    expect(hook.result.current.setupStep).toBe('world')
+    for (const [url, request] of vi.mocked(fetch).mock.calls) {
+      expect(String(url)).not.toMatch(/\/settings$|\/start$/u)
+      expect(request?.method ?? 'GET').toBe('GET')
+    }
+  })
+
   it('restores a protected draft only after owner review and resumes the recorded step without secrets or policy', async () => {
     const recovered = { ...profile, id: nextId, worldId: 'unfinished' }
     vi.mocked(readProtectedDraft).mockResolvedValue({ ok: true, revision: 31, message: '', text: serializeProtectedSetupDraft([recovered], 'server', nextId, 'C:\\synthetic\\source') })

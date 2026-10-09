@@ -15,6 +15,43 @@ const run: Run = {
 const input = { profile, run, nowMs, startGate: { allowed: true } }
 
 describe('HostLifecycleSummary', () => {
+  it('keeps compact Offline details without duplicating the parent Start action', () => {
+    const start = vi.fn()
+    const open = vi.fn()
+    render(<HostLifecycleSummary {...input} compact run={{ ...run, state: 'Offline', detail: 'Confirmed process exit.' }} onStart={start} onOpen={open} />)
+    expect(screen.getByText('Confirmed process exit.')).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByText('Observed phase')).not.toBeInTheDocument()
+    expect(start).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it.each(['Unknown', 'Starting'])('preserves compact %s uncertainty without self-navigation', state => {
+    const start = vi.fn()
+    const open = vi.fn()
+    render(<HostLifecycleSummary {...input} compact run={{ ...run, state, detail: 'Waiting for fresh driver evidence.' }} onStart={start} onOpen={open} />)
+    expect(screen.getByText('Waiting for fresh driver evidence.')).toBeInTheDocument()
+    expect(screen.getByText(state === 'Starting' ? 'Starting · Waiting for game readiness' : 'Unknown · Review needed')).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(start).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'Review empty-server timer', section: 'players', workspace: 'host', overrides: {} },
+    { label: 'Review recovery', section: 'diagnostics', workspace: 'settings', overrides: { lifecycleBlocked: true } },
+    { label: 'Continue maintenance', section: 'setup', workspace: 'host', overrides: { profile: { ...profile, maintenance: { enabled: true, message: 'Updating.' } } } }
+  ])('retains compact $label navigation only on owner click', ({ label, section, workspace, overrides }) => {
+    const start = vi.fn()
+    const open = vi.fn()
+    render(<HostLifecycleSummary {...input} {...overrides} compact onStart={start} onOpen={open} />)
+    expect(open).not.toHaveBeenCalled()
+    expect(start).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: label }))
+    expect(open).toHaveBeenCalledWith({ workspace, section, profileId: profile.id, label })
+    expect(start).not.toHaveBeenCalled()
+  })
+
   it('offers Start only on an explicit click for an Offline run and the existing parent gate', () => {
     const start = vi.fn()
     const open = vi.fn()

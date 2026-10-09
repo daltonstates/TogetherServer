@@ -9,6 +9,8 @@ describe('WorkspaceNavigation', () => {
     expect(screen.getByRole('button', { name: /Host/ })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('button', { name: 'Join' })).toBeEnabled()
     expect(screen.getByText('2')).toHaveAccessibleName('2 running')
+    expect(screen.getByRole('button', { name: 'Host' })).toHaveAccessibleDescription('2 servers running')
+    expect(screen.getByRole('button', { name: 'Attention' })).toHaveAccessibleDescription('New activity')
     fireEvent.click(screen.getByRole('button', { name: 'Attention' }))
     expect(navigate).toHaveBeenCalledWith('attention')
   })

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Button, Input } from './Controls'
 import { Icon, type IconName } from './Icon'
 
@@ -27,13 +27,16 @@ export function WorkspaceNavigation({ page, activeRuns, unread, onNavigate }: {
   unread: boolean
   onNavigate: (page: WorkspacePage) => void
 }) {
+  const statusId = useId()
   return <nav className="workspace-nav" aria-label="TogetherServer workspaces">
     {navigation.map(item => <Button key={item.id} className={page === item.id ? 'workspace-nav-item selected' : 'workspace-nav-item'}
-      aria-label={item.label} aria-current={page === item.id ? 'page' : undefined} title={`${item.label} (${item.shortcut})`} onClick={() => onNavigate(item.id)}>
+      aria-label={item.label} aria-current={page === item.id ? 'page' : undefined}
+      aria-describedby={item.id === 'host' && activeRuns > 0 ? `${statusId}-running` : item.id === 'attention' && unread ? `${statusId}-unread` : undefined}
+      title={`${item.label} (${item.shortcut})`} onClick={() => onNavigate(item.id)}>
       <span className="workspace-nav-icon"><Icon name={item.icon} /></span>
       <span className="workspace-nav-label">{item.label}</span>
-      {item.id === 'host' && activeRuns > 0 && <span className="workspace-nav-count" aria-label={`${activeRuns} running`}>{activeRuns}</span>}
-      {item.id === 'attention' && unread && <span className="workspace-nav-unread"><span className="sr-only">New activity</span></span>}
+      {item.id === 'host' && activeRuns > 0 && <span className="workspace-nav-count" aria-label={`${activeRuns} running`}>{activeRuns}<span className="sr-only" id={`${statusId}-running`}>{activeRuns} servers running</span></span>}
+      {item.id === 'attention' && unread && <span className="workspace-nav-unread"><span className="sr-only" id={`${statusId}-unread`}>New activity</span></span>}
     </Button>)}
   </nav>
 }
@@ -48,8 +51,11 @@ export function CommandPalette({ open, commands, onClose }: {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const visible = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase()
-    return needle ? commands.filter(command => `${command.label} ${command.detail} ${command.keywords ?? ''}`.toLocaleLowerCase().includes(needle)) : commands
+    const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    return words.length ? commands.filter(command => {
+      const description = `${command.label} ${command.detail} ${command.keywords ?? ''}`.toLocaleLowerCase()
+      return words.every(word => description.includes(word))
+    }) : commands
   }, [commands, query])
 
   useEffect(() => {
