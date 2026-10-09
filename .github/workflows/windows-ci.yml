@@ -164,7 +164,7 @@ jobs:
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           $legacy = (Resolve-Path local-data/compatibility/0.3.0/TogetherServer.exe).Path
           ./checks/update-handoff-smoke.ps1 -AppPath $candidate -LegacyAppPath $legacy -AllowInteractiveTests 2>&1 | Tee-Object -FilePath local-data/ci-evidence/mixed-version/update-handoff.log
-          if ($LASTEXITCODE -ne 0) { throw '0.3.0 to 0.3.1 update handoff failed.' }
+          # The PowerShell smoke throws on failure; unlike dotnet it does not set LASTEXITCODE.
 
       - name: Preserve mixed-version evidence
         if: always()

@@ -35,7 +35,7 @@ const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
-  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], expectedModeCancellations: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatDelivery: [],
+  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], expectedModeCancellations: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatRecovery: [], chatDelivery: [],
   cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const pendingResponseClassifications = new Set()
@@ -1201,10 +1201,52 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   const chat = first.locator('.server-chat')
   const message = 'Synthetic browser message kept during navigation'
   await chat.getByLabel('Message', { exact: true }).fill(message)
-  await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).getByRole('button', { name: 'Attention', exact: true }).click()
-  await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).getByRole('button', { name: 'Join', exact: true }).click()
-  await chat.getByRole('button', { name: 'Use recovered message', exact: true }).click()
-  assert.equal(await chat.getByLabel('Message', { exact: true }).inputValue(), message)
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+  const recoveryDiagnostics = { stage: 'leaving-compose', activeWorkspace: null, attentionReached: false,
+    composerUnmounted: false, selectedConnectionMatches: false, selectedHostMatches: false, serverStillAssigned: false,
+    protectedReadOk: false, persistedTextMatches: false, joinReached: false, recoveryPromptVisible: false,
+    recoveredTextMatches: false, composerDomCount: null, recoveryButtonDomCount: null }
+  report.chatRecovery.push(recoveryDiagnostics)
+  try {
+    await navigation.getByRole('button', { name: 'Attention', exact: true }).click()
+    // A click returns before protected flush completes. Confirm navigation before
+    // issuing Join so its new navigation epoch cannot supersede pending Attention.
+    await eventually(() => navigation.getByRole('button', { name: 'Attention', exact: true }).getAttribute('aria-current'),
+      value => value === 'page', 'Attention navigation completes after chat draft flush')
+    recoveryDiagnostics.attentionReached = true
+    await eventually(() => chat.count(), value => value === 0, 'Friend composer unmounted on Attention')
+    recoveryDiagnostics.composerUnmounted = true
+    recoveryDiagnostics.stage = 'protected-draft'
+    const savedScope = await api(friend, '/api/local/snapshot')
+    recoveryDiagnostics.selectedConnectionMatches = savedScope.connectionId === paired.connectionId
+    recoveryDiagnostics.selectedHostMatches = savedScope.hostId === paired.hostId
+    recoveryDiagnostics.serverStillAssigned = savedScope.profiles.some(profile => profile.id === profiles.valheim.id)
+    assert(recoveryDiagnostics.selectedConnectionMatches && recoveryDiagnostics.selectedHostMatches && recoveryDiagnostics.serverStillAssigned,
+      'Draft recovery must retain the selected saved Host and assigned room.')
+    const stored = await api(friend, '/api/local/ui-drafts/read', 'POST', { purpose: 'chat',
+      profileId: profiles.valheim.id, connectionId: paired.connectionId, key: 'compose' })
+    recoveryDiagnostics.protectedReadOk = stored.ok === true
+    recoveryDiagnostics.persistedTextMatches = stored.text === message
+    assert(recoveryDiagnostics.protectedReadOk && recoveryDiagnostics.persistedTextMatches,
+      'Completed navigation must protect the exact unfinished message in its selected connection/server scope.')
+    recoveryDiagnostics.stage = 'returning-to-compose'
+    await navigation.getByRole('button', { name: 'Join', exact: true }).click()
+    await eventually(() => navigation.getByRole('button', { name: 'Join', exact: true }).getAttribute('aria-current'),
+      value => value === 'page', 'Join navigation completes before chat recovery')
+    recoveryDiagnostics.joinReached = true
+    await chat.waitFor({ state: 'visible' })
+    const recover = chat.getByRole('button', { name: 'Use recovered message', exact: true })
+    await recover.waitFor({ state: 'visible' })
+    recoveryDiagnostics.recoveryPromptVisible = true
+    await recover.click()
+    recoveryDiagnostics.recoveredTextMatches = await chat.getByLabel('Message', { exact: true }).inputValue() === message
+    assert(recoveryDiagnostics.recoveredTextMatches, 'Review must restore the exact protected message into the composer.')
+    recoveryDiagnostics.stage = 'recovered'
+  } finally {
+    recoveryDiagnostics.activeWorkspace = await navigation.locator('button[aria-current="page"]').getAttribute('aria-label').catch(() => null)
+    recoveryDiagnostics.composerDomCount = await chat.count().catch(() => null)
+    recoveryDiagnostics.recoveryButtonDomCount = await chat.getByRole('button', { name: 'Use recovered message', exact: true }).count().catch(() => null)
+  }
   const selected = await api(friend, '/api/local/snapshot')
   assert.equal(selected.connectionId, paired.connectionId, 'Recovered compose must stay on the selected saved Host.')
   assert.equal(selected.hostId, paired.hostId, 'Recovered compose must retain the paired Host identity.')
