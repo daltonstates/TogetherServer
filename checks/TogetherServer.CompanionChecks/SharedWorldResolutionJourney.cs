@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
 using TogetherServer;
+using TogetherServer.CompanionChecks;
 
 internal static partial class SharedWorldJourney
 {
@@ -24,6 +25,9 @@ internal static partial class SharedWorldJourney
         var cPort = ports[4];
         var aCandidatePort = ports[5];
         var bCandidatePort = ports[6];
+        var candidateAddress = AssignedPrivateIpv4ForJourney();
+        var aCandidateEndpoint = $"https://{candidateAddress}:{aCandidatePort}";
+        var bCandidateEndpoint = $"https://{candidateAddress}:{bCandidatePort}";
         var world = Path.Combine(hostData, "worlds", "owner-override-off");
         Directory.CreateDirectory(world);
         var profile = new ServerProfile
@@ -168,13 +172,19 @@ internal static partial class SharedWorldJourney
                 Require((await PostAsync<object, JsonElement>(friend,
                     "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
                     "candidate PC could not set its direct address");
-                Require((await PutAsync<HostSettings, ActionResult>(friend,
+                var endpoint = $"https://{candidateAddress}:{port}";
+                var savedCandidate = await PutAsync<HostSettings, ActionResult>(friend,
                     "/api/local/settings", new HostSettings
                     {
-                        CompanionEndpoint = $"https://127.0.0.1:{port}",
+                        CompanionEndpoint = endpoint,
                         CompanionPort = port,
-                        CompanionBindAddress = "127.0.0.1"
-                    })).Ok, "candidate direct address was not saved");
+                        CompanionBindAddress = candidateAddress,
+                        ConnectionRoute = new() { Mode = ConnectionRouteModes.AdvancedAddress, Address = candidateAddress }
+                    });
+                Require(savedCandidate.Ok &&
+                    savedCandidate.Snapshot.Settings.CompanionEndpoint == endpoint &&
+                    savedCandidate.Snapshot.Settings.CompanionBindAddress == candidateAddress,
+                    $"candidate assigned private address was not saved: {savedCandidate.Code} {savedCandidate.Message}");
                 Require((await PostAsync<object, JsonElement>(friend,
                     "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(),
                     "candidate did not return to Friend mode");
@@ -197,8 +207,10 @@ internal static partial class SharedWorldJourney
             Require(offerResult is { Ok: true, Offer: { } } &&
                 SharedWorldElection.VerifyOffer(offerResult.Offer) &&
                 offerResult.Offer!.Version.VersionHash == recoveryVersion.VersionHash &&
+                offerResult.Offer.Proposal.CandidateAddress == bCandidateEndpoint &&
                 !offerResult.Offer.Roster.OwnerOverride,
                 $"override-off signed recovery offer failed: {offerResult.Code} {offerResult.Message}");
+            WindowsListenerOwners.RequireTogetherServerOwner(bCandidatePort, friendB);
             var firstVote = await PostAsync<WorldAuthorityOffer, WorldAuthorityVoteAction>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/recovery/vote", offerResult.Offer!);
             var secondVote = await PostAsync<WorldAuthorityOffer, WorldAuthorityVoteAction>(bLocal,
@@ -219,7 +231,7 @@ internal static partial class SharedWorldJourney
             await StartReadyAsync(owner, profile.Id);
             var prepared = await PostAsync<PreparePlannedHandoffRequest, PlannedHandoffResult>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world/handoff/prepare",
-                new(deviceA, $"https://127.0.0.1:{aCandidatePort}"));
+                new(deviceA, aCandidateEndpoint));
             Require(prepared is { Ok: true, Version: { Number: 6 } } &&
                 prepared.Version!.ParentHash == recoveryVersion.VersionHash,
                 $"override-off independent final save failed: {prepared.Code} {prepared.Message}");

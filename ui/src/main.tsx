@@ -278,6 +278,7 @@ function App() {
   const currentOperationProfile = useRef<Record<string, string>>({})
   const draftGuards = useRef<Map<string, EditorDraftGuard>>(new Map())
   const navigationEpoch = useRef(0)
+  const modeSwitchesInFlight = useRef(0)
   const keepEditorGuard = useCallback((source: string, guard: EditorDraftGuard | null) => {
     if (guard) draftGuards.current.set(source, guard)
     else draftGuards.current.delete(source)
@@ -353,6 +354,7 @@ function App() {
   const [connectionActivity, setConnectionActivity] = useState<ConnectionActivity>({})
   const inviteLoad = useRef(0)
   const snapshotEpochRef = useRef(0)
+  const publicIpRequestRef = useRef(0)
   const liveConnectionKeysRef = useRef<Set<string>>(new Set())
   const connectionRevealRequestRef = useRef<Record<string, number>>({})
   const addressRecoveryRef = useRef<HTMLDetailsElement>(null)
@@ -734,26 +736,37 @@ function App() {
     try { return await copyText(value, label, 'Show the value, then select and copy it instead.') }
     finally { setConnectionBusy(key, null) }
   }
-  const detectPublicIp = useCallback(async () => {
+  const detectPublicIp = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return
+    const requestId = ++publicIpRequestRef.current
+    const requestEpoch = ++snapshotEpochRef.current
     setDetectingPublicIp(true)
     try {
-      const result = await changeJson('/api/local/network/detect-public-ip', 'POST', parsePublicIpDetection)
+      const result = await changeJson('/api/local/network/detect-public-ip', 'POST', parsePublicIpDetection, undefined, signal)
+      if (signal?.aborted || snapshotEpochRef.current !== requestEpoch) return
       setPublicIpDetection(result)
       if (result.ok && result.address && result.snapshot) {
         applySnapshot(result.snapshot)
         syncDetectedPublicIp(result.address, result.snapshot.settings)
       }
     } catch {
+      if (signal?.aborted || snapshotEpochRef.current !== requestEpoch) return
       setPublicIpDetection({ ok: false, code: 'PublicIpUnavailable', address: null,
         message: 'Could not check the public IPv4 address. Check this PC’s Internet connection and retry.' })
-    } finally { setDetectingPublicIp(false) }
+    } finally {
+      if (publicIpRequestRef.current === requestId) setDetectingPublicIp(false)
+    }
   }, [applySnapshot, syncDetectedPublicIp])
   useEffect(() => {
-    if (currentMode !== 'Host') return
-    void detectPublicIp()
-    const timer = window.setInterval(() => void detectPublicIp(), 15 * 60 * 1000)
-    return () => window.clearInterval(timer)
-  }, [currentMode, detectPublicIp])
+    if (currentMode !== 'Host' || appInstance?.isStaging !== false) return
+    const controller = new AbortController()
+    void detectPublicIp(controller.signal)
+    const timer = window.setInterval(() => void detectPublicIp(controller.signal), 15 * 60 * 1000)
+    return () => {
+      controller.abort()
+      window.clearInterval(timer)
+    }
+  }, [currentMode, appInstance?.isStaging, detectPublicIp])
   const checkPorts = async (announce = false) => {
     if (announce) setCheckingPorts(true)
     const requestEpoch = ++snapshotEpochRef.current
@@ -1058,24 +1071,35 @@ function App() {
     finally { setPending('') }
   }
   const switchMode = async (mode: 'host' | 'friend') => {
+    const epoch = ++navigationEpoch.current
     if ((dirty || sensitiveDraft) && !window.confirm('Keep a protected nonsecret setup draft and change pages? Unsaved passwords, custom scripts and advanced app settings are discarded.')) return false
-    if (!await beforeChangingScope()) return false
+    if (!await beforeChangingScope() || epoch !== navigationEpoch.current) return false
+    modeSwitchesInFlight.current += 1
     setPending('mode')
     setNotice(null)
     try {
       const result = await change(`/api/local/mode/${mode}`, 'POST')
+      if (epoch !== navigationEpoch.current) return false
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) {
+        const next = await readSnapshot()
+        if (epoch !== navigationEpoch.current) return false
+        if (next.mode !== (mode === 'host' ? 'Host' : 'Friend')) return false
         setRevealedConnections({})
         setRevealedGamePasswords({})
-        const next = await readSnapshot()
         applySnapshot(next)
         resetForMode(next)
+        setWorkspacePage(mode === 'host' ? 'host' : 'join')
         return true
       }
       return false
-    } catch (error) { setNotice({ good: false, text: errorMessage(error) }); return false }
-    finally { setPending('') }
+    } catch (error) {
+      if (epoch === navigationEpoch.current) setNotice({ good: false, text: errorMessage(error) })
+      return false
+    } finally {
+      modeSwitchesInFlight.current -= 1
+      if (modeSwitchesInFlight.current === 0) setPending(current => current === 'mode' ? '' : current)
+    }
   }
   const acknowledgeDataRecovery = async () => {
     if (snapshot?.mode !== 'Host') return
@@ -1369,7 +1393,8 @@ function App() {
 
   const navigateWorkspace = (page: WorkspacePage) => {
     if (page === 'attention' || page === 'settings' ||
-      (page === 'host' && snapshot?.mode === 'Host') || (page === 'join' && snapshot?.mode === 'Friend')) {
+      (page === 'host' && snapshot?.mode === 'Host' && modeSwitchesInFlight.current === 0) ||
+      (page === 'join' && snapshot?.mode === 'Friend' && modeSwitchesInFlight.current === 0)) {
       void changeScope(() => {
         if (page === 'attention') setNotificationUnread(false)
         if (page === 'settings') setHostSettingsSection('app')

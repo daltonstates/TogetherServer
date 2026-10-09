@@ -411,25 +411,27 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const [resolutionMessage, setResolutionMessage] = useState('')
   useEffect(() => {
     let active = true
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus)
+    const controller = new AbortController()
+    void getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal)
       .then(value => { if (active) setStatus(value) })
       .catch(error => { if (active) setMessage(errorMessage(error)) })
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster)
+    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster, controller.signal)
       .then(value => { if (active) setRoster(value) })
       .catch(error => { if (active) setMessage(errorMessage(error)) })
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)
+    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)
       .then(value => { if (active) setHandoff(value) })
       .catch(error => { if (active) setHandoffMessage(errorMessage(error)) })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [profileId])
   useEffect(() => {
     if (!open) return
     let active = true
+    const controller = new AbortController()
     let timer: number | undefined
     const refresh = async () => {
       const [nextStatus, nextHandoff] = await Promise.allSettled([
-        getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus),
-        getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)
+        getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal),
+        getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)
       ])
       if (active) {
         if (nextStatus.status === 'fulfilled') { setStatus(nextStatus.value); setMessage('') }
@@ -440,7 +442,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       }
     }
     void refresh()
-    return () => { active = false; window.clearTimeout(timer) }
+    return () => { active = false; window.clearTimeout(timer); controller.abort() }
   }, [open, profileId])
   const changeSharing = async (enabled: boolean) => {
     setBusy(true); setMessage('')

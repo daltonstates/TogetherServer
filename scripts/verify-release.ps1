@@ -3,7 +3,7 @@ param(
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
-    [ValidateSet('All', 'Existing', 'Qol')][string]$Suite = 'All',
+    [ValidateSet('All', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop')][string]$Suite = 'All',
     [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
@@ -118,7 +118,7 @@ try {
             throw 'Core route checks must use in-memory TestServer; packaged journeys own real sockets.'
         }
     }
-    if ($Suite -ne 'Qol') {
+    if ($Suite -in 'All', 'Existing') {
         Invoke-Checked 'UI lint' {
             Push-Location ui
             try { npm run lint }
@@ -175,16 +175,20 @@ try {
         Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
     }
 
-    if ($Suite -ne 'Existing') {
+    if ($Suite -in 'All', 'Qol', 'QolApi') {
         Invoke-Checked 'TogetherServer.FeatureChecks' {
             dotnet run --project checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj -c Release
         }
         Invoke-Checked 'QoL packaged API journey' {
             dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --qol-api-journey
         }
+    }
+    if ($Suite -in 'All', 'Qol', 'Browser') {
         Invoke-Checked 'QoL bundled browser journeys' {
             node ui/checks/qol-browser-smoke.mjs --app-path $AppPath --allow-interactive-tests --output-dir local-data/ci-evidence/qol-browser
         }
+    }
+    if ($Suite -in 'All', 'Qol', 'Desktop') {
         if (!$SkipDesktop) {
             Invoke-Checked 'QoL native desktop smoke' { & checks/qol-desktop-smoke.ps1 -AppPath $AppPath -AllowInteractiveTests }
         }

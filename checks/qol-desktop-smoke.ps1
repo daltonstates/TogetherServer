@@ -304,9 +304,9 @@ try {
     assert.equal(selected.ok, true); assert.equal(selected.code, 'ServerSelected');
     assert.equal(path.resolve(selected.executablePath), path.resolve(caseRoot, 'picker-fixture', 'valheim_server.exe'));
     fs.writeFileSync(out('picker-result.json'), JSON.stringify({ selectedDisposableFixture: true }));
-  } else if (mode === 'inspect') {
+  } else if (mode === 'inspect' || mode === 'inspect-compact') {
     await page.locator('.shell').waitFor();
-    await page.screenshot({ path: out('native-final-window.png') });
+    await page.screenshot({ path: out(mode === 'inspect-compact' ? 'native-compact-150-percent.png' : 'native-final-window.png') });
   } else throw new Error('Unknown fixed smoke phase.');
   assert.deepEqual(errors, [], 'Native WebView had uncaught page errors.');
   if (browser.isConnected() && !page.isClosed()) {
@@ -397,7 +397,7 @@ try {
         $compact = Read-Rect
         Require ([Math]::Abs(($compact.Right - $compact.Left) - $compactWidth) -le 8 -and
             [Math]::Abs(($compact.Bottom - $compact.Top) - $compactHeight) -le 8) 'Native minimum bounds rejected the supported 390x600 logical size.'
-        Run-WebViewPhase 'inspect'
+        Run-WebViewPhase 'inspect-compact'
         Write-Host 'PASS native compact 390x600 logical window with the persisted 150% text setting'
         Pass-Case 'compact'
     } else {

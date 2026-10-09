@@ -32,6 +32,9 @@ internal static partial class SharedWorldJourney
             friendBPort, candidatePort)[0];
         var candidateAPort = AvailablePorts(1, hostPort, companionPort, friendAPort,
             friendBPort, friendCPort, candidatePort)[0];
+        var candidateAddress = AssignedPrivateIpv4ForJourney();
+        var candidateEndpoint = $"https://{candidateAddress}:{candidatePort}";
+        var candidateAEndpoint = $"https://{candidateAddress}:{candidateAPort}";
         var gamePort = AvailableGamePort();
         var world = Path.Combine(hostData, "worlds", "disposable-world");
         Directory.CreateDirectory(world);
@@ -369,26 +372,36 @@ internal static partial class SharedWorldJourney
             Require((await PostAsync<object, JsonElement>(bLocal,
                 "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
                 "Friend B could not edit its future Host address");
-            Require((await PutAsync<HostSettings, ActionResult>(bLocal,
+            var candidateSettings = await PutAsync<HostSettings, ActionResult>(bLocal,
                 "/api/local/settings", new HostSettings
                 {
-                    CompanionEndpoint = $"https://127.0.0.1:{candidatePort}",
+                    CompanionEndpoint = candidateEndpoint,
                     CompanionPort = candidatePort,
-                    CompanionBindAddress = "127.0.0.1"
-                })).Ok, "Friend B could not save its direct candidate address");
+                    CompanionBindAddress = candidateAddress,
+                    ConnectionRoute = new() { Mode = ConnectionRouteModes.AdvancedAddress, Address = candidateAddress }
+                });
+            Require(candidateSettings.Ok &&
+                candidateSettings.Snapshot.Settings.CompanionEndpoint == candidateEndpoint &&
+                candidateSettings.Snapshot.Settings.CompanionBindAddress == candidateAddress,
+                $"Friend B could not save its assigned private candidate address: {candidateSettings.Code} {candidateSettings.Message}");
             Require((await PostAsync<object, JsonElement>(bLocal,
                 "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(),
                 "candidate PC did not return to Friend mode");
             Require((await PostAsync<object, JsonElement>(aLocal,
                 "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
                 "Friend A could not edit its future Host address");
-            Require((await PutAsync<HostSettings, ActionResult>(aLocal,
+            var candidateASettings = await PutAsync<HostSettings, ActionResult>(aLocal,
                 "/api/local/settings", new HostSettings
                 {
-                    CompanionEndpoint = $"https://127.0.0.1:{candidateAPort}",
+                    CompanionEndpoint = candidateAEndpoint,
                     CompanionPort = candidateAPort,
-                    CompanionBindAddress = "127.0.0.1"
-                })).Ok, "Friend A could not save its direct candidate address");
+                    CompanionBindAddress = candidateAddress,
+                    ConnectionRoute = new() { Mode = ConnectionRouteModes.AdvancedAddress, Address = candidateAddress }
+                });
+            Require(candidateASettings.Ok &&
+                candidateASettings.Snapshot.Settings.CompanionEndpoint == candidateAEndpoint &&
+                candidateASettings.Snapshot.Settings.CompanionBindAddress == candidateAddress,
+                $"Friend A could not save its assigned private candidate address: {candidateASettings.Code} {candidateASettings.Message}");
             Require((await PostAsync<object, JsonElement>(aLocal,
                 "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(),
                 "Friend A did not return to Friend mode");
@@ -413,8 +426,9 @@ internal static partial class SharedWorldJourney
             Require(offerResult is { Ok: true, Offer: { } } &&
                 SharedWorldElection.VerifyOffer(offerResult.Offer) &&
                 offerResult.Offer.Version.VersionHash == secondVersion.VersionHash &&
-                offerResult.Offer.Proposal.CandidateAddress == $"https://127.0.0.1:{candidatePort}",
+                offerResult.Offer.Proposal.CandidateAddress == candidateEndpoint,
                 $"candidate did not arm an exact, signed direct-address offer: {offerResult.Code} {offerResult.Message}");
+            WindowsListenerOwners.RequireTogetherServerOwner(candidatePort, friendB);
             var offer = offerResult.Offer!;
             Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/consent", new(false))).Ok,
@@ -479,7 +493,7 @@ internal static partial class SharedWorldJourney
             await StartReadyAsync(owner, profile.Id);
             var planned = await PostAsync<PreparePlannedHandoffRequest, PlannedHandoffResult>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world/handoff/prepare",
-                new(deviceA, $"https://127.0.0.1:{candidateAPort}"));
+                new(deviceA, candidateAEndpoint));
             Require(planned is { Ok: true, Code: "WaitingForSuccessorCopy", Version: { Number: 3 } } &&
                 planned.Version.ParentHash == secondVersion.VersionHash &&
                 planned.Version.VersionHash != decision.Version.VersionHash,
@@ -664,6 +678,31 @@ internal static partial class SharedWorldJourney
 
     private static string ReceiverRoot(string data, Guid device, Guid profile) =>
         Path.Combine(data, "received-shared-worlds", device.ToString("N"), profile.ToString("N"));
+
+    private static string AssignedPrivateIpv4ForJourney()
+    {
+        // Takeover proofs deliberately reject loopback. Select an address that
+        // Windows actually assigned to this approved test runner, restricted to
+        // RFC1918; never fabricate a public endpoint or bind every interface.
+        var address = NetworkInterface.GetAllNetworkInterfaces()
+            .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up &&
+                adapter.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel))
+            .SelectMany(adapter => adapter.GetIPProperties().UnicastAddresses)
+            .Select(item => item.Address)
+            .Where(item => item.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            .Where(item =>
+            {
+                var bytes = item.GetAddressBytes();
+                return bytes[0] == 10 || bytes[0] == 172 && bytes[1] is >= 16 and <= 31 ||
+                    bytes[0] == 192 && bytes[1] == 168;
+            })
+            .Distinct()
+            .OrderBy(item => item.ToString(), StringComparer.Ordinal)
+            .FirstOrDefault();
+        return address?.ToString() ?? throw new InvalidOperationException(
+            "The isolated shared-world journey requires an actually assigned RFC1918 IPv4 address on an active adapter. " +
+            "Use an approved separate Windows runner with private networking; no public or synthetic address was selected.");
+    }
 
     private static bool RecordedDecision(string path, WorldAuthorityRecord expected)
     {

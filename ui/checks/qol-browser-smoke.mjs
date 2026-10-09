@@ -28,7 +28,10 @@ const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
-  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], cleanup: [], startedUtc: new Date().toISOString() }
+  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [],
+  cleanup: [], startedUtc: new Date().toISOString() }
+const browserCollectors = []
+const pendingResponseClassifications = new Set()
 let browser
 let failed = false
 let stopping = false
@@ -58,6 +61,143 @@ function redact(value) {
     .replace(/TS[123]-[^\s"'<>]+/gu, '[synthetic code]')
     .replace(/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/giu, '[id]')
     .replace(/(?:https?:\/\/|[A-Za-z]:[\\/])[^\s"'<>]+/gu, '[location]').slice(0, 600)
+}
+async function boundedResponseJson(response, maximumBytes = 2048) {
+  const headers = response.headers()
+  if (!/^application\/json(?:;|$)/iu.test(headers['content-type'] ?? '')) return null
+  const length = headers['content-length']
+  if (length !== undefined && (!/^\d{1,9}$/u.test(length) || Number(length) > maximumBytes)) return null
+  let timer
+  try {
+    const bytes = await Promise.race([
+      response.body(),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 5000) })
+    ])
+    if (!bytes || bytes.length > maximumBytes) return null
+    const value = JSON.parse(bytes.toString('utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  } catch { return null }
+  finally { clearTimeout(timer) }
+}
+const guidPattern = '[\\da-f]{8}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{12}'
+const guidExpression = new RegExp(`^${guidPattern}$`, 'iu')
+const hostReadPath = new RegExp(`^/api/local/profiles/${guidPattern}/(?:requirements|chat(?:/summary)?|shared-world(?:/(?:governance|handoff))?)$`, 'iu')
+const friendReadPath = new RegExp(`^/api/local/friend/${guidPattern}/(?:compatibility|shared-world(?:/(?:recovery|handoff/restore))?)$`, 'iu')
+const scopedFriendChatPath = new RegExp(`^/api/local/friend/connections/${guidPattern}/servers/${guidPattern}/chat(?:/summary)?$`, 'iu')
+function roleBoundRead(request, url, origin) {
+  if (url.origin !== origin || url.search || request.resourceType() !== 'fetch') return null
+  if (request.method() === 'GET') {
+    if (hostReadPath.test(url.pathname) || url.pathname === '/api/local/minecraft/discover') return 'Host'
+    if (friendReadPath.test(url.pathname) || scopedFriendChatPath.test(url.pathname)) return 'Friend'
+    return null
+  }
+  if (request.method() !== 'POST') return null
+  if (url.pathname === '/api/local/network/detect-public-ip') {
+    const bytes = request.postDataBuffer()
+    return !bytes || bytes.length === 0 ? 'Host' : null
+  }
+  if (url.pathname !== '/api/local/ui-drafts/read') return null
+  const bytes = request.postDataBuffer()
+  if (!bytes || bytes.length > 1024) return null
+  try {
+    const body = JSON.parse(bytes.toString('utf8'))
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 4 ||
+        !Object.keys(body).every(key => ['purpose', 'profileId', 'connectionId', 'key'].includes(key)) ||
+        !['file', 'settings', 'list', 'chat'].includes(body.purpose) || typeof body.profileId !== 'string' ||
+        !guidExpression.test(body.profileId) || typeof body.key !== 'string' || !/^[a-z\d_:-]{1,96}$/iu.test(body.key)) return null
+    const empty = '00000000-0000-0000-0000-000000000000'
+    if (body.profileId === empty && (body.purpose !== 'settings' || body.key !== 'host-setup' || body.connectionId !== null)) return null
+    if (body.connectionId === null) return 'Host'
+    return body.purpose === 'chat' && body.key === 'compose' && typeof body.connectionId === 'string' &&
+      guidExpression.test(body.connectionId) ? 'Friend' : null
+  } catch { return null }
+}
+function observeBrowserRequest(collector, request) {
+  const order = ++collector.order
+  collector.requestOrders.set(request, order)
+  const url = new URL(request.url())
+  const match = /^\/api\/local\/mode\/(host|friend)$/u.exec(url.pathname)
+  if (url.origin !== collector.origin || url.search || request.method() !== 'POST' || request.resourceType() !== 'fetch' ||
+      !match) return
+  const bytes = request.postDataBuffer()
+  if (bytes && bytes.length !== 0) return
+  const transition = { id: collector.transitions.length + 1, from: collector.mode, to: match[1] === 'host' ? 'Host' : 'Friend',
+    started: order, responded: null, confirmed: false }
+  collector.transitions.push(transition)
+  collector.modeRequests.set(request, transition)
+}
+async function observeBrowserResponse(collector, response, order) {
+  const request = response.request()
+  const url = new URL(response.url())
+  const started = collector.requestOrders.get(request)
+  const transition = collector.modeRequests.get(request)
+  const status = response.status()
+  if (transition) {
+    transition.responded = order
+    const body = status === 200 ? await boundedResponseJson(response) : null
+    transition.confirmed = body?.ok === true && body.code === 'ModeChanged'
+    if (transition.confirmed && order > collector.modeOrder) {
+      collector.mode = transition.to; collector.modeOrder = order
+    }
+  } else if (url.origin === collector.origin && url.pathname === '/api/local/snapshot' && !url.search &&
+      request.method() === 'GET' && status === 200) {
+    const body = await boundedResponseJson(response, 512 * 1024)
+    if (body?.mode === 'Host' || body?.mode === 'Friend') {
+      collector.snapshots.push({ mode: body.mode, started, responded: order })
+      if (order > collector.modeOrder) { collector.mode = body.mode; collector.modeOrder = order }
+    }
+  }
+  if (status < 400) return
+  const body = url.origin === collector.origin ? await boundedResponseJson(response) : null
+  const code = typeof body?.code === 'string' && /^[a-z][a-z\d]{0,63}$/iu.test(body.code) ? body.code : null
+  collector.responses.push({ url: response.url(), status, code, role: roleBoundRead(request, url, collector.origin), started,
+    responded: order, evidence: { method: request.method(), status, route: redact(url.pathname), code }, classified: false, consoleConsumed: false })
+}
+function expectedModeTransition(collector, response) {
+  if (response.status !== 409 || !response.role || response.started === undefined ||
+      response.code !== (response.role === 'Host' ? 'FriendMode' : 'HostMode')) return null
+  return collector.transitions.find((transition, index) => {
+    if (!transition.confirmed || transition.from !== response.role || transition.to === response.role) return false
+    // The first matching snapshot acknowledges the new scope. Later wrong-role requests remain failures.
+    const acknowledgement = collector.snapshots.filter(snapshot => snapshot.mode === transition.to &&
+      snapshot.started >= transition.started && snapshot.responded >= transition.responded)
+      .sort((left, right) => left.responded - right.responded)[0]
+    const ended = Math.min(acknowledgement?.responded ?? transition.responded,
+      collector.transitions[index + 1]?.started ?? Infinity)
+    return response.started < ended && response.responded > transition.started
+  }) ?? null
+}
+async function flushBrowserEvidence() {
+  while (pendingResponseClassifications.size > 0) await Promise.allSettled([...pendingResponseClassifications])
+  for (const collector of browserCollectors) {
+    const modes = [...collector.snapshots,
+      ...collector.transitions.filter(transition => transition.confirmed)
+        .map(transition => ({ mode: transition.to, responded: transition.responded }))]
+      .sort((left, right) => right.responded - left.responded)
+    for (const transition of collector.transitions) {
+      // Body reads can finish out of order; use the last mode receipt observed before this request.
+      transition.from = modes.find(mode => mode.responded < transition.started)?.mode ?? transition.from
+    }
+    for (const response of collector.responses) {
+      if (response.classified) continue
+      const transition = expectedModeTransition(collector, response)
+      response.expected = !!transition
+      if (transition) report.expectedModeDenials.push({ ...response.evidence, page: collector.id, transition: transition.id,
+        fromMode: transition.from, toMode: transition.to, transitionCode: 'ModeChanged' })
+      else report.failedRequests.push(response.evidence)
+      response.classified = true
+    }
+    for (const message of collector.consoleErrors.splice(0)) {
+      const match = /^Failed to load resource: the server responded with a status of (\d{3})(?: \([^\r\n]*\))?$/u.exec(message.text)
+      const corresponding = match && collector.responses.find(response => !response.consoleConsumed &&
+        response.url === message.url && response.status === Number(match[1]))
+      if (corresponding) {
+        corresponding.consoleConsumed = true
+        report.deduplicatedConsoleHttpErrors.push({ ...corresponding.evidence, page: collector.id,
+          observedAs: corresponding.expected ? 'expected-mode-denial' : 'failed-request' })
+      } else report.browserErrors.push({ kind: 'console', message: redact(message.text) })
+    }
+  }
 }
 async function eventually(read, predicate, label, timeout = 30_000) {
   const end = Date.now() + timeout
@@ -248,9 +388,13 @@ async function selectServer(page, name, tab = 'Overview') {
 async function openPage(instance, context) {
   const page = await context.newPage()
   page.setDefaultTimeout(15_000)
+  const collector = { id: browserCollectors.length + 1, origin: instance.origin, order: 0, mode: null, modeOrder: 0,
+    requestOrders: new WeakMap(), modeRequests: new WeakMap(), transitions: [], snapshots: [], responses: [], consoleErrors: [] }
+  browserCollectors.push(collector)
+  page.on('request', request => observeBrowserRequest(collector, request))
   page.on('pageerror', error => report.browserErrors.push({ kind: 'pageerror', message: redact(error.message) }))
   page.on('console', message => {
-    if (message.type() === 'error') report.browserErrors.push({ kind: 'console', message: redact(message.text()) })
+    if (message.type() === 'error') collector.consoleErrors.push({ text: message.text(), url: message.location().url })
   })
   page.on('requestfailed', request => {
     const failure = request.failure()?.errorText ?? 'Request failed'
@@ -259,7 +403,14 @@ async function openPage(instance, context) {
     report.failedRequests.push({ method: request.method(), route: redact(url.pathname), failure: redact(failure) })
   })
   page.on('response', response => {
-    if (response.status() >= 400) report.failedRequests.push({ status: response.status(), route: redact(new URL(response.url()).pathname) })
+    const order = ++collector.order
+    const pending = observeBrowserResponse(collector, response, order).catch(error => {
+      if (response.status() >= 400) report.failedRequests.push({ method: response.request().method(),
+        status: response.status(), route: redact(new URL(response.url()).pathname), code: null })
+      report.browserErrors.push({ kind: 'response-collector', message: redact(error.message) })
+    })
+    pendingResponseClassifications.add(pending)
+    void pending.finally(() => pendingResponseClassifications.delete(pending))
   })
   page.on('dialog', async dialog => {
     if (dialog.type() === 'confirm' && /discard|reload|prepare to change|stop|restart|finish later clears/iu.test(dialog.message())) await dialog.accept()
@@ -584,6 +735,7 @@ async function cleanupOwnedResources() {
     try { await browser.close() }
     catch { safeToRemove = false; report.cleanup.push({ resource: 'owned browser', outcome: 'close failed' }) }
   }
+  await flushBrowserEvidence()
   for (const instance of [...instances].reverse()) {
     try { await rememberManagedProcesses(instance) }
     catch { safeToRemove = false; report.cleanup.push({ resource: instance.name, outcome: 'managed identity needs review' }) }
@@ -668,6 +820,7 @@ try {
   skip('Steam/client launch, game terms and official downloads', 'No real game client, native game launcher, terms consent or download is invoked by this browser smoke.')
   skip('real-game, separate-PC/WAN and world save/load/restart acceptance', 'All data and protocols here are disposable synthetic loopback fixtures; those external gates require their own evidence.')
   assert.equal(createHash('sha256').update(await readFile(appPath)).digest('hex'), candidateSha256, 'The exact candidate changed during browser smoke.')
+  await flushBrowserEvidence()
   assert.equal(report.browserErrors.length, 0, 'The bundled UI emitted browser errors; inspect the redacted report.')
   assert.equal(report.failedRequests.length, 0, 'The bundled UI emitted failed requests; inspect the redacted report.')
 } catch (error) {
