@@ -67,6 +67,10 @@ if ($ports.Count -ne 2) { throw 'Two unused loopback app/debugging ports were no
 $port = $ports[0]
 $debugPort = $ports[1]
 $debugUserDataRoot = Join-Path $dataRoot 'webview2'
+# The Runtime appends EBWebView to the API's userDataFolder for Chromium's
+# --user-data-dir. Microsoft documents that fixed suffix here:
+# https://learn.microsoft.com/en-us/microsoft-edge/web-platform/devtools-mcp-server#step-2-find-the-webview2-user-data-directory
+$debugChromiumUserDataRoot = Join-Path $debugUserDataRoot 'EBWebView'
 $baseUrl = "http://127.0.0.1:$port"
 $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $profileId = [guid]::NewGuid().ToString('D')
@@ -190,8 +194,12 @@ function Wait-OwnedWebViewDebugger {
                 $arguments = [TogetherServerQolWindowCheck]::CommandLineArguments($metadata.CommandLine)
                 Require ($arguments -contains "--remote-debugging-port=$debugPort") 'The owned WebView2 browser did not receive the requested debugging port. Elevated WebView2 hosts ignore environment overrides; use a separately approved standard-integrity runner or an explicit staging-only API option.'
                 $profileArgument = @($arguments | Where-Object { $_.StartsWith('--user-data-dir=', [StringComparison]::Ordinal) })
-                Require ($profileArgument.Count -eq 1 -and
-                    [IO.Path]::GetFullPath($profileArgument[0].Substring('--user-data-dir='.Length)).Equals($debugUserDataRoot, [StringComparison]::OrdinalIgnoreCase)) 'The debugger browser profile is outside the disposable staging data.'
+                Require ($profileArgument.Count -eq 1) 'The owned debugger browser did not provide one exact profile argument.'
+                $profilePath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($profileArgument[0].Substring('--user-data-dir='.Length)))
+                $relativeProfile = if ($profilePath.Equals($debugChromiumUserDataRoot, [StringComparison]::OrdinalIgnoreCase)) { 'EBWebView' }
+                    elseif ($profilePath.Equals($debugUserDataRoot, [StringComparison]::OrdinalIgnoreCase)) { 'root' }
+                    else { 'unexpected' }
+                Require ($relativeProfile -eq 'EBWebView') "The debugger browser profile did not match the exact disposable webview2/EBWebView directory. observedRelativeProfile=$relativeProfile"
                 try {
                     $version = Invoke-RestMethod "http://127.0.0.1:$debugPort/json/version" -TimeoutSec 2 -NoProxy
                     $socket = $null

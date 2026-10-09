@@ -618,7 +618,31 @@ async function editorRecovery(page, host, profiles) {
   await files.getByRole('button', { name: 'Discard unsaved file edits', exact: true }).click()
   const settings = page.getByRole('region', { name: 'Simple game settings' })
   const difficulty = settings.getByRole('combobox', { name: /^Difficulty/u })
-  await difficulty.selectOption('hard')
+  const guided = await api(host, `/api/local/profiles/${profiles.bedrock.id}/game-settings`)
+  const settingKeys = guided?.settings && typeof guided.settings === 'object' && !Array.isArray(guided.settings)
+    ? Object.keys(guided.settings).sort() : []
+  const guidedSummary = `ok=${guided?.ok === true}, code=${redact(guided?.code)}, kind=${redact(guided?.kind)}, ` +
+    `viewKeys=${redact(Object.keys(guided ?? {}).sort().join(','))}, settingKeys=${redact(settingKeys.join(','))}, ` +
+    `settingCount=${settingKeys.length}, listCount=${Array.isArray(guided?.lists) ? guided.lists.length : -1}, ` +
+    `shaPresent=${typeof guided?.sha256 === 'string'}, message=${redact(guided?.message).replace(/\b[a-f\d]{64}\b/giu, '[hash]')}`
+  try {
+    assert.equal(guided?.ok, true, guidedSummary)
+    assert.equal(guided?.code, 'GameSettingsReady', guidedSummary)
+    assert.equal(guided?.kind, 'MinecraftBedrock', guidedSummary)
+    assert.equal(guided?.settings?.difficulty, 'normal', guidedSummary)
+    assert((await readFile(path.join(profiles.bedrock.worldDirectory, 'server.properties'), 'utf8')) === profiles.properties,
+      'Discard and the guided read must leave the original synthetic file unchanged.')
+    await difficulty.selectOption('hard')
+  } catch (error) {
+    const regionCount = await settings.count()
+    const notices = regionCount === 1
+      ? await settings.locator(':scope > .notice, :scope > .helper-text').allTextContents() : []
+    const notice = redact(notices.join(' ').replace(/\b[a-f\d]{64}\b/giu, '[hash]'))
+    const selectCount = regionCount === 1 ? await settings.locator('select').count() : 0
+    const difficultyCount = regionCount === 1 ? await difficulty.count() : 0
+    throw new Error(`Guided settings precondition/control failed: ${guidedSummary}; ` +
+      `regions=${regionCount}, selects=${selectCount}, difficultyControls=${difficultyCount}, notice=${notice}; ${redact(error.message)}`, { cause: error })
+  }
   await settings.getByLabel('Search game settings', { exact: true }).fill('players')
   assert.equal(await difficulty.count(), 0)
   await settings.getByLabel('Search game settings', { exact: true }).fill('')

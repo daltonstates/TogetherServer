@@ -18,7 +18,7 @@ Implementation baseline: `390da9a6c7cc0d52195e7b04fed8a7b0bed2196d`. The origina
 | --- | --- | --- |
 | Existing complete packaged gate on baseline | Failed at outdated overloaded-method reflection check; fixed for next run | [Run 37886291239](https://github.com/daltonstates/TogetherServer/actions/runs/37886291239) |
 | New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed on three successive isolated candidates | Runs 37891050308, 37894019360 and 37895269849; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
-| New main React browser workflows, keyboard, recovery and viewport screenshots | First two complete journeys passed; setup stopped at a field lookup; later journeys pending | Run 37895269849; `ui/checks/qol-browser-smoke.mjs` |
+| New main React browser workflows, keyboard, recovery and viewport screenshots | First three complete journeys passed; editor recovery stopped at a guided-control lookup; later journeys pending | Run 37898107034; `ui/checks/qol-browser-smoke.mjs` |
 | Native Quit draft receipt, placement, tray and fixture picker coverage | Native WebView rendered; debugger attach blocked further coverage; no completed native journey claimed | Run 37895269849; `checks/qol-desktop-smoke.ps1` |
 | Expanded release gate and CI evidence retention | One immutable build shared with four separate Windows verification runners | `scripts/verify-release.ps1`, `.github/workflows/windows-ci.yml` |
 | Real Friend-PC/WAN/game/world-save acceptance | Not performed | Separate owner-installed binaries, test PCs/routes and copied-world acceptance required |
@@ -36,7 +36,7 @@ The final validation report will list passes, failures, skips, exact source/cand
 - Canonical Friend states `Not connected` and `Update required` were missing from the tray summary allowlist, preventing newer Host counts from being projected. A data-only regression now checks both states and invalid metadata rejection.
 - Required solution formatting was corrected without changing the affected files' behavior. Native title-bar Close checks allow the bounded draft handshake and HTTP shutdown to finish.
 
-CI artifacts contain candidate identity, per-stage outcomes, redacted browser summaries and screenshots only. Disposable state, synthetic credentials, worlds, fixture binaries and protected drafts are excluded from uploads.
+Verification evidence artifacts contain candidate identity, per-stage outcomes, redacted browser summaries and screenshots only. Disposable state, synthetic credentials, worlds, fixture binaries and protected drafts are excluded from those evidence uploads. The separate one-day candidate artifact intentionally includes the exact app, bundled UI and reviewed synthetic fixture build outputs so each isolated runner tests the same build.
 
 ## Local follow-up checks
 
@@ -92,3 +92,14 @@ Follow-up commits use a per-source-revision CI concurrency group so correcting b
 - After the checkbox correction, all **11 existing backup catalog tests** passed and the UI bundle/typecheck passed. Source inspection identified one stale served-text expectation for the former UTC-input label; it now checks the implemented local-time input plus the retained exact UTC preview. The unchanged shared-control guard and all reviewed data-only served-bundle assertions passed locally without starting the served smoke, a listener or an app. Focused lint and check-source parsing also passed.
 
 The second `Existing` job stopped at the shared-control guard; its later staging/desktop/update handoff checks and later new browser/native workflows remain pending. Older partial passes are retained as diagnostic evidence, not combined candidate acceptance.
+
+## Third four-lane run
+
+[Run 37898107034](https://github.com/daltonstates/TogetherServer/actions/runs/37898107034), head `54a3b66128dd16adc4f1ba429fd35d1b49a55fbf`, built candidate `0.3.0+7980912ee6f9794c512b6f56201ad08484818758`, SHA-256 `C1BA9A185A4FB2B69A1711D3E412317CE4EF531DEAAE375A31883651D883C37C`.
+
+- `QolApi` passed completely again.
+- `Browser` passed all three initial journeys, including setup blockers, empty secret/world fields after reuse, applied nonoverlapping ports and paused-step recovery. The wide/narrow 150-percent screenshots now prove all three named header controls fit. Artifact inspection confirmed the fixed narrow header. Unexpected HTTP and JavaScript failures were both zero. The editor journey proved raw-file draft/navigation recovery and unchanged original bytes, then stopped at the guided Difficulty lookup. The next check requires the real scoped settings result first and retains bounded typed/UI diagnostics; no collapsed section or DTO mismatch was established from source, and the real cause remains pending.
+- `Desktop` verified the loopback debugger's exact browser/parent/profile ancestry but refused its profile path before attachment. [Microsoft documents](https://learn.microsoft.com/en-us/microsoft-edge/web-platform/devtools-mcp-server#step-2-find-the-webview2-user-data-directory) that the Runtime appends `EBWebView` to the API user-data directory. The check now requires exactly the disposable `webview2/EBWebView` path, never an arbitrary descendant. Native journey completion remains pending.
+- `Existing` is still running independently. No current pending stage is counted as passed.
+
+The new follow-up changes are check diagnostics and the exact documented native profile path. The application code is unchanged from this candidate. The next run still builds and verifies one exact source-identified candidate across all four lanes.
