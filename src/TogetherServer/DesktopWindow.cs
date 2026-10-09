@@ -616,6 +616,16 @@ internal sealed class DesktopWindow
         maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
     }
 
+    internal static string? CiWebViewDebugArguments(bool staging, string? enteredPort)
+    {
+        if (!staging || enteredPort is not { Length: 5 } ||
+            enteredPort.Any(character => character is < '0' or > '9') ||
+            !int.TryParse(enteredPort, NumberStyles.None, CultureInfo.InvariantCulture, out var port) ||
+            port is < 49152 or > 65535) return null;
+        return "--remote-debugging-port=" + port.ToString(CultureInfo.InvariantCulture) +
+            " --remote-debugging-address=127.0.0.1";
+    }
+
     private async Task LoadGuiAsync(Form window, Control content)
     {
         var loading = new Label
@@ -633,7 +643,15 @@ internal sealed class DesktopWindow
         {
             if (!TrySetLoadState(GuiLoadState.CreatingEnvironment)) return;
             _ = CoreWebView2Environment.GetAvailableBrowserVersionString();
-            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory);
+            // This bounded staging opt-in does not authorize interactive tests on the owner's desktop.
+            var debugArguments = isStaging
+                ? CiWebViewDebugArguments(true, Environment.GetEnvironmentVariable("TOGETHERSERVER_CI_WEBVIEW_DEBUG_PORT"))
+                : null;
+            var options = debugArguments is null ? null : new CoreWebView2EnvironmentOptions
+            {
+                AdditionalBrowserArguments = debugArguments
+            };
+            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory, options: options);
             if (window.IsDisposed || !TrySetLoadState(GuiLoadState.InitializingWebView)) return;
             var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = content.BackColor };
             content.Controls.Add(view);

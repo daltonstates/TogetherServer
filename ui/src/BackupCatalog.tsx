@@ -103,7 +103,7 @@ function RestoreBackupReview({ review, unavailableReason, working, onConfirm, on
     </dl>
     <p>{review.checkpoint}</p><p>{unavailableReason || review.reason}</p>
     <p>The selected backup is verified again. After Restore, test the world in the game and check a recognizable saved change after restart.</p>
-    <label className="check"><input type="checkbox" checked={accepted} disabled={working}
+    <label className="check"><Input type="checkbox" checked={accepted} disabled={working}
       onChange={event => setAccepted(event.target.checked)} />I reviewed this backup and the current world replacement.</label>
     <div className="actions"><Button className="secondary" disabled={working || !accepted || !review.canRestore || !!unavailableReason}
       onClick={onConfirm}>{working ? 'Restoring…' : 'Restore reviewed backup'}</Button>
@@ -254,7 +254,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
         key={JSON.stringify([profileId, backup.backupId, backup.label, backup.pinned])} backup={backup} updater={updater} capacity={catalog} onSaved={saved} actions={actions(backup)}>
         <small>World: {backup.worldId ?? 'Unknown'} · {backup.setupIncluded === true ? 'Includes protected setup' : backup.setupIncluded === false ? 'World only' : 'Setup coverage unknown'}.</small>
         <BackupEvidenceDetails backup={backup} evidenceAvailable={catalog.evidenceAvailable} />
-        <label className="check"><input type="checkbox" checked={comparisonIds.includes(backup.backupId)}
+        <label className="check"><Input type="checkbox" checked={comparisonIds.includes(backup.backupId)}
           disabled={comparisonIds.length === 2 && !comparisonIds.includes(backup.backupId)} onChange={event => setComparisonIds(current =>
             event.target.checked ? [...current, backup.backupId].slice(0, 2) : current.filter(id => id !== backup.backupId))} />Compare {backup.label || new Date(backup.createdUtc).toLocaleString()}</label>
       </BackupBookmarkEditor>)}</div>

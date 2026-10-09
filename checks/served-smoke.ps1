@@ -87,7 +87,7 @@ try {
         'App preferences, Friend access, timers, and advanced Host controls.', 'PC name', 'Server access', 'Choose servers', 'Search servers',
         'Select all', 'Clear all', 'Save access', 'Start servers', 'Request Stop', 'View logs', 'On with server exceptions',
         'Access for this PC', 'No end date', 'Access ends', 'Access expired', 'Change deadline', 'Clear deadline',
-        'Advanced: custom UTC date and time', 'Exact UTC', 'On this PC', 'Save deadline', 'saved connection remains here',
+        'Advanced: custom local date and time', 'Local date and time', 'Exact UTC', 'On this PC', 'Save deadline', 'saved connection remains here',
         'Allow remote Start and Stop', 'Stop & timer',
         'Connection help', 'Advanced network and game paths', 'Technical details',
         'Game server', 'Friend app', 'Outside connection', 'Reachable outside network', 'Recommended next step',

@@ -92,7 +92,7 @@ export function BackupBookmarkEditor({ backup, updater = updateBackupBookmark, c
           <option value="">Choose a suggestion</option>
           {suggestedBackupNames(backup).map(name => <option key={name} value={name}>{name}</option>)}
         </Select>
-        <label className="check"><input type="checkbox" checked={pinned} disabled={saving}
+        <label className="check"><Input type="checkbox" checked={pinned} disabled={saving}
           onChange={event => setPinned(event.target.checked)} />Pin this backup</label>
         <small>{preview.message}</small>
         {!valid && <p role="alert">Use English letters, numbers, spaces or simple punctuation in the name.</p>}

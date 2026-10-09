@@ -2065,23 +2065,54 @@ try
         "remote Stop did not use the synthetic console's graceful exit");
     Console.WriteLine("PASS long remote Stop survives Friend restart and queued Start cannot race Host shutdown"); passes++;
 
-    var retainedHostLogs = await OwnerGetJson<ServerLogResult>(stopOwner,
+    // A terminal-operation poll deliberately returns before heartbeat refresh.
+    // The restarted Friend must receive canonical permissions and capabilities before proxying logs.
+    FriendView? retainedLogStatus = null;
+    var retainedLogStatusReady = false;
+    for (var i = 0; i < 80; i++)
+    {
+        retainedLogStatus = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
+        if (retainedLogStatus.HostCapabilities?.Contains(CompanionProtocol.ServerLogsCapability, StringComparer.Ordinal) == true &&
+            retainedLogStatus.Profiles.SingleOrDefault(item => item.Id == stopProfile.Id) is { CanViewLogs: true, State: "Offline" })
+        {
+            retainedLogStatusReady = true;
+            break;
+        }
+        await Task.Delay(100);
+    }
+    var retainedLogProfile = retainedLogStatus?.Profiles.SingleOrDefault(item => item.Id == stopProfile.Id);
+    Require(retainedLogStatusReady,
+        $"restarted Friend did not refresh canonical retained-log access: state={retainedLogStatus?.State}, " +
+        $"code={retainedLogStatus?.ConnectionCode}, logsCapability={retainedLogStatus?.HostCapabilities?.Contains(CompanionProtocol.ServerLogsCapability, StringComparer.Ordinal) == true}, " +
+        $"canViewLogs={retainedLogProfile?.CanViewLogs}, profileState={retainedLogProfile?.State}");
+
+    using var retainedHostLogResponse = await OwnerGet(stopOwner,
         $"/api/local/profiles/{stopProfile.Id}/logs?limit=200");
+    var retainedHostLogs = await retainedHostLogResponse.Content.ReadFromJsonAsync<ServerLogResult>(webJson)
+        ?? throw new Exception($"retained Host log response was empty (HTTP {(int)retainedHostLogResponse.StatusCode})");
     var retainedPublicLogs = await PublicLogs(directLogClient, directLogCredential, stopProfile.Id,
         "limit=200");
-    var retainedFriendLogs = await OwnerGetJson<ServerLogResult>(stopFriendLocal,
+    using var retainedFriendLogResponse = await OwnerGet(stopFriendLocal,
         $"/api/local/friend/{stopProfile.Id}/logs?limit=200");
+    var retainedFriendLogs = await retainedFriendLogResponse.Content.ReadFromJsonAsync<ServerLogResult>(webJson)
+        ?? throw new Exception($"retained Friend log response was empty (HTTP {(int)retainedFriendLogResponse.StatusCode})");
     var retainedPublicResult = retainedPublicLogs.Body.Deserialize<ServerLogResult>(webJson)
-        ?? throw new Exception("retained Friend log response was empty");
-    Require(retainedHostLogs.Ok && retainedHostLogs.SourceState == ServerLogSourceStates.Ended &&
-        retainedHostLogs.Records.Count > 0 && retainedHostLogs.RunId is not null &&
+        ?? throw new Exception($"retained direct Friend log response was empty (HTTP {(int)retainedPublicLogs.Status})");
+    Require(retainedHostLogResponse.StatusCode == HttpStatusCode.OK &&
+        retainedHostLogs.Ok && retainedHostLogs.SourceState == ServerLogSourceStates.Ended &&
+        retainedHostLogs.Records is { Count: > 0 } && retainedHostLogs.RunId is not null &&
         retainedPublicLogs.Status == HttpStatusCode.OK &&
         !retainedPublicResult.Ok && retainedPublicResult.Code == "FriendRetainedLogsUnavailable" &&
         retainedPublicResult.SourceState == ServerLogSourceStates.Ended &&
-        retainedPublicResult.RunId is null && retainedPublicResult.Records.Count == 0 &&
+        retainedPublicResult.RunId is null && retainedPublicResult.Records?.Count == 0 &&
+        retainedFriendLogResponse.StatusCode == HttpStatusCode.OK &&
         !retainedFriendLogs.Ok && retainedFriendLogs.Code == "FriendRetainedLogsUnavailable" &&
-        retainedFriendLogs.RunId is null && retainedFriendLogs.Records.Count == 0,
-        "Host retained-run access or active-exact-run-only Friend access was not enforced after restart");
+        retainedFriendLogs.SourceState == ServerLogSourceStates.Ended &&
+        retainedFriendLogs.RunId is null && retainedFriendLogs.Records?.Count == 0,
+        "Host retained-run access or active-exact-run-only Friend access was not enforced after restart: " +
+        $"Host[http={(int)retainedHostLogResponse.StatusCode}, ok={retainedHostLogs.Ok}, code={retainedHostLogs.Code}, source={retainedHostLogs.SourceState}, run={retainedHostLogs.RunId is not null}, records={retainedHostLogs.Records?.Count ?? -1}]; " +
+        $"directFriend[http={(int)retainedPublicLogs.Status}, ok={retainedPublicResult.Ok}, code={retainedPublicResult.Code}, source={retainedPublicResult.SourceState}, run={retainedPublicResult.RunId is not null}, records={retainedPublicResult.Records?.Count ?? -1}]; " +
+        $"Friend[http={(int)retainedFriendLogResponse.StatusCode}, ok={retainedFriendLogs.Ok}, code={retainedFriendLogs.Code}, source={retainedFriendLogs.SourceState}, run={retainedFriendLogs.RunId is not null}, records={retainedFriendLogs.Records?.Count ?? -1}]");
     Console.WriteLine("PASS retained ended-run logs remain Host-only across restart"); passes++;
 
     var stopMarker = Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker");

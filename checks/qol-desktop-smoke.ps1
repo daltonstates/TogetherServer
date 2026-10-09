@@ -66,6 +66,7 @@ for ($i = 0; $i -lt 200 -and $ports.Count -lt 2; $i++) {
 if ($ports.Count -ne 2) { throw 'Two unused loopback app/debugging ports were not found without binding a listener.' }
 $port = $ports[0]
 $debugPort = $ports[1]
+$debugUserDataRoot = Join-Path $dataRoot 'webview2'
 $baseUrl = "http://127.0.0.1:$port"
 $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $profileId = [guid]::NewGuid().ToString('D')
@@ -105,6 +106,17 @@ public static class TogetherServerQolWindowCheck {
         }, IntPtr.Zero);
         return found;
     }
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern IntPtr CommandLineToArgvW(string commandLine, out int count);
+    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
+    public static string[] CommandLineArguments(string commandLine) {
+        int count; var memory = CommandLineToArgvW(commandLine, out count);
+        if (memory == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
+        try {
+            var arguments = new string[count];
+            for (int index = 0; index < count; index++) arguments[index] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory, index * IntPtr.Size));
+            return arguments;
+        } finally { LocalFree(memory); }
+    }
 }
 '@
 
@@ -139,6 +151,71 @@ function Assert-AppIdentity {
     Require ($app.Process.StartTime.ToUniversalTime().Ticks -eq $app.Ticks -and
         [IO.Path]::GetFullPath($app.Process.Path).Equals($developmentApp, [StringComparison]::OrdinalIgnoreCase)) 'The test app process identity changed.'
 }
+function Wait-OwnedWebViewDebugger {
+    $deadline = [DateTime]::UtcNow.AddSeconds(25)
+    $lastState = 'No debugging listener was observed.'
+    do {
+        Assert-AppIdentity
+        $connections = @(Get-NetTCPConnection -State Listen -LocalPort $debugPort -ErrorAction SilentlyContinue)
+        if ($connections.Count -gt 0) {
+            Require (@($connections | Where-Object { $_.LocalAddress -notin @('127.0.0.1', '::1') }).Count -eq 0) 'The disposable WebView debugger did not bind only to loopback.'
+            $owners = @($connections.OwningProcess | Sort-Object -Unique)
+            Require ($owners.Count -eq 1) 'The debugging port has ambiguous process ownership.'
+            $metadata = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $owners[0]) -ErrorAction Stop
+            Require ($null -ne $metadata -and
+                [IO.Path]::GetFileName($metadata.ExecutablePath) -eq 'msedgewebview2.exe') "The debugging listener is not the disposable app's WebView2 browser."
+            $browserProcess = [Diagnostics.Process]::GetProcessById([int]$owners[0])
+            try {
+                $browserProcess.Refresh()
+                $browserTicks = $browserProcess.StartTime.ToUniversalTime().Ticks
+                Require (!$browserProcess.HasExited -and $browserTicks -ge $app.Ticks -and
+                    [IO.Path]::GetFullPath($browserProcess.Path).Equals([IO.Path]::GetFullPath($metadata.ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) 'The owned WebView2 browser identity changed.'
+                $ancestor = $metadata
+                $ownedDescendant = $false
+                $seenParents = [Collections.Generic.HashSet[int]]::new()
+                for ($depth = 0; $depth -lt 8; $depth++) {
+                    if ($ancestor.ParentProcessId -eq $app.Id) { $ownedDescendant = $true; break }
+                    Require ($ancestor.ParentProcessId -gt 0 -and $seenParents.Add([int]$ancestor.ParentProcessId)) 'The debugger browser has invalid process ancestry.'
+                    $ancestor = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $ancestor.ParentProcessId) -ErrorAction Stop
+                    Require ($null -ne $ancestor -and
+                        [IO.Path]::GetFullPath($ancestor.ExecutablePath).Equals([IO.Path]::GetFullPath($metadata.ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) 'The debugger browser is outside the exact disposable WebView2 process tree.'
+                    $ancestorProcess = [Diagnostics.Process]::GetProcessById([int]$ancestor.ProcessId)
+                    try {
+                        $ancestorTicks = $ancestorProcess.StartTime.ToUniversalTime().Ticks
+                        Require (!$ancestorProcess.HasExited -and $ancestorTicks -ge $app.Ticks -and $ancestorTicks -le $browserTicks -and
+                            [IO.Path]::GetFullPath($ancestorProcess.Path).Equals([IO.Path]::GetFullPath($metadata.ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) 'The debugger browser ancestor identity changed.'
+                    } finally { $ancestorProcess.Dispose() }
+                }
+                Require $ownedDescendant 'The debugger browser is not a descendant of the exact disposable app.'
+                $arguments = [TogetherServerQolWindowCheck]::CommandLineArguments($metadata.CommandLine)
+                Require ($arguments -contains "--remote-debugging-port=$debugPort") 'The owned WebView2 browser did not receive the requested debugging port. Elevated WebView2 hosts ignore environment overrides; use a separately approved standard-integrity runner or an explicit staging-only API option.'
+                $profileArgument = @($arguments | Where-Object { $_.StartsWith('--user-data-dir=', [StringComparison]::Ordinal) })
+                Require ($profileArgument.Count -eq 1 -and
+                    [IO.Path]::GetFullPath($profileArgument[0].Substring('--user-data-dir='.Length)).Equals($debugUserDataRoot, [StringComparison]::OrdinalIgnoreCase)) 'The debugger browser profile is outside the disposable staging data.'
+                try {
+                    $version = Invoke-RestMethod "http://127.0.0.1:$debugPort/json/version" -TimeoutSec 2 -NoProxy
+                    $socket = $null
+                    Require ([Uri]::TryCreate([string]$version.webSocketDebuggerUrl, [UriKind]::Absolute, [ref]$socket) -and
+                        $socket.Scheme -eq 'ws' -and $socket.Host -eq '127.0.0.1' -and $socket.Port -eq $debugPort -and
+                        $socket.AbsolutePath -match '^/devtools/browser/[a-zA-Z0-9-]{1,128}$' -and
+                        !$socket.UserInfo -and !$socket.Query -and !$socket.Fragment) 'The owned debugger advertised an invalid loopback browser transport.'
+                    $current = [Diagnostics.Process]::GetProcessById([int]$owners[0])
+                    try {
+                        Require (!$current.HasExited -and $current.StartTime.ToUniversalTime().Ticks -eq $browserTicks -and
+                            [IO.Path]::GetFullPath($current.Path).Equals([IO.Path]::GetFullPath($metadata.ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) 'The WebView2 browser changed during debugger readiness.'
+                    } finally { $current.Dispose() }
+                    Assert-AppIdentity
+                    return $socket.AbsoluteUri
+                } catch [Microsoft.PowerShell.Commands.HttpResponseException] { $lastState = 'Owned loopback debugger HTTP metadata was not ready.' }
+                  catch [System.Net.Http.HttpRequestException] { $lastState = 'Owned loopback debugger transport was not ready.' }
+                  catch [System.Threading.Tasks.TaskCanceledException] { $lastState = 'Owned loopback debugger metadata timed out.' }
+            } finally { $browserProcess.Dispose() }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $elevated = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    throw ("The disposable WebView2 debugger was not ready within 25 seconds. HostElevated=$elevated. $lastState Elevated hosts ignore WEBVIEW2 environment flags; no unrelated endpoint was contacted.")
+}
 function Start-TestApp([switch]$Startup) {
     $start = [Diagnostics.ProcessStartInfo]::new($developmentApp)
     $start.UseShellExecute = $false
@@ -148,6 +225,9 @@ function Start-TestApp([switch]$Startup) {
     $start.ArgumentList.Add('--port'); $start.ArgumentList.Add([string]$port)
     $start.EnvironmentVariables['TOGETHERSERVER_DATA_DIR'] = $fakeProductionRoot
     $start.EnvironmentVariables['TOGETHERSERVER_STAGING_DATA_DIR'] = $dataRoot
+    # This is consumed only by the marked staging app's CI debug API option.
+    # It never changes the parent environment or a registry/policy setting.
+    $start.EnvironmentVariables['TOGETHERSERVER_CI_WEBVIEW_DEBUG_PORT'] = [string]$debugPort
     $start.EnvironmentVariables['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = "--remote-debugging-port=$debugPort --remote-debugging-address=127.0.0.1"
     $process = [Diagnostics.Process]::Start($start)
     return Record-Process $process $developmentApp
@@ -205,7 +285,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-const [repository, mode, debugPort, base, profileId, caseRoot, marker] = process.argv.slice(2);
+const [repository, mode, debugEndpoint, base, profileId, caseRoot, marker] = process.argv.slice(2);
 const require = createRequire(path.join(repository, 'ui', 'package.json'));
 const { chromium } = require('playwright');
 const out = name => {
@@ -221,7 +301,11 @@ async function json(url, body) {
   return response.json();
 }
 try {
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, { timeout: 25000 });
+  const transport = new URL(debugEndpoint);
+  assert.equal(transport.protocol, 'ws:'); assert.equal(transport.hostname, '127.0.0.1');
+  assert.match(transport.pathname, /^\/devtools\/browser\/[a-zA-Z0-9-]{1,128}$/);
+  assert.equal(transport.search, ''); assert.equal(transport.hash, '');
+  browser = await chromium.connectOverCDP(debugEndpoint, { timeout: 25000 });
   const pages = browser.contexts().flatMap(context => context.pages());
   const page = pages.find(candidate => new URL(candidate.url()).origin === base);
   assert.ok(page, 'The owned local WebView page was not present in CDP.');
@@ -325,11 +409,12 @@ try {
 
 function Start-WebViewPhase([string]$Phase, [string]$Marker = $draftMarker) {
     Assert-AppIdentity
+    $debugEndpoint = Wait-OwnedWebViewDebugger
     $start = [Diagnostics.ProcessStartInfo]::new($node)
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true
     $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
-    foreach ($argument in @($nodeScript, $repository, $Phase, [string]$debugPort, $baseUrl, $profileId, $caseRoot, $Marker)) { $start.ArgumentList.Add($argument) }
+    foreach ($argument in @($nodeScript, $repository, $Phase, $debugEndpoint, $baseUrl, $profileId, $caseRoot, $Marker)) { $start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($start)
     $identity = Record-Process $process $node
     return @{ Identity = $identity; Output = $process.StandardOutput.ReadToEndAsync(); Error = $process.StandardError.ReadToEndAsync(); Phase = $Phase }

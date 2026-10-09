@@ -1624,7 +1624,7 @@ function App() {
           <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} />Close to tray</label><small>Hosting and Friend checks keep running.</small>
           <Button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button>
         </div></details>
-        <Button className="command-trigger" onClick={() => setCommandPaletteOpen(true)}><Icon name="search" size={16} /><span>Commands</span><kbd>Ctrl K</kbd></Button>
+        <Button className="command-trigger" aria-label="Commands" title="Commands (Ctrl K)" onClick={() => setCommandPaletteOpen(true)}><Icon name="search" size={16} /><span>Commands</span><kbd>Ctrl K</kbd></Button>
       </div>
     </header>
 

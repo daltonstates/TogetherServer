@@ -28,7 +28,7 @@ const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
-  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [],
+  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [],
   cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const pendingResponseClassifications = new Set()
@@ -122,7 +122,7 @@ function observeBrowserRequest(collector, request) {
   const bytes = request.postDataBuffer()
   if (bytes && bytes.length !== 0) return
   const transition = { id: collector.transitions.length + 1, from: collector.mode, to: match[1] === 'host' ? 'Host' : 'Friend',
-    started: order, responded: null, confirmed: false }
+    started: order, responded: null, bodyReady: null, confirmed: false }
   collector.transitions.push(transition)
   collector.modeRequests.set(request, transition)
 }
@@ -135,6 +135,7 @@ async function observeBrowserResponse(collector, response, order) {
   if (transition) {
     transition.responded = order
     const body = status === 200 ? await boundedResponseJson(response) : null
+    transition.bodyReady = ++collector.order
     transition.confirmed = body?.ok === true && body.code === 'ModeChanged'
     if (transition.confirmed && order > collector.modeOrder) {
       collector.mode = transition.to; collector.modeOrder = order
@@ -142,49 +143,84 @@ async function observeBrowserResponse(collector, response, order) {
   } else if (url.origin === collector.origin && url.pathname === '/api/local/snapshot' && !url.search &&
       request.method() === 'GET' && status === 200) {
     const body = await boundedResponseJson(response, 512 * 1024)
+    const bodyReady = ++collector.order
     if (body?.mode === 'Host' || body?.mode === 'Friend') {
-      collector.snapshots.push({ mode: body.mode, started, responded: order })
+      collector.snapshots.push({ mode: body.mode, started, responded: order, bodyReady })
       if (order > collector.modeOrder) { collector.mode = body.mode; collector.modeOrder = order }
     }
   }
   if (status < 400) return
   const body = url.origin === collector.origin ? await boundedResponseJson(response) : null
+  const bodyReady = ++collector.order
   const code = typeof body?.code === 'string' && /^[a-z][a-z\d]{0,63}$/iu.test(body.code) ? body.code : null
   collector.responses.push({ url: response.url(), status, code, role: roleBoundRead(request, url, collector.origin), started,
-    responded: order, evidence: { method: request.method(), status, route: redact(url.pathname), code }, classified: false, consoleConsumed: false })
+    responded: order, bodyReady, evidence: { method: request.method(), status, route: redact(url.pathname), code }, classified: false, consoleConsumed: false })
+}
+function modeBeforeRequest(collector, started) {
+  // A delayed snapshot may have captured its mode before a later successful
+  // change. Its request chronology cannot overwrite that change's receipt.
+  return [...collector.snapshots.filter(snapshot => Number.isSafeInteger(snapshot.started))
+    .map(snapshot => ({ mode: snapshot.mode, causalOrder: snapshot.started, responded: snapshot.responded })),
+  ...collector.transitions.filter(transition => transition.confirmed)
+    .map(transition => ({ mode: transition.to, causalOrder: transition.responded, responded: transition.responded }))]
+    .filter(mode => mode.responded < started)
+    .sort((left, right) => right.causalOrder - left.causalOrder || right.responded - left.responded)[0]?.mode ?? null
+}
+function modeTransitionWindow(collector, transition, index) {
+  const nextStarted = collector.transitions[index + 1]?.started ?? Infinity
+  // Only a read initiated after the exact ModeChanged response can acknowledge
+  // this change. Headers alone do not mean its body is ready for the UI.
+  const acknowledgement = transition.confirmed ? collector.snapshots.filter(snapshot => snapshot.mode === transition.to &&
+    snapshot.started > transition.responded && snapshot.started < nextStarted &&
+    snapshot.responded > transition.responded && Number.isSafeInteger(snapshot.bodyReady))
+    .sort((left, right) => left.bodyReady - right.bodyReady)[0] : undefined
+  return { acknowledgement, ended: transition.responded === null ? null :
+    Math.min(acknowledgement?.bodyReady ?? transition.responded, nextStarted) }
 }
 function expectedModeTransition(collector, response) {
   if (response.status !== 409 || !response.role || response.started === undefined ||
       response.code !== (response.role === 'Host' ? 'FriendMode' : 'HostMode')) return null
   return collector.transitions.find((transition, index) => {
     if (!transition.confirmed || transition.from !== response.role || transition.to === response.role) return false
-    // The first matching snapshot acknowledges the new scope. Later wrong-role requests remain failures.
-    const acknowledgement = collector.snapshots.filter(snapshot => snapshot.mode === transition.to &&
-      snapshot.started >= transition.started && snapshot.responded >= transition.responded)
-      .sort((left, right) => left.responded - right.responded)[0]
-    const ended = Math.min(acknowledgement?.responded ?? transition.responded,
-      collector.transitions[index + 1]?.started ?? Infinity)
+    const { ended } = modeTransitionWindow(collector, transition, index)
     return response.started < ended && response.responded > transition.started
   }) ?? null
+}
+function checkModeTransitionCorrelation() {
+  const transition = { id: 1, from: 'Host', to: 'Friend', started: 10, responded: 20, bodyReady: 28, confirmed: true }
+  const collector = { transitions: [transition], snapshots: [
+    { mode: 'Host', started: 1, responded: 2, bodyReady: 3 },
+    { mode: 'Friend', started: 15, responded: 21, bodyReady: 25 }, // Poll issued before ModeChanged.
+    { mode: 'Friend', started: 30, responded: 40, bodyReady: 50 },
+    { mode: 'Host', started: 5, responded: 70, bodyReady: 71 } // Late stale response cannot undo the confirmed change.
+  ] }
+  const denial = { status: 409, role: 'Host', code: 'FriendMode', started: 45, responded: 46 }
+  assert.equal(modeBeforeRequest(collector, 10), 'Host')
+  assert.equal(modeBeforeRequest(collector, 80), 'Friend')
+  assert.equal(modeTransitionWindow(collector, transition, 0).acknowledgement.started, 30)
+  assert.equal(expectedModeTransition(collector, denial), transition, 'Snapshot headers cannot close the transition before its body is ready.')
+  assert.equal(expectedModeTransition(collector, { ...denial, started: 50, responded: 51 }), null, 'Post-ack wrong-role reads remain failures.')
+  assert.equal(expectedModeTransition(collector, { ...denial, status: 400 }), null)
+  assert.equal(expectedModeTransition(collector, { ...denial, code: 'UnknownProfile' }), null)
+  assert.equal(expectedModeTransition(collector, { ...denial, role: null }), null)
+  collector.transitions.push({ id: 2, from: 'Friend', to: 'Host', started: 44, responded: 60, bodyReady: 61, confirmed: true })
+  assert.equal(expectedModeTransition(collector, denial), null, 'A later transition cannot extend an earlier allowance.')
 }
 async function flushBrowserEvidence() {
   while (pendingResponseClassifications.size > 0) await Promise.allSettled([...pendingResponseClassifications])
   for (const collector of browserCollectors) {
-    const modes = [...collector.snapshots,
-      ...collector.transitions.filter(transition => transition.confirmed)
-        .map(transition => ({ mode: transition.to, responded: transition.responded }))]
-      .sort((left, right) => right.responded - left.responded)
     for (const transition of collector.transitions) {
-      // Body reads can finish out of order; use the last mode receipt observed before this request.
-      transition.from = modes.find(mode => mode.responded < transition.started)?.mode ?? transition.from
+      transition.from = modeBeforeRequest(collector, transition.started)
     }
     for (const response of collector.responses) {
       if (response.classified) continue
       const transition = expectedModeTransition(collector, response)
       response.expected = !!transition
       if (transition) report.expectedModeDenials.push({ ...response.evidence, page: collector.id, transition: transition.id,
-        fromMode: transition.from, toMode: transition.to, transitionCode: 'ModeChanged' })
-      else report.failedRequests.push(response.evidence)
+        fromMode: transition.from, toMode: transition.to, transitionCode: 'ModeChanged',
+        requestOrder: response.started, responseOrder: response.responded, bodyReadyOrder: response.bodyReady })
+      else report.failedRequests.push({ ...response.evidence, page: collector.id, readRole: response.role,
+        requestOrder: response.started ?? null, responseOrder: response.responded, bodyReadyOrder: response.bodyReady })
       response.classified = true
     }
     for (const message of collector.consoleErrors.splice(0)) {
@@ -198,6 +234,14 @@ async function flushBrowserEvidence() {
       } else report.browserErrors.push({ kind: 'console', message: redact(message.text) })
     }
   }
+  report.modeTransitionDiagnostics = browserCollectors.flatMap(collector => collector.transitions.map((transition, index) => {
+    const { acknowledgement, ended } = modeTransitionWindow(collector, transition, index)
+    return { page: collector.id, transition: transition.id, fromMode: transition.from, toMode: transition.to,
+      confirmed: transition.confirmed, requestOrder: transition.started, responseOrder: transition.responded,
+      bodyReadyOrder: transition.bodyReady, acknowledgementRequestOrder: acknowledgement?.started ?? null,
+      acknowledgementResponseOrder: acknowledgement?.responded ?? null, acknowledgementBodyReadyOrder: acknowledgement?.bodyReady ?? null,
+      windowEndOrder: ended }
+  }))
 }
 async function eventually(read, predicate, label, timeout = 30_000) {
   const end = Date.now() + timeout
@@ -428,12 +472,18 @@ async function screenshot(page, name, viewport) {
     documentWidth: document.documentElement.scrollWidth, theme: document.documentElement.dataset.theme,
     density: document.documentElement.dataset.density, textScale: getComputedStyle(document.documentElement).getPropertyValue('--qol-text-scale').trim(),
     highContrast: document.documentElement.dataset.highContrast,
-    liveStatusCount: document.querySelectorAll('[role="status"],[aria-live="polite"]').length }))
+    liveStatusCount: document.querySelectorAll('[role="status"],[aria-live="polite"]').length,
+    headerControls: [...document.querySelectorAll('.header-tools > details > summary, .header-tools > .command-trigger')]
+      .map(control => { const bounds = control.getBoundingClientRect(); return { name: control.getAttribute('aria-label'),
+        left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height } }) }))
   report.layout.push({ name, ...metrics })
   await page.screenshot({ path: path.join(evidenceRoot, `${name}.png`), fullPage: true,
     mask: [page.locator('code'), page.locator('input[type="password"]'), page.locator('.invite-input')] })
   report.screenshots.push(`${name}.png`)
   assert(metrics.documentWidth <= metrics.width + 1, `${name}: the rendered page must not overflow horizontally.`)
+  assert.equal(metrics.headerControls.length, 3, `${name}: all three header controls must be present.`)
+  assert(metrics.headerControls.every(control => control.name && control.width > 0 && control.height > 0 &&
+    control.left >= -1 && control.right <= metrics.width + 1), `${name}: named header controls must fit inside the viewport.`)
 }
 
 async function routingAndAppearance(page) {
@@ -518,10 +568,15 @@ async function setupReview(page, profiles) {
   assert(await dialog.getByRole('region', { name: 'Setup blockers' }).getByRole('button').count() >= 2, 'Setup must show its blockers together.')
   await dialog.getByText("Reuse a saved server's nonsecret setup", { exact: true }).click()
   await dialog.getByRole('button', { name: `Use setup from ${profiles.valheim.name}`, exact: true }).click()
-  assert.equal(await dialog.getByLabel('World name', { exact: true }).inputValue(), '')
-  assert.equal(await dialog.getByLabel('Game password', { exact: true }).inputValue(), '')
-  await dialog.getByLabel('World name', { exact: true }).fill('browser-new-world')
-  await dialog.getByLabel('Game password', { exact: true }).fill('fixture-pass-123')
+  await dialog.getByRole('heading', { name: 'Choose a world', exact: true }).waitFor()
+  const worldName = dialog.getByRole('textbox', { name: /^World name/u })
+  // These implicit labels include helper text; the password label also contains its visibility checkbox.
+  const gamePassword = dialog.getByLabel(/^Game password/u)
+    .and(dialog.locator('input[id^="setup-"][id$="-game-password"]'))
+  assert.equal(await worldName.inputValue(), '')
+  assert.equal(await gamePassword.inputValue(), '')
+  await worldName.fill('browser-new-world')
+  await gamePassword.fill('fixture-pass-123')
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
   await dialog.getByText('Selected Valheim Dedicated Server', { exact: true }).waitFor()
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
@@ -545,7 +600,7 @@ async function editorRecovery(page, host, profiles) {
   const files = page.getByRole('region', { name: 'Server files and settings' })
   const row = files.locator('.server-file-row').filter({ hasText: 'server.properties' })
   await row.getByRole('button', { name: 'Edit file', exact: true }).click()
-  const contents = files.getByLabel('File contents', { exact: true })
+  const contents = files.getByRole('textbox', { name: /^File contents/u })
   const raw = profiles.properties + '# QoL browser raw draft\n'
   await contents.fill(raw)
   await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: 'Logs', exact: true }).click()
@@ -562,15 +617,16 @@ async function editorRecovery(page, host, profiles) {
   await files.getByRole('region', { name: 'Review raw file changes' }).getByText(/QoL browser raw draft/u).waitFor()
   await files.getByRole('button', { name: 'Discard unsaved file edits', exact: true }).click()
   const settings = page.getByRole('region', { name: 'Simple game settings' })
-  await settings.getByRole('combobox', { name: /^Difficulty/u }).selectOption('hard')
+  const difficulty = settings.getByRole('combobox', { name: /^Difficulty/u })
+  await difficulty.selectOption('hard')
   await settings.getByLabel('Search game settings', { exact: true }).fill('players')
-  assert.equal(await settings.getByRole('combobox', { name: /^Difficulty/u }).count(), 0)
+  assert.equal(await difficulty.count(), 0)
   await settings.getByLabel('Search game settings', { exact: true }).fill('')
-  assert.equal(await settings.getByLabel('Difficulty', { exact: true }).inputValue(), 'hard')
+  assert.equal(await difficulty.inputValue(), 'hard')
   await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: 'Overview', exact: true }).click()
   await selectServer(page, profiles.bedrock.name, 'Files')
   await settings.getByRole('button', { name: 'Review recovered draft', exact: true }).click()
-  assert.equal(await settings.getByLabel('Difficulty', { exact: true }).inputValue(), 'hard')
+  assert.equal(await difficulty.inputValue(), 'hard')
   await settings.getByRole('button', { name: 'Review settings changes', exact: true }).click()
   await settings.getByRole('region', { name: 'Review exact changes' }).waitFor()
   await screenshot(page, 'editor-recovery-wide', { width: 1440, height: 900 })
@@ -800,6 +856,7 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
 }
 
 try {
+  checkModeTransitionCorrelation()
   const { chromium } = await import('playwright')
   const host = await startInstance('host')
   const profiles = await seedProfiles(host)
