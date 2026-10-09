@@ -116,3 +116,16 @@ The new follow-up changes are check diagnostics and the exact documented native 
 - After the native accessibility change, complete code-only solution compilation passed with zero warnings/errors and all 17 safe feature groups passed. Native/browser check-source syntax, focused lint and whitespace checks passed without local app, browser, console fixture or game execution.
 
 No complete native or combined four-lane acceptance is claimed yet. The next candidate includes the native label correction, chat identity prerequisite and bounded browser DOM diagnostics.
+
+## Fifth four-lane run and guided-settings visibility
+
+[Run 37902737757](https://github.com/daltonstates/TogetherServer/actions/runs/37902737757), head `b97c2786fd5a88516548029f49c2e1224820a83c`, built candidate `0.3.0+485fdeb71ee44e16e399180738da585a389e1687`, SHA-256 `022C5EB068BE3B80B714C12E144A7E288D62BCA13B680DF6AC55AE961E359B21`.
+
+- `QolApi` passed completely again.
+- `Browser` passed the three initial journeys. The guided-panel diagnostic proved its DOM node and Reload button existed on the exact selected Bedrock Files tab, but CSS hid them; there was no error-boundary fallback or HTTP/JavaScript failure. The legacy Files-tab whitelist hid every direct card child except the profile header and raw file panel. It now also permits `.game-settings-panel`. The strict visible-region and actual Difficulty interaction checks remain the runtime regression; the UI bundle/typecheck passed after this one-rule fix.
+- `Desktop` passed **real WebView appearance, persisted 150-percent/compact sizing, native monitor/Minimize/Maximize/Restore controls, and Close-to-tray/reopen of the same PID**. This supplies runtime evidence for the accessible-name fix. Its file picker then rejected a filename ComboBox without `ValuePattern`. The check now selects exactly one writable owned Edit within the filename control, rechecks app/dialog/control identity, and waits for exact copied-fixture path readback; actual picker completion and later native draft/placement recovery remain pending.
+- `Existing` stopped at one of 585 JSDOM tests: the shared-save head-change case selected an offer control before its independent armed-recovery response committed. This and an adjacent case now wait for explicit armed votes and the visible offer control. All head-change code/vote/split-action removal assertions remain intact; the complete focused file passed **44/44** locally. Production shared-save authority code is unchanged.
+- The prior Custom timeout's fixture now records optional operation-scoped Start/Stop phase-presence booleans and elapsed time on failure. Marker writes cannot change the signal/output/timeout behavior; no retry, budget increase or product-driver change is introduced. Its source-only compilation and formatting passed. These diagnostics are not a Custom runtime pass.
+- PowerShell/source syntax, focused lint and whitespace passed. The app/fixture/browser/native/installer checks were not launched on the owner's desktop.
+
+The next single-build/four-runner candidate includes the guided visibility rule, native picker selection and synchronized shared-save fixture waits. Full acceptance still requires actual results from all four lanes against matching candidate bytes.

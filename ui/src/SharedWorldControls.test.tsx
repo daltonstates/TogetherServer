@@ -864,8 +864,9 @@ describe('Shared saves controls', () => {
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(screen.getByText('Shared worlds'))
     fireEvent.click(await screen.findByText('Recover after Host loss'))
+    await screen.findByText(/Votes 0\/2/)
     fireEvent.click(screen.getAllByText('Technical details')[0])
-    fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show signed offer code' }))
     expect(await screen.findByLabelText('Signed offer code')).toBeInTheDocument()
     state = 'ObservedMajority'
     fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
@@ -904,8 +905,11 @@ describe('Shared saves controls', () => {
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(screen.getByText('Shared worlds'))
     fireEvent.click(await screen.findByText('Recover after Host loss'))
+    // The section is available before its independent recovery poll commits.
+    // Wait for the armed proposal before choosing its conditional details.
+    await screen.findByText(/Votes 1\/2/)
     fireEvent.click(screen.getAllByText('Technical details')[0])
-    fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show signed offer code' }))
     await waitFor(() => expect(codeReads).toBe(1))
     expect(screen.queryByLabelText('Signed offer code')).not.toBeInTheDocument()
     codeHash = 'B'.repeat(64)

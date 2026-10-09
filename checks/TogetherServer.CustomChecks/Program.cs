@@ -52,8 +52,10 @@ ServerProfile Profile(string name, int port)
 CustomScriptBundle Scripts(string status = "") => new(
     """
     if ($env:TOGETHERSERVER_MANAGED_PID -ne [string]$PID) { exit 19 }
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("start-entered-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'entered') } catch { }
     $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
     while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("stop-observed-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'observed') } catch { }
     Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
     exit 0
     """,
@@ -62,8 +64,10 @@ CustomScriptBundle Scripts(string status = "") => new(
     @{ state = 'Ready'; detail = 'Synthetic custom status'; onlinePlayers = 0; maxPlayers = 4; players = @('Alice', 'Bob') } | ConvertTo-Json -Compress
     """ : status,
     """
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("stop-entered-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'entered') } catch { }
     $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
     New-Item -ItemType File -Path $stop -Force | Out-Null
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("stop-returned-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'returned') } catch { }
     """);
 
 CustomScriptBundle ContractV2Scripts(string status = "") => Scripts(string.IsNullOrWhiteSpace(status) ?
@@ -143,8 +147,23 @@ await Check("protected scripts are required and never authorize remote stop", as
     }
     finally
     {
+        Guid? cleanupOperationId = null;
+        try { cleanupOperationId = data.LoadRuns().FirstOrDefault(run => run.ProfileId == profile.Id)?.OperationId; }
+        catch { /* Optional fixture diagnostics cannot prevent the ordinary Stop. */ }
+        var cleanupWatch = System.Diagnostics.Stopwatch.StartNew();
         var stopped = await activeManager.StopAsync(profile.Id);
-        Require(stopped.Ok, $"custom cleanup failed: {stopped.Code} {stopped.Message}");
+        cleanupWatch.Stop();
+        if (!stopped.Ok)
+        {
+            bool PhaseRecorded(string phase) => cleanupOperationId is { } operationId &&
+                File.Exists(Path.Combine(profile.WorldDirectory, phase + "-" + operationId.ToString("D") + ".phase"));
+            // Report only this synthetic operation's phase presence and elapsed
+            // time. Diagnostics never retry Stop or alter its timeout/outcome.
+            Require(false, $"custom cleanup failed: {stopped.Code} {stopped.Message}; " +
+                $"elapsedMs={cleanupWatch.ElapsedMilliseconds}; startEntered={PhaseRecorded("start-entered")}; " +
+                $"stopEntered={PhaseRecorded("stop-entered")}; stopReturned={PhaseRecorded("stop-returned")}; " +
+                $"stopObserved={PhaseRecorded("stop-observed")}");
+        }
     }
     Require((await activeManager.UpdateSettingsAsync(new HostSettings { Profiles = [] })).Ok, "profile removal failed");
     Require(!data.HasCustomScripts(profile.Id), "removing a custom profile retained its protected scripts");

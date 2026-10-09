@@ -1354,7 +1354,7 @@ kbd {
 .server-detail[data-server-tab="setup"] .safety-status { display: none; }
 .server-detail[data-server-tab="logs"] .server-detail-card > :not(.profile-top):not(.server-log-viewer) { display: none !important; }
 .server-detail[data-server-tab="sessions"] .server-detail-card > :not(.profile-top):not(.recent-sessions) { display: none !important; }
-.server-detail[data-server-tab="files"] .server-detail-card > :not(.profile-top):not(.server-files-panel) { display: none !important; }
+.server-detail[data-server-tab="files"] .server-detail-card > :not(.profile-top):not(.server-files-panel):not(.game-settings-panel) { display: none !important; }
 .server-detail[data-server-tab="backups"] .card-manage { margin-top: 12px; }
 .server-detail[data-server-tab="backups"] .card-manage > summary { color: var(--color-accent-light); }
 .host-workspace-shell .access-strip { margin: 12px 16px 16px; }

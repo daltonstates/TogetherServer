@@ -498,6 +498,65 @@ function Dialog-Element([IntPtr]$Dialog, [string]$Name, [string]$AutomationId = 
     Require ($null -ne $element) "Unsupported OS popup: owned dialog control is unavailable ($Name / $AutomationId)."
     return $element
 }
+function Find-FilenameEdit([IntPtr]$Dialog) {
+    Assert-OwnedWindow $Dialog
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Dialog)
+    Require ($root.Current.ProcessId -eq $app.Id -and $root.Current.Name -eq 'Choose Valheim Dedicated Server') 'The owned popup is not the expected file picker.'
+    $idCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1148')
+    $nameCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'File name:')
+    $filenameCondition = [System.Windows.Automation.OrCondition]::new([System.Windows.Automation.Condition[]]@($idCondition, $nameCondition))
+    $editCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+    $anchors = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $filenameCondition)
+    Require ($anchors.Count -le 16) 'The owned picker has an ambiguous filename control tree.'
+    $candidates = [Collections.Generic.List[object]]::new()
+    $diagnostics = [Collections.Generic.List[object]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($anchor in $anchors) {
+        $nodes = [Collections.Generic.List[System.Windows.Automation.AutomationElement]]::new()
+        $nodes.Add($anchor)
+        foreach ($edit in $anchor.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)) { $nodes.Add($edit) }
+        Require ($nodes.Count -le 16) 'The owned filename control has an ambiguous edit tree.'
+        foreach ($element in $nodes) {
+            $runtimeId = [string]::Join(',', [string[]]($element.GetRuntimeId()))
+            if (!$seen.Add($runtimeId)) { continue }
+            $info = $element.Current
+            $pattern = $null
+            $hasValue = $element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)
+            if ($diagnostics.Count -lt 16) {
+                $diagnostics.Add(@{ controlType = $info.ControlType.ProgrammaticName; valuePattern = $hasValue;
+                    owned = $info.ProcessId -eq $app.Id; enabled = $info.IsEnabled; offscreen = $info.IsOffscreen })
+            }
+            if ($info.ControlType -ne [System.Windows.Automation.ControlType]::Edit -or !$hasValue -or
+                $info.ProcessId -ne $app.Id -or !$info.IsEnabled -or $info.IsOffscreen -or $pattern.Current.IsReadOnly) { continue }
+            $candidates.Add(@{ Element = $element; Pattern = $pattern; RuntimeId = $runtimeId;
+                AnchorRuntimeId = [string]::Join(',', [string[]]($anchor.GetRuntimeId())) })
+        }
+    }
+    Require ($candidates.Count -le 1) 'The owned picker exposes more than one writable filename edit.'
+    return @{ Control = $(if ($candidates.Count -eq 1) { $candidates[0] } else { $null }); Diagnostics = $diagnostics.ToArray() }
+}
+function Assert-FilenameEdit([IntPtr]$Dialog, $Control) {
+    Assert-OwnedWindow $Dialog
+    Require ([TogetherServerQolWindowCheck]::FindOwnedDialog($app.Id) -eq $Dialog) 'The owned file picker changed before filename editing.'
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Dialog)
+    Require ($root.Current.ProcessId -eq $app.Id -and $root.Current.Name -eq 'Choose Valheim Dedicated Server') 'The expected file picker identity changed.'
+    $rootId = [string]::Join(',', [string[]]($root.GetRuntimeId()))
+    $currentId = [string]::Join(',', [string[]]($Control.Element.GetRuntimeId()))
+    $info = $Control.Element.Current
+    Require ($currentId -eq $Control.RuntimeId -and $info.ProcessId -eq $app.Id -and
+        $info.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and $info.IsEnabled -and
+        !$info.IsOffscreen -and !$Control.Pattern.Current.IsReadOnly) 'The owned writable filename edit identity changed.'
+    $current = $Control.Element
+    $inAnchor = $false; $inDialog = $false
+    for ($depth = 0; $depth -lt 20 -and $null -ne $current; $depth++) {
+        if ($current.Current.ProcessId -ne $app.Id) { break }
+        $runtimeId = [string]::Join(',', [string[]]($current.GetRuntimeId()))
+        if ($runtimeId -eq $Control.AnchorRuntimeId) { $inAnchor = $true }
+        if ($runtimeId -eq $rootId) { $inDialog = $true; break }
+        $current = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($current)
+    }
+    Require ($inAnchor -and $inDialog) 'The filename edit is outside the exact owned filename control and picker.'
+}
 
 try {
     Begin-Case 'appearance'
@@ -590,10 +649,25 @@ try {
     $nodePhase = Start-WebViewPhase 'picker'
     $dialog = [IntPtr]::Zero
     Wait-Until { $script:dialog = [TogetherServerQolWindowCheck]::FindOwnedDialog($app.Id); return $dialog -ne [IntPtr]::Zero } 'The owned native file picker did not open.'
-    $fileName = Dialog-Element $dialog 'File name:' '1148'
-    $valuePattern = $null
-    Require ($fileName.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) 'Unsupported OS popup: the owned file-name control has no ValuePattern.'
-    $valuePattern.SetValue($selectedFixture)
+    $fileNameState = $null
+    try {
+        Wait-Until { $script:fileNameState = Find-FilenameEdit $dialog; return $null -ne $fileNameState.Control } 'The owned filename edit did not expose a writable ValuePattern.'
+    } catch {
+        if ($fileNameState) {
+            # Types/pattern availability only; never names, values, paths, IDs or other desktop controls.
+            Write-Host ('FILENAME_READINESS ' + ($fileNameState.Diagnostics | ConvertTo-Json -Depth 3 -Compress))
+        }
+        throw
+    }
+    $fileName = $fileNameState.Control
+    Assert-FilenameEdit $dialog $fileName
+    $fileName.Pattern.SetValue($selectedFixture)
+    Wait-Until {
+        Assert-FilenameEdit $dialog $fileName
+        $enteredPath = $fileName.Pattern.Current.Value
+        return ![string]::IsNullOrWhiteSpace($enteredPath) -and [IO.Path]::IsPathFullyQualified($enteredPath) -and
+            [IO.Path]::GetFullPath($enteredPath).Equals($selectedFixture, [StringComparison]::OrdinalIgnoreCase)
+    } 'The owned filename edit did not retain the exact copied fixture path.' 5
     (Dialog-Element $dialog 'Open' '1').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Finish-WebViewPhase $nodePhase; $nodePhase = $null
     Require (Test-Path -LiteralPath (Join-Path $caseRoot 'picker-result.json')) 'Native picker did not select the disposable fixture.'
