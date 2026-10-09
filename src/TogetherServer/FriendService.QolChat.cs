@@ -4,7 +4,9 @@ public sealed partial class FriendService
 {
     private FriendLink? SelectedChatLink(Guid connectionId)
     {
-        lock (sync) return disposed || connectionId == Guid.Empty || selectedId != connectionId
+        // Guid.Empty identifies the protected pre-index legacy link. It is a
+        // valid scope only while that exact saved link is currently selected.
+        lock (sync) return disposed || selectedId != connectionId
             ? null : links.FirstOrDefault(item => item.Id == connectionId).Link;
     }
 

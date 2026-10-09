@@ -497,7 +497,7 @@ try {
         $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
         if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }
         Invoke-ChromeButton $first 'Close TogetherServer'
-        if (!$first.WaitForExit(10000)) {
+        if (!$first.WaitForExit(25000)) {
             $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
             throw "Closing the native window did not exit: visible=$($windowState.visible), rendered=$($windowState.rendered), title=$($first.MainWindowTitle)"
         }

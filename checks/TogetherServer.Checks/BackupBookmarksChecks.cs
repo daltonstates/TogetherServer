@@ -16,8 +16,11 @@ internal static class BackupBookmarksChecks
         var clock = new BookmarkClock();
         var profile = new ServerProfile
         {
-            Id = Guid.NewGuid(), Kind = GameKinds.Fixture, Name = "Disposable backup bookmarks",
-            WorldId = "disposable", WorldDirectory = source,
+            Id = Guid.NewGuid(),
+            Kind = GameKinds.Fixture,
+            Name = "Disposable backup bookmarks",
+            WorldId = "disposable",
+            WorldDirectory = source,
             Backups = new() { MinimumFreeSpaceMb = 0, RetentionCount = 1 }
         };
         var dataRoot = Path.Combine(checkRoot, "app-data");
@@ -111,8 +114,13 @@ internal static class BackupBookmarksChecks
                 "a corrupt pinned size was treated as spare capacity");
             catalog.Records.Add(new WorldBackupRecord
             {
-                Id = other.Id, ProfileId = other.ProfileId, Kind = other.Kind, WorldId = other.WorldId,
-                CreatedUtc = other.CreatedUtc - TimeSpan.FromDays(1), SizeBytes = 0, Pinned = false
+                Id = other.Id,
+                ProfileId = other.ProfileId,
+                Kind = other.Kind,
+                WorldId = other.WorldId,
+                CreatedUtc = other.CreatedUtc - TimeSpan.FromDays(1),
+                SizeBytes = 0,
+                Pinned = false
             });
             reopened.SaveBackupCatalog(catalog);
             clock.Advance();

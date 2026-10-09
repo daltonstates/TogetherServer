@@ -31,8 +31,15 @@ internal static class GameClientFriendChecks
 
         using var data = new LocalData(Path.Combine(root, "client-link-" + Guid.NewGuid().ToString("N")));
         const string configFile = "synthetic-friend.protected";
-        var config = new FriendConfiguration { HostId = Guid.NewGuid(), DeviceId = Guid.NewGuid(), Credential = new string('C', 64),
-            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90), Endpoint = "https://127.0.0.1:5131", Fingerprint = new string('A', 64) };
+        var config = new FriendConfiguration
+        {
+            HostId = Guid.NewGuid(),
+            DeviceId = Guid.NewGuid(),
+            Credential = new string('C', 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64)
+        };
         data.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(config, Json));
         var host = new FakeHost(profileId, config.DeviceId, config.Credential);
         HttpClient Client(string endpoint, IEnumerable<string> pins)
@@ -148,8 +155,13 @@ internal static class GameClientFriendChecks
             if (Denial is not null) return Task.FromResult(Reply(new PairingDecision(false, Denial, "Synthetic denial."), HttpStatusCode.Forbidden));
             var path = request.RequestUri!.AbsolutePath;
             if (path == "/api/companion/status" && MalformedStatusProfile)
-                return Task.FromResult(Reply(new { remoteControlsEnabled = true, profiles = new object?[] { null },
-                    receivedUtc = DateTimeOffset.UtcNow, protocol = CompanionProtocol.Describe() }));
+                return Task.FromResult(Reply(new
+                {
+                    remoteControlsEnabled = true,
+                    profiles = new object?[] { null },
+                    receivedUtc = DateTimeOffset.UtcNow,
+                    protocol = CompanionProtocol.Describe()
+                }));
             if (path is "/api/companion/status" or "/api/companion/heartbeat")
                 return Task.FromResult(Reply(new CompanionStatus(true, null, Assigned ? [new(profileId, "Synthetic", "Ready", Address, Kind: GameKinds.Valheim, GameKind: SavedKind)] : [],
                     false, false, DateTimeOffset.UtcNow, new("synthetic", CompanionProtocol.Current, CompanionProtocol.Minimum,

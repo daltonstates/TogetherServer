@@ -1,7 +1,7 @@
-using System.Text;
-using System.Text.Json;
 using System.Drawing;
 using System.Net;
+using System.Text;
+using System.Text.Json;
 using TogetherServer;
 
 namespace TogetherServer.FeatureChecks;
@@ -63,9 +63,26 @@ internal static class DesktopQolChecks
         Require(!bounded.Save(excess, "draft", bounded.Read(excess).Revision).Ok, "Unfinished drafts never silently evicted");
         var oldest = identity with { Key = "draft-0" };
         var oldestRevision = bounded.Read(oldest).Revision;
-        Require(bounded.Clear(oldest, oldestRevision).Ok, "Full store clear");
+        var oldestClear = bounded.Clear(oldest, oldestRevision);
+        Require(oldestClear.Ok, "Full store clear");
         Require(bounded.Save(excess, "draft", bounded.Read(excess).Revision).Ok, "Cleared slot compacted");
-        Require(!bounded.Save(oldest, "stale", oldestRevision).Ok, "Compacted tombstone cannot resurrect");
+        var compacted = bounded.Read(oldest);
+        Require(compacted.Text is null && compacted.Revision > oldestClear.Revision &&
+            !bounded.Save(oldest, "stale", oldestRevision).Ok &&
+            !bounded.Save(oldest, "stale cleared value", oldestClear.Revision).Ok, "Compacted tombstone cannot resurrect");
+        var compactedRestart = new ProtectedUiDraftStore(() => boundedBytes, bytes => boundedBytes = bytes, () => now);
+        Require(compactedRestart.Read(oldest).Revision == compacted.Revision &&
+            !compactedRestart.Save(oldest, "restart replay", oldestClear.Revision).Ok, "Compacted floor survives restart");
+        var unrelatedMissing = identity with { Key = "still-missing" };
+        var missingRevision = compactedRestart.Read(unrelatedMissing).Revision;
+        var existing = identity with { Key = "draft-1" };
+        Require(compactedRestart.Save(existing, "later ordinary edit", compactedRestart.Read(existing).Revision).Ok &&
+            compactedRestart.Read(unrelatedMissing).Revision == missingRevision,
+            "Ordinary writes after compaction leave absent identities unchanged");
+        var fullClear = compactedRestart.Clear(unrelatedMissing, missingRevision);
+        Require(fullClear.Ok && fullClear.Text is null && fullClear.Revision > missingRevision &&
+            !compactedRestart.Save(unrelatedMissing, "replay after absence-only clear", missingRevision).Ok,
+            "A full store can compact an absence-only tombstone without permitting replay");
         Require(boundedBytes?.Length <= ProtectedUiDraftStore.MaximumStoreBytes, "Total protected bytes bounded");
 
         byte[]? hugeBytes = null;
@@ -94,6 +111,165 @@ internal static class DesktopQolChecks
         Require(recoveredWrite.Ok && recoveredWrite.Text == "committed edit" && recoveredWrite.Revision > 0 &&
             !uncertain.Save(identity, "old empty-state overwrite", 0).Ok,
             "A failed write receipt reloads canonical revision before retry");
+        CheckAbsentDraftRevisions();
+        CheckDraftStateMigration();
+        CheckLegacyChatScopes();
+    }
+
+    private static void CheckAbsentDraftRevisions()
+    {
+        byte[]? persisted = null;
+        var now = DateTimeOffset.Parse("2026-10-08T12:00:00Z");
+        var store = new ProtectedUiDraftStore(() => persisted, bytes => persisted = bytes, () => now);
+        var a = new ProtectedUiDraftIdentity("file", Guid.NewGuid(), null, "file:server-properties");
+        var b = new ProtectedUiDraftIdentity("list", Guid.NewGuid(), null, "list:allow-list");
+        var c = new ProtectedUiDraftIdentity("settings", Guid.NewGuid(), null, "settings:properties");
+        var beforeA = store.Read(a);
+        var beforeB = store.Read(b);
+        var beforeC = store.Read(c);
+        var savedA = store.Save(a, "File draft A", beforeA.Revision);
+        var savedB = store.Save(b, "List draft B", beforeB.Revision);
+        Require(savedA.Ok && savedB.Ok && savedB.Revision > savedA.Revision && store.Read(c).Revision == beforeC.Revision,
+            "Reading two absent editors before saving either does not cause an unrelated CAS refusal");
+        var clearedA = store.Clear(a, savedA.Revision);
+        var restarted = new ProtectedUiDraftStore(() => persisted, bytes => persisted = bytes, () => now);
+        Require(clearedA.Ok && restarted.Read(c).Revision == beforeC.Revision &&
+            restarted.Save(c, "Settings draft C", beforeC.Revision).Ok,
+            "Ordinary clear and restart do not invalidate another absent editor");
+        Require(!restarted.Save(a, "old file edit", savedA.Revision).Ok, "Stable absence floor does not weaken an existing tombstone");
+        now += ProtectedUiDraftStore.Retention + TimeSpan.FromTicks(1);
+        var afterPrune = restarted.Read(a);
+        Require(afterPrune.Ok && afterPrune.Text is null && afterPrune.Revision > clearedA.Revision &&
+            !restarted.Save(a, "old cleared file", clearedA.Revision).Ok &&
+            !restarted.Save(b, "old pruned list", savedB.Revision).Ok, "Prune fences old content and tombstones independently of later allocations");
+        var d = c with { ProfileId = Guid.NewGuid() };
+        var beforeD = restarted.Read(d);
+        Require(restarted.Save(a, "Reviewed after pruning", afterPrune.Revision).Ok &&
+            restarted.Read(d).Revision == beforeD.Revision, "Post-prune ordinary saves do not keep moving the absence floor");
+        var afterRestart = new ProtectedUiDraftStore(() => persisted, bytes => persisted = bytes, () => now);
+        Require(afterRestart.Read(d).Revision == beforeD.Revision && afterRestart.Save(d, "Reviewed settings draft D", beforeD.Revision).Ok &&
+            !afterRestart.Save(b, "pruned replay after restart", savedB.Revision).Ok, "Restart retains the prune floor without unrelated false CAS");
+        using var serialized = JsonDocument.Parse(persisted!);
+        Require(serialized.RootElement.GetProperty("schema").GetInt32() == 2 &&
+            serialized.RootElement.GetProperty("absenceFloor").GetInt64() == afterPrune.Revision &&
+            serialized.RootElement.GetProperty("counter").GetInt64() > afterPrune.Revision,
+            "Revision allocation and the durable absence floor are separate state fields");
+    }
+
+    private static void CheckDraftStateMigration()
+    {
+        var now = DateTimeOffset.Parse("2026-10-08T12:00:00Z");
+        var existing = new ProtectedUiDraftIdentity("chat", Guid.NewGuid(), null, "compose");
+        var missing = existing with { ProfileId = Guid.NewGuid() };
+        byte[]? persisted = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            schema = 1,
+            counter = 7,
+            entries = new[] { new { identity = existing, text = "Retained version one compose", revision = 2, updatedUtc = now } }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var migrated = new ProtectedUiDraftStore(() => persisted, bytes => persisted = bytes, () => now);
+        Require(migrated.Read(existing) is { Ok: true, Revision: 2, Text: "Retained version one compose" } &&
+            migrated.Read(missing) is { Ok: true, Revision: 7, Text: null }, "Version one entry and absent revision survive migration");
+        Require(migrated.Save(existing, "Reviewed migrated compose", 2).Ok && migrated.Read(missing).Revision == 7 &&
+            !migrated.Save(missing, "old pre-migration replay", 6).Ok, "Migration keeps prior replay floors and releases unrelated allocation coupling");
+        var restarted = new ProtectedUiDraftStore(() => persisted, bytes => persisted = bytes, () => now);
+        Require(restarted.Read(missing).Revision == 7 && restarted.Save(missing, "Reviewed missing compose", 7).Ok,
+            "Migrated absence floor survives a new-format restart");
+        foreach (var malformed in new[]
+        {
+            "null", "[]", "{}", "{\"schema\":2,\"counter\":1,\"entries\":[]}",
+            "{\"schema\":2,\"counter\":1,\"absenceFloor\":2,\"entries\":[]}",
+            "{\"schema\":2,\"counter\":1,\"absenceFloor\":-1,\"entries\":[]}",
+            "{\"schema\":2,\"counter\":1,\"absenceFloor\":\"0\",\"entries\":[]}",
+            "{\"schema\":2,\"counter\":1,\"absenceFloor\":0,\"absenceFloor\":1,\"entries\":[]}",
+            "{\"schema\":1,\"counter\":1,\"absenceFloor\":0,\"entries\":[]}",
+            "{\"schema\":3,\"counter\":1,\"absenceFloor\":0,\"entries\":[]}",
+            "{\"schema\":2,\"counter\":9007199254740992,\"absenceFloor\":0,\"entries\":[]}"
+        })
+        {
+            var invalid = new ProtectedUiDraftStore(() => Encoding.UTF8.GetBytes(malformed),
+                _ => throw new InvalidOperationException("Invalid draft state must never be overwritten"), () => now);
+            Require(!invalid.Read(existing).Ok && !invalid.Save(existing, "unreviewed overwrite", 0).Ok,
+                "Unknown, duplicate or out-of-bound floor state remains unavailable and untouched");
+        }
+        using var legacyInput = JsonDocument.Parse(JsonSerializer.Serialize(new
+        { purpose = "chat", profileId = existing.ProfileId, connectionId = Guid.Empty, key = "compose", text = "Legacy draft", expectedRevision = 0 }));
+        var legacy = ProtectedUiDraftStore.ParseSave(legacyInput.RootElement).Identity;
+        Require(legacy.ConnectionId == Guid.Empty && legacy.Purpose == "chat" && legacy.Key == "compose",
+            "Exact zero legacy connection schema is distinct from a null Host scope");
+        Reject(() => ProtectedUiDraftStore.ValidateIdentity(legacy with { Purpose = "file" }), "Legacy scope is chat-only");
+        Reject(() => ProtectedUiDraftStore.ValidateIdentity(legacy with { Key = "composer" }), "Legacy scope is the reviewed compose key only");
+        Reject(() => ProtectedUiDraftStore.ValidateIdentity(legacy with { ProfileId = Guid.Empty }), "Legacy connection does not acquire the reserved setup profile");
+    }
+
+    private static void CheckLegacyChatScopes()
+    {
+        // Synthetic protected configuration and authorized local copies only.
+        // The injected transport throws on every send, including loopback.
+        using var data = new LocalData(Path.GetFullPath(Path.Combine("local-data", "feature-checks", "legacy-chat-" + Guid.NewGuid().ToString("N"))));
+        var profile = Guid.NewGuid();
+        var deniedProfile = Guid.NewGuid();
+        var peer = Guid.NewGuid();
+        var legacyHost = Guid.NewGuid();
+        var peerHost = Guid.NewGuid();
+        FriendConfiguration Configuration(Guid host, char credential) => new()
+        {
+            HostId = host,
+            DeviceId = Guid.NewGuid(),
+            Credential = new string(credential, 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64),
+            CachedProfiles = [new(profile, "Synthetic assigned room", "Offline", null), new(deniedProfile, "Synthetic removed room", "Offline", null)],
+            ChatDeniedProfiles = [deniedProfile]
+        };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        data.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(Configuration(legacyHost, 'L'), options));
+        data.SaveProtected($"friend-{peer:N}.protected", JsonSerializer.SerializeToUtf8Bytes(Configuration(peerHost, 'P'), options));
+        data.SaveProtected("friend-connections.protected", JsonSerializer.SerializeToUtf8Bytes(new { ids = new[] { Guid.Empty, peer }, selectedId = Guid.Empty }, options));
+        var requests = 0;
+        using var friend = new FriendService(data, (endpoint, pins) => new HttpClient(new MetadataHandler(request =>
+        {
+            requests++;
+            throw new InvalidOperationException("Legacy scope checks cannot send network traffic");
+        }))
+        { BaseAddress = new Uri(endpoint) });
+        Require(friend.View().ConnectionId == Guid.Empty && friend.View().Connections?.Count == 2,
+            "The protected legacy link remains selected when it is present in the saved index");
+        var summary = friend.ChatSummaryAsync(Guid.Empty, profile, CancellationToken.None).GetAwaiter().GetResult();
+        Require(summary.Ok && summary.HostId == legacyHost && summary.ProfileId == profile,
+            "A selected actual legacy link can read its assigned local room summary");
+        var missing = friend.ChatSummaryAsync(Guid.Empty, Guid.NewGuid(), CancellationToken.None).GetAwaiter().GetResult();
+        var denied = friend.ChatSummaryAsync(Guid.Empty, deniedProfile, CancellationToken.None).GetAwaiter().GetResult();
+        Require(!missing.Ok && missing.Code == "UnknownProfile" && !denied.Ok && denied.Code == "ChatAccessDenied",
+            "Legacy selection never bypasses assignment or room removal");
+        var queued = friend.PostChatAsync(Guid.Empty, profile, "Synthetic legacy unsent text", CancellationToken.None).GetAwaiter().GetResult();
+        Require(queued.Ok && queued.Code == "ChatQueued" && queued.Pending.Count == 1, "Selected legacy offline room can queue deliberately");
+        var draft = queued.Pending.Single();
+        Require(friend.EditQueuedChatAsync(Guid.Empty, profile, draft.Id, new("Reviewed legacy text", draft.Text), CancellationToken.None).GetAwaiter().GetResult().Ok,
+            "Selected legacy room can edit a proven unsent queue entry");
+        Require(friend.Select(peer).Ok &&
+            friend.ChatSummaryAsync(Guid.Empty, profile, CancellationToken.None).GetAwaiter().GetResult().Code == "ConnectionChanged" &&
+            friend.SyncChatAsync(Guid.Empty, profile, CancellationToken.None).GetAwaiter().GetResult().Code == "ConnectionChanged",
+            "An unselected legacy link cannot be used when another equal-profile Host is selected");
+        Require(friend.ChatSummaryAsync(peer, profile, CancellationToken.None).GetAwaiter().GetResult().HostId == peerHost,
+            "The same profile ID on another saved Host remains a different chat authority");
+        Require(friend.Select(Guid.Empty).Ok &&
+            friend.CancelQueuedChatAsync(Guid.Empty, profile, draft.Id, new("Reviewed legacy text"), CancellationToken.None).GetAwaiter().GetResult().Ok,
+            "Reselecting the legacy link restores only its own queue authority");
+        friend.Dispose();
+        Require(friend.ChatSummaryAsync(Guid.Empty, profile, CancellationToken.None).GetAwaiter().GetResult().Code == "ConnectionChanged" && requests == 0,
+            "Disposed legacy connections remain closed and every regression stays local");
+        data.SaveProtected("friend-connections.protected", JsonSerializer.SerializeToUtf8Bytes(new { ids = new[] { peer }, selectedId = Guid.Empty }, options));
+        using var withoutLegacy = new FriendService(data, (endpoint, pins) => new HttpClient(new MetadataHandler(request =>
+        {
+            requests++;
+            throw new InvalidOperationException("Unindexed legacy scope checks cannot send network traffic");
+        }))
+        { BaseAddress = new Uri(endpoint) });
+        Require(withoutLegacy.View().ConnectionId == peer &&
+            withoutLegacy.ChatSummaryAsync(Guid.Empty, profile, CancellationToken.None).GetAwaiter().GetResult().Code == "ConnectionChanged" && requests == 0,
+            "A leftover protected legacy file cannot become an active link when the current index excludes it");
     }
 
     internal static void RunPreferences()
@@ -170,8 +346,11 @@ internal static class DesktopQolChecks
         Require(restored.SnoozedUntil("0.4.0") is null && !restored.IsVersionSkipped("0.4.0"), "Skip can be cleared");
         for (var index = 0; index < 24; index++) reminders.Snooze(new("0.4." + index, "SkipVersion"));
         Require(saved?.Snoozes.Count == 16, "Reminder state bounded");
-        Reject(() => { using var input = JsonDocument.Parse("{\"version\":\"0.4.0\",\"duration\":\"Forever\",\"url\":\"private\"}");
-            UpdateUiPreferences.ParseSnooze(input.RootElement); }, "Snooze cannot set arbitrary policy or URL");
+        Reject(() =>
+        {
+            using var input = JsonDocument.Parse("{\"version\":\"0.4.0\",\"duration\":\"Forever\",\"url\":\"private\"}");
+            UpdateUiPreferences.ParseSnooze(input.RootElement);
+        }, "Snooze cannot set arbitrary policy or URL");
     }
 
     private static void CheckNativeDraftFlushGate()
@@ -245,7 +424,10 @@ internal static class DesktopQolChecks
         File.WriteAllText(executable, "synthetic installed file; never executed");
         string Metadata(string tag, string notesLink) => JsonSerializer.Serialize(new
         {
-            tag_name = tag, draft = false, prerelease = false, body = new string('a', 5000) + "\0",
+            tag_name = tag,
+            draft = false,
+            prerelease = false,
+            body = new string('a', 5000) + "\0",
             html_url = notesLink,
             assets = new[] { new { name = AppUpdater.AssetName, state = "uploaded", size = 4,
                 digest = "sha256:" + new string('A', 64),
@@ -258,8 +440,11 @@ internal static class DesktopQolChecks
             Require(request.RequestUri?.AbsoluteUri == "https://api.github.com/repos/daltonstates/TogetherServer/releases/latest",
                 "Notes use only the existing metadata request");
             requests++;
-            return new(HttpStatusCode.OK) { Content = new StringContent(Metadata(version,
-                "https://github.com/daltonstates/TogetherServer/releases/tag/" + version)) };
+            return new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(Metadata(version,
+                "https://github.com/daltonstates/TogetherServer/releases/tag/" + version))
+            };
         }));
         UpdateUiPreferences.State? persisted = null;
         var preferences = new UpdateUiPreferences(save: value => persisted = value);

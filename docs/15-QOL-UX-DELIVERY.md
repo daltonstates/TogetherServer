@@ -130,6 +130,8 @@ Skipped: synthetic symbolic-link cases because the current test account could no
 
 Source checks used bounded synthetic files, fake HTTP/desktop adapters and pure projections. No app, game, console fixture, browser automation, installer, staging package or listener was launched. No production data, real world, real credential, public network setting, release or tag was changed. No push or deployment was performed.
 
+On 2026-10-09 the owner authorized additional testing on a separate Windows CI runner while preserving the running version. Follow-up fixes, the isolated draft PR and exact runtime results are recorded in [the QoL validation ledger](16-QOL-UX-VALIDATION.md). The implementation results above remain the original code-only baseline; pending runtime checks are not counted as passes.
+
 ## Integration and recovery notes
 
 - Protected drafts are per actual file/list/settings/profile or selected Friend connection/room, use Windows CurrentUser protection and bounded CAS revisions, and never store passwords/scripts in setup recovery or private fields in browser preferences. Failed/uncertain saves and newer edits during flush retain navigation. Native manual Quit requests a bounded local WebView acknowledgement before taking the API mode gate; failure keeps the app open. Close-to-tray retains its normal hide behavior.

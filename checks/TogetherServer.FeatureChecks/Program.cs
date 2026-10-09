@@ -22,7 +22,8 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Safe unsent chat queue changes", () => ChatQueueChecks.RunAsync(root)),
     ("Native import selection previews", () => { SetupImportPreviewChecks.Run(root); return Task.CompletedTask; }),
     ("Shared save display projections", () => { SharedWorldProjectionChecks.Run(root); return Task.CompletedTask; }),
-    ("Local QoL endpoint scopes and run identity", () => { QolLocalEndpointInputChecks.Run(); return Task.CompletedTask; })
+    ("Local QoL endpoint scopes and run identity", () => { QolLocalEndpointInputChecks.Run(); return Task.CompletedTask; }),
+    ("Canonical tray projection", () => { DesktopTrayProjectionChecks.Run(root); return Task.CompletedTask; })
 };
 foreach (var group in groups)
 {

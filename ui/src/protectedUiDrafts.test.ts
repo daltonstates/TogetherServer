@@ -56,6 +56,35 @@ describe('protected drafts', () => {
     expect(() => parseProtectedDraftResult({ ok: true, text: '界'.repeat(700000), revision: 1, message: 'bad' })).toThrow()
   })
 
+  it('preserves a legacy zero connection ID on every compose request separately from the Host null scope', async () => {
+    const fetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => ({ ok: true, status: 200,
+      text: async () => JSON.stringify({ ok: true, text: null, revision: 4, message: 'Checked.' }) } as Response))
+    vi.stubGlobal('fetch', fetch)
+    const connectionId = '00000000-0000-0000-0000-000000000000'
+    const legacy: DraftIdentity = { ...identity, connectionId, key: 'compose' }
+    await readProtectedDraft(legacy)
+    await saveProtectedDraft(legacy, 'Reviewed legacy compose', 4)
+    await clearProtectedDraft(legacy, 5)
+    for (const [, request] of fetch.mock.calls) {
+      expect(JSON.parse(request!.body as string)).toMatchObject({ purpose: 'chat', profileId: identity.profileId,
+        connectionId, key: 'compose' })
+    }
+    await readProtectedDraft({ ...legacy, connectionId: null })
+    expect(JSON.parse(fetch.mock.calls[3][1]!.body as string).connectionId).toBeNull()
+  })
+
+  it('keeps legacy zero connection IDs limited to the reviewed chat compose identity', () => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    const connectionId = '00000000-0000-0000-0000-000000000000'
+    for (const purpose of ['file', 'settings', 'list'] as const)
+      expect(() => readProtectedDraft({ ...identity, purpose, connectionId, key: 'compose' })).toThrow()
+    expect(() => readProtectedDraft({ ...identity, connectionId })).toThrow()
+    expect(() => readProtectedDraft({ ...identity, connectionId, profileId: connectionId, key: 'compose' })).toThrow()
+    expect(() => readProtectedDraft({ ...identity, connectionId: '00000000', key: 'compose' })).toThrow()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('protects a reviewed large file draft while keeping chat capped at 64 KiB', async () => {
     const large = 'a'.repeat(512 * 1024)
     const fetch = vi.fn(async () => ({ ok: true, status: 200,

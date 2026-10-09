@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ApiError, changeJson, errorMessage, getJson } from './api'
+import { ApiError, changeJson, errorMessage, getJson, getLocalJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
@@ -366,7 +366,7 @@ function App() {
   useEffect(() => subscribeToDesktopDraftFlush(() => beforeLeavingAppRef.current()), [])
   useEffect(() => {
     const controller = new AbortController()
-    void getJson('/api/local/desktop/notifications', parseNotificationPreferences, controller.signal).then(preferences => {
+    void getLocalJson('/api/local/desktop/notifications', parseNotificationPreferences, controller.signal).then(preferences => {
       if (!controller.signal.aborted) setUiPreferences(current => ({ ...current, quietMode: preferences.quietMode }))
     }).catch(() => { /* The notification panel has an explicit retry. */ })
     return () => controller.abort()

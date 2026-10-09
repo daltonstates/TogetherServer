@@ -8,6 +8,10 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ['checks/**/*.mjs'],
+    languageOptions: { globals: globals.node }
+  },
+  {
     files: ['src/**/*.{ts,tsx}', 'vite.config.ts', 'vitest.config.ts'],
     languageOptions: {
       globals: { ...globals.browser, ...globals.node }

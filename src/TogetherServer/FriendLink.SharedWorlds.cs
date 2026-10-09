@@ -89,8 +89,11 @@ internal static class ReceivedSharedWorldProjection
     {
         var observation = new ReceivedSharedWorldReceiptObservation(1, receipt.ReceiptId,
             receivedUtc, hostConfirmed, "");
-        return observation with { Signature = Convert.ToBase64String(key.SignData(
-            Basis(receipt, observation), HashAlgorithmName.SHA256)) };
+        return observation with
+        {
+            Signature = Convert.ToBase64String(key.SignData(
+            Basis(receipt, observation), HashAlgorithmName.SHA256))
+        };
     }
 
     internal static bool Verify(SharedWorldReceipt receipt,
@@ -2438,8 +2441,11 @@ internal sealed partial class FriendLink
             active.HostVersion == version.Number)
             sharedTransfers[profileId] = active with
             {
-                State = "Confirming receipt", TransferPhase = "Receipt", ThisPcVersion = version.Number,
-                CompletedUtc = ReceivedSharedWorldProjection.CompletedUtc(version), ReceivedUtc = null,
+                State = "Confirming receipt",
+                TransferPhase = "Receipt",
+                ThisPcVersion = version.Number,
+                CompletedUtc = ReceivedSharedWorldProjection.CompletedUtc(version),
+                ReceivedUtc = null,
                 ReceiptConfirmed = null
             };
         using var key = LoadPcSigningKey(deviceId);
@@ -2516,7 +2522,8 @@ internal sealed partial class FriendLink
             active.ThisPcVersion == version.Number && active.TransferPhase == "Receipt")
             sharedTransfers[profileId] = active with
             {
-                ReceivedUtc = observation.ReceivedUtc, ReceiptConfirmed = observation.HostConfirmed
+                ReceivedUtc = observation.ReceivedUtc,
+                ReceiptConfirmed = observation.HostConfirmed
             };
     }
 

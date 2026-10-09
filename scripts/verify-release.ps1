@@ -10,11 +10,22 @@ if (!$AllowInteractiveTests) {
     throw 'ForegroundSafety: Full verification can change desktop focus, including console fixtures when -SkipDesktop is set. Use scripts/verify-code-only.ps1 on the active desktop. -AllowInteractiveTests requires explicit owner approval for a separate test PC or dedicated unattended Windows session.'
 }
 $repository = Split-Path -Parent $PSScriptRoot
+$checkEvidence = [Collections.Generic.List[object]]::new()
+$evidenceRoot = Join-Path $repository 'local-data/ci-evidence/release-gate'
+$candidateIdentity = $null
 
 function Invoke-Checked([string]$Name, [scriptblock]$Command) {
     Write-Host "`n== $Name =="
-    & $Command
-    if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE." }
+    $started = [DateTime]::UtcNow
+    try {
+        & $Command
+        if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE." }
+        $checkEvidence.Add(@{ name = $Name; outcome = 'passed'; elapsedSeconds = ([DateTime]::UtcNow - $started).TotalSeconds })
+    }
+    catch {
+        $checkEvidence.Add(@{ name = $Name; outcome = 'failed'; elapsedSeconds = ([DateTime]::UtcNow - $started).TotalSeconds })
+        throw
+    }
 }
 
 Push-Location $repository
@@ -59,6 +70,8 @@ try {
     Write-Host "Source identity: $($fileInfo.ProductVersion)"
     Write-Host "SHA-256: $candidateHash"
     Write-Host "Authenticode: $($signature.Status)"
+    $candidateIdentity = @{ sourceRevision = $sourceRevision; productVersion = $fileInfo.ProductVersion;
+        sha256 = $candidateHash; authenticode = [string]$signature.Status }
 
     Invoke-Checked 'Git whitespace check' {
         $emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -77,13 +90,13 @@ try {
         }
     }
     Invoke-Checked 'Check runner listener identity' {
-        $checkFiles = @(Get-ChildItem -LiteralPath (Join-Path $repository 'checks') -File -Recurse |
-            Where-Object { $_.Extension -in '.cs', '.ps1' -and
+        $checkFiles = @(Get-ChildItem -LiteralPath (Join-Path $repository 'checks'), (Join-Path $repository 'ui/checks') -File -Recurse |
+            Where-Object { $_.Extension -in '.cs', '.ps1', '.mjs' -and
                 $_.FullName -notmatch '[\\/](?:obj|bin)[\\/]' })
         $listenerPatterns = @(
             '\bnew\s+(?:System\.Net\.Sockets\.)?(?:TcpListener|UdpClient|Socket)\s*\(',
             '\[(?:System\.)?Net\.Sockets\.(?:TcpListener|UdpClient|Socket)\]::new\s*\(',
-            '\.Bind\s*\(', '\.Listen\s*\('
+            '\.Bind\s*\(', '\.Listen\s*\(', '\bcreateServer\s*\(', '\bcreateSocket\s*\('
         )
         $offenders = @($checkFiles | Select-String -Pattern $listenerPatterns)
         if ($offenders.Count -gt 0) {
@@ -124,7 +137,8 @@ try {
         'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
         'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',
         'checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj',
-        'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj'
+        'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj',
+        'checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj'
     )
     foreach ($checkProject in $checkProjects) {
         $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
@@ -132,6 +146,9 @@ try {
     }
     Invoke-Checked 'Core remote journey' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
+    }
+    Invoke-Checked 'QoL packaged API journey' {
+        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --qol-api-journey
     }
     Invoke-Checked 'World-load packaged rehearsal' {
         dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --world-load-rehearsal
@@ -151,8 +168,13 @@ try {
     Invoke-Checked 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
     Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
     Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
+    Invoke-Checked 'QoL bundled browser journeys' {
+        node ui/checks/qol-browser-smoke.mjs --app-path $AppPath --allow-interactive-tests --output-dir local-data/ci-evidence/qol-browser
+    }
     if (!$SkipDesktop) {
         Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -AllowInteractiveTests }
+        Invoke-Checked 'Packaged interactive desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -Interactive -AllowInteractiveTests }
+        Invoke-Checked 'QoL native desktop smoke' { & checks/qol-desktop-smoke.ps1 -AppPath $AppPath -AllowInteractiveTests }
     }
     else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
 
@@ -162,4 +184,10 @@ try {
     if ($finalHash -ne $candidateHash) { throw 'Candidate bytes changed during verification.' }
     Write-Host "`nPASS exact candidate remained $candidateHash through serial verification."
 }
-finally { Pop-Location }
+finally {
+    New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+    @{ candidate = $candidateIdentity; checks = @($checkEvidence.ToArray());
+        boundary = 'Separate approved Windows session; synthetic and loopback evidence does not establish real game, WAN, join or save acceptance.' } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'release-gate-report.json') -Encoding utf8
+    Pop-Location
+}

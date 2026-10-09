@@ -34,16 +34,26 @@ internal static class WeeklySummaryChecks
             "legacy", now - TimeSpan.FromDays(1), false);
         var outside = Session(start - TimeSpan.FromHours(3), start - TimeSpan.FromHours(2), ServerSessionOutcome.UnexpectedExit, 100);
         var another = Session(now - TimeSpan.FromHours(1), now, ServerSessionOutcome.UnexpectedExit, 200) with { ProfileId = Guid.NewGuid() };
-        var ongoing = new ManagedRun { ProfileId = profile, OperationId = Guid.NewGuid(), StartTimeUtcTicks = start.UtcTicks,
-            WasReady = true, MaximumTrustedOnlinePlayers = 800, LastTrustedOnlinePlayers = 0 };
+        var ongoing = new ManagedRun
+        {
+            ProfileId = profile,
+            OperationId = Guid.NewGuid(),
+            StartTimeUtcTicks = start.UtcTicks,
+            WasReady = true,
+            MaximumTrustedOnlinePlayers = 800,
+            LastTrustedOnlinePlayers = 0
+        };
         var records = new List<ManagedRunArchive> { clipped, overlap, failure, backupFailure, legacy, outside, another };
         var summary = HostManager.SummarizeWeeklySessions(profile, now, records, [ongoing]);
         Require(summary.WindowStartUtc == start && summary.WindowEndUtc == now && summary.RecordedRuntimeSeconds == 2 * 3600 + 7 * 60,
             "runtime was not clipped, merged, or scoped to exactly seven days");
-        Require(summary is { ArchivedSessionCount: 5, CompletedSessionCount: 4, FailedStarts: 1, UnexpectedExits: 1,
-                RollingBackupsCompleted: 1, RollingBackupsFailed: 1, RollingBackupsNotAttempted: 2,
-                PeakTrustedOnlinePlayers: 4, UnavailableSessionCount: 1, ClippedSessionCount: 1,
-                OverlappingSessionCount: 1, UnfinishedRunCount: 1, SessionsWithoutTrustedCounts: 1 },
+        Require(summary is
+        {
+            ArchivedSessionCount: 5, CompletedSessionCount: 4, FailedStarts: 1, UnexpectedExits: 1,
+            RollingBackupsCompleted: 1, RollingBackupsFailed: 1, RollingBackupsNotAttempted: 2,
+            PeakTrustedOnlinePlayers: 4, UnavailableSessionCount: 1, ClippedSessionCount: 1,
+            OverlappingSessionCount: 1, UnfinishedRunCount: 1, SessionsWithoutTrustedCounts: 1
+        },
             "weekly outcome, backup, peak, or explicit gap metrics were wrong");
         var roundTrip = JsonSerializer.Deserialize<List<ManagedRunArchive>>(JsonSerializer.Serialize(records))!;
         Require(JsonSerializer.Serialize(HostManager.SummarizeWeeklySessions(profile, now, roundTrip, [ongoing])) ==
@@ -71,7 +81,9 @@ internal static class WeeklySummaryChecks
             "cross-midnight overlapping intervals were double-counted or assigned to archive dates");
         var endsAtMidnight = acrossMidnight with
         {
-            EndedUtc = midnight, ArchivedUtc = midnight, DurationSeconds = 3600
+            EndedUtc = midnight,
+            ArchivedUtc = midnight,
+            DurationSeconds = 3600
         };
         var exactMidnight = HostManager.SummarizeWeeklySessions(profile, now, [endsAtMidnight], []);
         Require(exactMidnight.RuntimeByDay![6].RecordedRuntimeSeconds == 3600 &&
@@ -97,23 +109,25 @@ internal static class WeeklySummaryChecks
             "a duplicate record supplied usable drill-down timing or outcome evidence");
         var unavailableTimes = legacy with { OperationId = Guid.NewGuid(), ArchivedUtc = default };
         Require(HostManager.SummarizeWeeklySessions(profile, now, [unavailableTimes], [ongoing]) is
-            { UndatedArchiveRecordCount: 1, RecordedRuntimeSeconds: 0, PeakTrustedOnlinePlayers: null, UnfinishedRunCount: 1 },
+        { UndatedArchiveRecordCount: 1, RecordedRuntimeSeconds: 0, PeakTrustedOnlinePlayers: null, UnfinishedRunCount: 1 },
             "undated or unfinished records manufactured runtime or count observations");
         var atBoundary = Session(start, start, ServerSessionOutcome.FailedBeforeReady, null);
         Require(HostManager.SummarizeWeeklySessions(profile, now, [atBoundary], []) is
-            { RecordedRuntimeSeconds: 0, FailedStarts: 1, CompletedSessionCount: 1 }, "the exact week boundary was lost");
+        { RecordedRuntimeSeconds: 0, FailedStarts: 1, CompletedSessionCount: 1 }, "the exact week boundary was lost");
         var fullWeek = Session(start - TimeSpan.FromDays(2), now, ServerSessionOutcome.GracefulStop, 99,
             ServerSessionBackupResult.NotConfigured);
         Require(HostManager.SummarizeWeeklySessions(profile, now, [fullWeek], []) is
-            { RecordedRuntimeSeconds: 604800, ClippedSessionCount: 1, PeakTrustedOnlinePlayers: null, RollingBackupsNotConfigured: 1 },
+        { RecordedRuntimeSeconds: 604800, ClippedSessionCount: 1, PeakTrustedOnlinePlayers: null, RollingBackupsNotConfigured: 1 },
             "a long archived run exceeded the window or attributed its untimed peak");
         var capped = Enumerable.Range(0, 501).Select(index => atBoundary with
         {
-            OperationId = Guid.NewGuid(), ArchivedUtc = start + TimeSpan.FromSeconds(index),
-            StartedUtc = start + TimeSpan.FromSeconds(index), EndedUtc = start + TimeSpan.FromSeconds(index)
+            OperationId = Guid.NewGuid(),
+            ArchivedUtc = start + TimeSpan.FromSeconds(index),
+            StartedUtc = start + TimeSpan.FromSeconds(index),
+            EndedUtc = start + TimeSpan.FromSeconds(index)
         }).ToList();
         Require(HostManager.SummarizeWeeklySessions(profile, now, capped, []) is
-            { ArchiveLimitReached: true, ArchivedSessionCount: 500, CompletedSessionCount: 500 },
+        { ArchiveLimitReached: true, ArchivedSessionCount: 500, CompletedSessionCount: 500 },
             "the retained archive bound was hidden or exceeded");
         var serialized = JsonSerializer.Serialize(summary);
         Require(!serialized.Contains("synthetic", StringComparison.Ordinal) && !serialized.Contains("No logs", StringComparison.Ordinal) &&

@@ -125,8 +125,11 @@ internal sealed partial class FriendLink
             IReadOnlyList<ChatDraft> submitted = local.Ok
                 ? chat.MarkPendingSubmitted(config.HostId, profileId, config.DeviceId) : [];
             local = local with { Pending = submitted };
-            var outbound = new { entries = local.Entries,
-                drafts = submitted.Select(draft => new { draft.Id, draft.Text }).ToArray() };
+            var outbound = new
+            {
+                entries = local.Entries,
+                drafts = submitted.Select(draft => new { draft.Id, draft.Text }).ToArray()
+            };
             using var response = await HostClient().PostAsJsonAsync(
                 $"api/companion/servers/{profileId}/chat/sync",
                 outbound, Json, cancellationToken);

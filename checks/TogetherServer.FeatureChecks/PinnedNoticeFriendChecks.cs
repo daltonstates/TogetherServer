@@ -22,9 +22,12 @@ internal static class PinnedNoticeFriendChecks
         const string configFile = "notice-link.protected";
         var configuration = new FriendConfiguration
         {
-            HostId = hostId, DeviceId = Guid.NewGuid(), Credential = new string('C', 64),
+            HostId = hostId,
+            DeviceId = Guid.NewGuid(),
+            Credential = new string('C', 64),
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
-            Endpoint = "https://127.0.0.1:5131", Fingerprint = new string('A', 64),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64),
             CachedProfiles = [new(profileId, "Synthetic server", "Offline", null)]
         };
         peerData.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(configuration, Json));
@@ -121,9 +124,12 @@ internal static class PinnedNoticeFriendChecks
         const string configFile = "notice-pin-fault.protected";
         var configuration = new FriendConfiguration
         {
-            HostId = hostId, DeviceId = Guid.NewGuid(), Credential = new string('D', 64),
+            HostId = hostId,
+            DeviceId = Guid.NewGuid(),
+            Credential = new string('D', 64),
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
-            Endpoint = "https://127.0.0.1:5131", Fingerprint = new string('B', 64),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('B', 64),
             CachedProfiles = [new(profileId, "Synthetic server", "Offline", null)]
         };
         peerData.SaveProtected(configFile, JsonSerializer.SerializeToUtf8Bytes(configuration, Json));

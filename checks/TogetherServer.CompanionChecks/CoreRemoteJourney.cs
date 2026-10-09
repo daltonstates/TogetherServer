@@ -54,7 +54,8 @@ internal static partial class CoreRemoteJourney
             if (typeof(DesktopWindow).Assembly != appAssembly ||
                 appAssembly.GetName().Name != "TogetherServer" ||
                 appAssembly.GetType("TogetherServer.AppBackgroundTasks") is null ||
-                typeof(DesktopWindow).GetMethod(nameof(DesktopWindow.Notify)) is null)
+                typeof(DesktopWindow).GetMethod(nameof(DesktopWindow.Notify), [typeof(string), typeof(string), typeof(bool)]) is null ||
+                typeof(DesktopWindow).GetMethod(nameof(DesktopWindow.Notify), [typeof(TogetherServer.ActivityEvent), typeof(bool), typeof(Guid?)]) is null)
                 throw new Exception("Tray notifications are not implemented in the packaged app assembly.");
             using var owner = LocalClient(hostPort);
             using var friendLocal = LocalClient(friendPort);

@@ -95,7 +95,8 @@ internal sealed partial class WorldBackupService
             long? freeBytes = null;
             try { var measured = availableSpace(data.BackupsRoot); if (measured is >= 0 and <= MaximumUiInteger) freeBytes = measured; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or
-                NotSupportedException or System.ComponentModel.Win32Exception) { }
+                NotSupportedException or System.ComponentModel.Win32Exception)
+            { }
             if (bookmarks.PinnedSizeBytes > MaximumUiInteger)
                 return EmptyCatalog(profile.Id, "BackupCatalogUnavailable", "Pinned capacity needs local review.");
             return new(true, "BackupCatalog", "Completed backup metadata and separate dated outcomes on this Host.",

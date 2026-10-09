@@ -64,8 +64,12 @@ internal static class QolLocalEndpointInputChecks
             Kind: GameKinds.Valheim, GameKind: GameKinds.Valheim, RunOperationId: firstRun);
         var viewA = new FriendView("Friend", "Connected", "Synthetic", "https://192.0.2.1:5131", null,
             true, false, false, [measured], [], ConnectionId: hostA);
-        var viewB = viewA with { ConnectionId = hostB, Endpoint = "https://192.0.2.2:5131",
-            Profiles = [measured with { JoinAddress = "192.0.2.2:2456" }] };
+        var viewB = viewA with
+        {
+            ConnectionId = hostB,
+            Endpoint = "https://192.0.2.2:5131",
+            Profiles = [measured with { JoinAddress = "192.0.2.2:2456" }]
+        };
         Require(QolLocalEndpointInputs.GameProbeScopeFailure(hostA, hostA, viewA, profileId, firstRun) is null &&
                 QolLocalEndpointInputs.GameProbeScopeFailure(hostA, hostA, viewA, profileId, firstRun, measured) is null,
             "an unchanged selected Host/run was denied before or after its fixed probe");
@@ -177,7 +181,9 @@ internal static class QolLocalEndpointInputChecks
         {
             var profile = new ServerProfile
             {
-                Id = Guid.NewGuid(), Kind = game.Kind, WorldId = "synthetic",
+                Id = Guid.NewGuid(),
+                Kind = game.Kind,
+                WorldId = "synthetic",
                 WorldDirectory = Path.GetFullPath(Path.Combine("local-data", "metadata-only-never-created", game.Kind))
             };
             foreach (var key in game.Files)

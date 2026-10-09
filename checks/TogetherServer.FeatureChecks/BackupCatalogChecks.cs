@@ -25,8 +25,12 @@ internal static class BackupCatalogChecks
         var clock = new CatalogClock();
         var profile = new ServerProfile
         {
-            Id = Guid.NewGuid(), Kind = GameKinds.Fixture, Name = "Synthetic catalog checks", WorldId = "SyntheticWorld",
-            WorldDirectory = source, Backups = new() { RetentionCount = 3, MinimumFreeSpaceMb = 16 }
+            Id = Guid.NewGuid(),
+            Kind = GameKinds.Fixture,
+            Name = "Synthetic catalog checks",
+            WorldId = "SyntheticWorld",
+            WorldDirectory = source,
+            Backups = new() { RetentionCount = 3, MinimumFreeSpaceMb = 16 }
         };
         var dataRoot = Path.Combine(checkRoot, "synthetic-app-data");
         Guid firstId;
@@ -161,8 +165,12 @@ internal static class BackupCatalogChecks
         var clock = new CatalogClock();
         var profile = new ServerProfile
         {
-            Id = Guid.NewGuid(), Kind = GameKinds.Fixture, Name = "Source-only evidence lease checks", WorldId = "SyntheticEvidence",
-            WorldDirectory = source, ExecutablePath = Path.Combine(checkRoot, "never-launched.exe"),
+            Id = Guid.NewGuid(),
+            Kind = GameKinds.Fixture,
+            Name = "Source-only evidence lease checks",
+            WorldId = "SyntheticEvidence",
+            WorldDirectory = source,
+            ExecutablePath = Path.Combine(checkRoot, "never-launched.exe"),
             Backups = new() { RetentionCount = 3, MinimumFreeSpaceMb = 0 }
         };
         data.SaveSettings(new HostSettings { Profiles = [profile] });

@@ -104,9 +104,12 @@ internal static class ChatQueueChecks
         const string file = "queue-friend.protected";
         var configuration = new FriendConfiguration
         {
-            HostId = hostId, DeviceId = deviceId, Credential = new string('Q', 64),
+            HostId = hostId,
+            DeviceId = deviceId,
+            Credential = new string('Q', 64),
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
-            Endpoint = "https://127.0.0.1:5131", Fingerprint = new string('A', 64),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64),
             CachedProfiles = [new(profileId, "Synthetic server", "Offline", null)]
         };
         peerData.SaveProtected(file, JsonSerializer.SerializeToUtf8Bytes(configuration, Json));

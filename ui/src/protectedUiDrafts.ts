@@ -34,7 +34,8 @@ function boundedIdentity(identity: DraftIdentity): DraftIdentity {
   const empty = '00000000-0000-0000-0000-000000000000'
   if (!['file', 'settings', 'list', 'chat'].includes(identity.purpose) ||
     !guid.test(identity.profileId) || !/^[a-z\d_:-]{1,96}$/i.test(identity.key) ||
-    (identity.connectionId != null && (!guid.test(identity.connectionId) || identity.connectionId === empty)) ||
+    (identity.connectionId != null && (!guid.test(identity.connectionId) ||
+      (identity.connectionId === empty && (identity.purpose !== 'chat' || identity.key !== 'compose')))) ||
     (identity.profileId === empty &&
       (identity.purpose !== 'settings' || identity.key !== 'host-setup' || identity.connectionId != null)))
     throw new ContractError('The draft must belong to a saved server or the local setup guide.')

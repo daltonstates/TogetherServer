@@ -261,9 +261,17 @@ internal static class GameSettingsChecks
     {
         var directory = Path.Combine(root, "server-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
-        return new() { Name = "Synthetic settings", ServerName = "Synthetic settings", Kind = kind,
-            WorldId = "synthetic-world", WorldDirectory = directory, GamePort = 25565,
-            ExecutablePath = Path.Combine(directory, "not-launched.exe"), Backups = new() { MinimumFreeSpaceMb = 0, RetentionCount = 20 } };
+        return new()
+        {
+            Name = "Synthetic settings",
+            ServerName = "Synthetic settings",
+            Kind = kind,
+            WorldId = "synthetic-world",
+            WorldDirectory = directory,
+            GamePort = 25565,
+            ExecutablePath = Path.Combine(directory, "not-launched.exe"),
+            Backups = new() { MinimumFreeSpaceMb = 0, RetentionCount = 20 }
+        };
     }
     private static ServerFileContentResult Content(string key, string content) =>
         new(true, "ServerFileReady", "Synthetic source", key, content, Hash(content));

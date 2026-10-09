@@ -278,7 +278,7 @@ internal sealed class DesktopWindow
     {
         if (summary.RunningServers is < 0 or > 128 || summary.ServersNeedingReview is < 0 or > 128 ||
             summary.FriendState is not ("Connected" or "Disabled" or "Unknown" or "Disconnected/Unknown" or
-                "Revoked" or "Awaiting approval" or "No saved connection" or "Access expired")) return;
+                "Revoked" or "Awaiting approval" or "No saved connection" or "Not connected" or "Update required" or "Access expired")) return;
         traySummary = summary;
         var target = form;
         if (target is null || target.IsDisposed || !target.IsHandleCreated) return;
@@ -486,8 +486,11 @@ internal sealed class DesktopWindow
         if (localPreferences is null || !window.Visible || window.WindowState == FormWindowState.Minimized) return;
         var bounds = window.WindowState == FormWindowState.Normal ? window.Bounds : window.RestoreBounds;
         if (!HasUsefulVisibleArea(bounds, Screen.AllScreens.Select(screen => screen.WorkingArea))) return;
-        try { localPreferences.SaveWindowPlacement(new(bounds.X, bounds.Y, bounds.Width, bounds.Height,
-            window.WindowState == FormWindowState.Maximized)); }
+        try
+        {
+            localPreferences.SaveWindowPlacement(new(bounds.X, bounds.Y, bounds.Width, bounds.Height,
+            window.WindowState == FormWindowState.Maximized));
+        }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         { /* Remembering a window is optional and never blocks hosting or closing. */ }
     }

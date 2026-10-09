@@ -63,8 +63,12 @@ public sealed class DesktopNotificationPreferences
         Validate(change);
         lock (sync)
         {
-            var next = new Settings { QuietMode = settings.QuietMode, AllowedEvents = settings.AllowedEvents.ToArray(),
-                Servers = settings.Servers.ToList() };
+            var next = new Settings
+            {
+                QuietMode = settings.QuietMode,
+                AllowedEvents = settings.AllowedEvents.ToArray(),
+                Servers = settings.Servers.ToList()
+            };
             if (change.QuietMode is { } quiet) next.QuietMode = quiet;
             else if (change.ProfileId is { } profile)
             {

@@ -37,8 +37,11 @@ internal static class SharedWorldProjectionChecks
             "completion date was not the verified local manifest date or an unavailable date was invented");
 
         var draft = new SharedWorldReceipt(1, version.GroupId, profileId, version.VersionHash, deviceId, 1, 1, Guid.NewGuid(), "");
-        var receipt = draft with { Signature = Convert.ToBase64String(deviceKey.SignData(
-            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+        var receipt = draft with
+        {
+            Signature = Convert.ToBase64String(deviceKey.SignData(
+            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+        };
         var receiptFile = Path.Combine(directory, "receipt.json");
         var observationFile = Path.Combine(directory, "receipt-display.json");
         File.WriteAllBytes(receiptFile, JsonSerializer.SerializeToUtf8Bytes(receipt, json));
@@ -83,8 +86,15 @@ internal static class SharedWorldProjectionChecks
             TransferPhase: "Receiving");
         Require(defaults.CompletedUtc is null && defaults.ReceivedUtc is null && defaults.ReceiptConfirmed is null,
             "100 percent byte progress invented copy verification or Host receipt evidence");
-        var oldCopy = defaults with { HostVersion = 2, ThisPcVersion = 1, CompletedUtc = created,
-            ReceivedUtc = signed, ReceiptConfirmed = true, TransferPhase = "Verifying" };
+        var oldCopy = defaults with
+        {
+            HostVersion = 2,
+            ThisPcVersion = 1,
+            CompletedUtc = created,
+            ReceivedUtc = signed,
+            ReceiptConfirmed = true,
+            TransferPhase = "Verifying"
+        };
         Require(oldCopy.HostVersion != oldCopy.ThisPcVersion && oldCopy.TransferPhase == "Verifying",
             "historical local dates became completion evidence for the newer active transfer");
         var legacy = JsonSerializer.Deserialize<ReceivedSharedWorldStatus>(

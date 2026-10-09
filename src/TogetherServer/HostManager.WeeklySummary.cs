@@ -75,10 +75,16 @@ public sealed partial class HostManager
                     // when either individual record would otherwise be complete.
                     evidence.Add(new(item.ArchivedUtc, session with
                     {
-                        StartedUtc = null, EndedUtc = null, DurationSeconds = null,
-                        ReadyEverObserved = null, EndReason = null, Outcome = null,
-                        CrashRecoveryScheduled = null, LastTrustedOnlinePlayers = null,
-                        MaximumTrustedOnlinePlayers = null, BackupResult = null
+                        StartedUtc = null,
+                        EndedUtc = null,
+                        DurationSeconds = null,
+                        ReadyEverObserved = null,
+                        EndReason = null,
+                        Outcome = null,
+                        CrashRecoveryScheduled = null,
+                        LastTrustedOnlinePlayers = null,
+                        MaximumTrustedOnlinePlayers = null,
+                        BackupResult = null
                     }));
                 }
                 continue;

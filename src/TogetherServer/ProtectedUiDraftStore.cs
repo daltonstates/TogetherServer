@@ -35,7 +35,8 @@ public sealed class ProtectedUiDraftStore
             var bytes = data.LoadProtected(FileName);
             if (existed && bytes is null) throw new InvalidDataException("Protected drafts could not be recovered.");
             return bytes;
-        }, bytes => data.SaveProtected(FileName, bytes), clock) { }
+        }, bytes => data.SaveProtected(FileName, bytes), clock)
+    { }
 
     // Injected storage is used by pure/synthetic checks; production always uses CurrentUser protection above.
     internal ProtectedUiDraftStore(Func<byte[]?> load, Action<byte[]> save, Func<DateTimeOffset>? clock = null)
@@ -84,7 +85,7 @@ public sealed class ProtectedUiDraftStore
                     if (oldestClear is null)
                         return current with { Ok = false, Message = "Protected draft storage is full. Review or discard an older draft first." };
                     copy.Entries.Remove(oldestClear);
-                    Advance(copy);
+                    AdvanceAbsenceFloor(copy);
                 }
                 copy.Entries.RemoveAll(item => item.Identity == identity);
                 var revision = Advance(copy);
@@ -115,11 +116,16 @@ public sealed class ProtectedUiDraftStore
                 if (!exists && copy.Entries.Count == MaximumEntries)
                 {
                     var oldestClear = copy.Entries.Where(item => item.Text is null).OrderBy(item => item.UpdatedUtc).FirstOrDefault();
-                    if (oldestClear is not null) copy.Entries.Remove(oldestClear);
+                    if (oldestClear is not null)
+                    {
+                        copy.Entries.Remove(oldestClear);
+                        AdvanceAbsenceFloor(copy);
+                    }
                     else
                     {
-                        // A global absence floor still invalidates the old revision without adding an entry.
-                        var absentRevision = Advance(copy);
+                        // No slot is available: compact this absence-only
+                        // tombstone directly into the replay-rejection floor.
+                        var absentRevision = AdvanceAbsenceFloor(copy);
                         if (!TryPersist(copy)) return Unavailable();
                         return new(true, null, absentRevision, "Draft cleared.");
                     }
@@ -160,7 +166,7 @@ public sealed class ProtectedUiDraftStore
         if (identity.Purpose is not ("file" or "settings" or "list" or "chat") ||
             identity.Key is null || identity.Key.Length is < 1 or > 96 ||
             identity.Key.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '_' and not '-' and not ':') ||
-            identity.ConnectionId == Guid.Empty ||
+            (identity.ConnectionId == Guid.Empty && (identity.Purpose != "chat" || identity.Key != "compose")) ||
             (identity.ProfileId == Guid.Empty &&
              (identity.Purpose != "settings" || identity.Key != "host-setup" || identity.ConnectionId is not null)))
             throw new InvalidDataException("The draft identity is not a reviewed local server or setup key.");
@@ -192,11 +198,18 @@ public sealed class ProtectedUiDraftStore
             if (bytes.Length > MaximumStoreBytes) throw new InvalidDataException("Draft storage is too large.");
             using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 12 });
             var root = document.RootElement;
-            RequireFields(root, ["schema", "counter", "entries"], []);
-            if (root.GetProperty("schema").ValueKind != JsonValueKind.Number ||
-                !root.GetProperty("schema").TryGetInt32(out var schema) || schema != 1)
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("schema", out var schemaField) ||
+                schemaField.ValueKind != JsonValueKind.Number ||
+                !schemaField.TryGetInt32(out var schema) || schema is not (1 or 2))
                 throw new InvalidDataException("Draft schema is unavailable.");
+            RequireFields(root, schema == 1 ? ["schema", "counter", "entries"] : ["schema", "counter", "absenceFloor", "entries"], []);
             var loaded = new State { Counter = ReadRevision(root, "counter") };
+            // Version 1 used the allocation counter for every absent identity.
+            // Preserve its final absence revision on migration so omitted old
+            // content/tombstones cannot be revived by a saved pre-upgrade CAS.
+            loaded.AbsenceFloor = schema == 1 ? loaded.Counter : ReadRevision(root, "absenceFloor");
+            if (loaded.AbsenceFloor > loaded.Counter)
+                throw new InvalidDataException("Draft absence revision is invalid.");
             var entries = root.GetProperty("entries");
             if (entries.ValueKind != JsonValueKind.Array || entries.GetArrayLength() > MaximumEntries)
                 throw new InvalidDataException("Draft storage has too many entries.");
@@ -228,11 +241,11 @@ public sealed class ProtectedUiDraftStore
         var copy = Clone();
         copy.Entries.RemoveAll(item => item.UpdatedUtc <= cutoff);
         // Advance the absence floor before removing old content/tombstones; stale saves cannot revive either.
-        Advance(copy);
+        AdvanceAbsenceFloor(copy);
         if (!TryPersist(copy)) throw new InvalidDataException("Draft retention could not be stored.");
     }
 
-    private State Clone() => new() { Counter = state!.Counter, Entries = state.Entries.ToList() };
+    private State Clone() => new() { Counter = state!.Counter, AbsenceFloor = state.AbsenceFloor, Entries = state.Entries.ToList() };
     private bool TryPersist(State copy)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(copy, Json);
@@ -251,7 +264,7 @@ public sealed class ProtectedUiDraftStore
     private ProtectedUiDraftResult Current(ProtectedUiDraftIdentity identity, bool ok, string message)
     {
         var entry = state!.Entries.SingleOrDefault(item => item.Identity == identity);
-        return new(ok, entry?.Text, entry?.Revision ?? state.Counter, message);
+        return new(ok, entry?.Text, entry?.Revision ?? state.AbsenceFloor, message);
     }
     private ProtectedUiDraftResult Unavailable() => new(false, null, state?.Counter ?? 0,
         "Protected drafts are unavailable on this PC. Keep this edit open and try again after reviewing app recovery.");
@@ -263,6 +276,7 @@ public sealed class ProtectedUiDraftStore
         if (copy.Counter >= MaximumRevision) throw new InvalidDataException("Draft revision limit reached.");
         return ++copy.Counter;
     }
+    private static long AdvanceAbsenceFloor(State copy) => copy.AbsenceFloor = Advance(copy);
     private static void ValidateRevision(long value)
     {
         if (value is < 0 or > MaximumRevision) throw new InvalidDataException("Draft revision is invalid.");
@@ -298,8 +312,9 @@ public sealed class ProtectedUiDraftStore
     }
     private sealed class State
     {
-        public int Schema { get; init; } = 1;
+        public int Schema { get; init; } = 2;
         public long Counter { get; set; }
+        public long AbsenceFloor { get; set; }
         public List<Entry> Entries { get; set; } = [];
     }
     private sealed record Entry(ProtectedUiDraftIdentity Identity, string? Text, long Revision, DateTimeOffset UpdatedUtc);

@@ -35,6 +35,11 @@ if (args.Skip(1).Contains("--shared-live-transfer-journey", StringComparer.Ordin
 }
 if (!File.Exists(appPath) || !File.Exists(fixturePath) || !File.Exists(valheimFixturePath))
     throw new Exception("Run scripts/build.ps1 first.");
+if (args.Skip(1).Contains("--qol-api-journey", StringComparer.OrdinalIgnoreCase))
+{
+    await QolApiJourney.RunAsync(appPath);
+    return 0;
+}
 if (args.Skip(1).Contains("--core-remote-journey", StringComparer.OrdinalIgnoreCase))
 {
     await CoreRemoteJourney.RunAsync(appPath, valheimFixturePath);

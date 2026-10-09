@@ -53,9 +53,15 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             var current = view;
             var notes = current.LatestVersion is { } version ? preferences.NotesFor(version) : null;
             var until = current.LatestVersion is { } target ? preferences.SnoozedUntil(target) : null;
-            return current with { ReleaseNotes = notes?.Text ?? "", ReleaseNotesUrl = notes?.Url,
-                SnoozedUntilUtc = until, PromptSnoozed = until is not null,
-                VersionSkipped = current.LatestVersion is { } latest && preferences.IsVersionSkipped(latest), Preparation = preparation };
+            return current with
+            {
+                ReleaseNotes = notes?.Text ?? "",
+                ReleaseNotesUrl = notes?.Url,
+                SnoozedUntilUtc = until,
+                PromptSnoozed = until is not null,
+                VersionSkipped = current.LatestVersion is { } latest && preferences.IsVersionSkipped(latest),
+                Preparation = preparation
+            };
         }
     }
     public UpdatePreparationView Preparation => preparation;

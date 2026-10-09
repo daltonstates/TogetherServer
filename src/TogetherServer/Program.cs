@@ -1362,7 +1362,11 @@ bool ImportProfileGameMatches(Guid profileId, string kind) =>
     !data.LoadSettings().Profiles.Any(profile => profile.Id == profileId && profile.Kind != kind);
 IResult ImportConfirmationFailure(string code, string message) => Results.Json(new
 {
-    ok = false, code, message, worldId = (string?)null, worldDirectory = (string?)null
+    ok = false,
+    code,
+    message,
+    worldId = (string?)null,
+    worldDirectory = (string?)null
 });
 Task<IResult> PrepareOwnerImport(HttpContext context, string kind, string title, string filter) =>
     FeatureRole(context, true, async () =>
@@ -1400,8 +1404,14 @@ Task<IResult> LegacyImportReviewRequired(HttpContext context) => FeatureRole(con
         return ImportConfirmationFailure("StagingFreshWorldRequired", "Development cannot import an existing world. Use separate fresh development storage.");
     var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumPrepareRequestBytes);
     if (bytes is null || !SetupImportRequestParser.TryParsePrepare(bytes, out _))
-        return Results.BadRequest(new { ok = false, code = "InvalidImportSelection", message = "Use only one server profile ID.",
-            worldId = (string?)null, worldDirectory = (string?)null });
+        return Results.BadRequest(new
+        {
+            ok = false,
+            code = "InvalidImportSelection",
+            message = "Use only one server profile ID.",
+            worldId = (string?)null,
+            worldDirectory = (string?)null
+        });
     return ImportConfirmationFailure("ImportReviewRequired", "Browse and review the source preview, then choose Copy to create a managed copy.");
 });
 app.MapPost("/api/local/factorio/preview-save", (Func<HttpContext, Task<IResult>>)(context =>
@@ -1417,8 +1427,14 @@ app.MapPost("/api/local/setup/import-confirm", (Func<HttpContext, Task<IResult>>
             return ImportConfirmationFailure("StagingFreshWorldRequired", "Development cannot import an existing world. Use separate fresh development storage.");
         var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumRequestBytes);
         if (bytes is null || !SetupImportRequestParser.TryParse(bytes, out var request))
-            return Results.BadRequest(new { ok = false, code = "InvalidImportConfirmation", message = "Confirm only a selected source token, its server profile ID and supported game.",
-                worldId = (string?)null, worldDirectory = (string?)null });
+            return Results.BadRequest(new
+            {
+                ok = false,
+                code = "InvalidImportConfirmation",
+                message = "Confirm only a selected source token, its server profile ID and supported game.",
+                worldId = (string?)null,
+                worldDirectory = (string?)null
+            });
         if (!ImportProfileGameMatches(request!.ProfileId, request.Kind))
             return ImportConfirmationFailure("ImportScopeChanged", "The server's game changed. Browse and review its source again.");
         context.RequestAborted.ThrowIfCancellationRequested();

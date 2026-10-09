@@ -35,3 +35,12 @@ jobs:
       - name: Build and verify one exact candidate on the dedicated CI runner
         shell: pwsh
         run: ./scripts/verify-release.ps1 -Build -AllowInteractiveTests
+
+      - name: Preserve QoL screenshots and validation summaries
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qol-windows-evidence
+          path: local-data/ci-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
