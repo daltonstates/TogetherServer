@@ -36,8 +36,9 @@ const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
   journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], expectedModeCancellations: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatRecovery: [], chatDelivery: [],
-  cleanup: [], startedUtc: new Date().toISOString() }
+  dialogs: [], protectedReloads: [], cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
+const protectedReloadTickets = new WeakMap()
 const pendingResponseClassifications = new Set()
 let browser
 let failed = false
@@ -525,14 +526,54 @@ async function openPage(instance, context) {
     void pending.finally(() => pendingResponseClassifications.delete(pending))
   })
   page.on('dialog', async dialog => {
-    if (dialog.type() === 'confirm' && /discard|reload|prepare to change|stop|restart|finish later clears/iu.test(dialog.message())) await dialog.accept()
-    else { await dialog.dismiss(); report.browserErrors.push({ kind: 'unexpected-dialog', message: 'An unexpected dialog was dismissed.' }) }
+    const ticket = protectedReloadTickets.get(page)
+    if (dialog.type() === 'beforeunload' && ticket && ticket.expiresUtc > Date.now()) {
+      protectedReloadTickets.delete(page) // One protected reload, never a blanket dialog exception.
+      ticket.evidence.dialogObserved = true
+      report.dialogs.push({ type: dialog.type(), message: redact(dialog.message()), outcome: 'accepted-protected-reload', purpose: ticket.purpose })
+      await dialog.accept()
+    } else if (dialog.type() === 'confirm' && /discard|reload|prepare to change|stop|restart|finish later clears/iu.test(dialog.message())) {
+      report.dialogs.push({ type: dialog.type(), message: redact(dialog.message()), outcome: 'accepted-reviewed-confirm' })
+      await dialog.accept()
+    } else {
+      report.dialogs.push({ type: dialog.type(), message: redact(dialog.message()), outcome: 'dismissed-unexpected' })
+      await dialog.dismiss(); report.browserErrors.push({ kind: 'unexpected-dialog', message: 'An unexpected dialog was dismissed.' })
+    }
   })
   await page.goto(instance.origin, { waitUntil: 'domcontentloaded' })
   await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).waitFor()
   // These nodes come from the candidate's embedded bundle, never a Vite server or page.setContent.
   assert(await page.locator('script[src^="/assets/"]').count() > 0, 'The candidate must serve its bundled React assets.')
   return page
+}
+
+async function reloadProtectedSetup(page, host, expected, purpose) {
+  assert(['first-use-setup-recovery', 'populated-setup-recovery'].includes(purpose), 'Only the two deliberate protected setup reloads may accept beforeunload.')
+  const evidence = { purpose, protectedReadOk: false, exactScopeMatches: false, exactWorldMatches: false,
+    exactStepMatches: false, secretExcluded: false, dialogObserved: false, outcome: 'checking-store' }
+  report.protectedReloads.push(evidence)
+  const stored = await api(host, '/api/local/ui-drafts/read', 'POST', { purpose: 'settings',
+    profileId: '00000000-0000-0000-0000-000000000000', connectionId: null, key: 'host-setup' })
+  evidence.protectedReadOk = stored.ok === true && typeof stored.text === 'string' && stored.text.length <= 128 * 1024
+  assert(evidence.protectedReadOk, 'Reload requires a real persisted protected setup response.')
+  const draft = JSON.parse(stored.text)
+  const profile = Array.isArray(draft.profiles) ? draft.profiles.find(item => item.id === expected.profileId) : null
+  evidence.exactScopeMatches = draft.version === 3 && draft.activeProfileId === expected.profileId && profile !== null && profile !== undefined
+  evidence.exactWorldMatches = profile?.worldId === expected.worldId
+  evidence.exactStepMatches = draft.step === expected.step
+  evidence.secretExcluded = !stored.text.includes('fixture-pass-123') && !Object.hasOwn(profile ?? {}, 'password')
+  assert(evidence.exactScopeMatches && evidence.exactWorldMatches && evidence.exactStepMatches && evidence.secretExcluded,
+    'Reload requires the exact selected nonsecret setup and step in the real protected store.')
+  evidence.outcome = 'authorized-one-reload'
+  assert(!protectedReloadTickets.has(page), 'A page cannot have overlapping protected reload tickets.')
+  protectedReloadTickets.set(page, { purpose, expiresUtc: Date.now() + 15_000, evidence })
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    evidence.outcome = 'reloaded'
+  } catch (error) {
+    evidence.outcome = 'reload-failed'
+    throw error
+  } finally { protectedReloadTickets.delete(page) }
 }
 async function screenshot(page, name, viewport, subject, { assertLayout = true } = {}) {
   await page.setViewportSize(viewport)
@@ -582,6 +623,27 @@ async function firstUseAndSetupRecovery(page, host) {
       for (const viewport of viewports) {
         const name = `${phase}-${viewport.width}x${viewport.height}-${textScale}`
         await screenshot(page, name, viewport, firstHost)
+        const banner = page.locator('.staging-banner')
+        const staging = await banner.evaluate(element => {
+          const bounds = element.getBoundingClientRect(), label = element.querySelector(':scope > strong'), labelBounds = label.getBoundingClientRect(),
+            style = getComputedStyle(element), painted = document.elementFromPoint(labelBounds.left + labelBounds.width / 2, labelBounds.top + labelBounds.height / 2)
+          const initialScrollTop = element.scrollTop
+          element.scrollTop = element.scrollHeight
+          const factsBottomAtEnd = element.lastElementChild.getBoundingClientRect().bottom, endScrollTop = element.scrollTop
+          element.scrollTop = initialScrollTop
+          return { top: bounds.top, bottom: bounds.bottom, scrollTop: initialScrollTop, scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight, overflowY: style.overflowY, labelTop: labelBounds.top, labelBottom: labelBounds.bottom,
+            labelPainted: painted === label || label.contains(painted), factsBottomAtEnd, endScrollTop }
+        })
+        report.layout.push({ name: `${name}-staging-ribbon`, staging })
+        assert.equal(staging.scrollTop, 0, `${name}: staging ribbon must initially show its first content.`)
+        assert(staging.labelTop >= staging.top - 1 && staging.labelBottom <= staging.bottom + 1 && staging.labelPainted,
+          `${name}: DEVELOPMENT / STAGING must be inside the painted visible banner, never centered above its scrollport.`)
+        assert(staging.scrollHeight <= staging.clientHeight + 1 ||
+          ['auto', 'scroll'].includes(staging.overflowY) && staging.endScrollTop > 0,
+          `${name}: long staging facts must remain scrollable.`)
+        assert(staging.factsBottomAtEnd <= staging.bottom + 1 && staging.factsBottomAtEnd >= staging.top,
+          `${name}: the last staging facts must be reachable at the end of the banner scroll.`)
         const alignment = await firstHost.evaluate(element => {
           const bounds = element.getBoundingClientRect(), heading = document.querySelector('.page-heading').getBoundingClientRect(),
             style = getComputedStyle(element), recovered = element.querySelector('.setup-draft-recovery')?.getBoundingClientRect()
@@ -620,7 +682,10 @@ async function firstUseAndSetupRecovery(page, host) {
   // Save settings, Start a server or manipulate world files in this first-use journey.
   await firstHost.getByRole('button', { name: 'Host a server', exact: true }).click()
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
-  await dialog.getByRole('textbox', { name: /^World name/u }).fill('browser-first-use-world')
+  const firstWorldName = dialog.getByRole('textbox', { name: /^World name/u })
+  await firstWorldName.fill('browser-first-use-world')
+  const firstProfileId = (await firstWorldName.getAttribute('id'))?.replace(/^setup-/u, '').replace(/-world-id$/u, '')
+  assert(guidExpression.test(firstProfileId ?? ''), 'The first-use world input must identify its actual draft profile.')
   const password = dialog.locator('input[id^="setup-"][id$="-game-password"]')
   assert.equal(await password.inputValue(), '', 'First-use evidence must contain no entered password.')
   await dialog.getByRole('button', { name: 'Finish later', exact: true }).click()
@@ -630,7 +695,7 @@ async function firstUseAndSetupRecovery(page, host) {
   assert.equal(protectedDraft.ok, true)
   assert(protectedDraft.text?.includes('browser-first-use-world'), 'Finish later must keep the nonsecret setup in the real protected store.')
   // Reload is intentional: a recovery prompt appears for the persisted draft on the next load.
-  await page.reload({ waitUntil: 'domcontentloaded' })
+  await reloadProtectedSetup(page, host, { profileId: firstProfileId, worldId: 'browser-first-use-world', step: 'world' }, 'first-use-setup-recovery')
   const recovery = firstHost.getByRole('region', { name: 'Recovered server setup', exact: true })
   await recovery.waitFor({ state: 'visible' })
   assert.equal(await recovery.getByText('Saved server setup', { exact: true }).isVisible(), true)
@@ -916,7 +981,7 @@ async function serverNavigation(page, profiles) {
   await eventually(() => list.locator('.server-master-item').first().innerText(), value => value.includes(profiles.extra.name), 'saved manual ordering after reload')
   await screenshot(page, 'host-wide-100', { width: 1440, height: 900 })
 }
-async function setupReview(page, profiles) {
+async function setupReview(page, host, profiles) {
   await selectServer(page, profiles.valheim.name)
   const addServer = page.locator('.page-heading-actions').getByRole('button', { name: 'Add server', exact: true })
   assert.equal(await addServer.count(), 1, 'The populated Host page exposes one canonical Add server action.')
@@ -934,6 +999,8 @@ async function setupReview(page, profiles) {
   assert.equal(await worldName.inputValue(), '')
   assert.equal(await gamePassword.inputValue(), '')
   await worldName.fill('browser-new-world')
+  const setupProfileId = (await worldName.getAttribute('id'))?.replace(/^setup-/u, '').replace(/-world-id$/u, '')
+  assert(guidExpression.test(setupProfileId ?? ''), 'The setup world input must identify its actual reused draft profile.')
   await gamePassword.fill('fixture-pass-123')
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
   await dialog.getByText('Selected Valheim Dedicated Server', { exact: true }).waitFor()
@@ -948,7 +1015,7 @@ async function setupReview(page, profiles) {
   await screenshot(page, 'setup-review-wide', { width: 1440, height: 900 })
   await dialog.getByRole('button', { name: 'Finish later', exact: true }).click()
   await dialog.waitFor({ state: 'hidden' })
-  await page.reload({ waitUntil: 'domcontentloaded' })
+  await reloadProtectedSetup(page, host, { profileId: setupProfileId, worldId: 'browser-new-world', step: 'review' }, 'populated-setup-recovery')
   await page.getByRole('button', { name: 'Review saved setup', exact: true }).click()
   await page.getByRole('dialog', { name: 'Add new server' }).getByText('Review and start', { exact: true }).waitFor()
   await page.getByRole('dialog', { name: 'Add new server' }).getByRole('button', { name: 'Cancel', exact: true }).click()
@@ -1442,7 +1509,7 @@ try {
   await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage))
   await step('staging header menus, long notification glyph columns, keyboard commands and mobile workspace labels at viewport boundaries', () => headerOverlayRegression(hostPage, host))
   await step('saved-server search, per-server tabs, favorites and durable manual ordering', () => serverNavigation(hostPage, profiles))
-  await step('setup blockers, nonsecret reuse, applied port suggestion and paused-step recovery', () => setupReview(hostPage, profiles))
+  await step('setup blockers, nonsecret reuse, applied port suggestion and paused-step recovery', () => setupReview(hostPage, host, profiles))
   await step('raw and guided protected drafts survive immediate navigation without changing files', () => editorRecovery(hostPage, host, profiles))
   await step('real synthetic lifecycle, Logs reading controls and contributing weekly sessions', () => lifecycleLogsAndSessions(hostPage, host, profiles))
   await step('unified backup pin/filter/retention/verification and explicit cancelled Restore review', () => backupCatalog(hostPage, host, profiles))
