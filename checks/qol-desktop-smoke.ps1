@@ -574,6 +574,29 @@ function Start-TestApp([switch]$Startup) {
     $process = [Diagnostics.Process]::Start($start)
     return Record-Process $process $developmentApp
 }
+function Get-StartupRequestErrorKind([Management.Automation.ErrorRecord]$Record) {
+    $failure = $Record.Exception
+    for ($depth = 0; $null -ne $failure -and $depth -lt 8; $depth++) {
+        # PowerShell's web cmdlet wraps this HttpClient timeout in its terminating error:
+        # https://github.com/PowerShell/PowerShell/blob/master/src/Microsoft.PowerShell.Commands.Utility/commands/utility/WebCmdlet/Common/WebRequestPSCmdlet.Common.cs
+        if ($failure -is [Threading.Tasks.TaskCanceledException] -and $failure.InnerException -is [TimeoutException]) {
+            return 'HttpClientTimeout'
+        }
+        if ($failure -is [Microsoft.PowerShell.Commands.HttpResponseException]) { return $null }
+        if ($failure -is [Net.Http.HttpRequestException]) {
+            if ($null -ne $failure.StatusCode) { return $null }
+            return 'HttpTransport'
+        }
+        if ($failure -is [Net.WebException]) {
+            if ($null -ne $failure.Response -or $failure.Status -eq [Net.WebExceptionStatus]::ProtocolError) { return $null }
+            return 'WebTransport'
+        }
+        if ($failure -isnot [Management.Automation.RuntimeException] -and
+            $failure -isnot [Reflection.TargetInvocationException]) { return $null }
+        $failure = $failure.InnerException
+    }
+    return $null
+}
 function Wait-TestApp([bool]$Visible) {
     if (!$app.PathVerified) {
         $identityReadiness = @{ Observed = $null }
@@ -593,17 +616,35 @@ function Wait-TestApp([bool]$Visible) {
             throw
         }
     }
-    Wait-Until {
-        Assert-AppIdentity
-        try {
-            $instance = Invoke-RestMethod "$baseUrl/api/local/instance" -TimeoutSec 2
-            Require ($instance.isStaging -and [IO.Path]::GetFullPath($instance.dataRoot).Equals($dataRoot, [StringComparison]::OrdinalIgnoreCase)) 'App escaped the disposable staging root.'
-            $window = Invoke-RestMethod "$baseUrl/api/local/window" -TimeoutSec 2
-            if ($window.loadState -eq 'Failed') { throw "Native WebView failed: $($window.loadErrorCode) $($window.loadFailureKind)" }
-            return $window.available -and $window.rendered -and $window.customChrome -and $window.visible -eq $Visible
-        } catch [System.Net.Http.HttpRequestException] { return $false }
-        catch [System.Net.WebException] { return $false }
-    } 'The development WebView did not reach the expected rendered/visibility state.'
+    $apiReadiness = @{ Phase = 'Instance'; ErrorKind = 'None' }
+    try {
+        Wait-Until {
+            Assert-AppIdentity
+            try {
+                $apiReadiness.Phase = 'Instance'; $apiReadiness.ErrorKind = 'None'
+                $instance = Invoke-RestMethod "$baseUrl/api/local/instance" -TimeoutSec 2
+                Assert-AppIdentity
+                Require ($instance.isStaging -and [IO.Path]::GetFullPath($instance.dataRoot).Equals($dataRoot, [StringComparison]::OrdinalIgnoreCase)) 'App escaped the disposable staging root.'
+                $apiReadiness.Phase = 'Window'
+                $window = Invoke-RestMethod "$baseUrl/api/local/window" -TimeoutSec 2
+                Assert-AppIdentity
+                if ($window.loadState -eq 'Failed') { throw "Native WebView failed: $($window.loadErrorCode) $($window.loadFailureKind)" }
+                $apiReadiness.Phase = 'WindowState'; $apiReadiness.ErrorKind = 'WindowPending'
+                return $window.available -and $window.rendered -and $window.customChrome -and $window.visible -eq $Visible
+            } catch {
+                $kind = Get-StartupRequestErrorKind $_
+                if (!$kind) { $apiReadiness.ErrorKind = 'NonTransient'; throw }
+                $apiReadiness.ErrorKind = $kind
+                Assert-AppIdentity
+                return $false
+            }
+        } 'The development WebView did not reach the expected rendered/visibility state.' 25
+    } catch {
+        $facts = [ordered]@{ phase = $app.Phase; requestPhase = $apiReadiness.Phase;
+            errorKind = $apiReadiness.ErrorKind; expectedVisible = $Visible }
+        Write-Host ('APP_API_READINESS ' + ($facts | ConvertTo-Json -Compress))
+        throw
+    }
     if ($Visible) {
         $app.Process.Refresh()
         $script:windowHandle = $app.Process.MainWindowHandle
