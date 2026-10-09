@@ -243,7 +243,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
     <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p>Choose the game, world, and server files.</p></div></div>
     {freshWorldsOnly && <div className="staging-setup-notice"><strong>Development worlds persist in separate storage.</strong><span>Create and reuse them here. Existing production worlds cannot be selected, scanned, or copied, and every development save stays in the development data folder.</span></div>}
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-    {setupDraftRecovery && onRecoverSetupDraft && onDiscardSetupDraft && <EditorDraftRecovery {...setupDraftRecovery}
+    {setupDraftRecovery && onRecoverSetupDraft && onDiscardSetupDraft && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup"
       disabled={!!pending} onRecover={onRecoverSetupDraft} onDiscard={onDiscardSetupDraft} />}
     {importReview && onConfirmImport && onCancelImport && <SetupImportReviewPanel review={importReview} busy={!!pending}
       onConfirm={onConfirmImport} onCancel={onCancelImport} />}

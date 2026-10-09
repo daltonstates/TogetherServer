@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import hostWire from '../../contracts/host-snapshot.v1.json'
 import { parseSnapshot, type FriendSnapshot, type HostSnapshot, type Snapshot } from './contracts'
 import type { EditorDraftGuardChange } from './editorProtectedDraft'
+import { readProtectedDraft } from './protectedUiDrafts'
+import { serializeProtectedSetupDraft } from './setupDraft'
 import { App } from './main'
 import companionCss from './companion.css?inline'
 import qolCss from './qol.css?inline'
@@ -76,6 +78,7 @@ const host = () => state as HostSnapshot
 
 beforeEach(() => {
   localStorage.clear()
+  vi.mocked(readProtectedDraft).mockReset().mockResolvedValue({ ok: true, text: null, revision: 1, message: '' })
   recoveryBlocked = false
   transport.failures.logs = transport.failures.sessions = transport.failures.files = false
   transport.flush.mockReset().mockResolvedValue(true)
@@ -101,6 +104,8 @@ beforeEach(() => {
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
   vi.spyOn(window, 'confirm').mockReturnValue(true)
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.setAttribute('open', '') } })
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.removeAttribute('open') } })
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn(async () => {}) } })
   document.head.querySelector('[data-flow-styles]')?.remove()
   const styles = document.createElement('style')
@@ -303,6 +308,38 @@ describe('Host task structure', () => {
     expect(screen.getByRole('button', { name: /Join a server/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
     expectNoServerAction()
+  })
+
+  it('keeps staging rehearsal out of first setup and reachable through Connection help', async () => {
+    host().settings.profiles = []
+    host().runs = []
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/instance'
+      ? { ...instance, kind: 'Staging', isStaging: true, freshWorldsOnly: true } : read(path, ...args))
+    render(<App />)
+    expect(await screen.findByRole('region', { name: 'Set up a server' })).toBeInTheDocument()
+    expect(screen.queryByText('Test with another owned PC')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Connection help' }))
+    expect(await screen.findByText('Test with another owned PC')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Prepare rehearsal' })).toBeInTheDocument()
+    expect(transport.change).not.toHaveBeenCalled()
+  })
+
+  it('reviews recovered first-server setup inside the same entry area before opening its saved step', async () => {
+    const recoveredProfile = { ...host().settings.profiles[0], kind: 'Valheim' as const, name: 'Unfinished world setup' }
+    host().settings.profiles = []
+    host().runs = []
+    vi.mocked(readProtectedDraft).mockResolvedValue({ ok: true, revision: 2, message: '',
+      text: serializeProtectedSetupDraft([recoveredProfile], 'world', recoveredProfile.id) })
+    render(<App />)
+    const entry = await screen.findByRole('region', { name: 'Set up a server' })
+    const recovery = await within(entry).findByRole('region', { name: 'Recovered server setup' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(within(recovery).getByRole('button', { name: 'Review saved setup' }))
+    const setup = await screen.findByRole('dialog')
+    expect(within(setup).getByText('World').closest('li')).toHaveAttribute('aria-current', 'step')
+    expect(transport.change.mock.calls.filter(([path]) => path === '/api/local/settings' || path.endsWith('/start'))).toHaveLength(0)
   })
 
   it('shows loading, then a local-service error, and recovers on the next safe poll', async () => {

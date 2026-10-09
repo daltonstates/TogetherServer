@@ -171,15 +171,17 @@ export function useEditorDirtyGuard(source: string, dirty: boolean, onChange?: E
   useEffect(() => () => onChange?.(source, false), [source, onChange])
 }
 
-export function EditorDraftRecovery({ recovered, message, onRecover, onDiscard, disabled = false }: {
-  recovered: string | null; message: string; onRecover: () => void; onDiscard: () => void; disabled?: boolean
+export function EditorDraftRecovery({ recovered, message, onRecover, onDiscard, disabled = false, purpose = 'file' }: {
+  recovered: string | null; message: string; onRecover: () => void; onDiscard: () => void; disabled?: boolean; purpose?: 'file' | 'setup'
 }) {
   if (recovered === null) return message ? <p className="helper-text" role="status">{message}</p> : null
-  return <section className="notice" aria-label="Recovered editor draft">
-    <strong>A protected draft is available on this PC.</strong>
-    <p>Your saved file is unchanged. Put the draft into the editor to review it against the current file, or discard the draft.</p>
+  const setup = purpose === 'setup'
+  return <section className={setup ? 'notice setup-draft-recovery' : 'notice'} aria-label={setup ? 'Recovered server setup' : 'Recovered editor draft'}>
+    <strong>{setup ? 'Saved server setup' : 'A protected draft is available on this PC.'}</strong>
+    <p>{setup ? 'Review your saved game, world and server app to continue. Enter the game password again before saving.'
+      : 'Your saved file is unchanged. Put the draft into the editor to review it against the current file, or discard the draft.'}</p>
     {message && <p>{message}</p>}
-    <div className="actions"><Button className="secondary" disabled={disabled} onClick={onRecover}>Review recovered draft</Button>
-      <Button className="text-button" disabled={disabled} onClick={onDiscard}>Discard recovered draft</Button></div>
+    <div className="actions"><Button className={setup ? undefined : 'secondary'} disabled={disabled} onClick={onRecover}>{setup ? 'Review saved setup' : 'Review recovered draft'}</Button>
+      <Button className="text-button" disabled={disabled} onClick={onDiscard}>{setup ? 'Discard saved setup' : 'Discard recovered draft'}</Button></div>
   </section>
 }

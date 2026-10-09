@@ -717,27 +717,14 @@ main { padding-top: 22px; }
 .panel { padding: 20px 22px; }
 .section-heading { margin-bottom: 16px; }
 
-.welcome-panel { max-width: 850px; margin-inline: auto; }
-.welcome-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.welcome-choice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  width: 100%;
-  min-height: 88px;
-  border: 1px solid var(--color-accent-border);
-  border-radius: 10px;
-  padding: 15px 17px;
-  background: var(--color-accent-soft);
-  color: var(--color-text);
-  text-align: left;
-}
-.welcome-choice > span:last-child, .welcome-choice > div { flex: 1; }
-.welcome-choice strong { display: block; font-size:calc(15px * var(--qol-text-scale, 1)); }
-.welcome-choice small, .welcome-choice p { display: block; margin: 4px 0 0; color: var(--color-text-muted); font-size:calc(12px * var(--qol-text-scale, 1)); line-height: 1.45; }
-.welcome-choice.secondary-choice { border-color: var(--color-border); background: var(--color-surface-raised); }
-.welcome-choice:hover { border-color: var(--color-accent); }
+.host-first-server { max-width: none; }
+.host-first-server .section-heading { margin-bottom: 16px; }
+.host-first-server .setup-draft-recovery { margin: 0 0 16px; padding: 16px 0; border: 0; border-block: 1px solid var(--color-border-subtle); border-radius: 0; background: transparent; }
+.host-first-server .setup-draft-recovery p, .host-setup-continuation p { color: var(--color-text-muted); line-height: 1.5; }
+.host-first-server-actions .ui-button { min-height: 44px; }
+.host-first-server-footer { margin-top: 12px; }
+.host-first-server-footer .text-button { padding-inline: 0; }
+.host-setup-continuation { margin-bottom: 16px; }
 
 .setup-progress {
   display: grid;
@@ -1078,7 +1065,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .topbar { height: auto; min-height: 58px; }
   main { padding-top: 17px; }
   .page-heading { align-items: flex-start; }
-  .welcome-grid { grid-template-columns: 1fr; }
   .setup-progress li { gap: 4px; font-size:calc(11px * var(--qol-text-scale, 1)); }
   .setup-progress li:not(:last-child)::after { right: 4px; }
   .review-summary { grid-template-columns: 1fr; }

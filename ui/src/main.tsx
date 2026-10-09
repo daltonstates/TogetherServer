@@ -19,6 +19,7 @@ import { subscribeToDesktopNotifications, subscribeToDesktopDraftFlush, type Des
 import { AttentionWorkspace, readAttentionHistory, withAttentionHistorySource } from './AttentionWorkspace'
 import { FriendAccessReview, FriendAccessSummary, FriendPcFilters, defaultFriendPcFilters, filterFriendPcs } from './FriendAccessSummary'
 import { HostLifecycleSummary } from './HostLifecycleSummary'
+import { HostFirstServer } from './HostFirstServer'
 import { EditorDraftRecovery, type EditorDraftGuard } from './editorProtectedDraft'
 import { SetupFirstSessionGuide } from './setupFirstSessionGuide'
 import { WeeklySummary } from './WeeklySummary'
@@ -1615,7 +1616,7 @@ export function App() {
   }
   const pageTitle = workspacePage === 'host' ? 'Host' : workspacePage === 'join' ? 'Join' : workspacePage === 'attention' ? 'Attention Center' : 'Settings'
   const pageDescription = workspacePage === 'host'
-    ? savedProfiles.length === 0 ? 'Set up a server, or switch to Join if a friend sent you a code.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server, then act from its focused workspace.'
+    ? savedProfiles.length === 0 ? 'Manage game servers on this PC.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server, then act from its focused workspace.'
     : workspacePage === 'join' ? 'Connect to a server without interrupting anything you host on this PC.'
       : workspacePage === 'attention' ? 'Updates, notices, and recent Host or Friend activity in one place.'
         : 'Application preferences and Host controls stay in one full-window workspace.'
@@ -1883,7 +1884,6 @@ export function App() {
 
       {(workspacePage === 'host' || workspacePage === 'settings') && snapshot?.mode === 'Host' && draft && <>
         {workspacePage === 'host' && <>
-        {appInstance?.isStaging && <HostRemoteRehearsal />}
         {savedProfiles.length > 1 && <details className="all-servers-comparison">
           <summary>Compare all {savedProfiles.length} servers{serversNeedingAttention > 0 && <span className="comparison-attention">{serversNeedingAttention} need attention</span>}</summary>
         <PaneErrorBoundary title="All servers" resetKey={snapshot.settings.profiles.length}>
@@ -2110,17 +2110,16 @@ export function App() {
 
 
 
-        {savedProfiles.length === 0 && !showSetup && <section className="panel welcome-panel"><div className="section-heading"><div><h2>What would you like to do?</h2><p>You can host and join at the same time. Switching pages never stops a running server.</p></div></div>
-          {draft.profiles.length > 0 && dirty ? <div className="welcome-choice"><div><strong>Continue server setup</strong><p>Your unfinished non-secret setup details are still here. Re-enter the game password before saving.</p></div><Button onClick={continueSetup}>Continue setup</Button></div> : <div className="welcome-grid">
-            <Button className="welcome-choice" disabled={!!pending} onClick={addProfile}><span className="section-icon"><Icon name="server" /></span><span><strong>Host a server</strong><small>{appInstance?.freshWorldsOnly ? 'Create and keep a world in separate development storage.' : 'Create a new world or use a server already on this PC.'}</small></span></Button>
-            <Button className="welcome-choice secondary-choice" disabled={!!pending} onClick={() => void switchMode('friend')}><span className="section-icon"><Icon name="link" /></span><span><strong>Join a server</strong><small>Paste the private code your friend sent you.</small></span></Button>
-          </div>}
-          <Button className="text-button" onClick={() => openHostSettings('advanced')}>Move hosting from another PC</Button>
-        </section>}
+        {savedProfiles.length === 0 && !showSetup && <HostFirstServer busy={!!pending}
+          resume={draft.profiles.length > 0 && dirty || !!pausedSetupProfileId} recovered={setupDraftRecovery.recovered !== null}
+          onCreate={addProfile} onResume={continueSetup} onJoin={() => void switchMode('friend')}
+          onMove={() => openHostSettings('advanced')}
+          recovery={<EditorDraftRecovery {...setupDraftRecovery} purpose="setup" disabled={!!pending}
+            onRecover={recoverSetupDraft} onDiscard={() => void discardSetupDraft()} />} />}
 
-        {!showSetup && <EditorDraftRecovery {...setupDraftRecovery} disabled={!!pending}
+        {!showSetup && savedProfiles.length > 0 && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup" disabled={!!pending}
           onRecover={recoverSetupDraft} onDiscard={() => void discardSetupDraft()} />}
-        {!showSetup && pausedSetupProfileId && <Button className="secondary" disabled={!!pending} onClick={continueSetup}>Resume unfinished setup</Button>}
+        {!showSetup && savedProfiles.length > 0 && pausedSetupProfileId && <Button className="secondary" disabled={!!pending} onClick={continueSetup}>Resume unfinished setup</Button>}
         {!showSetup && firstSessionProfileId && (() => {
           const profile = savedProfiles.find(item => item.id === firstSessionProfileId)
           return profile && <SetupFirstSessionGuide profile={profile} state={snapshot.runs.find(run => run.profileId === profile.id)?.state ?? 'Unknown'}
@@ -2228,6 +2227,7 @@ export function App() {
                 </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs have connected yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
               </section>}
               {hostSettingsSection === 'network' && <section className="settings-section">
+              {appInstance?.isStaging && <HostRemoteRehearsal />}
               <h3>Connection checks</h3>
               <PaneErrorBoundary title="Connection Doctor" resetKey={selectedHostProfileId}><ConnectionDoctor
                 profile={selectedHostProfile} run={selectedHostRun} ports={portDiagnostics}
