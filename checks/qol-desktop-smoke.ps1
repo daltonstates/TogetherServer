@@ -135,8 +135,8 @@ public static class TogetherServerQolWindowCheck {
     }
     public sealed class IdOkFacts {
         public string State;
-        public int RawIdOkCount, ButtonCount, ReadyButtonCount;
-        public bool DirectControlPresent, CaptionMatches, CanonicalTextMatches, MainOwnerMatches;
+        public int ExpectedControlId, RawIdOkCount, ButtonCount, ReadyButtonCount;
+        public bool DirectControlPresent, ButtonTextMatches, CaptionMatches, CanonicalTextMatches, MainOwnerMatches;
         public IdOkControlFacts[] Controls;
     }
     public sealed class IdOkLookup {
@@ -276,10 +276,18 @@ public static class TogetherServerQolWindowCheck {
         return BoundedWindowText(control.Edit);
     }
     private static IdOkLookup InspectOwnedIdOk(IntPtr dialog, int processId) {
+        return InspectOwnedButton(dialog, processId, 1, null);
+    }
+    private static IdOkLookup InspectOwnedDraftRejectionOk(IntPtr dialog, int processId) {
+        // The observed rejection MessageBox exposes its sole OK Button as ID 2.
+        // This fixed identity applies only after the exact rejection dialog is verified.
+        return InspectOwnedButton(dialog, processId, 2, "OK");
+    }
+    private static IdOkLookup InspectOwnedButton(IntPtr dialog, int processId, int expectedControlId, string expectedButtonText) {
         var nodes = new System.Collections.Generic.HashSet<IntPtr>(Descendants(dialog));
         var rawIdOk = new System.Collections.Generic.HashSet<IntPtr>();
         var buttons = new System.Collections.Generic.HashSet<IntPtr>();
-        var direct = GetDlgItem(dialog, 1);
+        var direct = GetDlgItem(dialog, expectedControlId);
         if (direct != IntPtr.Zero) nodes.Add(direct);
         var facts = new System.Collections.Generic.List<IdOkControlFacts>();
         uint dialogProcess; var dialogThread = GetWindowThreadProcessId(dialog, out dialogProcess);
@@ -298,27 +306,34 @@ public static class TogetherServerQolWindowCheck {
                 SameDialogThread = threadId != 0 && threadId == dialogThread,
                 ParentSameDialogThread = parentThread != 0 && parentThread == dialogThread
             });
-            if (controlId != 1) continue;
+            if (controlId != expectedControlId) continue;
             if (controlOwner != processId || !IsChild(dialog, window))
-                throw new InvalidOperationException("An IDOK control is outside the exact owned dialog.");
+                throw new InvalidOperationException("The fixed button control is outside the exact owned dialog.");
             rawIdOk.Add(window);
-            // A container with ID 1 is metadata, not a second callable Button.
+            // A container with the same ID is metadata, not a second callable Button.
             if (controlClass == "Button") buttons.Add(window);
         }
         var readyCount = 0;
+        var buttonTextMatches = false;
         IntPtr selected = IntPtr.Zero;
         foreach (var button in buttons) {
-            uint buttonOwner; GetWindowThreadProcessId(button, out buttonOwner);
-            if (buttonOwner != processId || !IsChild(dialog, button) || GetDlgCtrlID(button) != 1 ||
+            uint buttonOwner; var buttonThread = GetWindowThreadProcessId(button, out buttonOwner);
+            if (buttonOwner != processId || !IsChild(dialog, button) || GetDlgCtrlID(button) != expectedControlId ||
                 WindowClass(button) != "Button")
-                throw new InvalidOperationException("The exact owned dialog IDOK Button identity changed.");
+                throw new InvalidOperationException("The exact owned dialog fixed Button identity changed.");
+            if (expectedButtonText != null && (GetParent(button) != dialog || buttonThread == 0 || buttonThread != dialogThread))
+                throw new InvalidOperationException("The rejection OK Button is not a direct same-thread child of the exact dialog.");
+            if (buttons.Count == 1 && expectedButtonText != null)
+                buttonTextMatches = BoundedWindowText(button) == expectedButtonText;
             if (IsWindowEnabled(button) && IsWindowVisible(button)) { readyCount++; selected = button; }
         }
-        var state = buttons.Count > 1 ? "Multiple" : buttons.Count == 0 ? "Missing" : readyCount == 0 ? "NotReady" : "Ready";
+        var state = buttons.Count > 1 ? "Multiple" : buttons.Count == 0 ? "Missing" : readyCount == 0 ? "NotReady" :
+            expectedButtonText != null && !buttonTextMatches ? "WrongText" : "Ready";
         return new IdOkLookup {
             Handle = state == "Ready" ? selected : IntPtr.Zero,
-            Diagnostics = new IdOkFacts { State = state, RawIdOkCount = rawIdOk.Count, ButtonCount = buttons.Count,
-                ReadyButtonCount = readyCount, DirectControlPresent = direct != IntPtr.Zero, Controls = facts.ToArray() }
+            Diagnostics = new IdOkFacts { State = state, ExpectedControlId = expectedControlId, RawIdOkCount = rawIdOk.Count,
+                ButtonCount = buttons.Count, ReadyButtonCount = readyCount, ButtonTextMatches = buttonTextMatches,
+                DirectControlPresent = direct != IntPtr.Zero, Controls = facts.ToArray() }
         };
     }
     private static IntPtr OwnedIdOkButton(IntPtr dialog, int processId) {
@@ -327,22 +342,29 @@ public static class TogetherServerQolWindowCheck {
             throw new InvalidOperationException("The owned dialog IDOK Button state is " + lookup.Diagnostics.State + ".");
         return lookup.Handle;
     }
-    private static void ClickOwnedIdOk(IntPtr dialog, int processId, Action validateDialog) {
+    private static IntPtr OwnedDraftRejectionOkButton(IntPtr dialog, int processId) {
+        var lookup = InspectOwnedDraftRejectionOk(dialog, processId);
+        if (lookup.Diagnostics.State != "Ready")
+            throw new InvalidOperationException("The owned rejection OK Button state is " + lookup.Diagnostics.State + ".");
+        return lookup.Handle;
+    }
+    private static void ClickOwnedButton(IntPtr dialog, Action validateDialog, Func<IntPtr> findButton) {
         validateDialog();
-        var button = OwnedIdOkButton(dialog, processId);
+        var button = findButton();
         var parent = GetParent(button);
         uint buttonOwner; var threadId = GetWindowThreadProcessId(button, out buttonOwner);
         validateDialog();
         uint currentOwner; var currentThread = GetWindowThreadProcessId(button, out currentOwner);
-        if (OwnedIdOkButton(dialog, processId) != button || GetParent(button) != parent ||
+        if (findButton() != button || GetParent(button) != parent ||
             currentOwner != buttonOwner || currentThread != threadId)
-            throw new InvalidOperationException("The captured owned IDOK Button identity changed before its click.");
+            throw new InvalidOperationException("The captured owned fixed Button identity changed before its click.");
         UIntPtr result;
         if (SendMessageTimeout(button, 0x00F5, IntPtr.Zero, IntPtr.Zero, 0x03, 1000, out result) == IntPtr.Zero && IsWindow(dialog))
-            throw new InvalidOperationException("The owned dialog IDOK Button did not acknowledge its click.");
+            throw new InvalidOperationException("The owned dialog fixed Button did not acknowledge its click.");
     }
     public static void ClickNativePickerOpen(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
-        ClickOwnedIdOk(dialog, processId, () => AssertPicker(dialog, owner, processId, ticks, expectedPath));
+        ClickOwnedButton(dialog, () => AssertPicker(dialog, owner, processId, ticks, expectedPath),
+            () => OwnedIdOkButton(dialog, processId));
     }
     private static void AssertDraftRejection(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
         AssertOwnedDialog(dialog, owner, processId, ticks, expectedPath, "TogetherServer");
@@ -360,18 +382,19 @@ public static class TogetherServerQolWindowCheck {
     }
     public static IntPtr DraftRejectionOkHandle(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
         AssertDraftRejection(dialog, owner, processId, ticks, expectedPath);
-        return OwnedIdOkButton(dialog, processId);
+        return OwnedDraftRejectionOkButton(dialog, processId);
     }
     public static IdOkLookup DraftRejectionOkReadiness(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
         AssertDraftRejection(dialog, owner, processId, ticks, expectedPath);
-        var lookup = InspectOwnedIdOk(dialog, processId);
+        var lookup = InspectOwnedDraftRejectionOk(dialog, processId);
         lookup.Diagnostics.CaptionMatches = true;
         lookup.Diagnostics.CanonicalTextMatches = true;
         lookup.Diagnostics.MainOwnerMatches = true;
         return lookup;
     }
     public static void ClickNativeDraftRejectionOk(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
-        ClickOwnedIdOk(dialog, processId, () => AssertDraftRejection(dialog, owner, processId, ticks, expectedPath));
+        ClickOwnedButton(dialog, () => AssertDraftRejection(dialog, owner, processId, ticks, expectedPath),
+            () => OwnedDraftRejectionOkButton(dialog, processId));
     }
     public static IntPtr FindOwnedDialog(int processId) {
         IntPtr found = IntPtr.Zero;
@@ -1099,10 +1122,10 @@ try {
             Assert-AppIdentity
             $okReadiness.Observed = [TogetherServerQolWindowCheck]::DraftRejectionOkReadiness($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
             if ($okReadiness.Observed.Diagnostics.State -eq 'Multiple') {
-                throw 'The exact rejected-draft dialog has multiple native IDOK Buttons; dismissal refused.'
+                throw 'The exact rejected-draft dialog has multiple native Buttons with fixed control ID 2; dismissal refused.'
             }
             return $okReadiness.Observed.Diagnostics.State -eq 'Ready'
-        } 'The exact rejected-draft IDOK Button did not become uniquely visible and enabled within 5 seconds.' 5
+        } 'The exact rejected-draft OK Button with fixed control ID 2 did not become uniquely visible and enabled within 5 seconds.' 5
     } catch {
         if ($okReadiness.Observed) {
             # Native control IDs identify layout only; PID/thread/HWND/profile IDs and all text/paths stay private.
@@ -1122,7 +1145,7 @@ try {
     } else {
         Assert-AppIdentity
         [TogetherServerQolWindowCheck]::ClickNativeDraftRejectionOk($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
-        Write-Host 'Rejected native draft dismissal used the checked owned IDOK Button fallback.'
+        Write-Host 'Rejected native draft dismissal used the checked owned OK Button with fixed control ID 2 fallback.'
     }
     Wait-Until {
         Assert-AppIdentity
