@@ -52,8 +52,10 @@ ServerProfile Profile(string name, int port)
 CustomScriptBundle Scripts(string status = "") => new(
     """
     if ($env:TOGETHERSERVER_MANAGED_PID -ne [string]$PID) { exit 19 }
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("start-entered-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'entered') } catch { }
     $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
     while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("stop-observed-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'observed') } catch { }
     Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
     exit 0
     """,
@@ -62,8 +64,10 @@ CustomScriptBundle Scripts(string status = "") => new(
     @{ state = 'Ready'; detail = 'Synthetic custom status'; onlinePlayers = 0; maxPlayers = 4; players = @('Alice', 'Bob') } | ConvertTo-Json -Compress
     """ : status,
     """
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("stop-entered-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'entered') } catch { }
     $stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
     New-Item -ItemType File -Path $stop -Force | Out-Null
+    try { [IO.File]::WriteAllText([IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ("stop-returned-" + $env:TOGETHERSERVER_OPERATION_ID + ".phase")), 'returned') } catch { }
     """);
 
 CustomScriptBundle ContractV2Scripts(string status = "") => Scripts(string.IsNullOrWhiteSpace(status) ?
@@ -143,8 +147,23 @@ await Check("protected scripts are required and never authorize remote stop", as
     }
     finally
     {
+        Guid? cleanupOperationId = null;
+        try { cleanupOperationId = data.LoadRuns().FirstOrDefault(run => run.ProfileId == profile.Id)?.OperationId; }
+        catch { /* Optional fixture diagnostics cannot prevent the ordinary Stop. */ }
+        var cleanupWatch = System.Diagnostics.Stopwatch.StartNew();
         var stopped = await activeManager.StopAsync(profile.Id);
-        Require(stopped.Ok, $"custom cleanup failed: {stopped.Code} {stopped.Message}");
+        cleanupWatch.Stop();
+        if (!stopped.Ok)
+        {
+            bool PhaseRecorded(string phase) => cleanupOperationId is { } operationId &&
+                File.Exists(Path.Combine(profile.WorldDirectory, phase + "-" + operationId.ToString("D") + ".phase"));
+            // Report only this synthetic operation's phase presence and elapsed
+            // time. Diagnostics never retry Stop or alter its timeout/outcome.
+            Require(false, $"custom cleanup failed: {stopped.Code} {stopped.Message}; " +
+                $"elapsedMs={cleanupWatch.ElapsedMilliseconds}; startEntered={PhaseRecorded("start-entered")}; " +
+                $"stopEntered={PhaseRecorded("stop-entered")}; stopReturned={PhaseRecorded("stop-returned")}; " +
+                $"stopObserved={PhaseRecorded("stop-observed")}");
+        }
     }
     Require((await activeManager.UpdateSettingsAsync(new HostSettings { Profiles = [] })).Ok, "profile removal failed");
     Require(!data.HasCustomScripts(profile.Id), "removing a custom profile retained its protected scripts");
@@ -200,39 +219,75 @@ await Check("invalid status fails closed and local stop remains available", asyn
         Require(stopped.Ok, $"timeout cleanup failed: {stopped.Code} {stopped.Message}");
     }
 
-    var childPidPath = Path.Combine(profile.WorldDirectory, "status-child.pid");
     Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts("""
+        $phasePrefix = [IO.Path]::Combine($env:TOGETHERSERVER_WORKING_DIRECTORY, ('status-' + $env:TOGETHERSERVER_OPERATION_ID))
+        [IO.File]::WriteAllText(($phasePrefix + '-entered.phase'), 'entered')
         $childInfo = [Diagnostics.ProcessStartInfo]::new()
-        $childInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $childInfo.FileName = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0\powershell.exe')
         $childInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"'
         $childInfo.UseShellExecute = $false
         $childInfo.CreateNoWindow = $true
-        $child = [Diagnostics.Process]::Start($childInfo)
-        Set-Content -LiteralPath (Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY 'status-child.pid') -Value $child.Id
-        Start-Sleep -Seconds 30
+        [IO.File]::WriteAllText(($phasePrefix + '-child-start-entered.phase'), 'entered')
+        try { $child = [Diagnostics.Process]::Start($childInfo) }
+        catch {
+            [IO.File]::WriteAllText(($phasePrefix + '-child-start-failed.phase'), 'failed')
+            throw
+        }
+        [IO.File]::WriteAllText(($phasePrefix + '-child-start-returned.phase'), 'returned')
+        [IO.File]::WriteAllText(($phasePrefix + '-pid-write-entered.phase'), 'entered')
+        try { [IO.File]::WriteAllText(($phasePrefix + '.pid'), [string]$child.Id) }
+        catch {
+            [IO.File]::WriteAllText(($phasePrefix + '-pid-write-failed.phase'), 'failed')
+            throw
+        }
+        [IO.File]::WriteAllText(($phasePrefix + '-pid-write-returned.phase'), 'returned')
+        [Threading.Thread]::Sleep(30000)
         """))).Ok, "descendant timeout scripts failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "descendant timeout start failed");
+    var descendantRun = data.LoadRuns().Single(run => run.ProfileId == profile.Id);
+    var childPhasePrefix = Path.Combine(profile.WorldDirectory, "status-" + descendantRun.OperationId.ToString("D"));
+    var childPidPath = childPhasePrefix + ".pid";
+    RunView? descendantStatus = null;
+    bool DescendantPhase(string phase) => File.Exists(childPhasePrefix + "-" + phase + ".phase");
+    string DescendantDiagnostics() =>
+        $"source={descendantStatus?.PlayerObservationSource ?? "None"}; state={descendantStatus?.State ?? "None"}; " +
+        $"operationMatches={descendantStatus?.RunOperationId == descendantRun.OperationId}; elapsedMs={timeoutWatch.ElapsedMilliseconds}; " +
+        $"countUnknown={descendantStatus?.OnlinePlayers is null}; trusted={descendantStatus?.PlayerCountTrusted == true}; " +
+        $"startEntered={File.Exists(Path.Combine(profile.WorldDirectory, "start-entered-" + descendantRun.OperationId.ToString("D") + ".phase"))}; " +
+        $"statusEntered={DescendantPhase("entered")}; childStartEntered={DescendantPhase("child-start-entered")}; " +
+        $"childStartReturned={DescendantPhase("child-start-returned")}; childStartFailed={DescendantPhase("child-start-failed")}; " +
+        $"pidWriteEntered={DescendantPhase("pid-write-entered")}; pidWriteReturned={DescendantPhase("pid-write-returned")}; " +
+        $"pidWriteFailed={DescendantPhase("pid-write-failed")}; pidRecorded={File.Exists(childPidPath)}";
     timeoutWatch.Restart();
     try
     {
-        var timedOut = await WaitForState(manager, profile.Id, "Unknown");
-        Require(timedOut.Detail.Contains("4 seconds", StringComparison.OrdinalIgnoreCase) &&
+        descendantStatus = await WaitForState(manager, profile.Id, "Unknown");
+        Require(descendantStatus.PlayerObservationSource == "CustomStatusTimedOut" &&
+            descendantStatus.RunOperationId == descendantRun.OperationId &&
+            descendantStatus.OnlinePlayers is null && !descendantStatus.PlayerCountTrusted &&
+            descendantStatus.Detail.Contains("4 seconds", StringComparison.OrdinalIgnoreCase) &&
             timeoutWatch.Elapsed < TimeSpan.FromSeconds(7),
-            "a descendant retaining redirected handles defeated the status timeout");
-        Require(File.Exists(childPidPath), "status descendant PID was not recorded");
-        var childPid = int.Parse(File.ReadAllText(childPidPath).Trim());
+            "a descendant retaining redirected handles defeated the status timeout; " + DescendantDiagnostics());
+        // Timeout begins before PowerShell enters this fixture. Missing PID is
+        // still a failure, but the receipts distinguish the last completed
+        // setup phase from a descendant that survived the exact tree cleanup.
+        Require(File.Exists(childPidPath), "status descendant PID was not recorded; " + DescendantDiagnostics());
+        Require(new FileInfo(childPidPath).Length is > 0 and <= 32,
+            "status descendant PID receipt exceeded its fixed bound; " + DescendantDiagnostics());
+        Require(int.TryParse(File.ReadAllText(childPidPath).Trim(), out var childPid) && childPid > 0,
+            "status descendant PID receipt was invalid; " + DescendantDiagnostics());
         await Task.Delay(200);
         try
         {
             using var child = System.Diagnostics.Process.GetProcessById(childPid);
-            Require(child.HasExited, "timed-out status descendant was left running");
+            Require(child.HasExited, "timed-out status descendant was left running; " + DescendantDiagnostics());
         }
         catch (ArgumentException) { /* Process is gone. */ }
     }
     finally
     {
         var stopped = await manager.StopAsync(profile.Id);
-        Require(stopped.Ok, $"descendant timeout cleanup failed: {stopped.Code} {stopped.Message}");
+        Require(stopped.Ok, $"descendant timeout cleanup failed: {stopped.Code} {stopped.Message}; " + DescendantDiagnostics());
     }
 });
 

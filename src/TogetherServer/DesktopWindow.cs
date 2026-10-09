@@ -14,6 +14,7 @@ internal sealed class DesktopWindow
 {
     private const string RuntimeDownload = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/";
     private static readonly TimeSpan GuiLoadDeadline = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DraftFlushDeadline = TimeSpan.FromSeconds(12);
     private static readonly Color WindowBorderColor = Color.FromArgb(48, 46, 44);
     private static readonly Color WindowCanvasColor = Color.FromArgb(14, 14, 15);
     private static readonly Color TitleBarColor = Color.FromArgb(17, 17, 18);
@@ -29,9 +30,20 @@ internal sealed class DesktopWindow
     private readonly bool startInTray;
     private readonly string displayName;
     private readonly bool isStaging;
+    private readonly QolLocalPreferences? localPreferences;
+    private readonly DesktopNotificationPreferences? notifications;
+    private readonly DesktopDraftFlushGate draftFlush;
     private readonly TaskCompletionSource<bool> shown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Form? form;
     private NotifyIcon? trayIcon;
+    private ToolStripItem? trayRunSummary;
+    private ToolStripItem? trayFriendSummary;
+    private CoreWebView2? uiBridge;
+    private readonly Queue<NativeNotification> notificationQueue = new();
+    private NativeNotification? activeNotification;
+    private bool activeNotificationClicked;
+    private DesktopNotificationDestination? pendingDestination;
+    private DesktopTraySummary traySummary = new(0, 0, "Unknown");
     private bool closing;
     private bool requestingQuit;
     private bool trayHintShown;
@@ -49,7 +61,8 @@ internal sealed class DesktopWindow
     private volatile bool visible;
 
     public DesktopWindow(Uri address, string dataDirectory, Action stopApplication, bool closeToTray, bool startInTray,
-        string displayName = "TogetherServer", bool isStaging = false)
+        string displayName = "TogetherServer", bool isStaging = false,
+        QolLocalPreferences? localPreferences = null, DesktopNotificationPreferences? notifications = null)
     {
         this.address = address;
         this.stopApplication = stopApplication;
@@ -57,6 +70,9 @@ internal sealed class DesktopWindow
         this.startInTray = startInTray;
         this.displayName = displayName;
         this.isStaging = isStaging;
+        this.localPreferences = localPreferences;
+        this.notifications = notifications;
+        draftFlush = new(address);
         browserDataDirectory = Path.Combine(dataDirectory, "webview2");
     }
 
@@ -237,14 +253,62 @@ internal sealed class DesktopWindow
     public void Exit()
     {
         closing = true;
+        draftFlush.CancelAll();
         var target = form;
         if (target is null || !target.IsHandleCreated || target.IsDisposed) return;
         try { target.BeginInvoke(new Action(target.Close)); }
         catch (InvalidOperationException) { }
     }
 
-    public void Notify(string title, string message, bool warning = false)
+    public void Notify(string title, string message, bool warning = false) =>
+        NotifyCore(title, message, warning, "Lifecycle", null, null, null);
+
+    public void Notify(ActivityEvent item, bool friendMode = false, Guid? connectionId = null)
     {
+        if (item.Severity is not (ActivitySeverity.Important or ActivitySeverity.Warning)) return;
+        NotifyCore($"{displayName} - {item.Category}", item.Message, item.Severity == ActivitySeverity.Warning,
+            item.Category, item.ProfileId, connectionId,
+            DesktopNotificationPreferences.Destination(item, friendMode, connectionId));
+    }
+
+    public void NotifyUpdate(string message) => NotifyCore(displayName + " update", message, false, "Update",
+        null, null, new("settings", "app"));
+
+    public void SetTraySummary(DesktopTraySummary summary)
+    {
+        if (summary.RunningServers is < 0 or > 128 || summary.ServersNeedingReview is < 0 or > 128 ||
+            summary.FriendState is not ("Connected" or "Disabled" or "Unknown" or "Disconnected/Unknown" or
+                "Revoked" or "Awaiting approval" or "No saved connection" or "Not connected" or "Update required" or "Access expired")) return;
+        traySummary = summary;
+        var target = form;
+        if (target is null || target.IsDisposed || !target.IsHandleCreated) return;
+        try { target.BeginInvoke(new Action(UpdateTraySummary)); }
+        catch (InvalidOperationException) { }
+    }
+
+    internal static string TraySummaryText(string displayName, DesktopTraySummary summary)
+    {
+        var text = $"{displayName}\nHosting: {summary.RunningServers} running, {summary.ServersNeedingReview} need review\nJoin: {summary.FriendState}";
+        return text.Length <= 127 ? text : text[..126] + "…";
+    }
+
+    private void UpdateTraySummary()
+    {
+        var summary = traySummary;
+        if (trayIcon is not null) trayIcon.Text = TraySummaryText(displayName, summary);
+        if (trayRunSummary is not null)
+            trayRunSummary.Text = $"Hosting: {summary.RunningServers} running · {summary.ServersNeedingReview} need review";
+        if (trayFriendSummary is not null) trayFriendSummary.Text = "Join: " + summary.FriendState;
+    }
+
+    private bool MayNotify(string category, Guid? profileId, Guid? connectionId) => notifications is not null
+        ? notifications.ShouldNotify(category, profileId, connectionId)
+        : WindowsNotificationState.Read() == DesktopUserNotificationState.AcceptsNotifications;
+
+    private void NotifyCore(string title, string message, bool warning, string category, Guid? profileId,
+        Guid? connectionId, DesktopNotificationDestination? destination)
+    {
+        if (destination is not null && !DesktopNotificationPreferences.IsDestination(destination)) return;
         var target = form;
         var tray = trayIcon;
         if (target is null || tray is null || target.IsDisposed || !target.IsHandleCreated) return;
@@ -252,13 +316,50 @@ internal sealed class DesktopWindow
         {
             target.BeginInvoke(new Action(() =>
             {
-                if (!target.IsDisposed && tray.Visible)
-                    tray.ShowBalloonTip(6000, title, message,
-                        warning ? ToolTipIcon.Warning : ToolTipIcon.Info);
+                if (target.IsDisposed || !tray.Visible || !MayNotify(category, profileId, connectionId)) return;
+                if (notificationQueue.Count >= 8) return; // All events remain available in Attention.
+                notificationQueue.Enqueue(new(BoundedNotificationText(title, 63), BoundedNotificationText(message, 240),
+                    warning, category, profileId, connectionId, destination));
+                ShowNextNotification();
             }));
         }
         catch (InvalidOperationException) { }
     }
+
+    private void ShowNextNotification()
+    {
+        if (activeNotification is not null || trayIcon is not { Visible: true } tray) return;
+        while (notificationQueue.TryDequeue(out var next))
+        {
+            if (!MayNotify(next.Category, next.ProfileId, next.ConnectionId)) continue;
+            activeNotification = next;
+            activeNotificationClicked = false;
+            tray.ShowBalloonTip(6000, next.Title, next.Message, next.Warning ? ToolTipIcon.Warning : ToolTipIcon.Info);
+            return;
+        }
+    }
+
+    private void PostNotificationDestination()
+    {
+        if (pendingDestination is null || uiBridge is null || !rendered) return;
+        try
+        {
+            uiBridge.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "together-notification", destination = pendingDestination },
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            pendingDestination = null;
+        }
+        catch (Exception error) when (error is InvalidOperationException or COMException)
+        { /* Keep the click destination for a later successful local render. */ }
+    }
+
+    private static string BoundedNotificationText(string value, int maximum)
+    {
+        var plain = new string(value.Where(character => !char.IsControl(character)).ToArray());
+        return plain.Length <= maximum ? plain : plain[..(maximum - 1)] + "…";
+    }
+
+    private sealed record NativeNotification(string Title, string Message, bool Warning, string Category,
+        Guid? ProfileId, Guid? ConnectionId, DesktopNotificationDestination? Destination);
 
     private void Run()
     {
@@ -267,7 +368,8 @@ internal sealed class DesktopWindow
             TrySetLoadState(GuiLoadState.WindowStarting);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using var window = new ChromeForm(startInTray)
+            var placement = localPreferences?.LoadWindowPlacement();
+            using var window = new ChromeForm(startInTray, placement)
             {
                 Text = displayName,
                 StartPosition = startInTray ? FormStartPosition.Manual : FormStartPosition.CenterScreen,
@@ -278,6 +380,16 @@ internal sealed class DesktopWindow
                 Padding = new Padding(1),
                 ShowInTaskbar = !startInTray
             };
+            if (!startInTray)
+            {
+                var primary = (Screen.PrimaryScreen ?? Screen.AllScreens[0]).WorkingArea;
+                var requested = placement ?? new DesktopWindowPlacement(primary.Left + Math.Max(0, (primary.Width - 1180) / 2),
+                    primary.Top + Math.Max(0, (primary.Height - 820) / 2), 1180, 820);
+                var bounds = QolLocalPreferences.ClampWindowBounds(requested, Screen.AllScreens.Select(screen => screen.WorkingArea));
+                window.MinimumSize = new Size(Math.Min(380, bounds.Width), Math.Min(560, bounds.Height));
+                window.StartPosition = FormStartPosition.Manual;
+                window.Bounds = bounds;
+            }
             if (startInTray) window.Location = OutsideVirtualDesktop(window.Size);
             form = window;
             var content = BuildChrome(window);
@@ -292,6 +404,12 @@ internal sealed class DesktopWindow
                 Visible = true
             };
             trayIcon = tray;
+            trayRunSummary = trayMenu.Items.Add("Hosting: checking…");
+            trayRunSummary.Enabled = false;
+            trayFriendSummary = trayMenu.Items.Add("Join: checking…");
+            trayFriendSummary.Enabled = false;
+            trayMenu.Items.Add(new ToolStripSeparator());
+            UpdateTraySummary();
             trayMenu.Items.Add("Open " + displayName, null, (_, _) => _ = ShowAsync());
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add("Quit " + displayName, null, (_, _) =>
@@ -299,8 +417,37 @@ internal sealed class DesktopWindow
                 if (!requestingQuit) _ = RequestQuitAsync(window);
             });
             tray.DoubleClick += (_, _) => _ = ShowAsync();
+            tray.BalloonTipClicked += (_, _) =>
+            {
+                if (activeNotificationClicked || activeNotification?.Destination is not { } destination) return;
+                activeNotificationClicked = true;
+                pendingDestination = destination;
+                // Incoming events never reveal the window. This path requires the owner's notification click.
+                RevealWindow(window);
+                PostNotificationDestination();
+            };
+            tray.BalloonTipClosed += (_, _) =>
+            {
+                activeNotification = null;
+                if (!window.IsDisposed) window.BeginInvoke(new Action(ShowNextNotification));
+            };
+            using var placementTimer = new System.Windows.Forms.Timer { Interval = 600 };
+            placementTimer.Tick += (_, _) =>
+            {
+                placementTimer.Stop();
+                RememberWindowPlacement(window);
+            };
+            void SchedulePlacementSave(object? _, EventArgs __)
+            {
+                if (!window.Visible || window.WindowState == FormWindowState.Minimized) return;
+                placementTimer.Stop();
+                placementTimer.Start();
+            }
+            window.LocationChanged += SchedulePlacementSave;
+            window.SizeChanged += SchedulePlacementSave;
             window.FormClosing += (_, eventArgs) =>
             {
+                RememberWindowPlacement(window);
                 if (closing || eventArgs.CloseReason == CloseReason.WindowsShutDown) return;
                 eventArgs.Cancel = true;
                 if (closeToTray) HideToTray(window, tray);
@@ -310,6 +457,7 @@ internal sealed class DesktopWindow
             {
                 TrySetLoadState(GuiLoadState.WindowShown);
                 shown.TrySetResult(true);
+                if (!startInTray && placement?.Maximized == true) window.MaximizeWithinWorkingArea();
                 if (Volatile.Read(ref startupShowRequested) != 0) RevealWindow(window);
                 _ = LoadGuiAsync(window, content);
                 visible = window.Visible;
@@ -326,9 +474,25 @@ internal sealed class DesktopWindow
         }
         finally
         {
+            draftFlush.CancelAll();
             trayIcon = null;
+            uiBridge = null;
             visible = false;
         }
+    }
+
+    private void RememberWindowPlacement(Form window)
+    {
+        if (localPreferences is null || !window.Visible || window.WindowState == FormWindowState.Minimized) return;
+        var bounds = window.WindowState == FormWindowState.Normal ? window.Bounds : window.RestoreBounds;
+        if (!HasUsefulVisibleArea(bounds, Screen.AllScreens.Select(screen => screen.WorkingArea))) return;
+        try
+        {
+            localPreferences.SaveWindowPlacement(new(bounds.X, bounds.Y, bounds.Width, bounds.Height,
+            window.WindowState == FormWindowState.Maximized));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { /* Remembering a window is optional and never blocks hosting or closing. */ }
     }
 
     private Control BuildChrome(Form window)
@@ -396,12 +560,24 @@ internal sealed class DesktopWindow
         titleBar.DoubleClick += Toggle;
         mark.DoubleClick += Toggle;
         title.DoubleClick += Toggle;
-        window.Resize += (_, _) =>
+        var maximizeChromeUpdateQueued = false;
+        void RefreshMaximizeChrome()
         {
-            maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
-            maximize.AccessibleName = window.WindowState == FormWindowState.Maximized
-                ? "Restore " + displayName : "Maximize " + displayName;
-        };
+            if (window.IsDisposed || window.Disposing || maximize.IsDisposed) return;
+            UpdateMaximizeChrome(window, maximize);
+            // Resize can run inside the native state setter. Refresh once more
+            // after that message completes, including saved-state restoration.
+            if (maximizeChromeUpdateQueued || !window.IsHandleCreated) return;
+            maximizeChromeUpdateQueued = true;
+            window.BeginInvoke(new Action(() =>
+            {
+                maximizeChromeUpdateQueued = false;
+                if (!window.IsDisposed && !window.Disposing && !maximize.IsDisposed)
+                    UpdateMaximizeChrome(window, maximize);
+            }));
+        }
+        window.Resize += (_, _) => RefreshMaximizeChrome();
+        window.Shown += (_, _) => RefreshMaximizeChrome();
 
         titleBar.Controls.Add(mark);
         titleBar.Controls.Add(title);
@@ -444,12 +620,29 @@ internal sealed class DesktopWindow
     private static void ChromeLeave(object? sender, EventArgs _) =>
         ((Button)sender!).BackColor = Color.Transparent;
 
-    private static void ToggleMaximize(Form window, Button maximize)
+    private void UpdateMaximizeChrome(Form window, Button maximize)
+    {
+        var maximized = window.WindowState == FormWindowState.Maximized;
+        maximize.Text = maximized ? "❐" : "□";
+        maximize.AccessibleName = (maximized ? "Restore " : "Maximize ") + displayName;
+    }
+
+    private void ToggleMaximize(Form window, Button maximize)
     {
         if (window.WindowState == FormWindowState.Maximized) window.WindowState = FormWindowState.Normal;
         else if (window is ChromeForm chrome) chrome.MaximizeWithinWorkingArea();
         else window.WindowState = FormWindowState.Maximized;
-        maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
+        UpdateMaximizeChrome(window, maximize);
+    }
+
+    internal static string? CiWebViewDebugArguments(bool staging, string? enteredPort)
+    {
+        if (!staging || enteredPort is not { Length: 5 } ||
+            enteredPort.Any(character => character is < '0' or > '9') ||
+            !int.TryParse(enteredPort, NumberStyles.None, CultureInfo.InvariantCulture, out var port) ||
+            port is < 49152 or > 65535) return null;
+        return "--remote-debugging-port=" + port.ToString(CultureInfo.InvariantCulture) +
+            " --remote-debugging-address=127.0.0.1";
     }
 
     private async Task LoadGuiAsync(Form window, Control content)
@@ -469,7 +662,15 @@ internal sealed class DesktopWindow
         {
             if (!TrySetLoadState(GuiLoadState.CreatingEnvironment)) return;
             _ = CoreWebView2Environment.GetAvailableBrowserVersionString();
-            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory);
+            // This bounded staging opt-in does not authorize interactive tests on the owner's desktop.
+            var debugArguments = isStaging
+                ? CiWebViewDebugArguments(true, Environment.GetEnvironmentVariable("TOGETHERSERVER_CI_WEBVIEW_DEBUG_PORT"))
+                : null;
+            var options = debugArguments is null ? null : new CoreWebView2EnvironmentOptions
+            {
+                AdditionalBrowserArguments = debugArguments
+            };
+            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory, options: options);
             if (window.IsDisposed || !TrySetLoadState(GuiLoadState.InitializingWebView)) return;
             var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = content.BackColor };
             content.Controls.Add(view);
@@ -479,6 +680,17 @@ internal sealed class DesktopWindow
                 view.Dispose();
                 return;
             }
+            uiBridge = view.CoreWebView2;
+            view.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
+            {
+                try
+                {
+                    if (closing || window.IsDisposed || !ReferenceEquals(uiBridge, view.CoreWebView2)) return;
+                    draftFlush.TryComplete(eventArgs.Source, eventArgs.WebMessageAsJson);
+                }
+                catch (Exception error) when (error is InvalidOperationException or COMException)
+                { /* An unavailable or malformed bridge response never permits Quit. */ }
+            };
             view.CoreWebView2.NavigationStarting += (_, eventArgs) =>
             {
                 if (Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var destination) &&
@@ -513,6 +725,7 @@ internal sealed class DesktopWindow
                         {
                             if (!TrySetRendered()) return;
                             rendered = true;
+                            PostNotificationDestination();
                             loading.Dispose();
                             CompleteStartupPresentation(window);
                             return;
@@ -700,12 +913,21 @@ internal sealed class DesktopWindow
 
     private static void OpenApprovedExternal(string? target)
     {
-        if (target is null || !new[] { "steam://install/896660", "https://www.minecraft.net/en-us/eula",
-                "https://www.microsoft.com/en-us/privacy/privacystatement" }
-            .Contains(target, StringComparer.OrdinalIgnoreCase)) return;
+        if (target is null || !IsApprovedExternal(target)) return;
         try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         { DesktopLaunch.ShowError("Could not open the selected page.\n\n" + ex.Message); }
+    }
+
+    internal static bool IsApprovedExternal(string? target)
+    {
+        if (target is null) return false;
+        if (new[] { "steam://install/896660", "https://www.minecraft.net/en-us/eula",
+                "https://www.microsoft.com/en-us/privacy/privacystatement" }
+            .Contains(target, StringComparer.OrdinalIgnoreCase)) return true;
+        const string prefix = "https://github.com/daltonstates/TogetherServer/releases/tag/";
+        return target.StartsWith(prefix, StringComparison.Ordinal) && target.Length <= prefix.Length + 33 &&
+            AppUpdater.ValidReleaseNotesLink(target, target[prefix.Length..]);
     }
 
     private void HideToTray(Form window, NotifyIcon tray)
@@ -714,8 +936,8 @@ internal sealed class DesktopWindow
         window.ShowInTaskbar = false;
         if (trayHintShown) return;
         trayHintShown = true;
-        tray.ShowBalloonTip(4000, displayName + " is still running",
-            "Open it from the tray icon. Right-click the icon to quit.", ToolTipIcon.Info);
+        NotifyCore(displayName + " is still running", "Open it from the tray icon. Right-click the icon to quit.",
+            false, "Lifecycle", null, null, new("settings", "app"));
     }
 
     private static Icon CreateTrayIcon(bool staging)
@@ -737,11 +959,43 @@ internal sealed class DesktopWindow
         finally { DestroyIcon(handle); }
     }
 
+    private async Task<bool> FlushDraftsForQuitAsync(Form window)
+    {
+        // No editor could have been used before the first successful local render.
+        if (!rendered) return true;
+        var bridge = uiBridge;
+        if (closing || window.IsDisposed || bridge is null ||
+            !draftFlush.TryBegin(out var requestId, out var completion)) return false;
+        try
+        {
+            bridge.PostWebMessageAsJson(DesktopDraftFlushGate.RequestJson(requestId));
+            return await completion.WaitAsync(DraftFlushDeadline);
+        }
+        catch (Exception error) when (error is TimeoutException or InvalidOperationException or COMException)
+        { return false; }
+        finally { draftFlush.Cancel(requestId); }
+    }
+
     private async Task RequestQuitAsync(Form window)
     {
+        if (requestingQuit || closing || window.IsDisposed) return;
         requestingQuit = true;
         try
         {
+            // Flush before calling /quit: protected draft writes need the local
+            // API's mode gate, which the guarded quit endpoint also acquires.
+            if (!await FlushDraftsForQuitAsync(window))
+            {
+                if (!closing && !window.IsDisposed)
+                {
+                    await ShowAsync();
+                    MessageBox.Show(window,
+                        "TogetherServer is still open because unfinished edits could not be confirmed as protected drafts. Review the draft message in the window, retry saving it, or deliberately discard it before quitting.",
+                        "TogetherServer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                return;
+            }
+            if (closing || window.IsDisposed) return;
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(address, "api/local/quit"));
             request.Headers.TryAddWithoutValidation("Origin", address.GetLeftPart(UriPartial.Authority));
@@ -783,11 +1037,13 @@ internal sealed class DesktopWindow
         private const int ResizeBorder = 7;
         private bool suppressActivation;
         private bool centerBeforeReveal;
+        private DesktopWindowPlacement? rememberedPlacement;
 
-        public ChromeForm(bool startupHidden)
+        public ChromeForm(bool startupHidden, DesktopWindowPlacement? placement = null)
         {
             suppressActivation = startupHidden;
             centerBeforeReveal = startupHidden;
+            rememberedPlacement = startupHidden ? placement : null;
         }
 
         public void AllowActivation() => suppressActivation = false;
@@ -795,14 +1051,36 @@ internal sealed class DesktopWindow
         public void PrepareForReveal()
         {
             suppressActivation = false;
-            if (!centerBeforeReveal && HasUsefulVisibleArea(Bounds,
-                    Screen.AllScreens.Select(screen => screen.WorkingArea))) return;
+            if (rememberedPlacement is { } saved)
+            {
+                rememberedPlacement = null;
+                centerBeforeReveal = false;
+                var restored = QolLocalPreferences.ClampWindowBounds(saved, Screen.AllScreens.Select(screen => screen.WorkingArea));
+                MinimumSize = new Size(Math.Min(380, restored.Width), Math.Min(560, restored.Height));
+                WindowState = FormWindowState.Normal;
+                Bounds = restored;
+                if (saved.Maximized) MaximizeWithinWorkingArea();
+                return;
+            }
+            if (!centerBeforeReveal && HasUsefulVisibleArea(Bounds, Screen.AllScreens.Select(screen => screen.WorkingArea)))
+            {
+                if (WindowState == FormWindowState.Normal)
+                {
+                    var current = QolLocalPreferences.ClampWindowBounds(new(Left, Top, Width, Height),
+                        Screen.AllScreens.Select(screen => screen.WorkingArea));
+                    MinimumSize = new Size(Math.Min(380, current.Width), Math.Min(560, current.Height));
+                    Bounds = current;
+                }
+                return;
+            }
             centerBeforeReveal = false;
             if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
             var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-            Location = new Point(
+            var centered = QolLocalPreferences.ClampWindowBounds(new(
                 workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2),
-                workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2));
+                workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2), Width, Height), [workingArea]);
+            MinimumSize = new Size(Math.Min(380, centered.Width), Math.Min(560, centered.Height));
+            Bounds = centered;
         }
 
         protected override bool ShowWithoutActivation => suppressActivation;

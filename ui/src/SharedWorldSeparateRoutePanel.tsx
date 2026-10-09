@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, TextArea } from './Controls'
+import { SharedWorldServerFile } from './SharedWorldServerFile'
+import { futureHostFields, normalizedDirectIpHttpsEndpoint, type SharedGame } from './sharedWorldUx'
 
 type Branch = { branchHash: string; offer: { version: { number: number };
   proposal: { profileId: string; candidateAddress: string } } }
@@ -21,6 +23,7 @@ function branch(value: unknown, profileId: string): Branch {
   const version = offer?.version as Record<string, unknown> | undefined
   if (typeof item.branchHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.branchHash) ||
     proposal?.profileId !== profileId || typeof proposal.candidateAddress !== 'string' ||
+    normalizedDirectIpHttpsEndpoint(proposal.candidateAddress) === null ||
     typeof version?.number !== 'number' || !Number.isSafeInteger(version.number) ||
     version.number < 1) throw new Error('Separate-copy proof is invalid.')
   return value as Branch
@@ -73,15 +76,20 @@ function action(value: unknown): Action {
   return item as Action
 }
 
-export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
-  { profileId: string; separateCopies: number }) {
+export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game, onBrowseServerFile }:
+  { profileId: string; separateCopies: number; game?: SharedGame;
+    onBrowseServerFile?: (game: SharedGame) => Promise<string | null> }) {
+  const fields = futureHostFields(game)
+  const knownGame = ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(game ?? '')
+  const scope = useRef(profileId)
+  scope.current = profileId
   const [ownBranches, setOwnBranches] = useState<Branch[]>([])
   const [shown, setShown] = useState<Branch | null>(null)
   const [hosting, setHosting] = useState<HostStatus | null>(null)
   const [serverFile, setServerFile] = useState('')
   const [gameVersion, setGameVersion] = useState('')
   const [controlPort, setControlPort] = useState('5131')
-  const [gamePort, setGamePort] = useState('')
+  const [gamePort, setGamePort] = useState(fields.gamePort)
   const [newPasswordSet, setNewPasswordSet] = useState(false)
   const [gamePassword, setGamePassword] = useState('')
   const [serverName, setServerName] = useState('Separate world')
@@ -93,19 +101,26 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
   const [result, setResult] = useState<RouteCheck | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    setOwnBranches([]); setShown(null); setHosting(null); setServerFile(''); setGameVersion('')
+    setControlPort('5131'); setGamePort(futureHostFields(game).gamePort); setNewPasswordSet(false); setGamePassword('')
+    setExecutable(''); setFactorioRconPort('27015'); setSplitAccepted(false); setHostAction(null)
+    setPasted(''); setResult(null); setError(''); setBusy(false)
+  }, [profileId, game])
   const load = async () => {
     setBusy(true); setError('')
     try {
-      setOwnBranches(await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery/separate`,
-        value => branches(value, profileId)))
-    } catch (cause) { setError(errorMessage(cause)) }
-    finally { setBusy(false) }
+      const value = await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery/separate`,
+        value => branches(value, profileId))
+      if (scope.current === profileId) setOwnBranches(value)
+    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
+    finally { if (scope.current === profileId) setBusy(false) }
   }
   const refreshHost = async (selected: Branch) => {
     const next = await getLocalJson(
       `/api/local/friend/${profileId}/shared-world/recovery/separate/hosting/${selected.branchHash}`,
       hostStatus)
-    setHosting(next)
+    if (scope.current === profileId) setHosting(next)
   }
   const select = async (selected: Branch) => {
     setShown(selected); setHosting(null); setHostAction(null); setBusy(true); setError('')
@@ -140,15 +155,17 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
   const check = async () => {
     setBusy(true); setError(''); setResult(null)
     try {
+      if (pasted.length < 2 || pasted.length > 512 * 1024) throw new Error('Separate-copy proof code is invalid or too large.')
       let parsed: unknown
       try { parsed = JSON.parse(pasted) as unknown }
       catch { throw new Error('Separate-copy proof code is invalid. Ask the candidate PC to copy it again.') }
       const proof = branch(parsed, profileId)
-      setResult(await changeJson(
+      const value = await changeJson(
         `/api/local/friend/${profileId}/shared-world/recovery/separate/route-check`,
-        'POST', routeCheck, { branch: proof }))
-    } catch (cause) { setError(errorMessage(cause)) }
-    finally { setBusy(false) }
+        'POST', routeCheck, { branch: proof })
+      if (scope.current === profileId) setResult(value)
+    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
+    finally { if (scope.current === profileId) setBusy(false) }
   }
   return <details><summary>Separate-copy route check</summary>
     <p>A second approved Friend PC must check the candidate’s direct HTTPS address. This checks the control route only. It does not settle the split or prove the game route.</p>
@@ -159,8 +176,9 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
         <Button className="text-button" disabled={busy}
           onClick={() => void select(item)}>Review separate copy and show proof code</Button>
       </div>)}
-      {shown && <TextArea aria-label="Signed separate-copy proof code"
-        rows={3} readOnly value={JSON.stringify(shown)} />}</>}
+      {shown && <><Button className="secondary" disabled={busy} onClick={() => void navigator.clipboard.writeText(JSON.stringify(shown))
+        .catch(() => setError('Could not copy this proof. Select the proof code below to copy it manually.'))}>Copy separate-copy proof</Button>
+        <TextArea aria-label="Signed separate-copy proof code" rows={3} readOnly value={JSON.stringify(shown)} /></>}</>}
     {shown && hosting && <section aria-label="Host this separate copy">
       <p role={hosting.reviewRequired ? 'alert' : 'status'}>{hosting.message}</p>
       {!hosting.reviewRequired && <>
@@ -170,25 +188,27 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies }:
             {item.name} {item.version} ({item.type})</li>)}</ul>
           <p>Install these packages in this PC’s managed server folder before restoring.</p>
         </details> : null}
-        {!hosting.restored && <><label>Installed game server file<Input value={serverFile}
-          onChange={event => setServerFile(event.target.value)} /></label>
+        {!hosting.restored && <><SharedWorldServerFile key={profileId} profileId={profileId} game={game}
+          value={serverFile} onChange={setServerFile} disabled={busy} onBrowseServerFile={onBrowseServerFile} />
           <label>Installed game version<Input value={gameVersion}
             onChange={event => setGameVersion(event.target.value)} /></label>
           <label>New server name<Input value={serverName}
             onChange={event => setServerName(event.target.value)} /></label>
-          <label>Installed game executable, if different<Input value={executable}
-            onChange={event => setExecutable(event.target.value)} /></label>
+          {(game === 'MinecraftJava' || !knownGame) && <label>{game === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different'}<Input value={executable}
+            onChange={event => setExecutable(event.target.value)} /></label>}
           {hosting.preparedServerRoot && <p>Prepare the matching Minecraft server and add-ons in this managed folder: {hosting.preparedServerRoot}. Match its server.properties settings and player allowlist to the signed source; a mismatch blocks restore and Start.</p>}
-          <label>Factorio local RCON port, if used<Input inputMode="numeric"
-            value={factorioRconPort} onChange={event => setFactorioRconPort(event.target.value)} /></label>
-          <label>New game password, if used<Input type="password" value={gamePassword}
-            onChange={event => setGamePassword(event.target.value)} /></label></>}
+          {(fields.factorio || !knownGame) && <label>Factorio local RCON port, if used<Input inputMode="numeric"
+            value={factorioRconPort} onChange={event => setFactorioRconPort(event.target.value)} /></label>}
+          {fields.factorio && <p className="helper-text">Keep the RCON port local. Never forward it.</p>}
+          {fields.password && <label>New game password, if used<Input type="password" value={gamePassword}
+            onChange={event => setGamePassword(event.target.value)} /></label>}</>}
         {!hosting.readyForManualStart && !hosting.running && <><label>Future Friend control port<Input inputMode="numeric"
           value={controlPort} onChange={event => setControlPort(event.target.value)} /></label>
           <label>Future game port<Input inputMode="numeric" value={gamePort}
             onChange={event => setGamePort(event.target.value)} /></label>
           <label><Input type="checkbox" checked={newPasswordSet}
-            onChange={event => setNewPasswordSet(event.target.checked)} /> I set a new game password on this PC</label>
+            onChange={event => setNewPasswordSet(event.target.checked)} /> {fields.password ?
+              'I set a new game password on this PC' : 'I reviewed local game access and set a new password where this game supports one'}</label>
           <Button className="secondary" disabled={busy} onClick={() => void hostChange(
             hosting.restored ? 'finish' : 'restore')}>
             {hosting.restored ? 'Finish local and route checks' : 'Restore into a fresh managed world'}</Button></>}

@@ -13,4 +13,12 @@ describe('JoinGuide', () => {
     expect(screen.getByText(/password shared separately/)).toBeInTheDocument()
     expect(screen.queryByText(/server code/i)).not.toBeInTheDocument()
   })
+  it('uses separate Copy fields for Bedrock and Terraria rather than ambiguous colon splitting', () => {
+    const view = render(<JoinGuide kind="MinecraftBedrock" />)
+    expect(screen.getByText(/Copy beside Server address/)).toHaveTextContent('Copy beside Port')
+    expect(view.container.textContent).not.toContain('final colon')
+    view.rerender(<JoinGuide kind="Terraria" />)
+    expect(screen.getByText(/Copy beside Server address/)).toHaveTextContent('Copy beside Port')
+    expect(view.container.textContent).not.toContain('port after')
+  })
 })

@@ -22,7 +22,8 @@ internal static class GameClientLaunch
     {
         GameKinds.Valheim => "steam://run/892970",
         GameKinds.Factorio => "steam://run/427520",
-        GameKinds.Terraria => "steam://run/105600", _ => null
+        GameKinds.Terraria => "steam://run/105600",
+        _ => null
     };
     internal static bool ValidAddress(string? address)
     {

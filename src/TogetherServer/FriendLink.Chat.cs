@@ -19,6 +19,10 @@ internal sealed partial class FriendLink
                 view.State == "Revoked" ? "The Host removed this PC's access." :
                     "The Host ended access for this PC. Ask the Host to extend or clear the deadline.",
                 current.HostId, profileId, [], []);
+        if (view.State == "Awaiting approval" || current.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
+            return new(false, view.State == "Awaiting approval" ? "ApprovalPending" : "CredentialExpired",
+                view.State == "Awaiting approval" ? "The Host must approve this PC before chat is available." :
+                    "Reconnect to the Host before using this chat room.", current.HostId, profileId, [], []);
         if (current.ChatDeniedProfiles?.Contains(profileId) == true)
             return new(false, "ChatAccessDenied", "The Host has removed this PC from this chat room.",
                 current.HostId, profileId, [], []);
@@ -46,13 +50,17 @@ internal sealed partial class FriendLink
 
     public ChatRoomView ChatRoom(Guid profileId) => LocalChat(profileId);
 
-    public async Task<ChatRoomView> PostChatAsync(Guid profileId, string? text)
+    public async Task<ChatRoomView> PostChatAsync(Guid profileId, string? text,
+        CancellationToken cancellationToken = default)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This saved connection is closing.",
             Guid.Empty, profileId, [], []);
-        await gate.WaitAsync();
+        var entered = false;
         try
         {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            cancellationToken.ThrowIfCancellationRequested();
             var local = LocalChat(profileId);
             if (!local.Ok) return local;
             if (!ServerChat.ValidText(text))
@@ -72,23 +80,29 @@ internal sealed partial class FriendLink
                     Message = "Send queued messages before adding more."
                 };
             }
-            if (view.State is "Connected" or "Disabled") return await SyncChatCoreAsync(profileId);
+            if (view.State is "Connected" or "Disabled") return await SyncChatCoreAsync(profileId, cancellationToken);
             return LocalChat(profileId, "ChatQueued", "Saved on this PC. It will sync when the Host is reachable.");
         }
-        finally { gate.Release(); ReleaseRetained(); }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
-    public async Task<ChatRoomView> SyncChatAsync(Guid profileId)
+    public async Task<ChatRoomView> SyncChatAsync(Guid profileId, CancellationToken cancellationToken = default)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This saved connection is closing.",
             Guid.Empty, profileId, [], []);
-        await gate.WaitAsync();
-        try { return await SyncChatCoreAsync(profileId); }
-        finally { gate.Release(); ReleaseRetained(); }
+        var entered = false;
+        try
+        {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            return await SyncChatCoreAsync(profileId, cancellationToken);
+        }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
-    private async Task<ChatRoomView> SyncChatCoreAsync(Guid profileId)
+    private async Task<ChatRoomView> SyncChatCoreAsync(Guid profileId, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var local = LocalChat(profileId);
         if (!local.Ok && local.Code != "ChatAccessDenied") return local;
         if (view.State is not ("Connected" or "Disabled"))
@@ -106,12 +120,22 @@ internal sealed partial class FriendLink
             };
         try
         {
+            // A previously removed room may send an empty probe to learn that
+            // access was restored, but must not disclose its protected drafts.
+            IReadOnlyList<ChatDraft> submitted = local.Ok
+                ? chat.MarkPendingSubmitted(config.HostId, profileId, config.DeviceId) : [];
+            local = local with { Pending = submitted };
+            var outbound = new
+            {
+                entries = local.Entries,
+                drafts = submitted.Select(draft => new { draft.Id, draft.Text }).ToArray()
+            };
             using var response = await HostClient().PostAsJsonAsync(
                 $"api/companion/servers/{profileId}/chat/sync",
-                new ChatSyncRequest(local.Entries, local.Pending), Json);
+                outbound, Json, cancellationToken);
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
-                var denial = await ReadBoundedChatPayloadAsync(response.Content);
+                var denial = await ReadBoundedChatPayloadAsync(response.Content, cancellationToken);
                 if (denial is not null)
                 {
                     try
@@ -149,7 +173,7 @@ internal sealed partial class FriendLink
                     Code = "ChatUnavailable",
                     Message = "The Host could not sync chat. Messages on this PC are kept."
                 };
-            var bytes = await ReadBoundedChatPayloadAsync(response.Content);
+            var bytes = await ReadBoundedChatPayloadAsync(response.Content, cancellationToken);
             if (bytes is null)
                 return local with
                 {
@@ -159,6 +183,7 @@ internal sealed partial class FriendLink
             ChatSyncResponse? remote;
             try { remote = JsonSerializer.Deserialize<ChatSyncResponse>(bytes, Json); }
             catch (JsonException) { remote = null; }
+            cancellationToken.ThrowIfCancellationRequested();
             if (remote is not { Ok: true, PublicKey: not null, Entries: not null } ||
                 remote.HostId != config.HostId || remote.ProfileId != profileId ||
                 remote.Entries.Count > ServerChat.MaximumEntries ||
@@ -206,7 +231,8 @@ internal sealed partial class FriendLink
                                    InvalidDataException or UnauthorizedAccessException or CryptographicException or
                                    ArgumentException or InvalidOperationException)
         {
-            return local with
+            if (cancellationToken.IsCancellationRequested) throw new OperationCanceledException(cancellationToken);
+            return LocalChat(profileId) with
             {
                 Code = "ChatOffline",
                 Message = "Showing the copy on this PC. Messages will sync after reconnection."
@@ -214,16 +240,17 @@ internal sealed partial class FriendLink
         }
     }
 
-    private static async Task<byte[]?> ReadBoundedChatPayloadAsync(HttpContent content)
+    private static async Task<byte[]?> ReadBoundedChatPayloadAsync(HttpContent content,
+        CancellationToken cancellationToken = default)
     {
         if (content.Headers.ContentLength > ServerChat.MaximumWireBytes) return null;
-        await using var source = await content.ReadAsStreamAsync();
+        await using var source = await content.ReadAsStreamAsync(cancellationToken);
         using var output = new MemoryStream();
         var buffer = new byte[8192];
         while (true)
         {
             var remaining = ServerChat.MaximumWireBytes - (int)output.Length;
-            var read = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining + 1)));
+            var read = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining + 1)), cancellationToken);
             if (read == 0) return output.ToArray();
             if (read > remaining) return null;
             output.Write(buffer, 0, read);

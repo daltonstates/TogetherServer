@@ -14,7 +14,18 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Seven-day session projection", () => { WeeklySummaryChecks.Run(); return Task.CompletedTask; }),
     ("Guided game settings", () => GameSettingsChecks.RunAsync(root)),
     ("Durable signed notices", () => { PinnedNoticeChecks.Run(root); return Task.CompletedTask; }),
-    ("Pinned Friend notice copies", () => PinnedNoticeFriendChecks.RunAsync(root))
+    ("Pinned Friend notice copies", () => PinnedNoticeFriendChecks.RunAsync(root)),
+    ("Protected UI drafts", () => { DesktopQolChecks.RunDrafts(); return Task.CompletedTask; }),
+    ("Desktop presentation preferences", () => { DesktopQolChecks.RunPreferences(); return Task.CompletedTask; }),
+    ("Trusted update metadata and reminders", () => DesktopQolChecks.RunUpdateMetadataAsync(root)),
+    ("Exact backup catalog evidence", () => { BackupCatalogChecks.Run(root); return Task.CompletedTask; }),
+    ("Safe unsent chat queue changes", () => ChatQueueChecks.RunAsync(root)),
+    ("Native import selection previews", () => { SetupImportPreviewChecks.Run(root); return Task.CompletedTask; }),
+    ("Shared save display projections", () => { SharedWorldProjectionChecks.Run(root); return Task.CompletedTask; }),
+    ("Local QoL endpoint scopes and run identity", () => { QolLocalEndpointInputChecks.Run(); return Task.CompletedTask; }),
+    ("Canonical tray projection", () => { DesktopTrayProjectionChecks.Run(root); return Task.CompletedTask; }),
+    ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
+    ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root))
 };
 foreach (var group in groups)
 {

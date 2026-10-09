@@ -6,6 +6,10 @@ import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 import { WorldLoadRehearsalPanel } from './WorldLoadRehearsal'
 import { LiveSaveControls, parseLiveSaveStatus, type LiveSaveStatus } from './LiveSaveControls'
+import { SharedWorldRouteDetails } from './SharedWorldRouteDetails'
+import { formatSharedBytes, normalizedDirectIpHttpsEndpoint, plannedHandoffChecklist,
+  sharedSaveAge, sharedTransferPhase, type SharedGame, type TransferPhase } from './sharedWorldUx'
+export { normalizedDirectIpHttpsEndpoint } from './sharedWorldUx'
 
 type CaptureKind = 'PostStopBackup' | 'LiveSave'
 type HostStatus = { enabled: boolean; latest: { number: number; versionHash: string; createdUtc: string; captureKind: CaptureKind | null } | null; error: string | null; confirmedCopies: number;
@@ -16,7 +20,8 @@ type AuthorityHead = { groupId: string; epoch: number; recordHash: string; versi
 type AuthorityStatus = { state: 'NoTakeover' | 'OldHostFenced' | 'ThisPcHost' | 'CompetingHistories' | 'ReviewRequired';
   message: string; head: AuthorityHead | null; competingHeads: AuthorityHead[]; exactManagedProcessRunning: boolean }
 type FriendStatus = { consented: boolean; hostVersion: number | null; thisPcVersion: number | null; state: string; error: string | null;
-  capacityNotice: string | null; capacityState: 'Low space' | null }
+  capacityNotice: string | null; capacityState: 'Low space' | null;
+  completedUtc: string | null; receivedUtc: string | null; transferPhase: TransferPhase | null; receiptConfirmed: boolean | null }
   & { receivedBytes: number; totalBytes: number; rosterRevision: number | null; trust: string }
 type Grants = { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }
 type RosterMember = { deviceId: string; grants: Grants; revoked: boolean; accessExpiresUtc: string | null }
@@ -62,18 +67,12 @@ function textOrNull(value: unknown, where: string): string | null {
   if (typeof value !== 'string' || value.length > 300) throw new Error(`${where} is invalid.`)
   return value
 }
-export function normalizedDirectIpHttpsEndpoint(value: string): string | null {
-  try {
-    const url = new URL(value)
-    if (url.protocol !== 'https:' || !url.port || url.pathname !== '/' || url.search || url.hash ||
-      url.username || url.password) return null
-    const host = url.hostname.toLowerCase()
-    const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(host)
-    const ipv6 = /^\[[0-9a-f:.]+\]$/.test(host) && host.includes(':')
-    if (!ipv4 && !ipv6 || host === '0.0.0.0' || host.startsWith('127.') ||
-      host === '[::]' || host === '[::1]' || host.includes('ffff:')) return null
-    return url.origin
-  } catch { return null }
+function timestampOrNull(value: unknown, where: string): string | null {
+  if (value == null) return null
+  const result = shortText(value, where, 64)
+  if (!/^\d{4}-\d{2}-\d{2}T.*(?:Z|\+00:00)$/.test(result) || !Number.isFinite(Date.parse(result)))
+    throw new Error(`${where} is invalid.`)
+  return result
 }
 function shortText(value: unknown, where: string, max = 300): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > max) throw new Error(`${where} is invalid.`)
@@ -230,14 +229,22 @@ function parseAuthorityStatus(value: unknown): AuthorityStatus {
 export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
   const source = record(value, 'Received save status')
   if (typeof source.state !== 'string' || source.state.length > 300) throw new Error('Received save state is invalid.')
+  const receivedBytes = numberOrNull(source.receivedBytes ?? 0, 'Received bytes') ?? 0
+  const totalBytes = numberOrNull(source.totalBytes ?? 0, 'Total bytes') ?? 0
+  if (receivedBytes > totalBytes) throw new Error('Received byte progress is invalid.')
+  const transferPhase = source.transferPhase ?? null
+  if (transferPhase !== null && transferPhase !== 'Receiving' && transferPhase !== 'Verifying' && transferPhase !== 'Receipt')
+    throw new Error('Transfer phase is invalid.')
   return { consented: boolean(source.consented, 'This PC consent'),
     hostVersion: numberOrNull(source.hostVersion, 'Host version'),
     thisPcVersion: numberOrNull(source.thisPcVersion, 'This PC version'),
     state: source.state, error: textOrNull(source.error, 'Received save error'),
     capacityNotice: textOrNull(source.capacityNotice ?? null, 'Signed history notice'),
     capacityState: source.capacityState === 'Low space' ? source.capacityState : null,
-    receivedBytes: numberOrNull(source.receivedBytes ?? 0, 'Received bytes') ?? 0,
-    totalBytes: numberOrNull(source.totalBytes ?? 0, 'Total bytes') ?? 0,
+    receivedBytes, totalBytes, transferPhase,
+    completedUtc: timestampOrNull(source.completedUtc, 'Completed save time'),
+    receivedUtc: timestampOrNull(source.receivedUtc, 'Received save time'),
+    receiptConfirmed: source.receiptConfirmed == null ? null : boolean(source.receiptConfirmed, 'Receipt confirmation'),
     rosterRevision: numberOrNull(source.rosterRevision ?? null, 'Roster revision'),
     trust: source.trust === undefined ? 'Roster not verified' :
       textOrNull(source.trust, 'Trust status') ?? 'Roster not verified' }
@@ -404,31 +411,38 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const [resolutionMessage, setResolutionMessage] = useState('')
   useEffect(() => {
     let active = true
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus)
+    const controller = new AbortController()
+    void getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal)
       .then(value => { if (active) setStatus(value) })
       .catch(error => { if (active) setMessage(errorMessage(error)) })
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster)
+    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster, controller.signal)
       .then(value => { if (active) setRoster(value) })
       .catch(error => { if (active) setMessage(errorMessage(error)) })
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)
+    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)
       .then(value => { if (active) setHandoff(value) })
       .catch(error => { if (active) setHandoffMessage(errorMessage(error)) })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [profileId])
   useEffect(() => {
     if (!open) return
     let active = true
+    const controller = new AbortController()
+    let timer: number | undefined
     const refresh = async () => {
-      try {
-        const next = await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus)
-        if (active) { setStatus(next); setMessage('') }
-      } catch (error) {
-        if (active) { setStatus(null); setMessage(errorMessage(error)) }
+      const [nextStatus, nextHandoff] = await Promise.allSettled([
+        getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal),
+        getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)
+      ])
+      if (active) {
+        if (nextStatus.status === 'fulfilled') { setStatus(nextStatus.value); setMessage('') }
+        else { setStatus(null); setMessage(errorMessage(nextStatus.reason)) }
+        if (nextHandoff.status === 'fulfilled') setHandoff(nextHandoff.value)
+        else { setHandoff(null); setHandoffMessage(errorMessage(nextHandoff.reason)) }
+        timer = window.setTimeout(() => void refresh(), 2000)
       }
     }
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 2000)
-    return () => { active = false; window.clearInterval(timer) }
+    return () => { active = false; window.clearTimeout(timer); controller.abort() }
   }, [open, profileId])
   const changeSharing = async (enabled: boolean) => {
     setBusy(true); setMessage('')
@@ -545,6 +559,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       `${status.enabled ? `Copied to ${status.confirmedCopies} PCs` : 'Sharing off; previously confirmed copies'} · latest ${latestCopyLabel} ${status.latest.number}`} · {new Date(status.latest.createdUtc).toLocaleString()}</p> :
       <p role="status">{fenced || review ? 'Preserved local copy on this PC. No published save can be verified here.' :
         status?.enabled ? 'No shared save has been published yet.' : 'Sharing is off. No shared save has been published yet.'}</p>}
+    {status?.latest && <p className="helper-text">Completed copy: {sharedSaveAge(status.latest.createdUtc)}.
+      {' '}<time dateTime={status.latest.createdUtc}>{new Date(status.latest.createdUtc).toLocaleString()}</time>.
+      {' '}Changes after this copy are not included.</p>}
     {authority?.state === 'ThisPcHost' && <p role="status">This PC holds the verified current hosting decision.</p>}
     {!fenced && !review && <><p>Shared saves can copy completed world files after a graceful Stop. Live sharing needs an accepted game-specific snapshot. Hash verification does not prove game load or playability. Automatic takeover is unavailable.</p>
       {status && <LiveSaveControls profileId={profileId} status={status.liveSave} onUpdated={async () => {
@@ -583,8 +600,15 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       {handoff?.pending && <p role={handoff.code === 'HandoffReviewRequired' ? 'alert' : 'status'}>{handoff.message}
         {handoff.finalVersion != null && ` Final save version ${handoff.finalVersion}.`}
         {handoff.receiptConfirmed && ' Signed receipt confirmed.'}</p>}
+      {handoff && !fenced && !review && <ol aria-label="Planned handoff checklist">
+        {plannedHandoffChecklist(handoff, devices.find(item => item.id === handoff.successorDeviceId)?.name ?? 'Next Host PC')
+          .map(step => <li key={step.id} aria-current={step.current ? 'step' : undefined}>
+            <strong>{step.done ? 'Done' : step.current ? 'Next' : 'Later'} · {step.pc}</strong>: {step.text}
+          </li>)}
+      </ol>}
+      {fenced && <p role="note">Next: the PC named in the signed hosting decision restores its verified copy and finishes local setup and route checks. This PC stays fenced. Start remains a separate choice on that PC.</p>}
       {!handoff?.pending && handoff !== null && <p className="helper-text">No pending handoff. If this PC was fenced, review its shared-world status before hosting.</p>}
-      {!handoff?.pending && <><label>Next host PC <Select value={successorId} disabled={busy || handoff === null}
+      {!handoff?.pending && !fenced && !review && <><label>Next host PC <Select value={successorId} disabled={busy || handoff === null}
         onChange={event => setSuccessorId(event.target.value)}><option value="">Choose a PC</option>
         {successors.map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</Select></label>
         {successors.length === 0 && <p className="helper-text">Give an approved PC Receive and Eligible host access, then enroll its signing identity.</p>}
@@ -605,7 +629,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     {status?.enabled && <p className="helper-text">Manage sharing lets an approved Friend change another member's Receive, host eligibility, and recovery vote. Only the owner can grant Manage sharing or change the owner override.</p>}
     {status?.error && <p role="alert">{status.error}</p>}
     <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
-      <p>Review signed offers before choosing a saved branch. The selected copy stays on its PC.</p>
+      <p>Review signed offers before choosing a saved branch. Every existing copy stays preserved on its PC; version number alone does not decide which history to use.</p>
       <Button className="secondary" disabled={busy} onClick={() => void loadPendingResolutions()}>Check owner decisions</Button>
       {pendingResolutions.map(offer => <div key={offer.proposalHash}>
         <p>{offer.competingBranches} signed branches · selected saved version {offer.selectedVersion}</p>
@@ -639,9 +663,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   </details>
 }
 
-export function FriendSharedWorlds({ profileId, available, onAddressChange }:
-  { profileId: string; available: boolean; onAddressChange?: () => void }) {
+export function FriendSharedWorlds({ profileId, available, onAddressChange, game, onBrowseServerFile, onOpenHostSetup }:
+  { profileId: string; available: boolean; onAddressChange?: () => void; game?: SharedGame;
+    onBrowseServerFile?: (game: SharedGame) => Promise<string | null>; onOpenHostSetup?: () => void }) {
   const [status, setStatus] = useState<FriendStatus | null>(null)
+  const currentProfile = useRef(profileId)
+  currentProfile.current = profileId
+  const [showHosting, setShowHosting] = useState(false)
   const [hostingSetupReady, setHostingSetupReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [successorHash, setSuccessorHash] = useState('')
@@ -668,7 +696,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     let next: RecoveryStatus
     try { next = await flight }
     finally { if (recoveryFlight.current?.request === flight) recoveryFlight.current = null }
-    if (!active()) return
+    if (!active() || currentProfile.current !== profileId) return
     const identity = `${next.proposalHash ?? ''}/${next.authorityHeadHash ?? ''}`
     if (recoveryIdentity.current !== null && recoveryIdentity.current !== identity) {
       setCandidateCode(null); setVoteCount(null); setReviewedOffer(null); setOfferCode('')
@@ -687,10 +715,25 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     try {
       const result = await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery/offer-code`,
         value => parseCurrentOfferCode(value, profileId))
-      if (identity === recoveryIdentity.current && currentRecovery.current?.state === 'OfferArmed' &&
+      if (currentProfile.current === profileId && identity === recoveryIdentity.current && currentRecovery.current?.state === 'OfferArmed' &&
         result.proposalHash === currentRecovery.current.proposalHash) setCandidateCode(result)
+      return result
     }
     catch (error) { if (identity === recoveryIdentity.current) setRecoveryMessage(errorMessage(error)) }
+  }
+  const copyCandidateCode = async () => {
+    const identity = recoveryIdentity.current
+    const result = await showCandidateCode()
+    if (!result || currentProfile.current !== profileId || identity !== recoveryIdentity.current ||
+      currentRecovery.current?.state !== 'OfferArmed' || result.proposalHash !== currentRecovery.current.proposalHash) return
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(result.offer))
+      if (currentProfile.current === profileId && identity === recoveryIdentity.current)
+        setRecoveryMessage('Signed offer code copied. Share it privately with the approved recovery voters.')
+    } catch {
+      if (currentProfile.current === profileId && identity === recoveryIdentity.current)
+        setRecoveryMessage('Could not copy the offer code. Open Technical details to select and copy it manually.')
+    }
   }
   useEffect(() => {
     if (!open) return
@@ -724,6 +767,14 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   const [pendingHistoryGroup, setPendingHistoryGroup] = useState<{ groupId: string; ownerPublicKey: string } | null>(null)
   useEffect(() => { setHistoryMessage(''); setPendingHistoryGroup(null) }, [profileId])
   useEffect(() => {
+    setStatus(null); setBusy(false); setShowHosting(false); setHostingSetupReady(false)
+    setSuccessorHash(''); setSuccessorPin(''); setSuccessorMessage(''); setMessage('')
+    setStageMessage(''); setStaged(false); setRecovery(null); setRecoveryMessage('')
+    setOfferCode(''); setCandidateCode(null); setReviewedOffer(null); setSplitAccepted(false); setVoteCount(null)
+    setChoices([]); setResolutionMessage(''); setOfferText(''); setInvitation(''); setReviewed(null)
+    recoveryIdentity.current = null; currentRecovery.current = null; recoveryFlight.current = null
+  }, [profileId])
+  useEffect(() => {
     if (!open && (!available || !status?.consented)) return
     let active = true
     let timer: number | undefined
@@ -749,29 +800,30 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/${action}`, action === 'consent' ? 'PUT' : 'POST',
         parseFriendResult, action === 'consent' ? { enabled } : undefined)
-      setMessage(result.message)
-      setStatus(result.status ?? await getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus))
-    } catch (error) { setMessage(errorMessage(error)) }
-    finally { setBusy(false) }
+      const next = result.status ?? await getLocalJson(`/api/local/friend/${profileId}/shared-world`, parseFriendSharedWorldStatus)
+      if (currentProfile.current === profileId) { setMessage(result.message); setStatus(next) }
+    } catch (error) { if (currentProfile.current === profileId) setMessage(errorMessage(error)) }
+    finally { if (currentProfile.current === profileId) setBusy(false) }
   }
   const joinSuccessor = async () => {
     setBusy(true); setSuccessorMessage('')
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/successor-enrollment`,
         'POST', parseBasicResult, { recordHash: successorHash.trim(), tlsFingerprint: successorPin.trim() })
-      setSuccessorMessage(result.message)
-    } catch (error) { setSuccessorMessage(errorMessage(error)) }
-    finally { setBusy(false) }
+      if (currentProfile.current === profileId) setSuccessorMessage(result.message)
+    } catch (error) { if (currentProfile.current === profileId) setSuccessorMessage(errorMessage(error)) }
+    finally { if (currentProfile.current === profileId) setBusy(false) }
   }
   const stage = async () => {
     setBusy(true); setStageMessage('')
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/stage`,
         'POST', parseBasicResult)
-      setStageMessage(result.message)
-      setStaged(result.ok && result.code === 'StagedForSetup')
-    } catch (error) { setStageMessage(errorMessage(error)); setStaged(false) }
-    finally { setBusy(false) }
+      if (currentProfile.current === profileId) {
+        setStageMessage(result.message); setStaged(result.ok && result.code === 'StagedForSetup')
+      }
+    } catch (error) { if (currentProfile.current === profileId) { setStageMessage(errorMessage(error)); setStaged(false) } }
+    finally { if (currentProfile.current === profileId) setBusy(false) }
   }
   const prepareOffer = async () => {
     const identity = recoveryIdentity.current
@@ -819,9 +871,11 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     finally { setBusy(false) }
   }
   const loadChoices = async () => {
-    try { setChoices(await getLocalJson(
-      `/api/local/friend/${profileId}/shared-world/resolution/heads`, parseResolutionChoices)) }
-    catch (error) { setResolutionMessage(errorMessage(error)) }
+    try {
+      const value = await getLocalJson(`/api/local/friend/${profileId}/shared-world/resolution/heads`, parseResolutionChoices)
+      if (currentProfile.current === profileId) setChoices(value)
+    }
+    catch (error) { if (currentProfile.current === profileId) setResolutionMessage(errorMessage(error)) }
   }
   const reviewHistory = async (confirm = false) => {
     setBusy(true); setHistoryMessage('')
@@ -877,6 +931,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
   const statusProblem = status?.state === 'Error' ||
     status?.state.startsWith('Host save source changed') ||
     status?.state.startsWith('Competing save histories')
+  const transferPhase = status ? sharedTransferPhase(status.state, status.transferPhase) : null
   const behind = status?.consented && !statusProblem && status.error == null && status.hostVersion != null &&
     status.thisPcVersion != null && status.hostVersion > status.thisPcVersion
   const headline = !status ? 'Checking save status' :
@@ -884,8 +939,10 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     statusProblem ? status.error ?? status.state :
     status?.state === 'Low space' ? 'Low space — receiving paused' :
     status?.state === 'Stalled' ? 'Receiving stalled — retrying' :
-    status?.state === 'Receiving' ? 'Receiving completed save' :
     status.error != null ? status.error :
+    transferPhase === 'Verifying' ? 'Verifying received save' :
+    transferPhase === 'Receipt' ? 'Confirming signed receipt' :
+    transferPhase === 'Receiving' ? 'Receiving completed save' :
     behind && status?.hostVersion != null && status.thisPcVersion != null ?
       `This PC is ${status.hostVersion - status.thisPcVersion === 1 ? 'one save' :
         `${status.hostVersion - status.thisPcVersion} saves`} behind` :
@@ -903,7 +960,8 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     {capacityAlert && <span className="warning-text" role="alert"> · {capacityAlert}</span>}</summary>
     <p role="status">{status?.thisPcVersion != null && status.consented ?
       `Verified save copy ${status.thisPcVersion} on this PC. ${headline}.` : `${headline}.`}</p>
-    <p>Saves are copied here after the Host stops its game server. Keep this app open to receive them. To host on this PC, use a planned handoff or recover after Host loss below.</p>
+    <section aria-label="Receive save copies"><h4>Receive saves</h4>
+    <p>Saves are copied here after the Host stops its game server. Keep this app open to receive them. Receiving keeps a private verified copy and does not make this PC a Host.</p>
     <p className="helper-text">Changes since the Host's last completed copy may be missing. Automatic takeover is unavailable.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>{status?.thisPcVersion != null ?
@@ -911,15 +969,39 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       'Connect to a Host with shared-save support before receiving saves.'}</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
-    {status?.capacityNotice && <p role="alert">{status.capacityNotice}</p>}
-    {status && <details><summary>Technical details</summary><p>Trust: {status.trust}.
-      Roster revision {status.rosterRevision ?? 'not checked'}. This is a verified copy status, not takeover readiness.</p></details>}
-    {status?.state === 'Receiving' && <p role="status">Receiving {status.receivedBytes} of {status.totalBytes} bytes.</p>}
     <div className="actions"><Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('check')}>Check latest</Button>
     <Button className="secondary" disabled={busy || !available || !status?.consented}
       onClick={() => void run('pull')}>{busy ? 'Working…' : 'Receive latest save'}</Button></div>
+    {status?.thisPcVersion != null && <dl aria-label="Shared save age">
+      <dt>Completed by the Host</dt><dd>{sharedSaveAge(status.completedUtc)}
+        {status.completedUtc && <> · <time dateTime={status.completedUtc}>{new Date(status.completedUtc).toLocaleString()}</time></>}</dd>
+      <dt>Verified on this PC</dt><dd>{sharedSaveAge(status.receivedUtc)}
+        {status.receivedUtc && <> · <time dateTime={status.receivedUtc}>{new Date(status.receivedUtc).toLocaleString()}</time></>}</dd>
+      <dt>Host receipt</dt><dd>{status.receiptConfirmed === true ? 'Acknowledged when last checked' :
+        status.receiptConfirmed === false ? 'Not acknowledged yet' : 'Unavailable'}</dd>
+    </dl>}
+    {status?.capacityNotice && <p role="alert">{status.capacityNotice}</p>}
+    {status && <details><summary>Technical details</summary><p>Trust: {status.trust}.
+      Roster revision {status.rosterRevision ?? 'not checked'}. This is a verified copy status, not takeover readiness.</p></details>}
+    {status && transferPhase && <section aria-label="Save transfer progress" aria-live="polite">
+      <p>{transferPhase === 'Receiving' ? 'Receiving copy' : transferPhase === 'Verifying' ?
+        'Verifying every file' : 'Confirming signed receipt'} · {formatSharedBytes(status.receivedBytes)} of {formatSharedBytes(status.totalBytes)}</p>
+      {status.totalBytes > 0 && <progress max={status.totalBytes} value={status.receivedBytes}
+        aria-label="Save bytes received" aria-valuetext={`${formatSharedBytes(status.receivedBytes)} of ${formatSharedBytes(status.totalBytes)}`} />}
+      <ol aria-label="Transfer phases">
+        <li aria-current={transferPhase === 'Receiving' ? 'step' : undefined}>Receive the copy</li>
+        <li aria-current={transferPhase === 'Verifying' ? 'step' : undefined}>Verify hashes and current access</li>
+        <li aria-current={transferPhase === 'Receipt' ? 'step' : undefined}>Confirm signed receipt</li>
+      </ol>
+      <p className="helper-text">Received bytes can reach the total before verification and receipt finish. Keep the app open; transfers resume after interruption.</p>
+    </section>}
     {message && <p role="status">{message}</p>}
+    <Button className="text-button" onClick={() => setShowHosting(true)}>Review hosting on this PC</Button>
+    </section>
+    <details aria-label="Host on this PC" open={showHosting} onToggle={event => setShowHosting(event.currentTarget.open)}>
+    <summary>Host on this PC</summary>
+    <p>Choose a planned handoff or guarded recovery. Receive, Eligible host and recovery-voter grants are separate. Nothing here takes over or starts automatically.</p>
     {available && <section aria-label="Signed hosting history"><h4>Signed hosting history</h4>
       <p>If this PC can vote, review the group and its hosting decisions here. Receiving saves is a separate choice.</p>
       <Button className="secondary" disabled={busy} onClick={() => void reviewHistory()}>Review signed history</Button>
@@ -932,6 +1014,10 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
     </section>}
     {status?.consented && <details><summary>Join a new Host after takeover</summary>
       <p>Use the signed takeover hash and certificate fingerprint shared by the new Host. This PC checks the takeover and pinned direct connection, then keeps the old Host connection and save history.</p>
+      <SharedWorldRouteDetails key={profileId} profileId={profileId} onReviewed={details => {
+        setSuccessorHash(details?.recordHash ?? ''); setSuccessorPin(details?.tlsFingerprint ?? '')
+        setSuccessorMessage('')
+      }} />
       <label>Signed takeover hash<Input value={successorHash} onChange={event => setSuccessorHash(event.target.value)} /></label>
       <label>New Host certificate fingerprint<Input value={successorPin} onChange={event => setSuccessorPin(event.target.value)} /></label>
       <Button className="secondary" disabled={busy || !/^[0-9A-Fa-f]{64}$/.test(successorHash.trim()) ||
@@ -956,6 +1042,8 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       </ol>
       <p className="helper-text">A network outage can leave the original Host running. Confirm with the group before continuing. Preparing or voting does not start a game server.</p>
       <Button className="secondary" disabled={busy} onClick={() => void prepareOffer()}>Prepare signed offer</Button>
+      {recovery?.state === 'OfferArmed' && <div className="actions"><Button className="secondary" disabled={busy}
+        onClick={() => void copyCandidateCode()}>Copy signed offer code</Button></div>}
       {recovery?.candidateAddress && <p>{recovery.state === 'HistoricalRecovery' || recovery.state === 'OfferClosed' ?
         'Earlier candidate PC' : 'Current candidate PC'} {recovery.candidateDeviceId} · save version {recovery.version} · {recovery.candidateAddress}</p>}
       {recovery?.required ? <p role="status">Votes {recovery.votes}/{recovery.required}. {recovery.state === 'MajorityRecorded' ?
@@ -990,27 +1078,34 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       </details>}
     </details>}
     {status?.consented && status.thisPcVersion != null &&
-      <SharedWorldSeparateRoutePanel profileId={profileId}
-        separateCopies={recovery?.separateCopies ?? 0} />}
+      <SharedWorldSeparateRoutePanel key={`separate-route/${profileId}/${game ?? 'Unknown'}`} profileId={profileId}
+        separateCopies={recovery?.separateCopies ?? 0} game={game} onBrowseServerFile={onBrowseServerFile} />}
     <FriendSharingManager profileId={profileId} available={available} />
     {status?.consented && status.thisPcVersion != null && <WorldLoadRehearsalPanel profileId={profileId} received />}
-    {status?.thisPcVersion != null && <SharedWorldReadinessPanel profileId={profileId}
-      onHostingSetupChange={setHostingSetupReady} />}
+    {status?.thisPcVersion != null && <SharedWorldReadinessPanel key={`readiness/${profileId}/${game ?? 'Unknown'}`} profileId={profileId}
+      onHostingSetupChange={setHostingSetupReady} game={game} onBrowseServerFile={onBrowseServerFile}
+      onOpenHostSetup={onOpenHostSetup} />}
     {available && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
-      <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override.</p>
+      <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override. Both histories remain preserved; a higher version number alone does not choose a winner.</p>
       <Button className="secondary" disabled={busy} onClick={() => void loadChoices()}>Check signed branches</Button>
-      {choices.map(choice => <div key={choice.recordHash}>
-        <p>Saved version {choice.version} {choice.availableHere ? '· verified on this PC' : '· on another PC'}</p>
-        {choice.availableHere && <div className="actions">
+      {choices.length > 0 && <div style={{ overflowX: 'auto' }}><table aria-label="Compare competing save histories">
+        <caption>Compare every signed branch. No copy is selected automatically.</caption>
+        <thead><tr><th scope="col">Save</th><th scope="col">Signed history</th><th scope="col">Propose this copy</th></tr></thead>
+        <tbody>{choices.map(choice => <tr key={choice.recordHash}>
+        <td><p>Saved version {choice.version} {choice.availableHere ? '· verified on this PC' : '· on another PC'}</p></td>
+        <td><code>{choice.recordHash.slice(0, 12)}…</code>
+          <details><summary>Full signed decision</summary><code style={{ overflowWrap: 'anywhere' }}>{choice.recordHash}</code></details></td>
+        <td>{choice.availableHere ? <div className="actions">
           <Button className="secondary" disabled={busy} onClick={() => void offerResolution(choice, false)}>Ask recovery voters</Button>
           <Button className="secondary" disabled={busy} onClick={() => void offerResolution(choice, true)}>Ask owner</Button>
-        </div>}
-        <details><summary>Technical details</summary><code>{choice.recordHash}</code></details>
-      </div>)}
-      {offerText && <details><summary>Share signed invitation</summary>
+        </div> : <span>Review on the PC holding this copy.</span>}</td>
+      </tr>)}</tbody></table></div>}
+      {offerText && <section aria-label="Signed voting invitation"><h4>Share signed invitation</h4>
         <p>Send this invitation only to designated recovery voters. The app checks the signed proposal and exact branches before a vote.</p>
-        <Button className="secondary" onClick={() => void navigator.clipboard.writeText(offerText)}>Copy invitation</Button>
-        <TextArea readOnly value={offerText} aria-label="Signed invitation" /></details>}
+        <Button className="secondary" onClick={() => void navigator.clipboard.writeText(offerText)
+          .then(() => setResolutionMessage('Signed voting invitation copied. Share it privately with approved voters.'))
+          .catch(() => setResolutionMessage('Could not copy the invitation. Select its signed code below to copy it manually.'))}>Copy invitation</Button>
+        <details><summary>Signed invitation code</summary><TextArea readOnly value={offerText} aria-label="Signed invitation" /></details></section>}
       <details><summary>Vote on an invitation</summary>
         <TextArea value={invitation} aria-label="Paste signed invitation" onChange={event => {
           setInvitation(event.target.value); setReviewed(null) }} />
@@ -1021,6 +1116,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange }:
       </details>
       {resolutionMessage && <p role="status">{resolutionMessage}</p>}
     </section>}
+    </details>
     <details><summary>Technical details</summary><p>Last checked Host version: {status?.hostVersion ?? 'unknown'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
       {status?.error && <p role="alert">{status.error}</p>}
       <p>Receive approved, hash-verified saves into this PC's private vault. A post-Stop backup is copied after a graceful Stop; a live save is a snapshot captured while the game is running. Current production sharing creates post-Stop copies only. Hash verification does not prove game load or playability.</p>

@@ -268,9 +268,13 @@ internal sealed class SharedWorldEnrollmentNonces(TimeProvider? clock = null)
         return nonce;
     }
 
-    internal bool Consume(Guid deviceId, Guid profileId, string nonce) =>
-        pending.TryRemove((deviceId, profileId), out var challenge) &&
-        challenge.Expires >= UtcNow &&
-        CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(challenge.Nonce),
-            Encoding.UTF8.GetBytes(nonce));
+    internal bool Consume(Guid deviceId, Guid profileId, string nonce)
+    {
+        var key = (deviceId, profileId);
+        if (!pending.TryGetValue(key, out var challenge) ||
+            !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(challenge.Nonce),
+                Encoding.UTF8.GetBytes(nonce))) return false;
+        // Remove only the challenge we matched; a newer Issue must survive.
+        return pending.TryRemove(new(key, challenge)) && challenge.Expires >= UtcNow;
+    }
 }

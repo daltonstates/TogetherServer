@@ -50,7 +50,11 @@ internal sealed partial class FriendLink
             // challenge/roster/history checks before asking for a test exchange.
             var checkedCopy = await CheckSharedWorldAsync(profileId, timeout.Token);
             if (!checkedCopy.Ok)
-            { Stage(4, "Unavailable", "The current Receive grant, signing enrollment or shared history needs review."); return Report(); }
+            {
+                Stage(4, "Unavailable", "The current Receive grant, signing enrollment or shared history needs review.");
+                stages[4] = stages[4] with { DiagnosticCode = RemoteRehearsal.SharedCheckFailureCode(checkedCopy.Code) };
+                return Report();
+            }
             var connection = config;
             if (connection is null) return Report();
             async Task<RemoteRehearsalExchange?> Exchange(Guid messageId)

@@ -15,7 +15,7 @@ public sealed record SuccessorRestoreStatus(bool Staged, bool Restored,
     string? RecordHash, string Message, IReadOnlyList<string> PendingChecks,
     string? PreparedServerRoot = null, bool ReadyForManualStart = false,
     IReadOnlyList<SharedWorldPortableAddOn>? RequiredAddOns = null,
-    string? ControlRouteFingerprint = null);
+    string? ControlRouteFingerprint = null, string? ControlRouteAddress = null);
 public sealed record SuccessorFinishRequest(string RecordHash, TakeoverLocalSetup Setup,
     string? ExecutablePath = null, string? PreparedServerRoot = null);
 
@@ -191,7 +191,8 @@ public sealed partial class HostManager
                  "Check local game ports before Start; test a real game join after Start."],
                 record.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock
                     ? SuccessorWorldRoot(data, record.Version) : null, ready,
-                record.Version.PortableSetup.AddOns, routeFingerprint);
+                record.Version.PortableSetup.AddOns, routeFingerprint,
+                routeFingerprint is null ? null : record.Proposal.CandidateAddress);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
                                    CryptographicException or UnauthorizedAccessException or ArgumentException or OverflowException)

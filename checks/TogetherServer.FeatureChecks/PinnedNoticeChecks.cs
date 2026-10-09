@@ -61,7 +61,8 @@ internal static class PinnedNoticeChecks
                 "an immutable revision accepted different signed content");
             var oldSignedNotice = Sign(hostData, first with
             {
-                ProfileId = otherProfile, UpdatedUtc = DateTimeOffset.UtcNow.AddDays(-90)
+                ProfileId = otherProfile,
+                UpdatedUtc = DateTimeOffset.UtcNow.AddDays(-90)
             });
             Require(ServerChat.VerifyNotice(oldSignedNotice, key, hostId, otherProfile) &&
                 peer.AcceptNoticeCopy(hostId, otherProfile, oldSignedNotice, key),
@@ -74,7 +75,8 @@ internal static class PinnedNoticeChecks
                 "an older or missing notice rolled the cache back");
             var reversedTime = Sign(hostData, changed with
             {
-                Revision = 3, UpdatedUtc = first.UpdatedUtc.AddTicks(-1)
+                Revision = 3,
+                UpdatedUtc = first.UpdatedUtc.AddTicks(-1)
             });
             Require(!peer.AcceptNoticeCopy(hostId, profileId, reversedTime, key),
                 "a revision with a backwards timestamp replaced the cache");
@@ -99,7 +101,9 @@ internal static class PinnedNoticeChecks
                 "forgetting one shared route removed another route's notice cache");
             var syncInput = JsonSerializer.Deserialize<ChatSyncRequest>(JsonSerializer.Serialize(new
             {
-                entries = new[] { entry }, drafts = Array.Empty<ChatDraft>(), notice = first
+                entries = new[] { entry },
+                drafts = Array.Empty<ChatDraft>(),
+                notice = first
             }, Json), Json);
             Require(syncInput is not null && !typeof(ChatSyncRequest).GetProperties()
                 .Any(property => property.Name.Contains("Notice", StringComparison.OrdinalIgnoreCase)) &&
@@ -151,8 +155,13 @@ internal static class PinnedNoticeChecks
         key.ImportPkcs8PrivateKey(data.LoadProtected("chat-owner-key.protected")!, out _);
         var basis = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            schema = 1, purpose = ServerChat.PinnedNoticeCapability,
-            notice.HostId, notice.ProfileId, notice.Revision, notice.UpdatedUtc, notice.Text
+            schema = 1,
+            purpose = ServerChat.PinnedNoticeCapability,
+            notice.HostId,
+            notice.ProfileId,
+            notice.Revision,
+            notice.UpdatedUtc,
+            notice.Text
         }, Json);
         return notice with { Signature = Convert.ToBase64String(key.SignData(basis, HashAlgorithmName.SHA256)) };
     }

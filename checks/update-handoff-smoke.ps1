@@ -61,6 +61,51 @@ $checkpointHash = (Get-FileHash -LiteralPath $checkpointManifestPath -Algorithm 
 
 $oldDataRoot = $env:TOGETHERSERVER_DATA_DIR
 $oldStagingDataRoot = $env:TOGETHERSERVER_STAGING_DATA_DIR
+$parentPath = (Get-Command powershell.exe -CommandType Application -ErrorAction Stop).Source
+
+function Record-OwnedProcess([Diagnostics.Process]$Process, [string]$ExpectedPath) {
+    # Retain the original process handle so an exited PID cannot be reused by cleanup.
+    $identity = @{ Process = $Process; Id = $Process.Id; Ticks = 0L;
+        Path = [IO.Path]::GetFullPath($ExpectedPath) }
+    try {
+        $null = $Process.SafeHandle
+        $identity.Ticks = $Process.StartTime.ToUniversalTime().Ticks
+    } catch {
+        $Process.Refresh()
+        if (!$Process.HasExited) { throw }
+    }
+    return $identity
+}
+
+function Stop-OwnedProcess($Identity) {
+    if ($null -eq $Identity) { return }
+    $process = $Identity.Process
+    $process.Refresh()
+    if ($process.HasExited) { return }
+    try {
+        $ticks = $process.StartTime.ToUniversalTime().Ticks
+        $path = $process.MainModule.FileName
+    } catch {
+        $process.Refresh()
+        if ($process.HasExited) { return }
+        throw
+    }
+    if ($Identity.Ticks -le 0 -or $process.Id -ne $Identity.Id -or $ticks -ne $Identity.Ticks -or
+        [string]::IsNullOrWhiteSpace($path) -or ![IO.Path]::IsPathRooted($path) -or
+        ![IO.Path]::GetFullPath($path).Equals($Identity.Path, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Update handoff cleanup refused a changed or uncertain disposable process identity.'
+    }
+    $process.Refresh()
+    if ($process.HasExited) { return }
+    try { $process.Kill() }
+    catch {
+        # A graceful API Quit may finish after the identity check but before Kill.
+        $process.Refresh()
+        if (!$process.HasExited) { throw }
+    }
+    if (!$process.WaitForExit(5000)) { throw 'A retained disposable update process did not exit during cleanup.' }
+}
+
 if ($port -eq 5128) {
     $env:TOGETHERSERVER_DATA_DIR = Join-Path $root 'production-data'
     $env:TOGETHERSERVER_STAGING_DATA_DIR = Join-Path $root 'staging-data'
@@ -68,11 +113,16 @@ if ($port -eq 5128) {
 else { $env:TOGETHERSERVER_DATA_DIR = $dataRoot }
 $parent = $null
 $updater = $null
+$parentIdentity = $null
+$updaterIdentity = $null
+$appIdentity = $null
 try {
-    $parent = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 4') -WindowStyle Hidden -PassThru
+    $parent = Start-Process -FilePath $parentPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 4') -WindowStyle Hidden -PassThru
+    $parentIdentity = Record-OwnedProcess $parent $parentPath
     $startTicks = $parent.StartTime.ToUniversalTime().Ticks
     $argumentLine = "--apply-update $($parent.Id) $startTicks `"$target`" `"$payload`" $hash `"$dataRoot`" `"$ready`" $verification `"$checkpoint`" $checkpointHash"
     $updater = Start-Process -FilePath $helper -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
+    $updaterIdentity = Record-OwnedProcess $updater $helper
     $signaled = $false
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         if (Test-Path -LiteralPath $ready) { $signaled = $true; break }
@@ -82,6 +132,36 @@ try {
     if (!$signaled) { throw 'Updater did not signal readiness.' }
     Write-Host "PASS $verificationLabel-verified updater helper rechecked the local-state checkpoint and signaled readiness before old process exit"
     if (!$updater.WaitForExit(20000) -or $updater.ExitCode -ne 0) { throw 'Updater did not finish the replacement and relaunch.' }
+    # Record the replacement before hash or API assertions can fail. Cleanup never
+    # discovers an unrecorded process; this short wait covers initial CIM visibility.
+    $discoveryDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        $instance = @(Get-CimInstance Win32_Process -Filter "name = '$targetProcessName'" |
+            Where-Object { $_.ExecutablePath -eq $target })
+        if ($instance.Count -gt 1) { throw 'More than one process has the exact isolated replacement executable path.' }
+        if ($instance.Count -eq 1) { break }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $discoveryDeadline)
+    if ($instance.Count -ne 1) { throw 'The expected isolated replacement process was not found within 3 seconds.' }
+    $relaunched = [Diagnostics.Process]::GetProcessById([int]$instance[0].ProcessId)
+    $appIdentity = Record-OwnedProcess $relaunched $target
+    do {
+        $relaunched.Refresh()
+        if ($relaunched.HasExited -or $appIdentity.Ticks -le 0 -or $relaunched.Id -ne $appIdentity.Id -or
+            $relaunched.StartTime.ToUniversalTime().Ticks -ne $appIdentity.Ticks) {
+            throw 'The relaunched isolated app identity changed before replacement assertions.'
+        }
+        $observedPath = [string]$relaunched.MainModule.FileName
+        if (![string]::IsNullOrWhiteSpace($observedPath)) {
+            if (![IO.Path]::IsPathFullyQualified($observedPath) -or
+                ![IO.Path]::GetFullPath($observedPath).Equals($appIdentity.Path, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The relaunched isolated app executable path did not match the retained identity.'
+            }
+            break
+        }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $discoveryDeadline)
+    if ([string]::IsNullOrWhiteSpace($observedPath)) { throw 'The isolated replacement path was not ready within its 3-second discovery window.' }
     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hash) { throw 'The installed EXE does not match the verified payload.' }
     if ((Get-FileHash -LiteralPath ($target + '.previous') -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous EXE backup was not preserved.' }
     Write-Host 'PASS isolated EXE replacement kept the old file and installed the verified payload'
@@ -96,21 +176,27 @@ try {
         catch { Start-Sleep -Milliseconds 100 }
     }
     if (!$running) { throw 'The replaced EXE did not relaunch its local app.' }
-    $instance = Get-CimInstance Win32_Process -Filter "name = '$targetProcessName'" |
-        Where-Object { $_.ExecutablePath -eq $target }
-    if (!$instance) { throw 'The expected isolated EXE was not the app serving the local API.' }
+    if ($relaunched.HasExited -or $appIdentity.Ticks -le 0 -or $relaunched.Id -ne $appIdentity.Id -or
+        $relaunched.StartTime.ToUniversalTime().Ticks -ne $appIdentity.Ticks -or
+        ![IO.Path]::GetFullPath($relaunched.MainModule.FileName).Equals($appIdentity.Path, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The relaunched isolated app identity could not be verified before guarded Quit.'
+    }
     $headers = @{ Origin = $base; 'X-TogetherServer-Local' = '1' }
     $quit = Invoke-RestMethod -Uri "$base/api/local/quit" -Method Post -Headers $headers
     if (!$quit.ok) { throw "Relaunched app did not quit cleanly: $($quit.message)" }
+    if (!$relaunched.WaitForExit(10000)) { throw 'The exact relaunched app did not exit after guarded local API Quit.' }
     Write-Host 'PASS updated EXE relaunched and quit through its guarded local API'
     Write-Host "Update handoff data: $root"
 }
 finally {
-    if ($parent -and !$parent.HasExited) { Stop-Process -Id $parent.Id -Force }
-    if ($updater -and !$updater.HasExited) { Stop-Process -Id $updater.Id -Force }
-    $remaining = Get-CimInstance Win32_Process -Filter "name = '$targetProcessName'" |
-        Where-Object { $_.ExecutablePath -eq $target }
-    foreach ($process in @($remaining)) { if ($process) { Stop-Process -Id $process.ProcessId -Force } }
+    $cleanupErrors = @()
+    foreach ($identity in @($parentIdentity, $updaterIdentity, $appIdentity)) {
+        if ($null -eq $identity) { continue }
+        try { Stop-OwnedProcess $identity }
+        catch { $cleanupErrors += $_.Exception.Message }
+        finally { $identity.Process.Dispose() }
+    }
     $env:TOGETHERSERVER_DATA_DIR = $oldDataRoot
     $env:TOGETHERSERVER_STAGING_DATA_DIR = $oldStagingDataRoot
+    if ($cleanupErrors.Count -gt 0) { throw ('Update handoff cleanup failed: ' + ($cleanupErrors -join '; ')) }
 }

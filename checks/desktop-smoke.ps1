@@ -119,13 +119,41 @@ function Get-ChromeButton($process, [string]$name) {
     return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
+function Get-OwnedChromeDiagnostic($process) {
+    try {
+        $process.Refresh()
+        if ($process.HasExited) { return 'NativeProcessExited=true' }
+        if (![IO.Path]::GetFullPath($process.Path).Equals($appPath, [StringComparison]::OrdinalIgnoreCase)) {
+            return 'NativeProcessIdentityMismatch=true'
+        }
+        $handle = $process.MainWindowHandle
+        if ($handle -eq [IntPtr]::Zero) { return 'NativeWindowHandleUnavailable=true' }
+        $owner = [uint32]0
+        [TogetherServerWindowCheck]::GetWindowThreadProcessId($handle, [ref]$owner) | Out-Null
+        if ($owner -ne $process.Id) { return 'NativeWindowOwnerMismatch=true' }
+        $zoomed = [TogetherServerWindowCheck]::IsZoomed($handle)
+        $state = if ([TogetherServerWindowCheck]::IsIconic($handle)) { 'Minimized' }
+            elseif ($zoomed) { 'Maximized' } else { 'Normal' }
+        $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+        $buttonType = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+        $buttonOwner = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$process.Id)
+        $buttons = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.AndCondition]::new($buttonType, $buttonOwner))
+        $knownNames = @('Minimize TogetherServer', 'Maximize TogetherServer', 'Restore TogetherServer', 'Close TogetherServer')
+        $names = @($buttons | ForEach-Object { $_.Current.Name } | Where-Object { $_ -in $knownNames } | Sort-Object -Unique)
+        return "NativeIsZoomed=$zoomed; NativeState=$state; OwnedChromeNames=$($names -join ' | ')"
+    } catch { return 'NativeChromeDiagnosticsUnavailable=true' }
+}
+
 function Invoke-ChromeButton($process, [string]$name) {
     $button = $null
     for ($i = 0; $i -lt 30 -and $null -eq $button; $i++) {
         $button = Get-ChromeButton $process $name
         if ($null -eq $button) { Start-Sleep -Milliseconds 100 }
     }
-    if ($null -eq $button) { throw "Custom title-bar control was not found: $name" }
+    if ($null -eq $button) { throw "Custom title-bar control was not found: $name. $(Get-OwnedChromeDiagnostic $process)" }
     $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
     $pattern.Invoke()
 }
@@ -284,7 +312,7 @@ try {
         for ($i = 0; $i -lt 30 -and ![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
             Start-Sleep -Milliseconds 100
         }
-        if (![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom maximize did not maximize.' }
+        if (![TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw "Custom maximize did not maximize. $(Get-OwnedChromeDiagnostic $first)" }
         if ($secondaryScreen) {
             $maximizedRect = [TogetherServerWindowCheck+WindowRect]::new()
             [TogetherServerWindowCheck]::GetWindowRect($first.MainWindowHandle, [ref]$maximizedRect) | Out-Null
@@ -299,7 +327,7 @@ try {
         for ($i = 0; $i -lt 30 -and [TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle); $i++) {
             Start-Sleep -Milliseconds 100
         }
-        if ([TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw 'Custom restore did not restore.' }
+        if ([TogetherServerWindowCheck]::IsZoomed($first.MainWindowHandle)) { throw "Custom restore did not restore. $(Get-OwnedChromeDiagnostic $first)" }
         [TogetherServerWindowCheck]::MoveWindow($first.MainWindowHandle, $originalRect.Left, $originalRect.Top,
             $originalRect.Right - $originalRect.Left, $originalRect.Bottom - $originalRect.Top, $true) | Out-Null
         Invoke-ChromeButton $first 'Minimize TogetherServer'
@@ -497,7 +525,7 @@ try {
         $preference = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -Method Put -Headers $headers -ContentType 'application/json' -Body '{"closeToTray":false}'
         if (!$preference.ok -or $preference.preferences.closeToTray) { throw 'Close-to-tray could not be turned off from Friend mode.' }
         Invoke-ChromeButton $first 'Close TogetherServer'
-        if (!$first.WaitForExit(10000)) {
+        if (!$first.WaitForExit(25000)) {
             $windowState = Invoke-RestMethod -Uri "$baseUrl/api/local/window"
             throw "Closing the native window did not exit: visible=$($windowState.visible), rendered=$($windowState.rendered), title=$($first.MainWindowTitle)"
         }

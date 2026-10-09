@@ -45,6 +45,54 @@ export function validateCustomUtcDateTime(value: string, nowMs: number): CustomU
   return { ok: true, utc: date.toISOString(), date }
 }
 
+// Resolve wall-clock time in the explicitly displayed zone. Date's constructor
+// silently moves a missing DST hour and picks one occurrence of a repeated hour.
+export function validateCustomLocalDateTime(value: string, nowMs: number,
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): CustomUtcValidation {
+  if (!value) return { ok: false, message: 'Enter a local date and time.' }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value))
+    return { ok: false, message: 'Use the local date and time fields shown.' }
+  const wallTime = Date.parse(`${value}:00.000Z`)
+  if (!Number.isFinite(wallTime) || new Date(wallTime).toISOString().slice(0, 16) !== value)
+    return { ok: false, message: 'Enter a real local calendar date and time.' }
+  // Reject distant dates before probing offsets near the edge of Date's range.
+  const offsetWindow = 48 * 60 * 60_000
+  if (wallTime > nowMs + maximumAccessMilliseconds + offsetWindow)
+    return { ok: false, message: 'Choose a local time no more than 365 days away.' }
+  if (wallTime < nowMs - offsetWindow)
+    return { ok: false, message: 'Choose a local time in the future.' }
+
+  let formatter: Intl.DateTimeFormat
+  try {
+    formatter = new Intl.DateTimeFormat('en-CA', { timeZone, calendar: 'iso8601',
+      numberingSystem: 'latn', hourCycle: 'h23', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return { ok: false, message: 'This PC\'s time zone could not be read. Check Windows time settings.' }
+  }
+  const wallValue = (timestamp: number) => {
+    const parts = formatter.formatToParts(new Date(timestamp))
+    const part = (kind: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === kind)?.value ?? ''
+    return `${part('year').padStart(4, '0')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`
+  }
+  const offsets = new Set<number>()
+  for (let hours = -48; hours <= 48; hours += 6) {
+    const timestamp = wallTime + hours * 60 * 60_000
+    offsets.add(Date.parse(`${wallValue(timestamp)}:00.000Z`) - timestamp)
+  }
+  const matches = [...offsets].map(offset => wallTime - offset)
+    .filter(timestamp => wallValue(timestamp) === value)
+  if (matches.length === 0)
+    return { ok: false, message: `That time does not exist in ${timeZone} because the clocks change. Choose another time.` }
+  if (matches.length !== 1)
+    return { ok: false, message: `That time occurs twice in ${timeZone} because the clocks change. Choose a time outside the repeated hour.` }
+  if (matches[0] <= nowMs) return { ok: false, message: 'Choose a local time in the future.' }
+  if (matches[0] > nowMs + maximumAccessMilliseconds)
+    return { ok: false, message: 'Choose a local time no more than 365 days away.' }
+  const date = new Date(matches[0])
+  return { ok: true, utc: date.toISOString(), date }
+}
+
 function defaultLocalDateTime(date: Date): string {
   return date.toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
@@ -67,32 +115,40 @@ export function accessDeadlineRelativeText(deadlineMs: number, nowMs: number): s
   return delta >= 0 ? `in ${amount} ${label}` : `${amount} ${label} ago`
 }
 
-export function OwnerAccessDeadlineEditor({
-  device,
-  disabled = false,
-  now = () => new Date(),
-  formatLocal = defaultLocalDateTime,
-  onSave,
-  onRefresh
-}: {
+type OwnerAccessDeadlineEditorProps = {
   device: Device
   disabled?: boolean
   now?: () => Date
   formatLocal?: (date: Date) => string
+  timeZone?: string
   onSave: (request: DeviceAccessExpiryRequest) => Promise<DeviceAccessExpiryResult>
   onRefresh: () => Promise<void>
-}) {
+}
+
+export function OwnerAccessDeadlineEditor(props: OwnerAccessDeadlineEditorProps) {
+  return <AccessDeadlineEditor key={props.device.id} {...props} />
+}
+
+function AccessDeadlineEditor({
+  device,
+  disabled = false,
+  now = () => new Date(),
+  formatLocal = defaultLocalDateTime,
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  onSave,
+  onRefresh
+}: OwnerAccessDeadlineEditorProps) {
   const id = useId()
   const [choice, setChoice] = useState<AccessChoice | null>(null)
-  const [customUtc, setCustomUtc] = useState('')
+  const [customLocal, setCustomLocal] = useState('')
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const nowMs = now().getTime()
   const deadlineMs = device.accessExpiresUtc ? Date.parse(device.accessExpiresUtc) : null
   const expired = device.accessExpired || (deadlineMs !== null && deadlineMs <= nowMs)
   const customValidation = useMemo(
-    () => validateCustomUtcDateTime(customUtc, nowMs),
-    [customUtc, nowMs]
+    () => validateCustomLocalDateTime(customLocal, nowMs, timeZone),
+    [customLocal, nowMs, timeZone]
   )
 
   const choose = (next: AccessChoice) => {
@@ -102,12 +158,20 @@ export function OwnerAccessDeadlineEditor({
 
   const requestForChoice = (): DeviceAccessExpiryRequest | null => {
     if (choice === 'Clear') return { clear: true }
-    if (choice === 'Custom') return customValidation.ok ? { accessExpiresUtc: customValidation.utc } : null
+    if (choice === 'Custom') {
+      const current = validateCustomLocalDateTime(customLocal, now().getTime(), timeZone)
+      return current.ok ? { accessExpiresUtc: current.utc } : null
+    }
     if (choice) return { duration: choice }
     return null
   }
 
   const save = async () => {
+    if (disabled || saving || device.revoked) return
+    if (choice === 'Custom') {
+      const current = validateCustomLocalDateTime(customLocal, now().getTime(), timeZone)
+      if (!current.ok) { setFeedback({ kind: 'error', text: current.message }); return }
+    }
     const request = requestForChoice()
     if (!request) {
       const message = choice === 'Custom' && !customValidation.ok
@@ -132,7 +196,7 @@ export function OwnerAccessDeadlineEditor({
         return
       }
       setChoice(null)
-      setCustomUtc('')
+      setCustomLocal('')
       setFeedback({ kind: 'success', text: result.message })
     } catch (error) {
       setFeedback({ kind: 'error', text: errorMessage(error) })
@@ -159,7 +223,7 @@ export function OwnerAccessDeadlineEditor({
 
     <details className="access-deadline-controls">
       <summary>Change deadline</summary>
-      <fieldset disabled={disabled || saving}>
+      <fieldset disabled={disabled || saving || device.revoked}>
         <legend>Choose when access ends</legend>
         <div className="access-deadline-choices">
           {accessDurationChoices.map(option => <label key={option.value} className={choice === option.value ? 'selected' : ''}>
@@ -173,30 +237,30 @@ export function OwnerAccessDeadlineEditor({
         </div>
 
         <details className="access-deadline-advanced">
-          <summary>Advanced: custom UTC date and time</summary>
+          <summary>Advanced: custom local date and time</summary>
           <label className="access-custom-choice">
             <Input type="radio" name={`${id}-access-deadline`} checked={choice === 'Custom'} onChange={() => choose('Custom')} />
-            <span>Use a custom UTC deadline</span>
+            <span>Use a custom local deadline</span>
           </label>
           <div className="access-custom-field">
-            <label htmlFor={`${id}-custom-utc`}>UTC date and time</label>
-            <Input id={`${id}-custom-utc`} type="datetime-local" step="60" value={customUtc}
-              aria-describedby={`${id}-custom-utc-help`}
+            <label htmlFor={`${id}-custom-local`}>Local date and time</label>
+            <Input id={`${id}-custom-local`} type="datetime-local" step="60" value={customLocal}
+              aria-describedby={`${id}-custom-local-help`}
               onFocus={() => choose('Custom')}
-              onChange={event => { setCustomUtc(event.target.value); choose('Custom') }} />
-            <small id={`${id}-custom-utc-help`}>Enter UTC explicitly. TogetherServer converts it for display; it does not interpret this field as local time.</small>
+              onChange={event => { setCustomLocal(event.target.value); choose('Custom') }} />
+            <small id={`${id}-custom-local-help`}>Time zone: {timeZone}. Check the exact UTC time below before saving. Missing or repeated times during clock changes are rejected.</small>
           </div>
           {choice === 'Custom' && customValidation.ok && <div className="access-deadline-preview" role="status">
             <span>Exact UTC</span><strong>{customValidation.utc}</strong>
             <span>On this PC</span><strong>{formatLocal(customValidation.date)}</strong>
           </div>}
-          {choice === 'Custom' && !customValidation.ok && customUtc && <p className="access-deadline-validation" role="alert">{customValidation.message}</p>}
+          {choice === 'Custom' && !customValidation.ok && customLocal && <p className="access-deadline-validation" role="alert">{customValidation.message}</p>}
         </details>
       </fieldset>
 
       <div className="access-deadline-save">
         <small>{choice === 'Clear' ? 'Clearing only removes the owner deadline.' : choice && choice !== 'Custom' ? 'The duration starts when the Host saves it.' : 'Assignments and permissions will not change.'}</small>
-        <Button disabled={disabled || saving || !choice || (choice === 'Custom' && !customValidation.ok)} onClick={() => void save()}>
+        <Button disabled={disabled || saving || device.revoked || !choice || (choice === 'Custom' && !customValidation.ok)} onClick={() => void save()}>
           {saving ? 'Saving deadline…' : 'Save deadline'}
         </Button>
       </div>

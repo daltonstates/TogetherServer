@@ -1,6 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { GameSettingsPanel } from './GameSettingsPanel'
+import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft } from './protectedUiDrafts'
+
+vi.mock('./protectedUiDrafts', () => ({ readProtectedDraft: vi.fn(), saveProtectedDraft: vi.fn(), clearProtectedDraft: vi.fn() }))
+beforeEach(() => {
+  vi.mocked(readProtectedDraft).mockReset().mockResolvedValue({ ok: true, text: null, revision: 4, message: '' })
+  vi.mocked(saveProtectedDraft).mockReset().mockImplementation(async (_identity, text, revision) => ({ ok: true, text, revision: revision + 1, message: '' }))
+  vi.mocked(clearProtectedDraft).mockReset().mockImplementation(async (_identity, revision) => ({ ok: true, text: null, revision: revision + 1, message: '' }))
+})
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 const beforeSha = 'A'.repeat(64)
@@ -170,4 +178,69 @@ it('shows malformed contracts as retryable errors and keeps unsupported games ou
   fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
   expect(await screen.findByText('Use its saved setup or reviewed file editor.')).toBeInTheDocument()
   expect(within(screen.getByRole('region', { name: 'Simple game settings' })).queryByRole('button', { name: 'Save with checkpoint' })).not.toBeInTheDocument()
+})
+
+it('searches descriptions without losing hidden edits and allows canceling a dirty reload', async () => {
+  const fetcher = vi.fn(async () => json(baseView))
+  vi.stubGlobal('fetch', fetcher)
+  vi.spyOn(window, 'confirm').mockReturnValue(false)
+  render(<GameSettingsPanel {...props} />)
+  fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
+  fireEvent.change(screen.getByLabelText('Search game settings'), { target: { value: 'capacity' } })
+  expect(screen.queryByLabelText('Difficulty')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Maximum players')).toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText('Search game settings'), { target: { value: '' } })
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  expect(fetcher).toHaveBeenCalledOnce()
+})
+
+it('keeps bulk paste in a reviewed local draft until the exact game-list preview is accepted', async () => {
+  let entries: { identity: string; name: null; ignoresPlayerLimit: null }[] = []
+  const listView = () => ({ ok: true, code: 'AccessListReady', message: 'Ready', kind: 'Valheim', key: 'permit-list', label: 'Permitted players',
+    sha256: beforeSha, entries, canUndo: false })
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    if (path.endsWith('/preview')) return json({ ...preview, key: 'permit-list', changes: [{ key: 'permit-list', label: 'Add player', before: null, after: 'Steam_222' }] })
+    if (init?.method === 'PUT') { entries = JSON.parse(String(init.body)).entries; return json({ ok: true, code: 'FileSaved', message: 'List saved after checkpoint.', key: 'permit-list', sha256: afterSha, canUndo: true }) }
+    if (path.endsWith('/permit-list')) return json(listView())
+    return json({ ...baseView, kind: 'Valheim', settings: null, sha256: null, lists: [{ key: 'permit-list', label: 'Permitted players', available: true }] })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  const drafts = vi.fn()
+  render(<GameSettingsPanel {...props} onDraftStateChange={drafts} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage permitted players' }))
+  const paste = await screen.findByLabelText('Players to paste')
+  paste.closest('details')!.open = true
+  fireEvent.change(paste, { target: { value: 'Steam_222' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Review pasted players' }))
+  expect(screen.queryByRole('button', { name: 'Remove Steam_222' })).not.toBeInTheDocument()
+  expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: 'Add reviewed players to draft' }))
+  expect(screen.getByRole('button', { name: 'Remove Steam_222' })).toBeInTheDocument()
+  expect(drafts).toHaveBeenCalledWith(`list:${props.profileId}:permit-list`, true)
+  fireEvent.change(screen.getByLabelText('Search permitted players'), { target: { value: 'not-present' } })
+  expect(screen.queryByRole('button', { name: 'Remove Steam_222' })).not.toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText('Search permitted players'), { target: { value: '' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Review list changes' }))
+  await screen.findByRole('region', { name: 'Review exact changes' })
+  expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: 'Save with checkpoint' }))
+  await waitFor(() => expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/permit-list'), expect.objectContaining({ method: 'PUT',
+    body: JSON.stringify({ expectedSha256: beforeSha, entries: [{ identity: 'Steam_222', name: null, ignoresPlayerLimit: null }] }) })))
+})
+
+it('requires explicit draft recovery and leaves live settings unchanged until the review and save', async () => {
+  vi.mocked(readProtectedDraft).mockResolvedValue({ ok: true, revision: 10, message: '', text: JSON.stringify({ version: 1, kind: 'MinecraftJava', sha256: 'old',
+    settings: { ...values, difficulty: 'hard' }, maximumPlayers: '20' }) })
+  vi.stubGlobal('fetch', vi.fn(async () => json(baseView)))
+  render(<GameSettingsPanel {...props} />)
+  await screen.findByRole('button', { name: 'Review recovered draft' })
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('normal')
+  expect(screen.getByLabelText('Difficulty')).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Review recovered draft' }))
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  expect(screen.getByText(/saved file changed since this draft/)).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Save with checkpoint' })).not.toBeInTheDocument()
 })

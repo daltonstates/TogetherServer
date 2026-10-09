@@ -49,7 +49,10 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
       destination = { workspace: 'settings', section: 'diagnostics', profileId: profile.id, label: 'Review recovery' }
     } else if (state === 'Failed' || (state === 'Unknown' && !stalePlayerObservation)) problem('Server state needs review', 90, 'overview', 'Review server')
     else if (snapshot.crashRecovery?.[profile.id]?.state === 'Suspended') problem('Crash recovery is suspended', 85, 'overview', 'Review recovery')
-    else if (profile.maintenance?.enabled) problem('Maintenance is active', 70, 'overview', 'Continue maintenance')
+    else if (profile.maintenance?.enabled) {
+      warning = 'Maintenance is active'; priority = 70
+      destination = { workspace: 'host', section: 'setup', profileId: profile.id, label: 'Continue maintenance' }
+    }
     else if (backupFailed) problem('Latest backup attempt failed', 60, 'backups', 'Review backups')
     else if ((state === 'Ready' || stalePlayerObservation) && !trusted) problem(stale ? 'Player observation is stale' : 'Player count unavailable', 50, 'players', 'Review players')
     else if (profile.kind !== 'Custom' && !backup) problem('Backup status unavailable', 35, 'backups', 'Review backups')

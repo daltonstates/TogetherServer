@@ -1,6 +1,7 @@
 import type { Profile } from './GameProfile'
 import type { InternetRouteCheck, PortDiagnostics } from './ServerReadiness'
 import type { MinecraftDiscovery, MinecraftInstallation } from './MinecraftSetup'
+import { setupSourceFiles, type SetupSourceFile } from './setupImportPreview'
 export { parseGameRequirements, parseGameCompatibility } from './gameCompatibilityWire'
 export type { GameRequirements, GameRequirementsResult, GameCompatibilityResult, RequiredGameAddOn } from './gameCompatibilityWire'
 export type { PinnedServerNotice, ChatRoomWithNotice } from './pinnedNoticeContracts'
@@ -25,6 +26,7 @@ export type Settings = {
 
 export type Run = {
   profileId: string
+  runOperationId: string | null
   state: string
   detail: string
   processId: number | null
@@ -202,6 +204,7 @@ export type RemoteOperation = {
 export type PublicProfile = {
   gameKind?: string | null
   id: string
+  runOperationId: string | null
   name: string
   state: string
   joinAddress: string | null
@@ -333,12 +336,13 @@ export type PortConflict = { profileId: string; profileName: string; sharedPorts
 export type BasicResult = { ok: boolean; code: string; message: string; portConflicts?: PortConflict[] | null; operationId?: string | null; operationState?: RemoteOperation['state'] | null }
 export type ActionResult = BasicResult & { snapshot: HostSnapshot }
 export type PublicIpDetection = BasicResult & { address: string | null; snapshot?: HostSnapshot }
-export type Discovery = { installations: { executablePath: string; source: string }[]; worlds: { name: string; saveRoot: string; sourceFolder: string; format: string }[] }
+export type SetupSourceFacts = { sourceFiles?: SetupSourceFile[] | null; totalBytes?: number | null; modifiedUtc?: string | null }
+export type Discovery = { installations: { executablePath: string; source: string }[]; worlds: ({ name: string; saveRoot: string; sourceFolder: string; format: string } & SetupSourceFacts)[] }
 export type ImportResult = BasicResult & { worldDirectory: string | null }
 export type ServerBrowseResult = BasicResult & { executablePath?: string }
 export type MinecraftBrowseResult = BasicResult & { path?: string | null }
 export type MinecraftInstallResult = BasicResult & { installation?: MinecraftInstallation }
-export type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string }
+export type WorldBrowseResult = BasicResult & { worldId: string | null; sourceSaveRoot: string | null; sourceFolder: string } & SetupSourceFacts
 export type AppInstanceView = {
   kind: 'Production' | 'Staging'
   displayName: string
@@ -465,6 +469,26 @@ function numeric(value: unknown, context = 'value'): number {
 
 function nullableText(value: unknown, context: string): string | null {
   return value === null ? null : text(value, context)
+}
+
+function optionalRunOperationId(value: unknown, context: string): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string' || !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu.test(value) ||
+      value === '00000000-0000-0000-0000-000000000000') throw new ContractError(`${context} must be a non-empty run GUID or unavailable.`)
+  return value
+}
+
+function optionalSetupSourceFacts(source: JsonRecord, context: string): SetupSourceFacts {
+  const sourceFiles = setupSourceFiles(source.sourceFiles, `${context}.sourceFiles`)
+  const totalBytes = source.totalBytes === undefined || source.totalBytes === null ? null : numeric(source.totalBytes, `${context}.totalBytes`)
+  if (totalBytes !== null && (!Number.isSafeInteger(totalBytes) || totalBytes < 0)) throw new ContractError(`${context}.totalBytes must be a safe byte count or unavailable.`)
+  let modifiedUtc: string | null = null
+  if (source.modifiedUtc !== undefined && source.modifiedUtc !== null) {
+    modifiedUtc = text(source.modifiedUtc, `${context}.modifiedUtc`)
+    if (modifiedUtc.length > 40 || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)$/u.test(modifiedUtc) || !Number.isFinite(Date.parse(modifiedUtc)))
+      throw new ContractError(`${context}.modifiedUtc must be an explicit UTC timestamp or unavailable.`)
+  }
+  return { sourceFiles, totalBytes, modifiedUtc }
 }
 
 function utcTimestamp(value: unknown, context: string): string {
@@ -609,7 +633,7 @@ export const parseSettings: Decoder<Settings> = (value, context = 'settings') =>
 const parseRun: Decoder<Run> = (value, context = 'run') => {
   const source = object(value, context)
   return {
-    profileId: text(source.profileId, `${context}.profileId`), state: text(source.state, `${context}.state`),
+    profileId: text(source.profileId, `${context}.profileId`), runOperationId: optionalRunOperationId(source.runOperationId, `${context}.runOperationId`), state: text(source.state, `${context}.state`),
     detail: text(source.detail, `${context}.detail`), processId: nullableNumber(source.processId, `${context}.processId`),
     onlinePlayers: nullableNumber(source.onlinePlayers, `${context}.onlinePlayers`),
     maxPlayers: nullableNumber(source.maxPlayers, `${context}.maxPlayers`),
@@ -771,7 +795,7 @@ const parseRemoteOperation: Decoder<RemoteOperation> = (value, context = 'remote
 const parsePublicProfile: Decoder<PublicProfile> = (value, context = 'public profile') => {
   const source = object(value, context)
   return {
-    id: text(source.id, `${context}.id`), name: text(source.name, `${context}.name`), state: text(source.state, `${context}.state`),
+    id: text(source.id, `${context}.id`), runOperationId: optionalRunOperationId(source.runOperationId, `${context}.runOperationId`), name: text(source.name, `${context}.name`), state: text(source.state, `${context}.state`),
     joinAddress: nullableText(source.joinAddress, `${context}.joinAddress`), canStopNow: flag(source.canStopNow, `${context}.canStopNow`),
     stopReason: nullableText(source.stopReason, `${context}.stopReason`), kind: text(source.kind, `${context}.kind`),
     gameKind: optionalNullableText(source.gameKind, `${context}.gameKind`),
@@ -1153,7 +1177,8 @@ export const parseDiscovery: Decoder<Discovery> = (value, context = 'discovery')
     worlds: list(source.worlds, `${context}.worlds`, (item, itemContext) => {
       const entry = object(item, itemContext ?? `${context}.worlds`)
       return { name: text(entry.name, `${itemContext}.name`), saveRoot: text(entry.saveRoot, `${itemContext}.saveRoot`),
-        sourceFolder: text(entry.sourceFolder, `${itemContext}.sourceFolder`), format: text(entry.format, `${itemContext}.format`) }
+        sourceFolder: text(entry.sourceFolder, `${itemContext}.sourceFolder`), format: text(entry.format, `${itemContext}.format`),
+        ...optionalSetupSourceFacts(entry, itemContext ?? `${context}.worlds`) }
     })
   }
 }
@@ -1432,5 +1457,5 @@ export const parseImportResult: Decoder<ImportResult> = (value, context = 'impor
 export const parseWorldBrowseResult: Decoder<WorldBrowseResult> = (value, context = 'world browse result') => {
   const { source, basic } = withBasicResult(value, context)
   return { ...basic, worldId: nullableText(source.worldId, `${context}.worldId`), sourceSaveRoot: nullableText(source.sourceSaveRoot, `${context}.sourceSaveRoot`),
-    sourceFolder: text(source.sourceFolder, `${context}.sourceFolder`) }
+    sourceFolder: text(source.sourceFolder, `${context}.sourceFolder`), ...optionalSetupSourceFacts(source, context) }
 }

@@ -3,6 +3,7 @@ param(
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
+    [ValidateSet('All', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop', 'Rehearsal')][string]$Suite = 'All',
     [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
@@ -10,11 +11,70 @@ if (!$AllowInteractiveTests) {
     throw 'ForegroundSafety: Full verification can change desktop focus, including console fixtures when -SkipDesktop is set. Use scripts/verify-code-only.ps1 on the active desktop. -AllowInteractiveTests requires explicit owner approval for a separate test PC or dedicated unattended Windows session.'
 }
 $repository = Split-Path -Parent $PSScriptRoot
+$checkEvidence = [Collections.Generic.List[object]]::new()
+$evidenceRoot = Join-Path $repository 'local-data/ci-evidence/release-gate'
+$candidateIdentity = $null
 
 function Invoke-Checked([string]$Name, [scriptblock]$Command) {
     Write-Host "`n== $Name =="
-    & $Command
-    if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE." }
+    $started = [DateTime]::UtcNow
+    try {
+        & $Command
+        if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE." }
+        $checkEvidence.Add(@{ name = $Name; outcome = 'passed'; elapsedSeconds = ([DateTime]::UtcNow - $started).TotalSeconds })
+    }
+    catch {
+        $checkEvidence.Add(@{ name = $Name; outcome = 'failed'; elapsedSeconds = ([DateTime]::UtcNow - $started).TotalSeconds })
+        throw
+    }
+}
+
+function Get-ConsoleCheckCases([ValidateSet('minecraft-checks', 'terraria-checks')][string]$Folder) {
+    $parent = [IO.Path]::GetFullPath((Join-Path $repository ('local-data/' + $Folder)))
+    $ancestor = [IO.DirectoryInfo]::new($parent)
+    for ($depth = 0; $null -ne $ancestor -and $depth -lt 32; $depth++) {
+        if ($ancestor.Exists -and ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Synthetic console result ancestry is linked.'
+        }
+        $ancestor = $ancestor.Parent
+    }
+    if ($null -ne $ancestor) { throw 'Synthetic console result ancestry exceeds the fixed depth bound.' }
+    if (![IO.Directory]::Exists($parent)) { return }
+    $count = 0
+    foreach ($directory in [IO.Directory]::EnumerateDirectories($parent)) {
+        if (++$count -gt 256) { throw 'Synthetic console case listing exceeds the fixed bound.' }
+        $name = [IO.Path]::GetFileName($directory)
+        if ($name -notmatch '^[0-9a-f]{32}$') { continue }
+        if (([IO.File]::GetAttributes($directory) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Synthetic console case directory is linked.'
+        }
+        $name
+    }
+}
+
+function Write-NewConsoleCheckResult([ValidateSet('minecraft-checks', 'terraria-checks')][string]$Folder, [string[]]$Before) {
+    $created = @(Get-ConsoleCheckCases $Folder | Where-Object { $_ -notin $Before })
+    if ($created.Count -ne 1) {
+        Write-Warning 'Synthetic console diagnostics unavailable: one exact new case was not identified.'
+        return
+    }
+    $case = [IO.Path]::GetFullPath((Join-Path $repository ('local-data/' + $Folder + '/' + $created[0])))
+    $resultPath = Join-Path $case 'results.txt'
+    if (![IO.File]::Exists($resultPath)) { Write-Warning 'The new synthetic console case has no results.txt.'; return }
+    if (([IO.File]::GetAttributes($resultPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Synthetic console results.txt is linked.'
+    }
+    # The synchronous owned runner has exited. Only its new top-level report is
+    # read; never enumerate a world/log tree or inspect an older case's report.
+    $stream = [IO.File]::Open($resultPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -gt 128 * 1024) { throw 'Synthetic console results.txt exceeds the fixed 128 KiB bound.' }
+        $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true))
+        try { $result = $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+    Write-Host "`n== $Folder new synthetic results.txt =="
+    Write-Host $result
 }
 
 Push-Location $repository
@@ -59,6 +119,8 @@ try {
     Write-Host "Source identity: $($fileInfo.ProductVersion)"
     Write-Host "SHA-256: $candidateHash"
     Write-Host "Authenticode: $($signature.Status)"
+    $candidateIdentity = @{ sourceRevision = $sourceRevision; productVersion = $fileInfo.ProductVersion;
+        sha256 = $candidateHash; authenticode = [string]$signature.Status }
 
     Invoke-Checked 'Git whitespace check' {
         $emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -77,13 +139,13 @@ try {
         }
     }
     Invoke-Checked 'Check runner listener identity' {
-        $checkFiles = @(Get-ChildItem -LiteralPath (Join-Path $repository 'checks') -File -Recurse |
-            Where-Object { $_.Extension -in '.cs', '.ps1' -and
+        $checkFiles = @(Get-ChildItem -LiteralPath (Join-Path $repository 'checks'), (Join-Path $repository 'ui/checks') -File -Recurse |
+            Where-Object { $_.Extension -in '.cs', '.ps1', '.mjs' -and
                 $_.FullName -notmatch '[\\/](?:obj|bin)[\\/]' })
         $listenerPatterns = @(
             '\bnew\s+(?:System\.Net\.Sockets\.)?(?:TcpListener|UdpClient|Socket)\s*\(',
             '\[(?:System\.)?Net\.Sockets\.(?:TcpListener|UdpClient|Socket)\]::new\s*\(',
-            '\.Bind\s*\(', '\.Listen\s*\('
+            '\.Bind\s*\(', '\.Listen\s*\(', '\bcreateServer\s*\(', '\bcreateSocket\s*\('
         )
         $offenders = @($checkFiles | Select-String -Pattern $listenerPatterns)
         if ($offenders.Count -gt 0) {
@@ -104,62 +166,125 @@ try {
             throw 'Core route checks must use in-memory TestServer; packaged journeys own real sockets.'
         }
     }
-    Invoke-Checked 'UI lint' {
-        Push-Location ui
-        try { npm run lint }
-        finally { Pop-Location }
-    }
-    Invoke-Checked 'UI unit tests' {
-        Push-Location ui
-        try { npm test }
-        finally { Pop-Location }
-    }
-    Invoke-Checked 'Locked application restore' { dotnet restore src/TogetherServer/TogetherServer.csproj --locked-mode }
-    $checkProjects = @(
-        'checks/TogetherServer.Checks/TogetherServer.Checks.csproj',
-        'checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj',
-        'checks/TogetherServer.FactorioChecks/TogetherServer.FactorioChecks.csproj',
-        'checks/TogetherServer.TerrariaChecks/TogetherServer.TerrariaChecks.csproj',
-        'checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj',
-        'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
-        'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',
-        'checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj',
-        'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj'
-    )
-    foreach ($checkProject in $checkProjects) {
-        $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
-        Invoke-Checked $name { dotnet run --project $checkProject -c Release }
-    }
-    Invoke-Checked 'Core remote journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
-    }
-    Invoke-Checked 'World-load packaged rehearsal' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --world-load-rehearsal
-    }
-    Invoke-Checked 'Shared Worlds packaged journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-world-journey
-    }
-    Invoke-Checked 'Staging LiveSave owner action' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --live-save-action
-    }
-    Invoke-Checked 'Shared LiveSave packaged transfer journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-live-transfer-journey
-    }
-    Invoke-Checked 'TogetherServer.CompanionChecks' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
-    }
-    Invoke-Checked 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
-    Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
-    Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
-    if (!$SkipDesktop) {
-        Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -AllowInteractiveTests }
-    }
-    else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
+    if ($Suite -in 'All', 'Existing') {
+        Invoke-Checked 'UI lint' {
+            Push-Location ui
+            try { npm run lint }
+            finally { Pop-Location }
+        }
+        Invoke-Checked 'UI unit tests' {
+            Push-Location ui
+            try { npm test }
+            finally { Pop-Location }
+        }
+        Invoke-Checked 'Locked application restore' { dotnet restore src/TogetherServer/TogetherServer.csproj --locked-mode }
+        $checkProjects = @(
+            'checks/TogetherServer.Checks/TogetherServer.Checks.csproj',
+            'checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj',
+            'checks/TogetherServer.FactorioChecks/TogetherServer.FactorioChecks.csproj',
+            'checks/TogetherServer.TerrariaChecks/TogetherServer.TerrariaChecks.csproj',
+            'checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj',
+            'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
+            'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',
+            'checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj',
+            'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj'
+        )
+        foreach ($checkProject in $checkProjects) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
+            $consoleCaseFolder = switch ($name) {
+                'TogetherServer.MinecraftChecks' { 'minecraft-checks' }
+                'TogetherServer.TerrariaChecks' { 'terraria-checks' }
+                default { $null }
+            }
+            if (!$consoleCaseFolder) {
+                Invoke-Checked $name { dotnet run --project $checkProject -c Release }
+                continue
+            }
+            Invoke-Checked $name {
+                $beforeCases = $null
+                if ($consoleCaseFolder) {
+                    try { $beforeCases = @(Get-ConsoleCheckCases $consoleCaseFolder) }
+                    catch { Write-Warning 'Could not safely snapshot synthetic console cases before this runner.' }
+                }
+                $runnerExitCode = $null
+                try {
+                    dotnet run --project $checkProject -c Release
+                    $runnerExitCode = $LASTEXITCODE
+                }
+                finally {
+                    if ($consoleCaseFolder -and $null -ne $beforeCases) {
+                        try { Write-NewConsoleCheckResult $consoleCaseFolder $beforeCases }
+                        catch { Write-Warning 'Could not safely emit the new synthetic console results.txt.' }
+                    }
+                }
+                if ($null -ne $runnerExitCode -and $runnerExitCode -ne 0) {
+                    throw "$name failed with exit code $runnerExitCode."
+                }
+            }
+        }
+        Invoke-Checked 'Core remote journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
+        }
+        Invoke-Checked 'World-load packaged rehearsal' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --world-load-rehearsal
+        }
+        Invoke-Checked 'Shared Worlds packaged journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-world-journey
+        }
+        Invoke-Checked 'Staging LiveSave owner action' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --live-save-action
+        }
+        Invoke-Checked 'Shared LiveSave packaged transfer journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-live-transfer-journey
+        }
+        Invoke-Checked 'TogetherServer.CompanionChecks' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
+        }
+        Invoke-Checked 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
+        Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
+        Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
+        if (!$SkipDesktop) {
+            Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -AllowInteractiveTests }
+            Invoke-Checked 'Packaged interactive desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -Interactive -AllowInteractiveTests }
+        }
+        else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
 
-    Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
+        Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
+    }
+
+    if ($Suite -eq 'Rehearsal') {
+        Invoke-Checked 'Remote rehearsal diagnostic journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --remote-rehearsal
+        }
+    }
+    if ($Suite -in 'All', 'Qol', 'QolApi') {
+        Invoke-Checked 'TogetherServer.FeatureChecks' {
+            dotnet run --project checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj -c Release
+        }
+        Invoke-Checked 'QoL packaged API journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --qol-api-journey
+        }
+    }
+    if ($Suite -in 'All', 'Qol', 'Browser') {
+        Invoke-Checked 'QoL bundled browser journeys' {
+            node ui/checks/qol-browser-smoke.mjs --app-path $AppPath --allow-interactive-tests --output-dir local-data/ci-evidence/qol-browser
+        }
+    }
+    if ($Suite -in 'All', 'Qol', 'Desktop') {
+        if (!$SkipDesktop) {
+            Invoke-Checked 'QoL native desktop smoke' { & checks/qol-desktop-smoke.ps1 -AppPath $AppPath -AllowInteractiveTests }
+        }
+        else { Write-Host 'SKIP QoL native desktop smoke (-SkipDesktop was supplied).' }
+    }
 
     $finalHash = (Get-FileHash -LiteralPath $AppPath -Algorithm SHA256).Hash
     if ($finalHash -ne $candidateHash) { throw 'Candidate bytes changed during verification.' }
     Write-Host "`nPASS exact candidate remained $candidateHash through serial verification."
 }
-finally { Pop-Location }
+finally {
+    New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+    @{ suite = $Suite; candidate = $candidateIdentity; checks = @($checkEvidence.ToArray());
+        boundary = 'Separate approved Windows session; synthetic and loopback evidence does not establish real game, WAN, join or save acceptance.' } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'release-gate-report.json') -Encoding utf8
+    Pop-Location
+}

@@ -35,12 +35,23 @@ internal static class GameCompatibility
         GameKinds.MinecraftBedrock or GameKinds.Factorio or GameKinds.Terraria;
     internal static string GameName(string kind) => kind switch
     {
-        GameKinds.MinecraftJava => "Minecraft Java", GameKinds.MinecraftBedrock => "Minecraft Bedrock",
-        GameKinds.Valheim => "Valheim", GameKinds.Factorio => "Factorio", GameKinds.Terraria => "Terraria", _ => "Unsupported game"
+        GameKinds.MinecraftJava => "Minecraft Java",
+        GameKinds.MinecraftBedrock => "Minecraft Bedrock",
+        GameKinds.Valheim => "Valheim",
+        GameKinds.Factorio => "Factorio",
+        GameKinds.Terraria => "Terraria",
+        _ => "Unsupported game"
     };
     internal static string Fingerprint(ServerProfile profile) => Convert.ToHexString(SHA256.HashData(
-        JsonSerializer.SerializeToUtf8Bytes(new { profile.Id, profile.Kind, profile.WorldId,
-            profile.WorldDirectory, profile.ExecutablePath, Jar = profile.Minecraft?.ServerJarPath }, Json)));
+        JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            profile.Id,
+            profile.Kind,
+            profile.WorldId,
+            profile.WorldDirectory,
+            profile.ExecutablePath,
+            Jar = profile.Minecraft?.ServerJarPath
+        }, Json)));
 
     internal static GameRequirementsResult Observe(LocalData data, ServerProfile profile, CancellationToken ct)
     {
@@ -67,7 +78,8 @@ internal static class GameCompatibility
             {
                 GameKinds.Factorio => ReadFactorioMods(Path.Combine(profile.WorldDirectory, "mods"), ct,
                     string.IsNullOrEmpty(profile.ExecutablePath) ? null : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(profile.ExecutablePath)!, "..", "..", "data"))),
-                GameKinds.MinecraftBedrock => ReadBedrockPacks(profile, ct), _ => []
+                GameKinds.MinecraftBedrock => ReadBedrockPacks(profile, ct),
+                _ => []
             };
         }
         catch (Exception ex) when (ReadFailure(ex)) { state = "Unknown"; }
@@ -147,8 +159,10 @@ internal static class GameCompatibility
             if (profile.Kind == GameKinds.Valheim) return null;
             var expectedName = profile.Kind switch
             {
-                GameKinds.Factorio => "factorio.exe", GameKinds.Terraria => "TerrariaServer.exe",
-                GameKinds.MinecraftBedrock => "bedrock_server.exe", _ => ""
+                GameKinds.Factorio => "factorio.exe",
+                GameKinds.Terraria => "TerrariaServer.exe",
+                GameKinds.MinecraftBedrock => "bedrock_server.exe",
+                _ => ""
             };
             if (!Path.GetFileName(profile.ExecutablePath).Equals(expectedName, StringComparison.OrdinalIgnoreCase)) return null;
             return ReadExecutableVersion(profile.ExecutablePath, profile.Kind, ct);

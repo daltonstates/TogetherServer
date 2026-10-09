@@ -4,11 +4,14 @@ using Microsoft.Win32;
 namespace TogetherServer;
 
 public sealed record ValheimInstallation(string ExecutablePath, string Source);
-public sealed record ValheimWorld(string Name, string SaveRoot, string SourceFolder, string Format);
+public sealed record ValheimWorld(string Name, string SaveRoot, string SourceFolder, string Format,
+    IReadOnlyList<SetupImportSourceFile>? SourceFiles = null, long? TotalBytes = null,
+    DateTimeOffset? ModifiedUtc = null);
 public sealed record ValheimDiscoveryResult(IReadOnlyList<ValheimInstallation> Installations,
     IReadOnlyList<ValheimWorld> Worlds);
 public sealed record WorldFileSelection(bool Ok, string Code, string Message, string? WorldId, string? SourceSaveRoot,
-    string SourceFolder = "worlds_local");
+    string SourceFolder = "worlds_local", IReadOnlyList<SetupImportSourceFile>? SourceFiles = null,
+    long? TotalBytes = null, DateTimeOffset? ModifiedUtc = null);
 public sealed record ImportWorldRequest(Guid ProfileId, string SourceSaveRoot, string WorldId,
     string SourceFolder = "worlds_local");
 public sealed record ImportWorldResult(bool Ok, string Code, string Message, string? WorldDirectory);
@@ -179,7 +182,12 @@ public static partial class ValheimSetup
         void AddWorld(string name, string root, string sourceFolder, string format)
         {
             if (seenWorlds.Add(root + "|" + sourceFolder + "|" + name))
-                worlds.Add(new ValheimWorld(name, root, sourceFolder, format));
+            {
+                var facts = format == "Pair" ? PreviewWorldPair(root, name) : null;
+                worlds.Add(new ValheimWorld(name, root, sourceFolder, format, facts,
+                    facts is null ? null : SetupImportSourceFacts.TotalBytes(facts),
+                    facts is null ? null : SetupImportSourceFacts.ModifiedUtc(facts)));
+            }
         }
 
         void AddInstallation(string path, string source)
@@ -192,6 +200,23 @@ public static partial class ValheimSetup
 
     public static bool ValidWorldId(string? name) => !string.IsNullOrWhiteSpace(name) && name.Length <= 64 &&
         name is not ("." or "..") && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+
+    // File facts only for the complete reviewed legacy pair. They do not certify a game-loadable save.
+    internal static IReadOnlyList<SetupImportSourceFile>? PreviewWorldPair(string saveRoot, string worldId)
+    {
+        if (!ValidWorldId(worldId) || !Path.IsPathFullyQualified(saveRoot)) return null;
+        try
+        {
+            var folder = Path.Combine(Path.GetFullPath(saveRoot), "worlds_local");
+            var db = Path.Combine(folder, worldId + ".db");
+            var fwl = Path.Combine(folder, worldId + ".fwl");
+            if (Directory.Exists(Path.Combine(folder, worldId))) return null;
+            SetupImportSourceFacts.EnsurePlainFile(db);
+            SetupImportSourceFacts.EnsurePlainFile(fwl);
+            return [SetupImportSourceFacts.Read(db), SetupImportSourceFacts.Read(fwl)];
+        }
+        catch (Exception ex) when (SetupImportSourceFacts.IsSourceException(ex)) { return null; }
+    }
 
     public static WorldFileSelection SelectWorldFile(string? path)
     {
@@ -213,7 +238,10 @@ public static partial class ValheimSetup
         var saveRoot = Path.GetDirectoryName(worldsFolder);
         if (saveRoot is null || !HasWorldPair(saveRoot, worldId))
             return new(false, "MissingWorldPair", "The selected world needs matching .db and .fwl files in worlds_local.", null, null);
-        return new(true, "WorldSelected", "World save pair found.", worldId, saveRoot);
+        var facts = PreviewWorldPair(saveRoot, worldId);
+        return new(true, "WorldSelected", "World save pair found.", worldId, saveRoot,
+            SourceFiles: facts, TotalBytes: facts is null ? null : SetupImportSourceFacts.TotalBytes(facts),
+            ModifiedUtc: facts is null ? null : SetupImportSourceFacts.ModifiedUtc(facts));
     }
 
     public static WorldFileSelection SelectWorldFolder(string? path)

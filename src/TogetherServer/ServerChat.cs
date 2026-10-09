@@ -8,7 +8,7 @@ namespace TogetherServer;
 // Copies on Friend PCs can repopulate a Host whose chat log was lost.
 public sealed record ChatEntry(Guid Id, Guid HostId, Guid ProfileId, Guid AuthorId,
     string Author, DateTimeOffset SentUtc, string Text, string Signature);
-public sealed record ChatDraft(Guid Id, string Text);
+public sealed record ChatDraft(Guid Id, string Text, bool? Submitted = null);
 public sealed record ChatSyncRequest(IReadOnlyList<ChatEntry>? Entries,
     IReadOnlyList<ChatDraft>? Drafts);
 public sealed record ChatSyncResponse(bool Ok, string Code, string Message,
@@ -242,6 +242,10 @@ public sealed partial class ServerChat(LocalData data)
             var pending = data.LoadProtectedJson<List<ChatDraft>>(file);
             if (existed && pending is null)
                 throw new InvalidDataException("The saved chat drafts need review.");
+            if (pending is not null && (pending.Count > MaximumDrafts ||
+                pending.Any(draft => draft is null || draft.Id == Guid.Empty || !ValidText(draft.Text)) ||
+                pending.Select(draft => draft.Id).Distinct().Count() != pending.Count))
+                throw new InvalidDataException("The saved chat drafts need review.");
             return pending ?? [];
         }
     }
@@ -258,7 +262,7 @@ public sealed partial class ServerChat(LocalData data)
                 return pending;
             }
             if (drafts.Count >= MaximumDrafts) throw new InvalidOperationException("Send queued messages before adding more.");
-            var draft = new ChatDraft(id ?? Guid.NewGuid(), text);
+            var draft = new ChatDraft(id ?? Guid.NewGuid(), text, Submitted: false);
             if (draft.Id == Guid.Empty) throw new ArgumentException("The draft ID is invalid.");
             drafts.Add(draft);
             data.SaveProtected(PendingFile(hostId, profileId, deviceId),

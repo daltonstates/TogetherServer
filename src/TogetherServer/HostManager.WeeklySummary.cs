@@ -3,13 +3,20 @@ namespace TogetherServer;
 public sealed record WeeklyServerSummaryResult(bool Ok, string Code, string Message, Guid ProfileId,
     WeeklyServerSummary? Summary = null);
 
+public sealed record WeeklySessionEvidence(DateTimeOffset ArchivedUtc, RecentServerSession Session);
+
+public sealed record WeeklyRuntimeDay(DateTimeOffset StartUtc, DateTimeOffset EndUtc,
+    long? RecordedRuntimeSeconds, int TimedSessionCount);
+
 public sealed record WeeklyServerSummary(DateTimeOffset WindowStartUtc, DateTimeOffset WindowEndUtc,
     long RecordedRuntimeSeconds, int ArchivedSessionCount, int CompletedSessionCount,
     int FailedStarts, int UnexpectedExits, int RollingBackupsCompleted, int RollingBackupsFailed,
     int RollingBackupsNotConfigured, int RollingBackupsUnsupported, int RollingBackupsNotAttempted,
     int? PeakTrustedOnlinePlayers, int SessionsWithoutTrustedCounts, int UnavailableSessionCount,
     int ClippedSessionCount, int OverlappingSessionCount, int UnfinishedRunCount,
-    int UndatedArchiveRecordCount, bool ArchiveLimitReached);
+    int UndatedArchiveRecordCount, bool ArchiveLimitReached,
+    IReadOnlyList<WeeklyRuntimeDay>? RuntimeByDay = null,
+    IReadOnlyList<WeeklySessionEvidence>? Sessions = null);
 
 public sealed partial class HostManager
 {
@@ -38,6 +45,7 @@ public sealed partial class HostManager
             .OrderByDescending(item => item.ArchivedUtc).Take(500).ToList();
         var profileRecords = retained.Where(item => item.ProfileId == profileId).ToList();
         var intervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+        var evidence = new List<WeeklySessionEvidence>();
         var archived = 0;
         var completed = 0;
         var failedStarts = 0;
@@ -63,6 +71,21 @@ public sealed partial class HostManager
                 {
                     archived++;
                     unavailable++;
+                    // A duplicate operation has no usable timing or outcome, even
+                    // when either individual record would otherwise be complete.
+                    evidence.Add(new(item.ArchivedUtc, session with
+                    {
+                        StartedUtc = null,
+                        EndedUtc = null,
+                        DurationSeconds = null,
+                        ReadyEverObserved = null,
+                        EndReason = null,
+                        Outcome = null,
+                        CrashRecoveryScheduled = null,
+                        LastTrustedOnlinePlayers = null,
+                        MaximumTrustedOnlinePlayers = null,
+                        BackupResult = null
+                    }));
                 }
                 continue;
             }
@@ -70,6 +93,7 @@ public sealed partial class HostManager
             var end = session.EndedUtc!.Value;
             if (end < windowStart || start > now) continue;
             archived++;
+            evidence.Add(new(item.ArchivedUtc, session));
             var boundedStart = start < windowStart ? windowStart : start;
             var boundedEnd = end > now ? now : end;
             if (boundedStart < boundedEnd) intervals.Add((boundedStart, boundedEnd));
@@ -126,6 +150,7 @@ public sealed partial class HostManager
                 .Select(item => item.OperationId).Distinct().Take(500).Count(),
             archive.Where(item => item.ProfileId == profileId &&
                 (item.ArchivedUtc == default || item.ArchivedUtc > now)).Take(500).Count(),
-            archive.Count >= 500);
+            archive.Count >= 500,
+            WeeklyRuntimeProjection.ByDay(windowStart, now, intervals), evidence);
     }
 }

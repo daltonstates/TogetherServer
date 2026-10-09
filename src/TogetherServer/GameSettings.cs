@@ -166,8 +166,11 @@ internal static class GameSettings
 
     internal static string ListLabel(string key) => key switch
     {
-        "allow-list" => "Allowed players", "admin-list" => "Administrators",
-        "ban-list" => "Banned players", "permit-list" => "Permitted players", _ => "Access list"
+        "allow-list" => "Allowed players",
+        "admin-list" => "Administrators",
+        "ban-list" => "Banned players",
+        "permit-list" => "Permitted players",
+        _ => "Access list"
     };
 
     internal static GameSettingsView Read(LocalData data, ServerProfile profile)

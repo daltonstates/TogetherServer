@@ -18,5 +18,9 @@ internal static class FeatureInputChecks
             !FeatureRequestParser.TryNotice(Bytes("{\"text\":\"rules\",\"expectedRevision\":0,\"expectedRevision\":1}"), out _), "notice revision input is ambiguous");
         foreach (var wrongType in new[] { "\"0\"", "null", "{}", "true", "[]", "9007199254740992" })
             Require(!FeatureRequestParser.TryNotice(Bytes($"{{\"text\":\"rules\",\"expectedRevision\":{wrongType}}}"), out _), "wrong-type or inexact notice revision accepted");
+        foreach (var code in new[] { "ConnectionChanged", "KeyReviewRequired", "VersionChainInvalid", "CheckFailed", "PermissionDenied" })
+            Require(RemoteRehearsal.SharedCheckFailureCode(code) == code, "reviewed rehearsal failure code was discarded");
+        foreach (var privateValue in new string?[] { null, "", "https://127.0.0.1:5131", "C:\\private\\world", Guid.NewGuid().ToString(), new string('A', 64), "UnreviewedPeerCode" })
+            Require(RemoteRehearsal.SharedCheckFailureCode(privateValue) == "UnclassifiedSharedCheckFailure", "unreviewed/private rehearsal failure data escaped redaction");
     }
 }

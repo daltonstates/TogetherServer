@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { WeeklySummary } from './WeeklySummary'
 import { parseWeeklyServerSummary, type WeeklyServerSummaryResult } from './weeklySummaryWire'
+import { weeklySummaryFixture } from './test/weeklySummaryFixture'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
 const result: WeeklyServerSummaryResult = {
@@ -15,6 +16,41 @@ const result: WeeklyServerSummaryResult = {
 }
 
 describe('WeeklySummary', () => {
+  it('opens the retained sessions contributing to each metric and excludes the clipped player peak', async () => {
+    const recorded = weeklySummaryFixture()
+    const loader = vi.fn(async () => recorded)
+    render(<WeeklySummary profileId={profileId} visible loader={loader} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Unexpected exits: 1/ }))
+    expect(screen.getByText('Unexpected exit', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.queryByText('Stopped gracefully', { selector: 'strong' })).not.toBeInTheDocument()
+    expect(screen.getByText(/^1 of 5 retained sessions match/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Trusted player peak: 4/ }))
+    expect(screen.getByText('Last 0 · peak 4')).toBeInTheDocument()
+    expect(screen.queryByText('Last 0 · peak 99')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Rolling backups: 1 completed/ }))
+    expect(screen.getByText(/^2 of 5 retained sessions match/)).toBeInTheDocument()
+    expect(screen.getAllByText('Stopped gracefully', { selector: 'strong' })).toHaveLength(2)
+    fireEvent.change(screen.getByLabelText('Session evidence'), { target: { value: 'backupFailed' } })
+    expect(screen.getByText('Last 0 · peak 0')).toBeInTheDocument()
+    expect(screen.queryByText('Last 0 · peak 99')).not.toBeInTheDocument()
+    expect(loader).toHaveBeenCalledOnce()
+  })
+
+  it('charts actual daily intervals and opens a UTC day while leaving days without timing unavailable', async () => {
+    render(<WeeklySummary profileId={profileId} visible loader={async () => weeklySummaryFixture()} />)
+    const day = await screen.findByRole('button', { name: 'Show recorded sessions on 2026-10-01 (UTC)' })
+    expect(screen.getByRole('img', { name: '2026-10-01: 2h 0m recorded runtime' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: '2026-10-08: 7m recorded runtime' })).toBeInTheDocument()
+    expect(screen.getAllByText('No timed evidence')).toHaveLength(6)
+    expect(screen.getByRole('button', { name: 'Show recorded sessions on 2026-10-07 (UTC)' })).toBeDisabled()
+    expect(screen.queryByRole('img', { name: /2026-10-07/ })).not.toBeInTheDocument()
+    fireEvent.click(day)
+    expect(screen.getByLabelText('Sessions from date (UTC)')).toHaveValue('2026-10-01')
+    expect(screen.getByLabelText('Sessions through date (UTC)')).toHaveValue('2026-10-01')
+    expect(screen.getByText(/^2 of 5 retained sessions match/)).toBeInTheDocument()
+    expect(screen.queryByText('Failed before Ready', { selector: 'strong' })).not.toBeInTheDocument()
+  })
+
   it('shows bounded recorded metrics and explicit legacy, unfinished, clipped and retained coverage', async () => {
     const { container } = render(<WeeklySummary profileId={profileId} visible loader={async () => result} />)
     expect(await screen.findByText('2h 7m')).toBeInTheDocument()

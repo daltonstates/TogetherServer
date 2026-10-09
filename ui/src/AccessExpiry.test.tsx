@@ -5,6 +5,7 @@ import {
   FriendAccessExpiredNotice,
   OwnerAccessDeadlineEditor,
   putDeviceAccessExpiry,
+  validateCustomLocalDateTime,
   validateCustomUtcDateTime
 } from './AccessExpiry'
 import type { Device, DeviceAccessExpiryResult } from './contracts'
@@ -44,10 +45,12 @@ function renderEditor(overrides: {
   current?: Device
   onSave?: (request: Parameters<typeof putDeviceAccessExpiry>[1]) => Promise<DeviceAccessExpiryResult>
   onRefresh?: () => Promise<void>
+  timeZone?: string
 } = {}) {
   const onSave = vi.fn(overrides.onSave ?? (async () => success))
   const onRefresh = vi.fn(overrides.onRefresh ?? (async () => undefined))
   render(<OwnerAccessDeadlineEditor device={overrides.current ?? device()} now={now}
+    timeZone={overrides.timeZone ?? 'UTC'}
     formatLocal={date => `LOCAL ${date.toISOString()}`} onSave={onSave} onRefresh={onRefresh} />)
   return { onSave, onRefresh }
 }
@@ -86,18 +89,19 @@ describe('OwnerAccessDeadlineEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledWith({ clear: true }))
   })
 
-  it('treats the advanced field as explicit UTC and previews the exact local conversion before saving', async () => {
-    const onSave = vi.fn(async () => ({ ...success, accessExpiresUtc: '2026-09-28T18:30:00.000Z' }))
-    renderEditor({ onSave })
+  it('interprets the advanced field in the displayed local zone and sends only its exact UTC conversion', async () => {
+    const onSave = vi.fn(async () => ({ ...success, accessExpiresUtc: '2026-09-28T22:30:00.000Z' }))
+    renderEditor({ onSave, timeZone: 'America/New_York' })
 
     fireEvent.click(screen.getByText('Change deadline'))
-    fireEvent.click(screen.getByText('Advanced: custom UTC date and time'))
-    fireEvent.change(screen.getByLabelText('UTC date and time'), { target: { value: '2026-09-28T18:30' } })
+    fireEvent.click(screen.getByText('Advanced: custom local date and time'))
+    fireEvent.change(screen.getByLabelText('Local date and time'), { target: { value: '2026-09-28T18:30' } })
 
-    expect(screen.getByText('2026-09-28T18:30:00.000Z')).toBeInTheDocument()
-    expect(screen.getByText('LOCAL 2026-09-28T18:30:00.000Z')).toBeInTheDocument()
+    expect(screen.getByText(/Time zone: America\/New_York/)).toBeInTheDocument()
+    expect(screen.getByText('2026-09-28T22:30:00.000Z')).toBeInTheDocument()
+    expect(screen.getByText('LOCAL 2026-09-28T22:30:00.000Z')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Save deadline' }))
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith({ accessExpiresUtc: '2026-09-28T18:30:00.000Z' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({ accessExpiresUtc: '2026-09-28T22:30:00.000Z' }))
   })
 
   it('rejects malformed, past, and more-than-365-day custom values before any request', () => {
@@ -174,6 +178,74 @@ describe('access-expiry API', () => {
       status: 200, headers: { 'Content-Type': 'application/json' }
     }))
     await expect(putDeviceAccessExpiry(device().id, { clear: true })).rejects.toMatchObject({ code: 'InvalidResponse' })
+  })
+})
+
+describe('local deadline validation', () => {
+  const beforeDst = Date.parse('2026-01-01T00:00:00Z')
+
+  it('rejects missing and repeated DST hours instead of silently shifting or picking one', () => {
+    expect(validateCustomLocalDateTime('2026-03-08T02:30', beforeDst, 'America/New_York'))
+      .toMatchObject({ ok: false, message: expect.stringContaining('does not exist') })
+    expect(validateCustomLocalDateTime('2026-11-01T01:30', beforeDst, 'America/New_York'))
+      .toMatchObject({ ok: false, message: expect.stringContaining('occurs twice') })
+  })
+
+  it('resolves summer, winter and fractional offsets with an exact UTC value', () => {
+    expect(validateCustomLocalDateTime('2026-07-15T18:30', beforeDst, 'America/New_York'))
+      .toMatchObject({ ok: true, utc: '2026-07-15T22:30:00.000Z' })
+    expect(validateCustomLocalDateTime('2026-12-15T18:30', beforeDst, 'America/New_York'))
+      .toMatchObject({ ok: true, utc: '2026-12-15T23:30:00.000Z' })
+    expect(validateCustomLocalDateTime('2026-07-15T18:30', beforeDst, 'Asia/Kathmandu'))
+      .toMatchObject({ ok: true, utc: '2026-07-15T12:45:00.000Z' })
+  })
+
+  it('rejects malformed calendars, past values, distant UTC conversions and unreadable zones', () => {
+    for (const value of ['2026-02-30T12:00', '2026-04-31T12:00', '2026-09-28T24:00', '9/28/2026 18:30'])
+      expect(validateCustomLocalDateTime(value, now().getTime(), 'UTC').ok).toBe(false)
+    expect(validateCustomLocalDateTime('2026-09-28T08:00', now().getTime(), 'America/New_York'))
+      .toMatchObject({ ok: false, message: expect.stringContaining('future') })
+    expect(validateCustomLocalDateTime('2027-09-28T08:01', now().getTime(), 'America/New_York'))
+      .toMatchObject({ ok: false, message: expect.stringContaining('365 days') })
+    expect(validateCustomLocalDateTime('2026-09-29T12:00', now().getTime(), 'Not/AZone').ok).toBe(false)
+  })
+
+  it('disables Save for a repeated local hour without making an owner mutation', () => {
+    const { onSave } = renderEditor({ timeZone: 'America/New_York' })
+    fireEvent.change(screen.getByLabelText('Local date and time'), { target: { value: '2026-11-01T01:30' } })
+    expect(screen.getByRole('alert')).toHaveTextContent('occurs twice')
+    expect(screen.getByRole('button', { name: 'Save deadline' })).toBeDisabled()
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('keeps a revoked PC read only', () => {
+    renderEditor({ current: device({ revoked: true }) })
+    expect(screen.getByLabelText('1 hour')).toBeDisabled()
+    expect(screen.getByLabelText('Local date and time')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save deadline' })).toBeDisabled()
+  })
+
+  it('revalidates a custom deadline at the click after the preview becomes past', async () => {
+    let currentTime = now()
+    const onSave = vi.fn(async () => success)
+    render(<OwnerAccessDeadlineEditor device={device()} now={() => currentTime} timeZone="UTC"
+      onSave={onSave} onRefresh={async () => undefined} />)
+    fireEvent.change(screen.getByLabelText('Local date and time'), { target: { value: '2026-09-28T12:01' } })
+    expect(screen.getByRole('button', { name: 'Save deadline' })).toBeEnabled()
+    currentTime = new Date('2026-09-28T12:02:00Z')
+    fireEvent.click(screen.getByRole('button', { name: 'Save deadline' }))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(await screen.findAllByRole('alert')).not.toHaveLength(0)
+  })
+
+  it('drops a previous PC custom selection when the editor scope changes', () => {
+    const onSave = vi.fn(async () => success)
+    const props = { now, timeZone: 'UTC', onSave, onRefresh: async () => undefined }
+    const { rerender } = render(<OwnerAccessDeadlineEditor device={device()} {...props} />)
+    fireEvent.change(screen.getByLabelText('Local date and time'), { target: { value: '2026-09-29T12:30' } })
+    rerender(<OwnerAccessDeadlineEditor device={device({ id: '33333333-3333-3333-3333-333333333333' })} {...props} />)
+    expect(screen.getByLabelText('Local date and time')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Save deadline' })).toBeDisabled()
   })
 })
 

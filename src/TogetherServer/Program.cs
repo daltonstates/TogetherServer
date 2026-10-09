@@ -111,13 +111,19 @@ var acceptanceRecorder = new AcceptanceRecorder(data, TimeProvider.System);
 var updateCheckpoints = new StateCheckpointService(data, TimeProvider.System);
 var serverLogs = new ServerLogService(data, manager);
 var serverChat = new ServerChat(data);
+var uiDrafts = new ProtectedUiDraftStore(data);
+var notificationPreferences = new DesktopNotificationPreferences(data);
+var qolDesktop = new QolLocalPreferences(data);
+var updateUi = new UpdateUiPreferences(data);
+var importSelections = new SetupImportSelections(data, instance.FreshWorldsOnly);
 var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 var appVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0);
 var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "", appVersion,
     enabled: instance.UpdatesAvailable,
-    disabledMessage: "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.");
+    disabledMessage: "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.",
+    uiPreferences: updateUi);
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
 using var externalProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
@@ -137,7 +143,8 @@ builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, p
 var app = builder.Build();
 var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"), root,
     app.Lifetime.StopApplication, desktopPreferences.CloseToTray, startupLaunch,
-    instance.DisplayName, instance.IsStaging) : null;
+    instance.DisplayName, instance.IsStaging, localPreferences: qolDesktop,
+    notifications: notificationPreferences) : null;
 app.Use(async (context, next) =>
 {
     var localGui = context.Connection.LocalPort == port;
@@ -207,7 +214,7 @@ app.MapGet("/api/local/snapshot", async () => friendMode
     : Results.Json(await manager.SnapshotAsync()));
 app.MapGet("/api/local/instance", () => Results.Json(instance.View(port)));
 app.MapGet("/api/local/data-recovery", () => Results.Json(data.Recovery));
-app.MapGet("/api/local/diagnostics", async (HttpContext context) =>
+app.MapGet("/api/local/diagnostics", (Func<HttpContext, Task<IResult>>)(async context =>
 {
     if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
     if (friendMode)
@@ -234,8 +241,8 @@ app.MapGet("/api/local/diagnostics", async (HttpContext context) =>
             message = "TogetherServer could not assemble owner diagnostics. No server action was started."
         }, statusCode: StatusCodes.Status500InternalServerError);
     }
-});
-app.MapGet("/api/local/support-report", async (HttpContext context) =>
+}));
+app.MapGet("/api/local/support-report", (Func<HttpContext, Task<IResult>>)(async context =>
 {
     if (FixedOwnerGetRejection(context) is { } rejection) return rejection;
     if (friendMode)
@@ -265,7 +272,7 @@ app.MapGet("/api/local/support-report", async (HttpContext context) =>
             message = "TogetherServer could not create the support report. Private error details were left out."
         }, statusCode: StatusCodes.Status500InternalServerError);
     }
-});
+}));
 app.MapGet("/api/local/window", () => Results.Json(new
 {
     available = desktop is not null,
@@ -366,19 +373,31 @@ app.MapPut("/api/local/desktop/preferences", (DesktopPreferenceChange change) =>
 });
 app.MapGet("/api/local/update", async () => Results.Json(await updater.CheckAsync()));
 app.MapPost("/api/local/update/check", async () => Results.Json(await updater.CheckAsync(true)));
-app.MapPost("/api/local/update/install", async (HttpContext context) =>
+IResult UpdatePreparationBlocked(string code, string message)
 {
+    updater.ReportPreparation(code == "AlreadyUpdating" ? "Restarting" : "Blocked", message,
+        code == "AlreadyUpdating" ? null : message);
+    return Results.Json(new UpdateResult(false, code, message));
+}
+app.MapPost("/api/local/update/install", (Func<HttpContext, Task<IResult>>)(async context =>
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(403);
+    if (context.Request.QueryString.HasValue)
+        return Results.BadRequest(new UpdateResult(false, "InvalidUpdateRequest", "Update accepts no query or caller-selected fields."));
+    var input = await FeatureBody(context, 1);
+    if (input is null || input.Length != 0)
+        return Results.BadRequest(new UpdateResult(false, "InvalidUpdateRequest", "Update accepts no caller-selected fields."));
     if (!instance.UpdatesAvailable)
-        return Results.Json(new UpdateResult(false, "UpdatesDisabled",
-            "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly."));
-    if (desktop is null) return Results.Json(new UpdateResult(false, "WindowUnavailable", "Open the published app window to update."));
+        return UpdatePreparationBlocked("UpdatesDisabled",
+            "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.");
+    if (desktop is null) return UpdatePreparationBlocked("WindowUnavailable", "Open the published app window to update.");
     await modeGate.WaitAsync();
     try
     {
-        if (updatePending) return Results.Json(new UpdateResult(false, "AlreadyUpdating", "The app is already restarting."));
+        if (updatePending) return UpdatePreparationBlocked("AlreadyUpdating", "The app is already restarting.");
+        if (shutdownPending) return UpdatePreparationBlocked("ShutdownPending", "TogetherServer is closing.");
         if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
-            return Results.Json(new UpdateResult(false, "ManagedRunPresent",
-                "Stop or resolve every hosted server before installing the update."));
+            return UpdatePreparationBlocked("ManagedRunPresent", "Stop or resolve every hosted server before installing the update.");
     }
     finally { modeGate.Release(); }
     var prepared = await updater.PrepareAsync();
@@ -386,27 +405,32 @@ app.MapPost("/api/local/update/install", async (HttpContext context) =>
     await modeGate.WaitAsync();
     try
     {
-        if (updatePending) return Results.Json(new UpdateResult(false, "AlreadyUpdating", "The app is already restarting."));
+        if (updatePending) return UpdatePreparationBlocked("AlreadyUpdating", "The app is already restarting.");
+        if (shutdownPending) return UpdatePreparationBlocked("ShutdownPending", "TogetherServer is closing.");
         if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
-            return Results.Json(new UpdateResult(false, "ManagedRunPresent",
-                "Stop or resolve every hosted server before installing the update."));
+            return UpdatePreparationBlocked("ManagedRunPresent", "Stop or resolve every hosted server before installing the update.");
         var targetVersion = updater.PreparedVersion;
         if (targetVersion is null)
-            return Results.Json(new UpdateResult(false, "NotReady", "No verified update is ready."));
+            return UpdatePreparationBlocked("NotReady", "No verified update is ready.");
+        updater.ReportPreparation("Checkpoint", "Protecting local settings before restart.");
         var checkpoint = updateCheckpoints.Create(appVersion.ToString(3), targetVersion,
             Environment.ProcessPath ?? "");
         if (!checkpoint.Ok || checkpoint.Checkpoint is null)
+        {
+            updater.ReportPreparation("Failed", checkpoint.Message, checkpoint.Message);
             return Results.Json(new UpdateResult(false, checkpoint.Code, checkpoint.Message));
+        }
         var started = updater.StartReplacement(checkpoint.Checkpoint);
         if (started.Ok)
         {
+            updater.ReportPreparation("Restarting", "TogetherServer is closing to install the verified update.");
             updatePending = true;
             context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
         }
         return Results.Json(started);
     }
     finally { modeGate.Release(); }
-});
+}));
 app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
     ? Results.Json(new { ok = true, code = "WindowShown" })
     : Results.Conflict(new { ok = false, code = "WindowUnavailable" }));
@@ -455,6 +479,136 @@ static async Task<byte[]?> FeatureBody(HttpContext context, int maximum)
         output.Write(buffer, 0, read);
     }
 }
+async Task<IResult> ProtectedDraftAction(HttpContext context, string action)
+{
+    if (!HasSensitiveLocalGetHeader(context) || context.Request.QueryString.HasValue)
+        return Results.StatusCode(403);
+    var bytes = await FeatureBody(context, ProtectedUiDraftStore.MaximumFileDraftBytes * 6 + 2048);
+    if (bytes is null) return Results.BadRequest(new { code = "InvalidDraft", message = "The local draft request is too large." });
+    ProtectedUiDraftIdentity identity;
+    ProtectedUiDraftSave? save = null;
+    ProtectedUiDraftClear? clear = null;
+    try
+    {
+        using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 12 });
+        if (action == "save") { save = ProtectedUiDraftStore.ParseSave(document.RootElement); identity = save.Identity; }
+        else if (action == "clear") { clear = ProtectedUiDraftStore.ParseClear(document.RootElement); identity = clear.Identity; }
+        else identity = ProtectedUiDraftStore.ParseIdentity(document.RootElement);
+    }
+    catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException or InvalidOperationException)
+    { return Results.BadRequest(new { code = "InvalidDraft", message = "Use the fixed reviewed draft fields and limits." }); }
+    return await FeatureRole(context, identity.ConnectionId is null, () =>
+    {
+        if (identity.ConnectionId is null)
+        {
+            var setup = identity.ProfileId == Guid.Empty && identity.Purpose == "settings" && identity.Key == "host-setup";
+            if (!setup)
+            {
+                var profile = data.LoadSettings().Profiles.SingleOrDefault(item => item.Id == identity.ProfileId);
+                if (profile is null)
+                    return Task.FromResult<IResult>(Results.NotFound(new { code = "UnknownProfile", message = "This saved server is no longer available." }));
+                if (!QolLocalEndpointInputs.DraftKeyMatches(identity, profile))
+                    return Task.FromResult<IResult>(Results.BadRequest(new { code = "DraftScopeChanged", message = "Choose this server's reviewed file, settings, player list or chat draft." }));
+            }
+        }
+        else
+        {
+            var current = friend.View();
+            if (identity.Purpose != "chat" || identity.Key != "compose" || current.ConnectionId != identity.ConnectionId ||
+                !current.Profiles.Any(profile => profile.Id == identity.ProfileId) &&
+                current.ChatProfiles?.Any(profile => profile.Id == identity.ProfileId) != true)
+                return Task.FromResult<IResult>(Results.Conflict(new { code = "DraftScopeChanged", message = "Open the saved Host and room before recovering its draft." }));
+        }
+        var result = save is not null ? uiDrafts.Save(identity, save.Text, save.ExpectedRevision) :
+            clear is not null ? uiDrafts.Clear(identity, clear.ExpectedRevision) : uiDrafts.Read(identity);
+        return Task.FromResult<IResult>(Results.Json(result));
+    });
+}
+app.MapPost("/api/local/ui-drafts/read", (Func<HttpContext, Task<IResult>>)(context => ProtectedDraftAction(context, "read")));
+app.MapPut("/api/local/ui-drafts", (Func<HttpContext, Task<IResult>>)(context => ProtectedDraftAction(context, "save")));
+app.MapPost("/api/local/ui-drafts/clear", (Func<HttpContext, Task<IResult>>)(context => ProtectedDraftAction(context, "clear")));
+
+bool OwnsNotificationScope(DesktopNotificationPreferenceChange change)
+{
+    if (change.ProfileId is not { } profileId) return true;
+    if (change.ConnectionId is not { } connectionId)
+        return !friendMode && data.LoadSettings().Profiles.Any(profile => profile.Id == profileId);
+    var view = friend.View();
+    return friendMode && view.Connections?.Any(connection => connection.ConnectionId == connectionId &&
+        connection.Profiles.Any(profile => profile.Id == profileId)) == true;
+}
+app.MapGet("/api/local/desktop/notifications", (Func<HttpContext, Task<IResult>>)(context =>
+    FeatureRole(context, !friendMode, () => Task.FromResult<IResult>(Results.Json(notificationPreferences.View())))));
+app.MapPut("/api/local/desktop/notifications", (Func<HttpContext, Task<IResult>>)(context =>
+    FeatureRole(context, !friendMode, async () =>
+    {
+        var bytes = await FeatureBody(context, 8192);
+        if (bytes is null) return Results.BadRequest(new { code = "InvalidNotificationPreferences", message = "Use only the reviewed notification options." });
+        try
+        {
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 8 });
+            var change = DesktopNotificationPreferences.ParseChange(document.RootElement);
+            if (!OwnsNotificationScope(change)) return Results.Conflict(new { code = "NotificationScopeChanged", message = "Choose a currently owned or assigned server." });
+            return Results.Json(notificationPreferences.Apply(change));
+        }
+        catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException)
+        { return Results.BadRequest(new { code = "InvalidNotificationPreferences", message = "Use only the reviewed notification options." }); }
+    })));
+app.MapGet("/api/local/update/preparation", (HttpContext context) =>
+    FixedOwnerGetRejection(context) is { } rejection ? rejection : Results.Json(updater.Preparation));
+app.MapPost("/api/local/update/snooze", (Func<HttpContext, Task<IResult>>)(context =>
+    FeatureRole(context, !friendMode, async () =>
+    {
+        var bytes = await FeatureBody(context, 512);
+        if (bytes is null) return Results.BadRequest(new { code = "InvalidUpdateReminder", message = "Choose a reviewed reminder for this version." });
+        try
+        {
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 4 });
+            return Results.Json(await updater.SnoozeAsync(UpdateUiPreferences.ParseSnooze(document.RootElement)));
+        }
+        catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException)
+        { return Results.BadRequest(new { code = "InvalidUpdateReminder", message = "Choose a reviewed reminder for this version." }); }
+    })));
+app.MapGet("/api/local/profiles/{id:guid}/backup-catalog", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () => Results.Json(await manager.BackupCatalogAsync(id))));
+
+const string scopedChat = "/api/local/friend/connections/{connectionId:guid}/servers/{id:guid}/chat";
+app.MapGet("/api/local/profiles/{id:guid}/chat/summary", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, () => Task.FromResult<IResult>(Results.Json(ServerChat.Summarize(HostChatRoom(id))))));
+app.MapGet(scopedChat + "/summary", (HttpContext context, Guid connectionId, Guid id) =>
+    FeatureRole(context, false, async () => Results.Json(await friend.ChatSummaryAsync(connectionId, id, context.RequestAborted))));
+app.MapPost(scopedChat + "/sync", (HttpContext context, Guid connectionId, Guid id) =>
+    FeatureRole(context, false, async () =>
+    {
+        var bytes = await FeatureBody(context, 1);
+        if (bytes is null || bytes.Length != 0) return Results.BadRequest(new { code = "InvalidChatSync", message = "Sync accepts no request fields." });
+        return Results.Json(await friend.SyncChatAsync(connectionId, id, context.RequestAborted));
+    }));
+app.MapPost(scopedChat + "/messages", (HttpContext context, Guid connectionId, Guid id) =>
+    FeatureRole(context, false, async () =>
+    {
+        var bytes = await FeatureBody(context, ServerChat.MaximumPostBytes);
+        if (bytes is null || !ServerChat.TryChatPost(bytes, out var request))
+            return Results.BadRequest(new { code = "InvalidChatText", message = "Use only a message of at most 500 characters." });
+        return Results.Json(await friend.PostChatAsync(connectionId, id, request!.Text, context.RequestAborted));
+    }));
+app.MapPut(scopedChat + "/queue/{draftId:guid}", (HttpContext context, Guid connectionId, Guid id, Guid draftId) =>
+    FeatureRole(context, false, async () =>
+    {
+        var bytes = await FeatureBody(context, ServerChat.MaximumQueueMutationBytes);
+        if (bytes is null || !ServerChat.TryQueueEdit(bytes, out var request))
+            return Results.BadRequest(new { code = "InvalidChatQueueEdit", message = "Review only this queued message's fixed fields." });
+        return Results.Json(await friend.EditQueuedChatAsync(connectionId, id, draftId, request!, context.RequestAborted));
+    }));
+app.MapPost(scopedChat + "/queue/{draftId:guid}/cancel", (HttpContext context, Guid connectionId, Guid id, Guid draftId) =>
+    FeatureRole(context, false, async () =>
+    {
+        var bytes = await FeatureBody(context, ServerChat.MaximumQueueMutationBytes);
+        if (bytes is null || !ServerChat.TryQueueCancel(bytes, out var request))
+            return Results.BadRequest(new { code = "InvalidChatQueueCancel", message = "Review only this queued message's fixed fields." });
+        return Results.Json(await friend.CancelQueuedChatAsync(connectionId, id, draftId, request!, context.RequestAborted));
+    }));
+
 app.MapGet("/api/local/profiles/{id:guid}/requirements", (HttpContext context, Guid id) =>
     FeatureRole(context, true, async () => Results.Json(await manager.GameRequirementsAsync(id, context.RequestAborted))));
 app.MapPut("/api/local/profiles/{id:guid}/requirements", (HttpContext context, Guid id) =>
@@ -929,7 +1083,7 @@ app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore-setup
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/verify", async (Guid id, Guid backupId) =>
     friendMode
         ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Backup verification is local-owner-only." })
-        : Results.Json(await manager.VerifyBackupAsync(id, backupId)));
+        : Results.Json(await manager.VerifyBackupWithEvidenceAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/vault", async (Guid id, Guid backupId) =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
@@ -939,7 +1093,7 @@ app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/vault", async
         var destination = await desktop.PickFolderAsync("Choose an external drive or network folder for this verified backup");
         if (destination is null)
             return Results.Json(new BackupSafetyResult(false, "Canceled", "No backup-vault folder was selected.", backupId, DateTimeOffset.UtcNow));
-        return Results.Json(await manager.CopyBackupToVaultAsync(id, backupId, destination));
+        return Results.Json(await manager.CopyBackupToVaultWithEvidenceAsync(id, backupId, destination));
     }
     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
     {
@@ -982,7 +1136,7 @@ app.MapPost("/api/local/move-kit/inspect", async () =>
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/rehearse", async (Guid id, Guid backupId) =>
     friendMode
         ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." })
-        : Results.Json(await manager.RehearseRestoreAsync(id, backupId)));
+        : Results.Json(await manager.RehearseRestoreWithEvidenceAsync(id, backupId)));
 app.MapPost("/api/local/profiles/{id:guid}/world-load/prepare", async (Guid id, WorldLoadPreparationRequest request) =>
     friendMode ? Results.Conflict(new WorldLoadRehearsalResult(false, "FriendMode", "Switch to Host mode first.")) :
         Results.Json(await manager.PrepareWorldLoadRehearsalAsync(id, request.BackupId)));
@@ -1000,7 +1154,7 @@ app.MapPost("/api/local/world-load/{id:guid}/start", async (Guid id) =>
 app.MapPost("/api/local/world-load/{id:guid}/stop", async (Guid id) =>
     Results.Json(await manager.WorldLoadRehearsalAsync(id, "stop")));
 app.MapPost("/api/local/world-load/{id:guid}/confirm", async (Guid id, WorldLoadConfirmationRequest request) =>
-    Results.Json(await manager.WorldLoadRehearsalAsync(id, "confirm", request)));
+    Results.Json(await manager.ConfirmWorldLoadWithBackupEvidenceAsync(id, request)));
 app.MapPost("/api/local/world-load/{id:guid}/cleanup", async (Guid id, WorldLoadCleanupRequest request) =>
     Results.Json(await manager.WorldLoadRehearsalAsync(id, "cleanup", confirmStopped: request.ConfirmStopped)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore", (Guid id, Guid backupId) =>
@@ -1120,6 +1274,75 @@ app.MapPost("/api/local/valheim/browse-server", async () =>
     }
     catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message }); }
 });
+bool SharedServerScopeMatches(SharedServerBrowseRequest request, bool hostScope, Guid? connectionId)
+{
+    if (hostScope)
+        return !friendMode && data.LoadSettings().Profiles.Any(profile =>
+            profile.Id == request.ProfileId && profile.Kind == request.Kind);
+    var view = friend.View();
+    return friendMode && connectionId is { } selected && selected != Guid.Empty &&
+        view.ConnectionId == selected && view.Profiles.Any(profile =>
+            QolLocalEndpointInputs.ProfileGameMatches(profile, request));
+}
+async Task<IResult> BrowseSharedServerFile(HttpContext context)
+{
+    var hostScope = !friendMode;
+    return await FeatureRole(context, hostScope, async () =>
+    {
+        if (shutdownPending)
+            return Results.Conflict(new SharedServerBrowseResult(false, "ShutdownPending", "TogetherServer is closing."));
+        var bytes = await FeatureBody(context, QolLocalEndpointInputs.MaximumSharedBrowseBytes);
+        if (bytes is null || !QolLocalEndpointInputs.TrySharedServerBrowse(bytes, out var request))
+            return Results.BadRequest(new SharedServerBrowseResult(false, "InvalidServerSelection",
+                "Choose a currently owned or assigned server and its supported game."));
+        var connectionId = hostScope ? (Guid?)null : friend.View().ConnectionId;
+        if (!SharedServerScopeMatches(request!, hostScope, connectionId))
+            return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
+                "Open the current server and choose its game before browsing."));
+        if (desktop is null)
+            return Results.Conflict(new SharedServerBrowseResult(false, "WindowUnavailable",
+                "Open the TogetherServer window to choose a server file."));
+        var picker = QolLocalEndpointInputs.Picker(request!.Kind)!;
+        try
+        {
+            context.RequestAborted.ThrowIfCancellationRequested();
+            var selected = await desktop.PickFileAsync(picker.Title, picker.Filter);
+            context.RequestAborted.ThrowIfCancellationRequested();
+            if (shutdownPending || !SharedServerScopeMatches(request, hostScope, connectionId))
+                return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
+                    "The selected server changed. Open it and browse again."));
+            if (selected is null)
+                return Results.Json(new SharedServerBrowseResult(false, "Canceled", "No server file selected."));
+            if (!Path.IsPathFullyQualified(selected) ||
+                !Path.GetFileName(selected).Equals(picker.FileName, StringComparison.OrdinalIgnoreCase))
+                return Results.Json(new SharedServerBrowseResult(false, "InvalidServerFile",
+                    "Choose " + picker.FileName + " from the installed server folder."));
+            var path = Path.GetFullPath(selected);
+            SetupImportSourceFacts.EnsurePlainFile(path);
+            if (request.Kind == GameKinds.MinecraftJava)
+            {
+                var folder = Path.GetDirectoryName(path)!;
+                SetupImportSourceFacts.EnsurePlainFile(Path.Combine(folder, ".togetherserver-java.json"));
+                if (!MinecraftSetup.IsSupportedVanillaServerJar(path, folder))
+                    return Results.Json(new SharedServerBrowseResult(false, "UnsupportedServerJar",
+                        "Choose server.jar from a TogetherServer-installed official Minecraft Java server."));
+            }
+            if (!SharedServerScopeMatches(request, hostScope, connectionId))
+                return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
+                    "The selected server changed. Open it and browse again."));
+            // This path is returned only by the owner's loopback GUI. Existing
+            // local hosting setup still validates it before any managed Start.
+            return Results.Json(new SharedServerBrowseResult(true, "PathSelected",
+                "Server file selected. Review and save local hosting setup before starting.", path));
+        }
+        catch (Exception error) when (SetupImportSourceFacts.IsSourceException(error) || error is InvalidOperationException)
+        {
+            return Results.Json(new SharedServerBrowseResult(false, "BrowseFailed",
+                "Could not choose a plain installed server file. Browse again from its local folder."));
+        }
+    });
+}
+app.MapPost("/api/local/shared-worlds/browse-server-file", (Func<HttpContext, Task<IResult>>)BrowseSharedServerFile);
 app.MapPost("/api/local/factorio/browse-executable", async () =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
@@ -1135,22 +1358,94 @@ app.MapPost("/api/local/factorio/browse-executable", async () =>
     }
     catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message, path = (string?)null }); }
 });
-app.MapPost("/api/local/factorio/import-save", async (FactorioImportRequest request) =>
+bool ImportProfileGameMatches(Guid profileId, string kind) =>
+    !data.LoadSettings().Profiles.Any(profile => profile.Id == profileId && profile.Kind != kind);
+IResult ImportConfirmationFailure(string code, string message) => Results.Json(new
 {
-    if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
-    if (instance.FreshWorldsOnly) return Results.Conflict(new FactorioImportResult(false,
-        "StagingFactorioDisabled", "Factorio preview is unavailable in fresh-world-only staging."));
-    if (desktop is null) return Results.Conflict(new { ok = false, code = "WindowUnavailable", message = "Open the TogetherServer window to browse files." });
-    try
-    {
-        var path = await desktop.PickFileAsync("Choose an existing Factorio save to copy",
-            "Factorio saves (*.zip)|*.zip");
-        return Results.Json(path is null
-            ? new FactorioImportResult(false, "Canceled", "No Factorio save was selected.")
-            : FactorioSetup.ImportCopy(data, request.ProfileId, path));
-    }
-    catch (Exception ex) { return Results.Json(new FactorioImportResult(false, "BrowseFailed", "Could not open the Windows file picker: " + ex.Message)); }
+    ok = false,
+    code,
+    message,
+    worldId = (string?)null,
+    worldDirectory = (string?)null
 });
+Task<IResult> PrepareOwnerImport(HttpContext context, string kind, string title, string filter) =>
+    FeatureRole(context, true, async () =>
+    {
+        if (shutdownPending)
+            return Results.Conflict(new SetupImportPreviewResult(false, "ShutdownPending", "TogetherServer is closing."));
+        // Refuse before opening a picker or inspecting an original save.
+        if (instance.FreshWorldsOnly)
+            return Results.Conflict(new SetupImportPreviewResult(false, "StagingFreshWorldRequired",
+                "Development cannot import an existing world. Use separate fresh development storage."));
+        var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumPrepareRequestBytes);
+        if (bytes is null || !SetupImportRequestParser.TryParsePrepare(bytes, out var profileId))
+            return Results.BadRequest(new SetupImportPreviewResult(false, "InvalidImportSelection", "Use only one server profile ID."));
+        if (!ImportProfileGameMatches(profileId, kind))
+            return Results.Conflict(new SetupImportPreviewResult(false, "ImportScopeChanged", "Choose the current server's game before browsing."));
+        if (desktop is null)
+            return Results.Conflict(new SetupImportPreviewResult(false, "WindowUnavailable", "Open the TogetherServer window to choose a source file."));
+        try
+        {
+            context.RequestAborted.ThrowIfCancellationRequested();
+            var selected = await desktop.PickFileAsync(title, filter);
+            context.RequestAborted.ThrowIfCancellationRequested();
+            if (!ImportProfileGameMatches(profileId, kind))
+                return Results.Conflict(new SetupImportPreviewResult(false, "ImportScopeChanged", "The server's game changed. Browse and review its source again."));
+            return Results.Json(importSelections.Prepare(kind, profileId, selected));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or
+            System.Security.SecurityException)
+        { return Results.Json(new SetupImportPreviewResult(false, "BrowseFailed", "Could not choose the source file. No copy was made.")); }
+    });
+Task<IResult> LegacyImportReviewRequired(HttpContext context) => FeatureRole(context, true, async () =>
+{
+    if (shutdownPending) return ImportConfirmationFailure("ShutdownPending", "TogetherServer is closing.");
+    if (instance.FreshWorldsOnly)
+        return ImportConfirmationFailure("StagingFreshWorldRequired", "Development cannot import an existing world. Use separate fresh development storage.");
+    var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumPrepareRequestBytes);
+    if (bytes is null || !SetupImportRequestParser.TryParsePrepare(bytes, out _))
+        return Results.BadRequest(new
+        {
+            ok = false,
+            code = "InvalidImportSelection",
+            message = "Use only one server profile ID.",
+            worldId = (string?)null,
+            worldDirectory = (string?)null
+        });
+    return ImportConfirmationFailure("ImportReviewRequired", "Browse and review the source preview, then choose Copy to create a managed copy.");
+});
+app.MapPost("/api/local/factorio/preview-save", (Func<HttpContext, Task<IResult>>)(context =>
+    PrepareOwnerImport(context, GameKinds.Factorio, "Choose an existing Factorio save to preview", "Factorio saves (*.zip)|*.zip")));
+app.MapPost("/api/local/terraria/preview-world", (Func<HttpContext, Task<IResult>>)(context =>
+    PrepareOwnerImport(context, GameKinds.Terraria, "Choose an existing Terraria world to preview", "Terraria worlds (*.wld)|*.wld")));
+app.MapPost("/api/local/factorio/import-save", (Func<HttpContext, Task<IResult>>)LegacyImportReviewRequired);
+app.MapPost("/api/local/setup/import-confirm", (Func<HttpContext, Task<IResult>>)(context =>
+    FeatureRole(context, true, async () =>
+    {
+        if (shutdownPending) return ImportConfirmationFailure("ShutdownPending", "TogetherServer is closing.");
+        if (instance.FreshWorldsOnly)
+            return ImportConfirmationFailure("StagingFreshWorldRequired", "Development cannot import an existing world. Use separate fresh development storage.");
+        var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumRequestBytes);
+        if (bytes is null || !SetupImportRequestParser.TryParse(bytes, out var request))
+            return Results.BadRequest(new
+            {
+                ok = false,
+                code = "InvalidImportConfirmation",
+                message = "Confirm only a selected source token, its server profile ID and supported game.",
+                worldId = (string?)null,
+                worldDirectory = (string?)null
+            });
+        if (!ImportProfileGameMatches(request!.ProfileId, request.Kind))
+            return ImportConfirmationFailure("ImportScopeChanged", "The server's game changed. Browse and review its source again.");
+        context.RequestAborted.ThrowIfCancellationRequested();
+        var resolved = importSelections.Resolve(request.SelectionId, request.Kind, request.ProfileId);
+        if (!resolved.Ok || resolved.SelectedPath is null) return ImportConfirmationFailure(resolved.Code, resolved.Message);
+        // Only the native token store resolves the path; the original verified
+        // importer retains source/hash, fresh destination and copy-once guards.
+        return request.Kind == GameKinds.Factorio
+            ? Results.Json(FactorioSetup.ImportCopy(data, request.ProfileId, resolved.SelectedPath))
+            : Results.Json(TerrariaSetup.ImportCopy(data, request.ProfileId, resolved.SelectedPath));
+    })));
 app.MapPost("/api/local/terraria/browse-executable", async () =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first.", path = (string?)null });
@@ -1166,22 +1461,7 @@ app.MapPost("/api/local/terraria/browse-executable", async () =>
     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
     { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not choose the Terraria executable.", path = (string?)null }); }
 });
-app.MapPost("/api/local/terraria/import-world", async (TerrariaImportRequest request) =>
-{
-    if (friendMode) return Results.Conflict(new TerrariaImportResult(false, "FriendMode", "Switch to Host mode first."));
-    if (instance.FreshWorldsOnly) return Results.Conflict(new TerrariaImportResult(false,
-        "StagingTerrariaDisabled", "Terraria preview is unavailable in fresh-world-only staging."));
-    if (desktop is null) return Results.Conflict(new TerrariaImportResult(false, "WindowUnavailable", "Open the TogetherServer window first."));
-    try
-    {
-        var path = await desktop.PickFileAsync("Choose an existing Terraria world to copy", "Terraria worlds (*.wld)|*.wld");
-        return Results.Json(path is null
-            ? new TerrariaImportResult(false, "Canceled", "No Terraria world was selected.")
-            : TerrariaSetup.ImportCopy(data, request.ProfileId, path));
-    }
-    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-    { return Results.Json(new TerrariaImportResult(false, "BrowseFailed", "Could not choose the Terraria world.")); }
-});
+app.MapPost("/api/local/terraria/import-world", (Func<HttpContext, Task<IResult>>)LegacyImportReviewRequired);
 app.MapPost("/api/local/minecraft/browse", async (MinecraftBrowseRequest request) =>
 {
     if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Switch to Host mode first." });
@@ -1296,7 +1576,7 @@ app.MapPost("/api/local/mode/{mode}", async (string mode) =>
     }
     finally { modeGate.Release(); }
 });
-app.MapPost("/api/local/quit", async (HttpContext context) =>
+app.MapPost("/api/local/quit", (Func<HttpContext, Task<IResult>>)(async context =>
 {
     await modeGate.WaitAsync();
     try
@@ -1315,7 +1595,7 @@ app.MapPost("/api/local/quit", async (HttpContext context) =>
         return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
     }
     finally { modeGate.Release(); }
-});
+}));
 
 app.MapGet("/api/local/companion", async () =>
 {
@@ -1769,8 +2049,18 @@ app.MapPost("/api/local/friend/{id:guid}/chat/sync", async (Guid id) =>
 app.MapPost("/api/local/friend/{id:guid}/chat/messages", async (Guid id, ChatPostRequest request) =>
     friendMode ? Results.Json(await friend.PostChatAsync(id, request.Text)) :
     Results.Conflict(new { code = "HostMode" }));
-app.MapPost("/api/local/friend/{id:guid}/probe-game", async (Guid id) =>
-    friendMode ? Results.Json(await friend.ProbeGameEndpointAsync(id)) : Results.Conflict(new { ok = false, code = "HostMode" }));
+app.MapPost("/api/local/friend/{id:guid}/probe-game", (HttpContext context, Guid id) =>
+    FeatureRole(context, false, async () =>
+    {
+        if (shutdownPending)
+            return Results.Conflict(new GameEndpointProbeResult(false, "ShutdownPending", "TogetherServer is closing.", DateTimeOffset.UtcNow));
+        var bytes = await FeatureBody(context, QolLocalEndpointInputs.MaximumGameProbeBytes);
+        if (bytes is null || !QolLocalEndpointInputs.TryGameProbe(bytes, out var request))
+            return Results.BadRequest(new GameEndpointProbeResult(false, "InvalidGameProbe",
+                "Use only the selected saved Host ID and current nullable server run ID.", DateTimeOffset.UtcNow));
+        context.RequestAborted.ThrowIfCancellationRequested();
+        return Results.Json(await friend.ProbeGameEndpointAsync(request!.ConnectionId, id, request.RunOperationId));
+    }));
 app.MapGet("/api/local/friend/{id:guid}/shared-world", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Json(friend.SharedWorldStatus(id)) : Results.Conflict(new { code = "HostMode" }));
