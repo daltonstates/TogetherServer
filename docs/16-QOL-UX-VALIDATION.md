@@ -16,12 +16,12 @@ Implementation baseline: `390da9a6c7cc0d52195e7b04fed8a7b0bed2196d`. The origina
 
 | Work | Current state | Evidence |
 | --- | --- | --- |
-| Existing complete packaged gate | Latest candidate stopped at a chat unread-count unit-test assertion: 591/592 UI tests passed. Matching full acceptance pending | [Run 37932496881](https://github.com/daltonstates/TogetherServer/actions/runs/37932496881); complete earlier run 37919613063 |
-| Focused remote rehearsal | Passed both complete normal/denial/restart groups on the latest candidate; the earlier preflight failure did not recur | Run 37932496881; `checks/TogetherServer.CompanionChecks/RemoteRehearsalJourney.cs` |
-| New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed all 19 safe groups and the complete packaged API journey on the latest candidate | Run 37932496881; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
-| New main React browser workflows, keyboard, recovery and viewport screenshots | All eight journeys and the final strict request audit passed | Run 37932496881; `ui/checks/qol-browser-smoke.mjs` |
-| Native Quit draft receipt, placement, tray and fixture picker coverage | Passed the native lane; exact case/skip evidence inspection pending | Run 37932496881; `checks/qol-desktop-smoke.ps1` |
-| Expanded release gate and CI evidence retention | One immutable build shared with four separate Windows verification runners | `scripts/verify-release.ps1`, `.github/workflows/windows-ci.yml` |
+| Existing complete packaged gate | Passed all 27 release-gate stages on the latest exact candidate; all five verification reports match its identity | [Run 37933627657](https://github.com/daltonstates/TogetherServer/actions/runs/37933627657), [Existing job](https://github.com/daltonstates/TogetherServer/actions/runs/37933627657/job/113831039509) |
+| Focused remote rehearsal | Passed both complete normal/denial/restart groups on the latest candidate | Run 37933627657; `checks/TogetherServer.CompanionChecks/RemoteRehearsalJourney.cs` |
+| New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed all 19 safe groups and the complete packaged API journey on the latest candidate | Run 37933627657; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
+| New main React browser workflows, keyboard, recovery and viewport screenshots | All eight journeys and the final strict request audit passed; zero unexpected errors or cancellations | Run 37933627657; `ui/checks/qol-browser-smoke.mjs` |
+| Native Quit draft receipt, placement, tray and fixture picker coverage | Passed all 11 supported cases and cleanup; three explicit skips | Run 37933627657; `checks/qol-desktop-smoke.ps1` |
+| Expanded release gate and CI evidence retention | One immutable build shared with five separate Windows verification runners; all passed | `scripts/verify-release.ps1`, `.github/workflows/windows-ci.yml` |
 | Real Friend-PC/WAN/game/world-save acceptance | Not performed | Separate owner-installed binaries, test PCs/routes and copied-world acceptance required |
 
 Three subagents and a read-only Codex CLI reviewer use the configured `gpt-6.1-sol` model with max reasoning. File ownership is explicit; compilation, integration, commits and pushes are serialized. Runtime results must be recorded from the exact CI run; authored checks are not passes.
@@ -290,7 +290,7 @@ Code-only verification passed again with all 19 groups and zero compilation warn
 
 Read-only review identified further potential Check/automatic-Receive interleavings around signed manifest staging and initial trusted-anchor advancement. Neither is established as this CI failure's cause; no product ancestry/manifest/retry policy changes are inferred before obtaining the actual result code.
 
-## Current candidate: first five-lane run
+## First five-lane run
 
 [Run 37932496881](https://github.com/daltonstates/TogetherServer/actions/runs/37932496881), branch head `80aa55f3efb058d687af70cbaabcf88df5cbce78`, built candidate `0.3.0+f72f41e9cb0636494a6d74a3e7268bc17bc62c5e`, SHA-256 **`784BEA86E4D1DC4883F9BCC15763A69A5ED2F39E62C9CB3D1107203609F848F2`**.
 
@@ -301,3 +301,23 @@ Read-only review identified further potential Check/automatic-Receive interleavi
 Seven-day artifacts: Rehearsal 11616193398, QolApi 11617057854, Browser 11617455680, Desktop 11616568199, failed Existing 11617097631. One-day candidate 11617177138. Whole matching-candidate acceptance remains pending; no local runtime was launched.
 
 The chat test source establishes the exact ordering gap: accepted-message DOM commit can precede the passive `onUnreadChange` observer. The test now waits for the actual last unread callback value one using its existing `waitFor` bound; it preserves message, scroll position, Jump action, final unread zero and persisted-read assertions. No repeated user/API action, added sleep or deadline/retry change is introduced. Focused chat tests passed **52/52**; the complete JSDOM suite subsequently passed **592/592 across 63 files**, and focused zero-warning lint passed. Product source is unchanged by this follow-up; a new matching full Windows gate remains required.
+
+## Current candidate: second five-lane run
+
+[Run 37933627657](https://github.com/daltonstates/TogetherServer/actions/runs/37933627657), branch head `b3ac82446897359b9ef56b36e6cd5064c3845cd6`, built unsigned candidate `0.3.0+bf9686e02a92b28c0959e8122ad6cc3d872b3033`, SHA-256 **`55B107555490D0691E0F82EF2142FCBE9A3D6B73033406D37ACA608D2947459A`**.
+
+- `QolApi`: **19 safe groups and the complete packaged API journey passed**.
+- `Browser`: **8 passed**, signed chat delivery confirmed, zero unexpected HTTP/JavaScript errors, zero mode cancellations; three external/unsupported cases remain unexercised.
+- `Desktop`: **11 PASS, 0 FAIL, 3 SKIP**, assertions/screenshots/exact cleanup complete; the same canonical native skips remain.
+- `Rehearsal`: **both complete groups passed** again, including signed exchange/transfer/receipt and denial/restart/revocation boundaries.
+- `Existing`: **27/27 release-gate stages passed**. The job log records **592/592 UI tests across 63 files**, **113 core groups**, Valheim 11, Factorio 5, Terraria 2, Minecraft 12, Minecraft setup 5, Custom 6, Shared History's 4,102-version catch-up/retention checks, updater 15, core remote 8 and remote rehearsal 2. Packaged world-load rehearsal, **Shared Worlds 11 with zero recovery scenarios skipped**, staging live action 3, shared LiveSave transfer 5 and **Companion 46** passed. Formatting, served smoke, production/staging isolation, hidden and interactive desktop smoke, and update handoff all passed. The final serial verification reaffirmed the unchanged candidate SHA-256 at **13:20:00 UTC**.
+
+All five redacted release-gate reports, the downloaded executable and the prepared DEVELOPMENT copy agree on embedded source `bf9686e02a92b28c0959e8122ad6cc3d872b3033`, product version `0.3.0+bf9686e02a92b28c0959e8122ad6cc3d872b3033`, SHA-256 `55B107555490D0691E0F82EF2142FCBE9A3D6B73033406D37ACA608D2947459A` and unsigned status. GitHub confirmed the candidate job and all five verification jobs completed successfully at the **13:20:16 UTC** read. The Existing evidence artifact was downloaded as its JSON report only; its 27 stage outcomes were compared with the four passing reports.
+
+Seven-day artifacts: **Existing 11617962340**, QolApi 11616824507, Browser 11617467522, Desktop 11616684338, Rehearsal 11617422791. One-day candidate 11617352425. Ignored DEVELOPMENT package: `local-data/qol-development-20261009-b3ac824/`, with the exact executable plus its generated Host/Friend launchers and README; copied hash verified, not launched, no production state included and prior candidates preserved.
+
+Runtime acceptance is complete for this exact packaged/synthetic candidate across the five approved Windows lanes. Later documentation-only commits reference these completed results for branch head `b3ac82446897359b9ef56b36e6cd5064c3845cd6` and the candidate identity above. Earlier failed runs remain recorded; this success does not establish the cause of their unclassified rehearsal preflight failures.
+
+The three native skips remain explicit: development staging Windows startup, Explorer tray-context Quit and OS balloon delivery/click. The Existing lane separately passed Windows startup using its disposable production-mode candidate. The browser's native import, real game client/download and real-game/WAN/save acceptance cases remain unexercised. Owner-installed games, real Friend-PC/WAN routes, real-world load/change/save/restart and installer acceptance remain separate external gates.
+
+The coordinator's final read-only production comparison at **13:21:08 UTC** matched the original executable PID/path/version/hash and both listeners: **one application, two listeners**, with production and the owner's foreground unchanged. A fresh remote main check still returned `af045bd2d4d2098331ef5f8f22391ede6e16286d`. No local runtime, deployment, main merge, tag or release was performed.
