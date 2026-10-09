@@ -15,6 +15,17 @@ var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
 var valheimFixturePath = Path.GetFullPath("src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe");
+if (args.Skip(1).Contains("--mixed-version-journey", StringComparer.OrdinalIgnoreCase))
+{
+    var legacyIndex = Array.FindIndex(args, argument => argument.Equals("--legacy-app-path", StringComparison.OrdinalIgnoreCase));
+    if (legacyIndex < 0 || legacyIndex + 1 >= args.Length)
+        throw new ArgumentException("Mixed-version checks require --legacy-app-path pointing to the separate 0.3.0 EXE.");
+    if (!OperatingSystem.IsWindows() || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+        !args.Contains("--allow-interactive-tests", StringComparer.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Mixed-version process checks require an explicitly opted-in hosted Windows CI runner; never run on the owner's active desktop.");
+    await CoreRemoteJourney.RunMixedVersionAsync(appPath, Path.GetFullPath(args[legacyIndex + 1]), valheimFixturePath);
+    return 0;
+}
 if (args.Skip(1).Contains("--shared-transfer-alerts", StringComparer.OrdinalIgnoreCase))
 {
     SharedWorldTransferAlertChecks.Run();

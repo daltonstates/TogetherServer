@@ -87,6 +87,23 @@ jobs:
         shell: pwsh
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      - name: Build the prior UI for matching header screenshots
+        if: matrix.suite == 'Browser'
+        shell: pwsh
+        run: |
+          git fetch origin a1eb74e6518900ad2087549c174d4486d5a41b3a
+          if ($LASTEXITCODE -ne 0) { throw 'Prior UI source fetch failed.' }
+          git worktree add --detach local-data/ui-before a1eb74e6518900ad2087549c174d4486d5a41b3a
+          if ($LASTEXITCODE -ne 0) { throw 'Prior UI worktree creation failed.' }
+          Push-Location local-data/ui-before/ui
+          try {
+            npm ci --ignore-scripts --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'Prior UI locked dependency install failed.' }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw 'Prior UI bundle build failed.' }
+          } finally { Pop-Location }
+          "TOGETHERSERVER_BASELINE_UI=$((Resolve-Path local-data/ui-before/ui/dist).Path)" >> $env:GITHUB_ENV
+
       - name: Verify the exact candidate on this dedicated runner
         shell: pwsh
         run: |
@@ -100,4 +117,119 @@ jobs:
           name: qol-windows-evidence-${{ matrix.suite }}
           path: local-data/ci-evidence/
           if-no-files-found: ignore
+          retention-days: 7
+
+  mixed-version:
+    needs: candidate
+    name: Verify 0.3.0 compatibility
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the same source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+
+      - name: Retrieve the immutable candidate and fixtures
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-candidate
+          path: .
+
+      - name: Fetch and verify the exact published 0.3.0 app
+        shell: pwsh
+        run: |
+          $legacyRoot = New-Item -ItemType Directory -Path local-data/compatibility/0.3.0 -Force
+          $legacy = Join-Path $legacyRoot.FullName 'TogetherServer.exe'
+          Invoke-WebRequest -Uri 'https://github.com/daltonstates/TogetherServer/releases/download/v0.3.0/TogetherServer-win-x64.exe' -OutFile $legacy
+          $expected = 'E2741B7425C497A7850BC95B5B844A4503099BF6A575484476B4A37330CDCE8E'
+          if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $expected) { throw 'Published 0.3.0 digest mismatch.' }
+          if ((Get-Item -LiteralPath $legacy).VersionInfo.FileVersion -ne '0.3.0.0') { throw 'Legacy app version mismatch.' }
+
+      - name: Test both old and new Host/Friend role directions
+        shell: pwsh
+        run: |
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/mixed-version -Force
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $legacy = (Resolve-Path local-data/compatibility/0.3.0/TogetherServer.exe).Path
+          dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $candidate --mixed-version-journey --legacy-app-path $legacy --allow-interactive-tests 2>&1 | Tee-Object -FilePath (Join-Path $evidence.FullName 'journey.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Mixed-version compatibility failed.' }
+
+      - name: Verify the published 0.3.0 app can update to this exact candidate
+        shell: pwsh
+        run: |
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $legacy = (Resolve-Path local-data/compatibility/0.3.0/TogetherServer.exe).Path
+          ./checks/update-handoff-smoke.ps1 -AppPath $candidate -LegacyAppPath $legacy -AllowInteractiveTests 2>&1 | Tee-Object -FilePath local-data/ci-evidence/mixed-version/update-handoff.log
+          if ($LASTEXITCODE -ne 0) { throw '0.3.0 to 0.3.1 update handoff failed.' }
+
+      - name: Preserve mixed-version evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mixed-version-evidence
+          path: local-data/ci-evidence/mixed-version/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  package:
+    needs: [verify, mixed-version]
+    name: Package verified release
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the verified source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Retrieve the exact verified candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-candidate
+          path: .
+
+      - name: Install the pinned installer compiler on this dedicated runner
+        shell: pwsh
+        run: |
+          $compilerSetup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $compilerSetup
+          if ((Get-FileHash -LiteralPath $compilerSetup -Algorithm SHA256).Hash -ne '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732') { throw 'Pinned installer compiler digest mismatch.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $compilerSetup
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw 'Installer compiler publisher verification failed.' }
+          $compilerRoot = Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6'
+          $installArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', "/DIR=`"$compilerRoot`"")
+          $setup = Start-Process -FilePath $compilerSetup -ArgumentList $installArguments -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0 -or !(Test-Path -LiteralPath (Join-Path $compilerRoot 'ISCC.exe'))) { throw 'Installer compiler installation failed.' }
+
+      - name: Build and test the installer around the verified bytes
+        shell: pwsh
+        run: |
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $hashBefore = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+          $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
+          if ((Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "$version+$env:GITHUB_SHA") { throw 'Candidate source identity mismatch.' }
+          ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
+          ./checks/installer-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
+          if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance failed.' }
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hashBefore) { throw 'Verified candidate bytes changed during packaging.' }
+          Copy-Item -LiteralPath $candidate -Destination local-data/release-assets/TogetherServer-win-x64.exe
+          $assets = @()
+          foreach ($name in @('TogetherServer-win-x64.exe', 'TogetherServer-Setup-win-x64.exe')) {
+            $file = Get-Item -LiteralPath (Join-Path 'local-data/release-assets' $name)
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath ($file.FullName + '.sha256') -Value "$hash  $name" -Encoding ascii
+            $assets += @{name=$name; sha256=$hash; bytes=$file.Length; authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
+          }
+          @{version=$version; sourceRevision=$env:GITHUB_SHA; candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets; acceptance='All Windows verification suites, both mixed-version directions, and installer smoke passed on dedicated runners.'} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
+
+      - name: Preserve the verified portable and installer assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-assets
+          path: local-data/release-assets/
+          if-no-files-found: error
           retention-days: 7

@@ -38,7 +38,8 @@ public static class UpdateInstaller
                 !HasPublisher(helper, args[8], signatureVerifier))) return 2;
             originalHash = await AppUpdater.HashAsync(target);
             if (args.Length == 11 &&
-                !StateCheckpointService.TryValidate(root, args[9], args[10], out _, originalHash)) return 2;
+                !StateCheckpointService.TryValidate(root, args[9], args[10], out _, originalHash,
+                    allowSupportedSourceSchema: true)) return 2;
 
             using var parent = Process.GetProcessById(parentId);
             if (parent.StartTime.ToUniversalTime().Ticks != parentStart) return 2;

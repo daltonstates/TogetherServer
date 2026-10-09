@@ -121,7 +121,7 @@ try {
     $installer = Join-Path $releaseDirectory $installerName
     if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer was not created: $installer" }
     $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
-    & (Join-Path $repository 'checks/installer-smoke.ps1') -InstallerPath $installer -ExpectedAppPath $asset
+    & (Join-Path $repository 'checks/installer-smoke.ps1') -InstallerPath $installer -ExpectedAppPath $asset -AllowInteractiveTests
     if ($LASTEXITCODE -ne 0) { throw 'Installer smoke verification failed.' }
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $installerHash) {
         throw 'Installer bytes changed during verification.'

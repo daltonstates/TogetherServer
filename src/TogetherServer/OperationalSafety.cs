@@ -531,7 +531,7 @@ internal sealed class StateCheckpointService(LocalData data, TimeProvider clock)
     }
 
     internal static bool TryValidate(string dataRoot, string directory, string expectedManifestSha256,
-        out string reason, string? expectedPreviousExecutableSha256 = null)
+        out string reason, string? expectedPreviousExecutableSha256 = null, bool allowSupportedSourceSchema = false)
     {
         reason = "The update checkpoint is invalid.";
         try
@@ -553,7 +553,9 @@ internal sealed class StateCheckpointService(LocalData data, TimeProvider clock)
             if (manifest is null || manifest.SchemaVersion != 1 || manifest.Id == Guid.Empty ||
                 manifest.CreatedUtc == default || manifest.CurrentVersion.Length is < 1 or > 64 ||
                 manifest.TargetVersion.Length is < 1 or > 64 ||
-                manifest.StorageSchemaVersion != LocalData.CurrentStorageSchemaVersion ||
+                (allowSupportedSourceSchema
+                    ? manifest.StorageSchemaVersion is < 2 or > LocalData.CurrentStorageSchemaVersion
+                    : manifest.StorageSchemaVersion != LocalData.CurrentStorageSchemaVersion) ||
                 manifest.PreviousExecutableSha256.Length != 64 ||
                 manifest.PreviousExecutableSha256.Any(character => !Uri.IsHexDigit(character)) ||
                 expectedPreviousExecutableSha256 is not null &&
@@ -574,6 +576,13 @@ internal sealed class StateCheckpointService(LocalData data, TimeProvider clock)
                 if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0 ||
                     info.Length != file.Length || !FixedHash(Hash(path), file.Sha256)) return false;
             }
+            if (allowSupportedSourceSchema &&
+                (expectedPreviousExecutableSha256 is null ||
+                 !Version.TryParse(manifest.CurrentVersion, out var sourceVersion) ||
+                 !Version.TryParse(manifest.TargetVersion, out var targetVersion) || targetVersion <= sourceVersion ||
+                 !manifest.Files.Any(file => file.Name.Equals("storage-schema.json", StringComparison.OrdinalIgnoreCase)) ||
+                 !SchemaMatches(Path.Combine(full, "storage-schema.json"), manifest.StorageSchemaVersion) ||
+                 !SchemaMatches(Path.Combine(dataRoot, "storage-schema.json"), manifest.StorageSchemaVersion))) return false;
             reason = "Verified.";
             return true;
         }
@@ -581,6 +590,17 @@ internal sealed class StateCheckpointService(LocalData data, TimeProvider clock)
                                    CryptographicException or OverflowException or ArgumentException or
                                    System.Security.SecurityException)
         { return false; }
+    }
+
+    // Read the source marker directly: constructing LocalData here would migrate it before handoff.
+    private static bool SchemaMatches(string path, int expected)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length > 64 * 1024 || (info.Attributes & FileAttributes.ReparsePoint) != 0) return false;
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        return document.RootElement.ValueKind == JsonValueKind.Object &&
+            document.RootElement.TryGetProperty("version", out var value) && value.ValueKind == JsonValueKind.Number &&
+            value.TryGetInt32(out var schema) && schema == expected;
     }
 
     private static bool FlatName(string value) => !string.IsNullOrWhiteSpace(value) &&

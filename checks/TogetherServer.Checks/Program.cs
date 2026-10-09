@@ -9006,6 +9006,74 @@ await Check("update checkpoint is same-root, bounded, hash-verified, and rejects
     return Task.CompletedTask;
 });
 
+await Check("update helper validates supported source schemas without accepting stale caller checkpoints or downgrades", () =>
+{
+    using var data = Data("state-checkpoint-source-schema");
+    var executable = Path.Combine(root, "checkpoint-source-previous.exe");
+    File.WriteAllBytes(executable, Encoding.UTF8.GetBytes("synthetic old executable"));
+    var executableHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(executable)));
+    var result = new StateCheckpointService(data, TimeProvider.System).Create("0.3.0", "0.3.1", executable);
+    Require(result.Ok && result.Checkpoint is not null, "source-schema checkpoint fixture was not created");
+    var checkpoint = result.Checkpoint!;
+    var manifestPath = Path.Combine(checkpoint.Directory, "checkpoint-manifest.json");
+    var manifest = JsonSerializer.Deserialize<StateCheckpointManifest>(File.ReadAllText(manifestPath),
+        new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var copiedSchema = Path.Combine(checkpoint.Directory, "storage-schema.json");
+    var sourceSchema = Path.Combine(data.RootPath, "storage-schema.json");
+    string SetSchema(int schema, string current = "0.3.0", string target = "0.3.1")
+    {
+        var content = JsonSerializer.Serialize(new { version = schema });
+        File.WriteAllText(sourceSchema, content);
+        File.WriteAllText(copiedSchema, content);
+        manifest.StorageSchemaVersion = schema;
+        manifest.CurrentVersion = current;
+        manifest.TargetVersion = target;
+        manifest.Files = manifest.Files.Select(file => file.Name == "storage-schema.json"
+            ? new StateCheckpointFile(file.Name, new FileInfo(copiedSchema).Length,
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(copiedSchema)))) : file).ToList();
+        File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(manifestPath)));
+    }
+    foreach (var schema in new[] { 2, 3, LocalData.CurrentStorageSchemaVersion })
+    {
+        var hash = SetSchema(schema);
+        Require(StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _, executableHash,
+            allowSupportedSourceSchema: true), $"supported source schema {schema} was rejected by helper");
+        if (schema < LocalData.CurrentStorageSchemaVersion)
+            Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _, executableHash),
+                "new caller accepted an old-schema checkpoint");
+        Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _,
+            allowSupportedSourceSchema: true), "source-schema helper validation did not require previous executable binding");
+        File.WriteAllText(sourceSchema, JsonSerializer.Serialize(new { version = schema + 1 }));
+        Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _, executableHash,
+            allowSupportedSourceSchema: true), "source-root schema mismatch was accepted");
+        File.WriteAllText(sourceSchema, JsonSerializer.Serialize(new { version = schema }));
+        File.AppendAllText(copiedSchema, "tamper");
+        Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _, executableHash,
+            allowSupportedSourceSchema: true), "tampered source checkpoint was accepted");
+    }
+    _ = SetSchema(3);
+    manifest.StorageSchemaVersion = 2;
+    File.WriteAllText(sourceSchema, "{\"version\":2}");
+    File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    var mismatchHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(manifestPath)));
+    Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, mismatchHash, out _, executableHash,
+        allowSupportedSourceSchema: true), "hash-valid copied schema disagreed with manifest but was accepted");
+    foreach (var schema in new[] { 0, 1, LocalData.CurrentStorageSchemaVersion + 1 })
+    {
+        var hash = SetSchema(schema);
+        Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _, executableHash,
+            allowSupportedSourceSchema: true), "unsupported source schema was accepted");
+    }
+    foreach (var versions in new[] { ("0.3.1", "0.3.0"), ("0.3.1", "0.3.1"), ("invalid", "0.3.1") })
+    {
+        var hash = SetSchema(2, versions.Item1, versions.Item2);
+        Require(!StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, hash, out _, executableHash,
+            allowSupportedSourceSchema: true), "downgrade, equal or invalid update version was accepted");
+    }
+    return Task.CompletedTask;
+});
+
 await Check("interrupted app recovery requires deliberate resume and clean exit clears the prompt", () =>
 {
     using var data = Data("startup-recovery");

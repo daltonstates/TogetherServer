@@ -249,7 +249,7 @@ try {
         }
         else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
 
-        Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
+        Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath -AllowInteractiveTests }
     }
 
     if ($Suite -eq 'Rehearsal') {
@@ -267,7 +267,9 @@ try {
     }
     if ($Suite -in 'All', 'Qol', 'Browser') {
         Invoke-Checked 'QoL bundled browser journeys' {
-            node ui/checks/qol-browser-smoke.mjs --app-path $AppPath --allow-interactive-tests --output-dir local-data/ci-evidence/qol-browser
+            $browserArguments = @('ui/checks/qol-browser-smoke.mjs', '--app-path', $AppPath, '--allow-interactive-tests', '--output-dir', 'local-data/ci-evidence/qol-browser')
+            if ($env:TOGETHERSERVER_BASELINE_UI) { $browserArguments += @('--baseline-ui-dir', $env:TOGETHERSERVER_BASELINE_UI) }
+            node @browserArguments
         }
     }
     if ($Suite -in 'All', 'Qol', 'Desktop') {

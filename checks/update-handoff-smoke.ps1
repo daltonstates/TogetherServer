@@ -1,8 +1,12 @@
-param([string]$AppPath = '')
+param([string]$AppPath = '', [string]$LegacyAppPath = '', [switch]$AllowInteractiveTests)
 $ErrorActionPreference = 'Stop'
+if (!$AllowInteractiveTests) { throw 'ForegroundSafety: Update handoff needs explicit approval for a separate test PC or unattended Windows runner.' }
 $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release-candidate/TogetherServer.exe' }
 $appPath = (Resolve-Path -LiteralPath $AppPath).Path
+$sourceApp = if ($LegacyAppPath) { (Resolve-Path -LiteralPath $LegacyAppPath).Path } else { $appPath }
+$candidateVersion = ([Version](Get-Item -LiteralPath $appPath).VersionInfo.FileVersion).ToString(3)
+if ($LegacyAppPath -and (([Version](Get-Item -LiteralPath $sourceApp).VersionInfo.FileVersion).ToString(3) -ne '0.3.0' -or $candidateVersion -ne '0.3.1')) { throw 'Mixed update acceptance requires exact 0.3.0 source and 0.3.1 candidate versions.' }
 $signature = Get-AuthenticodeSignature -LiteralPath $appPath
 if ($signature.Status -eq 'Valid' -and $signature.SignerCertificate) {
     $publisherHasher = [Security.Cryptography.SHA256]::Create()
@@ -32,12 +36,13 @@ if ($activeTcp -contains $port) {
     $targetFileName = 'TogetherServer DEVELOPMENT.exe'
 }
 if ($activeTcp -contains $port) { throw 'Update handoff needs production port 5127 or staging port 5128 to be free.' }
+if ($LegacyAppPath -and $port -ne 5127) { throw 'Legacy upgrade requires a free production-mode port on the dedicated runner.' }
 $target = Join-Path $install $targetFileName
 $targetProcessName = [IO.Path]::GetFileName($target)
 $payload = Join-Path $stage 'TogetherServer-win-x64.exe'
 $helper = Join-Path $stage 'TogetherServer-updater.exe'
 $ready = Join-Path $stage 'ready.signal'
-Copy-Item -LiteralPath $appPath -Destination $target
+Copy-Item -LiteralPath $sourceApp -Destination $target
 Copy-Item -LiteralPath $appPath -Destination $payload
 Copy-Item -LiteralPath $appPath -Destination $helper
 $hash = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash
@@ -45,19 +50,30 @@ $previousHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 $checkpointId = [guid]::NewGuid().ToString('N')
 $checkpoint = Join-Path $dataRoot "update-checkpoints/$checkpointId.checkpoint"
 New-Item -ItemType Directory -Path $checkpoint -Force | Out-Null
-$checkpointManifest = [ordered]@{
-    schemaVersion = 1
-    id = ([guid]::ParseExact($checkpointId, 'N')).ToString('D')
-    createdUtc = [DateTimeOffset]::UtcNow.ToString('O')
-    currentVersion = '0.2.1'
-    targetVersion = '0.2.1'
-    storageSchemaVersion = 4
-    previousExecutableSha256 = $previousHash
-    files = @()
-} | ConvertTo-Json -Depth 4
-$checkpointManifestPath = Join-Path $checkpoint 'checkpoint-manifest.json'
-[IO.File]::WriteAllText($checkpointManifestPath, $checkpointManifest, [Text.UTF8Encoding]::new($false))
-$checkpointHash = (Get-FileHash -LiteralPath $checkpointManifestPath -Algorithm SHA256).Hash
+function Write-HandoffCheckpoint {
+    # Same flat manifest format as 0.3.0; only this disposable root is read.
+    $stateFiles = @(Get-ChildItem -LiteralPath $dataRoot -File | Where-Object { $_.Extension -in '.json', '.protected' -and $_.Name -ne 'app-session.json' } | Sort-Object Name)
+    if ($stateFiles.Count -gt 250) { throw 'Checkpoint file count exceeds its bound.' }
+    $copiedFiles = @(); $totalBytes = 0L
+    foreach ($stateFile in $stateFiles) {
+        if (($stateFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $stateFile.Length -gt 32MB) { throw 'Checkpoint source is linked or too large.' }
+        $totalBytes += $stateFile.Length
+        if ($totalBytes -gt 128MB) { throw 'Checkpoint total size exceeds its bound.' }
+        $copied = Join-Path $checkpoint $stateFile.Name
+        Copy-Item -LiteralPath $stateFile.FullName -Destination $copied
+        $copiedFiles += @{name=$stateFile.Name;length=$stateFile.Length;sha256=(Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash}
+    }
+    $schema = Get-Content -LiteralPath (Join-Path $dataRoot 'storage-schema.json') -Raw | ConvertFrom-Json
+    if ($schema.version -ne $(if ($LegacyAppPath) { 2 } else { 4 })) { throw 'Unexpected source storage schema.' }
+    $manifest = [ordered]@{
+        schemaVersion=1;id=([guid]::ParseExact($checkpointId, 'N')).ToString('D');createdUtc=[DateTimeOffset]::UtcNow.ToString('O')
+        currentVersion=$(if ($LegacyAppPath) { '0.3.0' } else { '0.0.0' });targetVersion=$candidateVersion
+        storageSchemaVersion=$schema.version;previousExecutableSha256=$previousHash;files=$copiedFiles
+    } | ConvertTo-Json -Depth 5
+    $manifestPath = Join-Path $checkpoint 'checkpoint-manifest.json'
+    [IO.File]::WriteAllText($manifestPath, $manifest, [Text.UTF8Encoding]::new($false))
+    return (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
+}
 
 $oldDataRoot = $env:TOGETHERSERVER_DATA_DIR
 $oldStagingDataRoot = $env:TOGETHERSERVER_STAGING_DATA_DIR
@@ -117,8 +133,28 @@ $parentIdentity = $null
 $updaterIdentity = $null
 $appIdentity = $null
 try {
-    $parent = Start-Process -FilePath $parentPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 4') -WindowStyle Hidden -PassThru
-    $parentIdentity = Record-OwnedProcess $parent $parentPath
+    if ($LegacyAppPath) {
+        $parent = Start-Process -FilePath $target -ArgumentList @('--host') -WindowStyle Hidden -PassThru
+        $parentIdentity = Record-OwnedProcess $parent $target
+        $legacyBase = 'http://127.0.0.1:5127'; $legacyReady = $false
+        for ($attempt = 0; $attempt -lt 100; $attempt++) {
+            try {
+                $legacySnapshot = Invoke-RestMethod -Uri "$legacyBase/api/local/snapshot" -TimeoutSec 1
+                if ($legacySnapshot.mode -eq 'Host') { $legacyReady = $true; break }
+            } catch { Start-Sleep -Milliseconds 100 }
+        }
+        if (!$legacyReady) { throw 'Disposable 0.3.0 did not initialize its data.' }
+        $legacySnapshot.settings.idleMinutes = 42
+        $legacyHeaders = @{Origin=$legacyBase;'X-TogetherServer-Local'='1'}
+        $saved = Invoke-RestMethod -Uri "$legacyBase/api/local/settings" -Method Put -Headers $legacyHeaders -ContentType 'application/json' -Body ($legacySnapshot.settings | ConvertTo-Json -Depth 12)
+        if (!$saved.ok) { throw 'Disposable legacy settings could not be saved.' }
+    } else {
+        # Same-candidate byte-swap fixture; only LegacyAppPath proves an upgrade.
+        [IO.File]::WriteAllText((Join-Path $dataRoot 'storage-schema.json'), '{"version":4}', [Text.UTF8Encoding]::new($false))
+        $parent = Start-Process -FilePath $parentPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 4') -WindowStyle Hidden -PassThru
+        $parentIdentity = Record-OwnedProcess $parent $parentPath
+    }
+    $checkpointHash = Write-HandoffCheckpoint
     $startTicks = $parent.StartTime.ToUniversalTime().Ticks
     $argumentLine = "--apply-update $($parent.Id) $startTicks `"$target`" `"$payload`" $hash `"$dataRoot`" `"$ready`" $verification `"$checkpoint`" $checkpointHash"
     $updater = Start-Process -FilePath $helper -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
@@ -131,6 +167,10 @@ try {
     }
     if (!$signaled) { throw 'Updater did not signal readiness.' }
     Write-Host "PASS $verificationLabel-verified updater helper rechecked the local-state checkpoint and signaled readiness before old process exit"
+    if ($LegacyAppPath) {
+        $oldQuit = Invoke-RestMethod -Uri "$legacyBase/api/local/quit" -Method Post -Headers $legacyHeaders
+        if (!$oldQuit.ok) { throw 'Disposable 0.3.0 refused guarded Quit.' }
+    }
     if (!$updater.WaitForExit(20000) -or $updater.ExitCode -ne 0) { throw 'Updater did not finish the replacement and relaunch.' }
     # Record the replacement before hash or API assertions can fail. Cleanup never
     # discovers an unrecorded process; this short wait covers initial CIM visibility.
@@ -176,6 +216,10 @@ try {
         catch { Start-Sleep -Milliseconds 100 }
     }
     if (!$running) { throw 'The replaced EXE did not relaunch its local app.' }
+    if ($LegacyAppPath) {
+        if ($snapshot.settings.idleMinutes -ne 42 -or (Get-Content -LiteralPath (Join-Path $dataRoot 'storage-schema.json') -Raw | ConvertFrom-Json).version -ne 4) { throw 'Legacy settings or schema migration were not preserved.' }
+        Write-Host 'PASS actual 0.3.0 to 0.3.1 handoff preserved settings, migrated schema 2 to 4, and retained the exact old EXE'
+    }
     if ($relaunched.HasExited -or $appIdentity.Ticks -le 0 -or $relaunched.Id -ne $appIdentity.Id -or
         $relaunched.StartTime.ToUniversalTime().Ticks -ne $appIdentity.Ticks -or
         ![IO.Path]::GetFullPath($relaunched.MainModule.FileName).Equals($appIdentity.Path, [StringComparison]::OrdinalIgnoreCase)) {

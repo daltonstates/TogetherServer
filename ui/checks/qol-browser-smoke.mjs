@@ -17,6 +17,13 @@ assert(options.appPath && path.isAbsolute(options.appPath), 'Supply the exact ab
 const appPath = await realpath(options.appPath)
 assert((await lstat(appPath)).isFile() && path.extname(appPath).toLowerCase() === '.exe', 'The candidate must be an existing Windows EXE.')
 const candidateSha256 = createHash('sha256').update(await readFile(appPath)).digest('hex')
+let baselineUiDir
+if (options.baselineUiDir) {
+  assert(path.isAbsolute(options.baselineUiDir), '--baseline-ui-dir must be absolute.')
+  baselineUiDir = await realpath(options.baselineUiDir)
+  assert((await lstat(baselineUiDir)).isDirectory() && (await lstat(path.join(baselineUiDir, 'index.html'))).isFile(),
+    '--baseline-ui-dir must contain a built index.html and assets directory.')
+}
 const ownerId = randomUUID()
 const caseRoot = await mkdtemp(path.join(await realpath(tmpdir()), 'togetherserver-qol-browser-'))
 await writeFile(path.join(caseRoot, '.qol-smoke-owner'), ownerId, { flag: 'wx' })
@@ -38,14 +45,14 @@ let stopping = false
 let cleanupPromise
 
 function parseArguments(args) {
-  const parsed = { allowInteractive: false, appPath: '', outputDir: '' }
+  const parsed = { allowInteractive: false, appPath: '', outputDir: '', baselineUiDir: '' }
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]
     if (argument === '--allow-interactive-tests') parsed.allowInteractive = true
-    else if (argument === '--app-path' || argument === '--output-dir') {
+    else if (argument === '--app-path' || argument === '--output-dir' || argument === '--baseline-ui-dir') {
       assert(args[index + 1] && !args[index + 1].startsWith('--'), `${argument} requires a value.`)
-      parsed[argument === '--app-path' ? 'appPath' : 'outputDir'] = args[++index]
-    } else throw new Error('Use --app-path <absolute EXE> --allow-interactive-tests [--output-dir <artifact folder>].')
+      parsed[argument === '--app-path' ? 'appPath' : argument === '--baseline-ui-dir' ? 'baselineUiDir' : 'outputDir'] = args[++index]
+    } else throw new Error('Use --app-path <absolute EXE> --allow-interactive-tests [--output-dir <artifact folder>] [--baseline-ui-dir <absolute built UI directory>].')
   }
   if (!parsed.outputDir) delete parsed.outputDir
   return parsed
@@ -484,7 +491,8 @@ async function selectServer(page, name, tab = 'Overview') {
   const list = page.getByRole('complementary', { name: 'Saved servers' })
   await list.getByRole('button', { name: new RegExp(`^${name}`) }).click()
   await page.getByRole('region', { name: `${name} workspace`, exact: true }).waitFor()
-  await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: tab, exact: true }).click()
+  const label = ({ Files: 'Settings & files', Setup: 'Maintenance & setup' })[tab] ?? tab
+  await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: label, exact: true }).click()
   return page.getByRole('region', { name: `${name} workspace`, exact: true })
 }
 async function openPage(instance, context) {
@@ -526,7 +534,7 @@ async function openPage(instance, context) {
   assert(await page.locator('script[src^="/assets/"]').count() > 0, 'The candidate must serve its bundled React assets.')
   return page
 }
-async function screenshot(page, name, viewport, subject) {
+async function screenshot(page, name, viewport, subject, { assertLayout = true } = {}) {
   await page.setViewportSize(viewport)
   if (subject) {
     assert.equal(await subject.count(), 1, `${name}: the screenshot subject must be unique.`)
@@ -545,6 +553,7 @@ async function screenshot(page, name, viewport, subject) {
   await page.screenshot({ path: path.join(evidenceRoot, `${name}.png`), fullPage: false,
     mask: [page.locator('code:visible'), page.locator('input[type="password"]:visible'), page.locator('.invite-input:visible')] })
   report.screenshots.push(`${name}.png`)
+  if (!assertLayout) return // Baseline is observation-only, never a passing layout assertion.
   assert(metrics.documentWidth <= metrics.width + 1, `${name}: the rendered page must not overflow horizontally.`)
   assert.equal(metrics.headerControls.length, 3, `${name}: all three header controls must be present.`)
   assert(metrics.headerControls.every(control => control.name && control.width > 0 && control.height > 0 &&
@@ -604,6 +613,193 @@ async function routingAndAppearance(page) {
   await appearance.getByRole('checkbox', { name: 'Stronger contrast and status outlines' }).uncheck()
   await page.setViewportSize({ width: 1440, height: 900 })
 }
+async function headerOverlayRegression(page, host) {
+  // Augment only this browser's real disposable Host snapshot. Keep the candidate bundle,
+  // staging instance, transport and collectors; never seed production data or replace the app.
+  const snapshotRoute = `${host.origin}/api/local/snapshot`
+  const syntheticEvents = Array.from({ length: 8 }, (_, index) => ({ id: randomUUID(), occurredUtc: new Date(Date.now() - index * 60_000).toISOString(),
+    category: ['Lifecycle', 'Backup', 'Access', 'Network', 'Players', 'Maintenance', 'Recovery', 'Connections'][index],
+    action: `BrowserLayout${index}`, severity: index % 2 ? 'Warning' : 'Info', profileId: null, deviceId: null, visibility: 'Host',
+    message: `Synthetic browser-only layout row ${index + 1}. ${'Long notification detail wraps beside its glyph and remains readable without clipping. '.repeat(3)}` }))
+  const handler = async route => {
+    const response = await route.fetch()
+    const state = await response.json()
+    assert.equal(state.mode, 'Host', 'Header layout regression uses the disposable Host only.')
+    state.activity = syntheticEvents
+    state.settings.profiles = state.settings.profiles.map(profile => ({ ...profile,
+      name: `${profile.name} long browser layout command destination`.slice(0, 64) }))
+    await route.fulfill({ response, json: state })
+  }
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+  const notifications = page.locator('.notification-menu > summary')
+  const quickSettings = page.locator('.app-menu > summary')
+  const palette = page.getByRole('dialog', { name: 'Command palette' })
+  const viewports = [{ width: 1180, height: 774 }, { width: 1440, height: 900 }, { width: 641, height: 844 },
+    { width: 700, height: 844 }, { width: 390, height: 844 }, { width: 900, height: 400 }]
+  const box = async (locator, name, observeOnly = false) => {
+    const metrics = await locator.evaluate(element => {
+      const bounds = element.getBoundingClientRect(), style = getComputedStyle(element)
+      const exposed = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
+      return { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height,
+        clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+        overflowY: style.overflowY, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+        centerExposed: exposed === element || element.contains(exposed) }
+    })
+    report.layout.push({ name, overlay: metrics })
+    if (observeOnly) return metrics
+    assert(metrics.width > 0 && metrics.height > 0, `${name}: surface must have rendered geometry.`)
+    assert(metrics.left >= -1 && metrics.right <= metrics.viewportWidth + 1 && metrics.top >= -1 && metrics.bottom <= metrics.viewportHeight + 1,
+      `${name}: the complete overlay must stay inside the viewport.`)
+    assert(metrics.scrollWidth <= metrics.clientWidth + 1, `${name}: overlay content must not overflow horizontally.`)
+    assert(metrics.centerExposed, `${name}: the actual painted surface must not be clipped or covered by an ancestor.`)
+    if (metrics.scrollHeight > metrics.clientHeight + 1) assert(['auto', 'scroll'].includes(metrics.overflowY), `${name}: overflow must remain scrollable.`)
+    return metrics
+  }
+  await page.route(snapshotRoute, handler)
+  try {
+    if (baselineUiDir) {
+      const baselinePattern = `${host.origin}/**`
+      report.baselineUi = { codeIdentity: 'a1eb74e', provenance: 'Caller-supplied built baseline; CI must build the named commit.',
+        indexSha256: createHash('sha256').update(await readFile(path.join(baselineUiDir, 'index.html'))).digest('hex'),
+        outcome: 'capturing-observations-only', servedFiles: [], screenshots: [] }
+      const baselineAssets = async route => {
+        const request = route.request(), url = new URL(request.url())
+        if (request.method() !== 'GET' || url.origin !== host.origin ||
+            !(url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/assets/'))) return route.fallback()
+        const relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname).replace(/^\/+/, '')
+        const target = path.resolve(baselineUiDir, relative)
+        assert(inside(baselineUiDir, target), 'Baseline assets must stay within their supplied built directory.')
+        const resolved = await realpath(target)
+        assert(inside(baselineUiDir, resolved) && (await lstat(target)).isFile(), 'Baseline assets must be ordinary files inside the built directory.')
+        const body = await readFile(resolved)
+        const contentType = ({ '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
+          '.png': 'image/png', '.woff2': 'font/woff2', '.json': 'application/json' })[path.extname(resolved).toLowerCase()] ?? 'application/octet-stream'
+        if (!report.baselineUi.servedFiles.some(file => file.asset === relative)) report.baselineUi.servedFiles.push({ asset: relative,
+          sha256: createHash('sha256').update(body).digest('hex') })
+        await route.fulfill({ status: 200, body, contentType })
+      }
+      await page.route(baselinePattern, baselineAssets)
+      try {
+        await page.reload({ waitUntil: 'domcontentloaded' })
+        await navigation.waitFor()
+        await eventually(() => page.locator('.staging-banner').isVisible(), value => value, 'baseline uses the same actual staging banner')
+        for (const textScale of ['100', '150']) {
+          const viewport = { width: 1180, height: 774 }, name = `baseline-a1eb74e-notifications-1180x774-${textScale}`
+          await page.setViewportSize(viewport)
+          await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+          await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+          await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
+            value => value === (textScale === '150' ? '24px' : '16px'), `baseline ${textScale} percent text`)
+          await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+          await notifications.click()
+          const panel = page.locator('.notification-panel')
+          await panel.waitFor({ state: 'visible' })
+          // Matching real screenshot/masking/report helper, with baseline assertions deliberately disabled.
+          await screenshot(page, name, viewport, undefined, { assertLayout: false })
+          await box(panel, name, true)
+          const columns = await panel.locator('.notification-item').filter({ hasText: 'Synthetic browser-only layout row' }).evaluateAll(elements => elements.map(element => {
+            const glyph = element.querySelector(':scope > span').getBoundingClientRect(), content = element.querySelector(':scope > div').getBoundingClientRect()
+            return { firstColumn: getComputedStyle(element).gridTemplateColumns.split(' ')[0], glyphWidth: glyph.width, contentWidth: content.width,
+              glyphRight: glyph.right, contentLeft: content.left, contentRight: content.right }
+          }))
+          report.layout.push({ name: `${name}-columns`, baselineObservationOnly: true, columns })
+          report.baselineUi.screenshots.push(`${name}.png`)
+          await notifications.click()
+        }
+        report.baselineUi.outcome = 'captured-not-validated'
+      } finally { await page.unroute(baselinePattern, baselineAssets) }
+    } else skip('matching baseline notification screenshots', 'No --baseline-ui-dir supplied; candidate screenshots do not establish a before/after comparison.')
+    // APIs/snapshot fixture stayed unchanged. Restore candidate embedded assets before any assertion journey.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await navigation.waitFor()
+    await eventually(() => page.locator('.staging-banner').isVisible(), value => value, 'actual staging banner')
+    for (const textScale of ['100', '150']) {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+      await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+      await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
+        value => value === (textScale === '150' ? '24px' : '16px'), `${textScale} percent overlay text`)
+      await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+      for (const viewport of viewports) {
+        const suffix = `${viewport.width}x${viewport.height}-${textScale}`
+        await page.setViewportSize(viewport)
+        await notifications.click()
+        const panel = page.locator('.notification-panel')
+        await panel.waitFor({ state: 'visible' })
+        await screenshot(page, `notifications-${suffix}`, viewport, panel)
+        await box(panel, `notifications-${suffix}`)
+        const rows = panel.locator('.notification-item').filter({ hasText: 'Synthetic browser-only layout row' })
+        assert.equal(await rows.count(), 8, `${suffix}: all eight long fixture rows must render.`)
+        const columns = await rows.evaluateAll(elements => elements.map(element => {
+          const bounds = element.getBoundingClientRect(), glyph = element.querySelector(':scope > span').getBoundingClientRect(),
+            content = element.querySelector(':scope > div').getBoundingClientRect()
+          return { width: bounds.width, glyphWidth: glyph.width, firstColumn: getComputedStyle(element).gridTemplateColumns.split(' ')[0],
+            contentWidth: content.width, glyphRight: glyph.right, contentLeft: content.left, contentRight: content.right, rowRight: bounds.right }
+        }))
+        report.layout.push({ name: `notification-columns-${suffix}`, columns })
+        assert(columns.every(row => Number.parseFloat(row.firstColumn) <= 40 && row.glyphWidth <= 40 &&
+          row.contentWidth >= Math.min(200, row.width - 80) && row.glyphRight <= row.contentLeft && row.contentRight <= row.rowRight + 1),
+          `${suffix}: the real glyph column must stay narrow and reserve width for the notification text.`)
+        // Switching either way closes the other menu; Escape restores the corresponding trigger.
+        await quickSettings.click()
+        assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false)
+        const quick = page.locator('.app-menu-panel')
+        await screenshot(page, `quick-settings-${suffix}`, viewport, quick)
+        await box(quick, `quick-settings-${suffix}`)
+        await page.keyboard.press('Escape')
+        assert.equal(await page.locator('.app-menu').evaluate(element => element.open), false)
+        assert.equal(await quickSettings.evaluate(element => element === document.activeElement), true)
+        await quickSettings.click(); await notifications.click()
+        assert.equal(await page.locator('.app-menu').evaluate(element => element.open), false)
+        await page.keyboard.press('Escape')
+        assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false)
+        assert.equal(await notifications.evaluate(element => element === document.activeElement), true)
+        await notifications.click(); await page.mouse.click(3, viewport.height - 3)
+        assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false, 'Outside press closes Notifications.')
+        await quickSettings.click(); await page.mouse.click(3, viewport.height - 3)
+        assert.equal(await page.locator('.app-menu').evaluate(element => element.open), false, 'Outside press closes quick settings.')
+        await page.getByRole('button', { name: 'Commands', exact: true }).click()
+        const search = palette.getByRole('combobox', { name: 'Search commands' })
+        await search.waitFor()
+        const options = palette.getByRole('option'), count = await options.count()
+        assert(count >= 32, 'The actual command palette must contain at least 32 destinations.')
+        for (let index = 1; index < count; index++) await search.press('ArrowDown')
+        const lastId = await options.last().getAttribute('id')
+        await eventually(() => search.getAttribute('aria-activedescendant'), value => value === lastId, 'keyboard last command')
+        await screenshot(page, `commands-last-${suffix}`, viewport)
+        await box(palette, `commands-${suffix}`)
+        const active = palette.locator('[role="option"][aria-selected="true"]')
+        assert.equal(await active.count(), 1)
+        const activeBounds = await active.boundingBox(), listBounds = await palette.locator('.command-list').boundingBox()
+        report.layout.push({ name: `commands-selected-${suffix}`, activeBounds, listBounds })
+        assert(activeBounds && listBounds && activeBounds.y >= listBounds.y - 1 && activeBounds.y + activeBounds.height <= listBounds.y + listBounds.height + 1,
+          `${suffix}: the last keyboard-selected command must be inside the list scrollport.`)
+        const close = palette.getByRole('button', { name: 'Close commands', exact: true })
+        await box(close, `command-close-${suffix}`)
+        await close.click(); await palette.waitFor({ state: 'hidden' })
+        if (viewport.width <= 700) {
+          const mobileControls = await navigation.locator('.workspace-nav-item').evaluateAll(elements => elements.map(element => {
+            const label = element.querySelector('.workspace-nav-label'), bounds = element.getBoundingClientRect(), style = getComputedStyle(label)
+            return { name: element.getAttribute('aria-label'), width: bounds.width, height: bounds.height, label: label.textContent,
+              labelVisible: style.display !== 'none' && style.visibility !== 'hidden' && label.getBoundingClientRect().width > 0 }
+          }))
+          report.layout.push({ name: `mobile-navigation-${suffix}`, mobileControls })
+          assert.equal(mobileControls.length, 4)
+          assert(mobileControls.every(control => control.labelVisible && control.label === control.name && control.width >= 44 && control.height >= 44),
+            `${suffix}: all workspace labels and 44px touch targets remain visible.`)
+        }
+      }
+    }
+  } finally {
+    await page.unroute(snapshotRoute, handler)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await navigation.waitFor()
+    await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption('100')
+    await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+  }
+}
 async function serverNavigation(page, profiles) {
   const list = page.getByRole('complementary', { name: 'Saved servers' })
   await selectServer(page, profiles.valheim.name, 'Logs')
@@ -655,7 +851,7 @@ async function setupReview(page, profiles) {
   await screenshot(page, 'setup-review-wide', { width: 1440, height: 900 })
   await dialog.getByRole('button', { name: 'Finish later', exact: true }).click()
   await dialog.waitFor({ state: 'hidden' })
-  await page.getByRole('button', { name: 'Review recovered draft', exact: true }).click()
+  await page.getByRole('button', { name: 'Review saved setup', exact: true }).click()
   await page.getByRole('dialog', { name: 'Add new server' }).getByText('Review and start', { exact: true }).waitFor()
   await page.getByRole('dialog', { name: 'Add new server' }).getByRole('button', { name: 'Cancel', exact: true }).click()
   await page.getByRole('dialog', { name: 'Add new server' }).waitFor({ state: 'hidden' })
@@ -821,6 +1017,7 @@ async function backupCatalog(page, host, profiles) {
   await first.getByText('Pinned', { exact: true }).waitFor()
   await catalog.getByLabel('Search backups', { exact: true }).fill('Browser checkpoint')
   assert.equal(await catalog.locator('.backup-bookmark').count(), 1)
+  await catalog.getByRole('button', { name: /^Filter backups/u }).click()
   await catalog.getByRole('combobox', { name: /^Pins$/u }).selectOption('pinned')
   assert.equal(await catalog.locator('.backup-bookmark').count(), 1)
   await catalog.getByRole('button', { name: 'Clear filters', exact: true }).click()
@@ -833,6 +1030,7 @@ async function backupCatalog(page, host, profiles) {
   const currentFwl = 'Current synthetic FWL after backups; cancel must preserve this.'
   await writeFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), currentDb)
   await writeFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.fwl'), currentFwl)
+  await first.getByRole('button', { name: 'Review backup', exact: true }).click()
   await first.getByRole('button', { name: 'Review Restore', exact: true }).click()
   const review = catalog.getByRole('region', { name: 'Review Restore', exact: true })
   const restore = review.getByRole('button', { name: 'Restore reviewed backup', exact: true })
@@ -845,7 +1043,7 @@ async function backupCatalog(page, host, profiles) {
   assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), 'utf8'), currentDb)
   assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.fwl'), 'utf8'), currentFwl)
   await catalog.getByRole('button', { name: 'Verify', exact: true }).first().click()
-  await catalog.getByText(/Local integrity: Passed/u).first().waitFor()
+  await catalog.getByLabel('Recorded protection results').locator('small').filter({ hasText: /Local integrity: Passed/u }).first().waitFor()
 }
 
 async function friendPlayAndChat(host, friend, context, profiles) {
@@ -883,6 +1081,12 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   assert.equal(await readiness.count(), 1, 'The selected Friend Play flow must expose one current readiness status.')
   assert.equal(await first.getByRole('button', { name: 'Stop server', exact: true }).count(), 0)
   assert.equal(await first.getByRole('button', { name: 'View logs', exact: true }).count(), 0)
+  await play.getByRole('button', { name: 'Open Connection Doctor', exact: true }).click()
+  const doctor = page.locator('.friend-connection-tools .friend-connection-doctor')
+  await doctor.waitFor({ state: 'visible' })
+  assert.equal(await doctor.evaluate(element => element.open), true, 'Play must expand the Doctor in its moved footer.')
+  assert.equal(await doctor.locator(':scope > summary').evaluate(element => element === document.activeElement), true,
+    'The moved Doctor summary receives keyboard focus.')
   // The OS/Open game control is only observed; this harness never invokes a native client.
   await first.getByRole('button', { name: 'Open chat', exact: true }).first().click()
   const chat = first.locator('.server-chat')
@@ -997,7 +1201,8 @@ async function attentionAndLargeText(page) {
   const selectedDetailHeader = page.locator('.server-detail-card > .profile-top')
   await screenshot(page, 'host-narrow-150', { width: 390, height: 844 }, selectedDetailHeader)
   await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 }, selectedDetailHeader)
-  assert(report.layout.every(layout => layout.liveStatusCount > 0), 'Each rendered surface should retain accessible status announcements.')
+  assert(report.layout.filter(layout => 'liveStatusCount' in layout).every(layout => layout.liveStatusCount > 0),
+    'Each screenshot surface should retain accessible status announcements; geometry-only records are separate evidence.')
 }
 async function cleanupOwnedResources() {
   stopping = true
@@ -1080,6 +1285,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
   const hostPage = await openPage(host, context)
   await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage))
+  await step('staging header menus, long notification glyph columns, keyboard commands and mobile workspace labels at viewport boundaries', () => headerOverlayRegression(hostPage, host))
   await step('saved-server search, per-server tabs, favorites and durable manual ordering', () => serverNavigation(hostPage, profiles))
   await step('setup blockers, nonsecret reuse, applied port suggestion and paused-step recovery', () => setupReview(hostPage, profiles))
   await step('raw and guided protected drafts survive immediate navigation without changing files', () => editorRecovery(hostPage, host, profiles))

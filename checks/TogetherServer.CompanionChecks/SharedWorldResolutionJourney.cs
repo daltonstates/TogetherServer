@@ -120,10 +120,13 @@ internal static partial class SharedWorldJourney
                 "owner override Off was not recorded in a signed roster");
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "override off: first save");
-            await StartAndStopAsync(owner, profile.Id);
-            var first = (await GetAsync<SharedWorldStatus>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world")).Latest;
-            Require(first is { Number: 1 }, "owner-override-off first save was not signed");
+            var firstStop = await StartAndStopAsync(owner, profile.Id);
+            var firstStatus = await GetAsync<SharedWorldStatus>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world");
+            var first = firstStatus.Latest;
+            var firstDiagnostic = first is { Number: 1 } ? "" :
+                await DescribeMissingSharedPublicationAsync(owner, profile.Id, firstStop, firstStatus, root);
+            Require(first is { Number: 1 }, "owner-override-off first save was not signed" + firstDiagnostic);
             var firstVersion = first!;
             await Task.WhenAll(PollAsync(aLocal), PollAsync(bLocal));
             await Task.WhenAll(WaitVersionAsync(aLocal, profile.Id, 1),
@@ -355,5 +358,51 @@ internal static partial class SharedWorldJourney
             StopApp(friendA);
             StopApp(host);
         }
+    }
+    private static async Task<string> DescribeMissingSharedPublicationAsync(HttpClient owner,
+        Guid profileId, ActionResult stop, SharedWorldStatus sharing, string disposableRoot)
+    {
+        var backupFacts = "backups=unavailable";
+        try
+        {
+            var list = await GetAsync<WorldBackupList>(owner,
+                $"/api/local/profiles/{profileId}/backups");
+            var latest = list.Backups.OrderByDescending(item => item.CreatedUtc).FirstOrDefault();
+            backupFacts = $"completedCount={list.Status.CompletedCount}; " +
+                $"latestBackupSetupIncluded={latest?.SetupIncluded.ToString() ?? "none"}; " +
+                $"backupError={BoundedPublicationDiagnostic(list.Status.LastFailure)}";
+        }
+        catch (Exception error)
+        {
+            // Diagnostic reads must never replace the original assertion or emit raw paths.
+            backupFacts = "backupsRead=" + error.GetType().Name;
+        }
+        var freeBytes = "unavailable";
+        try
+        {
+            freeBytes = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(disposableRoot))!)
+                .AvailableFreeSpace.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (Exception error) { freeBytes = error.GetType().Name; }
+        return $"; stopCode={BoundedPublicationDiagnostic(stop.Code)}; " +
+            $"stopMessage={BoundedPublicationDiagnostic(stop.Message)}; " +
+            $"sharingEnabled={sharing.Enabled}; canManageSharing={sharing.CanManageSharing}; " +
+            $"latestNumber={sharing.Latest?.Number.ToString() ?? "none"}; " +
+            $"sharingError={BoundedPublicationDiagnostic(sharing.Error)}; " +
+            $"{backupFacts}; disposableDriveFreeBytes={freeBytes}";
+    }
+
+    private static string BoundedPublicationDiagnostic(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "none";
+        var text = new string(value.Take(4096).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
+        text = text.Replace("fixture-pass-123", "[synthetic password]", StringComparison.Ordinal);
+        text = System.Text.RegularExpressions.Regex.Replace(text,
+            @"(?i)(?:https?://|[a-z]:[\\/]|\\\\)[^;]*", "[location]");
+        text = System.Text.RegularExpressions.Regex.Replace(text,
+            @"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", "[id]");
+        text = System.Text.RegularExpressions.Regex.Replace(text,
+            @"[A-Za-z0-9+/=_-]{40,}", "[opaque value]");
+        return text.Length <= 240 ? text : text[..240] + "...";
     }
 }

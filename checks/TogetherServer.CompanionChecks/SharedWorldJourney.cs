@@ -747,12 +747,13 @@ internal static partial class SharedWorldJourney
         return client;
     }
 
-    private static async Task StartAndStopAsync(HttpClient owner, Guid profileId)
+    private static async Task<ActionResult> StartAndStopAsync(HttpClient owner, Guid profileId)
     {
         await StartReadyAsync(owner, profileId);
         var stop = await PostAsync<object, ActionResult>(owner,
             $"/api/local/profiles/{profileId}/stop", new { });
         Require(stop.Ok, $"fixture graceful Stop failed: {stop.Code} {stop.Message}");
+        return stop;
     }
 
     private static async Task StartReadyAsync(HttpClient owner, Guid profileId)
