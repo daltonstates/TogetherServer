@@ -96,6 +96,10 @@ public sealed class WorldBackupRecord
     public long SizeBytes { get; set; }
     public int FileCount { get; set; }
     public bool SetupIncluded { get; set; }
+    // Owner bookmarks live only in the catalog. They never change the completed
+    // manifest, payload hashes, protected setup, or signed sharing lineage.
+    public string Label { get; set; } = "";
+    public bool Pinned { get; set; }
 }
 
 public sealed class BackupFailure
@@ -690,10 +694,18 @@ internal sealed partial class WorldBackupService
     private void EnforceRetention(ServerProfile profile, BackupCatalog catalog, Guid keepId, Guid? protectedBackupId)
     {
         var retention = Math.Clamp(profile.Backups.RetentionCount, 1, 50);
+        // A damaged duplicate catalog row must not make a pinned directory
+        // eligible through another row carrying the same completed identity.
+        var pinnedIds = catalog.Records.Where(item => item.ProfileId == profile.Id && item.Pinned)
+            .Select(item => item.Id).ToHashSet();
         var protectedIds = new HashSet<Guid> { keepId };
         if (protectedBackupId is { } protectedId) protectedIds.Add(protectedId);
-        var retainedSlots = Math.Max(0, retention - protectedIds.Count);
-        var remove = catalog.Records.Where(item => item.ProfileId == profile.Id && !protectedIds.Contains(item.Id))
+        var protectedUnpinnedCount = catalog.Records.Where(item => item.ProfileId == profile.Id &&
+                !pinnedIds.Contains(item.Id) && protectedIds.Contains(item.Id))
+            .Select(item => item.Id).Distinct().Count();
+        var retainedSlots = Math.Max(0, retention - protectedUnpinnedCount);
+        var remove = catalog.Records.Where(item => item.ProfileId == profile.Id &&
+            !pinnedIds.Contains(item.Id) && !protectedIds.Contains(item.Id))
             .OrderByDescending(item => item.CreatedUtc).Skip(retainedSlots).ToList();
         foreach (var record in remove)
         {

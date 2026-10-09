@@ -363,7 +363,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     canAddShutdownTime,
                     snapshot.Settings.FriendTimerExtensionMinutes,
                     Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes),
-                    canViewLogs);
+                    canViewLogs, GameKind: profile.Kind);
             }).ToList();
             var protocol = CompanionProtocol.Describe(own?.ProtocolVersion);
             var assigned = own?.AssignedProfileIds.ToHashSet() ?? [];
@@ -748,8 +748,14 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     current is null || !pairing.CanAccess(current, profileId) ||
                     !chat.IsMember(profileId, current.Id))
                     return Results.Json(new { code = "ChatAccessDenied" }, statusCode: 403);
+                var entries = chat.Read(hostId, profileId);
+                var notice = chat.ReadOwnerNotice(hostId, profileId);
+                decision = pairing.AuthorizeActiveDevice(device.Id, out current);
+                if (!decision.Ok) return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+                if (current is null || !pairing.CanAccess(current, profileId) || !chat.IsMember(profileId, current.Id))
+                    return Results.Json(new { code = "ChatAccessDenied" }, statusCode: 403);
                 return Results.Json(new ChatSyncResponse(true, "ChatSynced", "Chat is up to date.",
-                    hostId, profileId, publicKey, chat.Read(hostId, profileId)));
+                    hostId, profileId, publicKey, entries, Notice: notice));
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or
                                        CryptographicException or UnauthorizedAccessException or ArgumentException)
@@ -1091,6 +1097,29 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (latest.Latest?.VersionHash != versionHash)
                 return Results.NotFound(new { code = "SharedVersionUnavailable" });
             return Results.Bytes(chunk, "application/octet-stream");
+        });
+        companion.MapGet("/servers/{profileId:guid}/requirements", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Authenticate(context, out var device, out var decision))
+                return Results.Json(decision, statusCode: AuthenticationStatus(decision));
+            decision = pairing.AuthorizeGameRequirements(device!.Id, profileId, out var current);
+            if (!decision.Ok || current is null)
+                return Results.Json(decision, statusCode: decision.Code == "PermissionDenied" ? 403 : AuthenticationStatus(decision));
+            if (!int.TryParse(context.Request.Headers[CompanionProtocol.HeaderName], out var protocol) ||
+                !CompanionProtocol.IsCompatible(protocol) ||
+                context.Request.Headers["X-TogetherServer-Capability"] != CompanionProtocol.GameRequirementsCapability)
+                return Results.Json(new PairingDecision(false, "RequirementsUpdateRequired", "Update both apps to share game requirements."), statusCode: 409);
+            if (context.Request.QueryString.HasValue ||
+                context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
+                return Results.BadRequest(new { code = "InvalidRequirementsRequest", message = "Choose only an assigned saved server." });
+            var result = await manager.GameRequirementsAsync(profileId, context.RequestAborted);
+            decision = pairing.AuthorizeGameRequirements(current.Id, profileId, out _);
+            if (!decision.Ok)
+                return Results.Json(decision, statusCode: decision.Code == "PermissionDenied" ? 403 : AuthenticationStatus(decision));
+            var payload = JsonSerializer.SerializeToUtf8Bytes(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (payload.Length > GameCompatibility.MaximumWireBytes)
+                return Results.Json(GameCompatibility.Failure("RequirementsResponseTooLarge", "The game requirements exceed the allowed response size."), statusCode: 503);
+            return Results.Bytes(payload, "application/json");
         });
         companion.MapGet("/servers/{profileId:guid}/logs", async (HttpContext context, Guid profileId) =>
         {

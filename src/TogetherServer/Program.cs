@@ -427,6 +427,109 @@ async Task<IResult> OwnerGet<T>(HttpContext context, Func<Task<T>> action, strin
     if (friendMode) return Results.Conflict(new { code = "FriendMode", message = $"{area} are Host-only." });
     return Results.Json(await action());
 }
+async Task<IResult> FeatureRole(HttpContext context, bool host, Func<Task<IResult>> action)
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(403);
+    if (context.Request.QueryString.HasValue || context.Request.Method == "GET" &&
+        context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
+        return Results.BadRequest(new { code = "InvalidFeatureRequest", message = "Use only this feature's fixed reviewed fields." });
+    if (!await modeGate.WaitAsync(TimeSpan.FromSeconds(4), context.RequestAborted))
+        return Results.Conflict(new { code = "FeatureBusy", message = "Another local action is still running. Retry this feature when it finishes." });
+    try
+    {
+        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+        if (host == friendMode) return Results.Conflict(new { code = host ? "FriendMode" : "HostMode", message = host ? "Open Host to manage this feature." : "Open Join to use this feature." });
+        return await action();
+    }
+    finally { modeGate.Release(); }
+}
+static async Task<byte[]?> FeatureBody(HttpContext context, int maximum)
+{
+    if (context.Request.ContentLength > maximum) return null;
+    using var output = new MemoryStream(); var buffer = new byte[Math.Min(4096, maximum + 1)];
+    while (true)
+    {
+        var read = await context.Request.Body.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, maximum - (int)output.Length + 1)), context.RequestAborted);
+        if (read == 0) return output.ToArray();
+        if (output.Length + read > maximum) return null;
+        output.Write(buffer, 0, read);
+    }
+}
+app.MapGet("/api/local/profiles/{id:guid}/requirements", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () => Results.Json(await manager.GameRequirementsAsync(id, context.RequestAborted))));
+app.MapPut("/api/local/profiles/{id:guid}/requirements", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () =>
+    {
+        var bytes = await FeatureBody(context, 256);
+        if (bytes is null || !FeatureRequestParser.TryVersion(bytes, out var version))
+            return Results.BadRequest(new { code = "InvalidVersion", message = "Use only one bounded game version or null to clear it." });
+        return Results.Json(await manager.SetGameRequirementAsync(id, new(version), context.RequestAborted));
+    }));
+app.MapGet("/api/local/friend/{id:guid}/compatibility", (HttpContext context, Guid id) =>
+    FeatureRole(context, false, async () => Results.Json(await friend.ReadGameCompatibilityAsync(id, context.RequestAborted))));
+app.MapPut("/api/local/friend/{id:guid}/client-version", (HttpContext context, Guid id) =>
+    FeatureRole(context, false, async () =>
+    {
+        var bytes = await FeatureBody(context, 256);
+        if (bytes is null || !FeatureRequestParser.TryVersion(bytes, out var version))
+            return Results.BadRequest(new { code = "InvalidVersion", message = "Use only one bounded manual client version or null." });
+        return Results.Json(await friend.SetManualClientVersionAsync(id, new(version), context.RequestAborted));
+    }));
+app.MapPost("/api/local/friend/{id:guid}/open-game", (HttpContext context, Guid id) =>
+    FeatureRole(context, false, async () =>
+    {
+        var bytes = await FeatureBody(context, 1);
+        if (bytes is null || bytes.Length != 0)
+            return Results.BadRequest(new { code = "InvalidGameLaunchRequest", message = "Open game accepts only a currently assigned saved server, without a body." });
+        return Results.Json(await friend.OpenGameAsync(id, context.RequestAborted));
+    }));
+app.MapGet("/api/local/profiles/{id:guid}/backup-bookmarks", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () => Results.Json(await manager.BackupBookmarksAsync(id))));
+app.MapPut("/api/local/profiles/{id:guid}/backups/{backupId:guid}/bookmark", (HttpContext context, Guid id, Guid backupId) =>
+    FeatureRole(context, true, async () =>
+    {
+        var bytes = await FeatureBody(context, 512);
+        if (bytes is null || !FeatureRequestParser.TryBookmark(bytes, out var request))
+            return Results.BadRequest(new { code = "InvalidBackupBookmark", message = "Use only a backup name and pin flag." });
+        var result = await manager.UpdateBackupBookmarkAsync(id, backupId, request!);
+        return Results.Json(result, statusCode: result.Ok ? 200 : result.Code == "UnknownProfile" ? 404 : 400);
+    }));
+app.MapGet("/api/local/profiles/{id:guid}/weekly-summary", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () => Results.Json(await manager.WeeklySummaryAsync(id))));
+app.MapGet("/api/local/profiles/{id:guid}/game-settings", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () => Results.Json(await manager.ReadGameSettingsAsync(id))));
+async Task<IResult> GameSettingsMutation(HttpContext context, Guid id, string? key, bool preview = false, bool undo = false) =>
+    await FeatureRole(context, true, async () =>
+    {
+        IResult invalid = Results.BadRequest(new { ok = false, code = "InvalidSettingsRequest", message = "Use only the reviewed game settings fields." });
+        var maximum = undo ? GameSettingsRequestParser.MaximumUndoRequestBytes : key is null
+            ? GameSettingsRequestParser.MaximumSettingsRequestBytes : GameSettingsRequestParser.MaximumListRequestBytes;
+        var bytes = await FeatureBody(context, maximum);
+        if (bytes is null) return invalid;
+        if (undo)
+        {
+            if (!GameSettingsRequestParser.TryParseUndo(bytes, out var request)) return invalid;
+            return key is null ? Results.Json(await manager.UndoGameSettingsAsync(id, request!)) :
+                Results.Json(await manager.UndoGameAccessListAsync(id, key, request!));
+        }
+        if (key is null)
+        {
+            if (!GameSettingsRequestParser.TryParseSettings(bytes, out var request)) return invalid;
+            return preview ? Results.Json(await manager.PreviewGameSettingsAsync(id, request!)) :
+                Results.Json(await manager.SaveGameSettingsAsync(id, request!));
+        }
+        if (!GameSettingsRequestParser.TryParseList(bytes, out var listRequest)) return invalid;
+        return preview ? Results.Json(await manager.PreviewGameAccessListAsync(id, key, listRequest!)) :
+            Results.Json(await manager.SaveGameAccessListAsync(id, key, listRequest!));
+    });
+app.MapPost("/api/local/profiles/{id:guid}/game-settings/preview", (HttpContext context, Guid id) => GameSettingsMutation(context, id, null, preview: true));
+app.MapPut("/api/local/profiles/{id:guid}/game-settings", (HttpContext context, Guid id) => GameSettingsMutation(context, id, null));
+app.MapPost("/api/local/profiles/{id:guid}/game-settings/undo", (HttpContext context, Guid id) => GameSettingsMutation(context, id, null, undo: true));
+app.MapGet("/api/local/profiles/{id:guid}/game-settings/lists/{key}", (HttpContext context, Guid id, string key) =>
+    FeatureRole(context, true, async () => Results.Json(await manager.ReadGameAccessListAsync(id, key))));
+app.MapPost("/api/local/profiles/{id:guid}/game-settings/lists/{key}/preview", (HttpContext context, Guid id, string key) => GameSettingsMutation(context, id, key, preview: true));
+app.MapPut("/api/local/profiles/{id:guid}/game-settings/lists/{key}", (HttpContext context, Guid id, string key) => GameSettingsMutation(context, id, key));
+app.MapPost("/api/local/profiles/{id:guid}/game-settings/lists/{key}/undo", (HttpContext context, Guid id, string key) => GameSettingsMutation(context, id, key, undo: true));
 app.MapPut("/api/local/settings", async (HostSettings settings) =>
 {
     await modeGate.WaitAsync();
@@ -692,8 +795,15 @@ ChatRoomView HostChatRoom(Guid profileId)
     var members = pairing.Views().Where(device => device.AssignedProfileIds.Contains(profileId) &&
         !device.Revoked).Select(device => new ChatMember(device.Id, device.Name,
             serverChat.IsMember(profileId, device.Id))).ToList();
-    return new(true, "ChatReady", "Messages are copied to connected members.", hostId,
-        profileId, serverChat.Read(hostId, profileId), [], members);
+    try
+    {
+        return new(true, "ChatReady", "Messages are copied to connected members.", hostId,
+            profileId, serverChat.Read(hostId, profileId), [], members,
+            Notice: serverChat.ReadOwnerNotice(hostId, profileId), NoticeSupported: true);
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or
+        System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+    { return new(false, "ChatReviewRequired", "This room's protected data needs owner review.", hostId, profileId, [], []); }
 }
 app.MapPost("/api/local/rehearsal/prepare", async () => friendMode
     ? Results.Conflict(new RemoteRehearsalSetup(false, "FriendMode", "Open the development Host first."))
@@ -707,6 +817,26 @@ app.MapPost("/api/local/friend/{id:guid}/rehearsal", async (HttpContext context,
 app.MapGet("/api/local/profiles/{id:guid}/chat", (HttpContext context, Guid id) =>
     !HasSensitiveLocalGetHeader(context) ? Results.StatusCode(403) :
     friendMode ? Results.Conflict(new { code = "FriendMode" }) : Results.Json(HostChatRoom(id)));
+app.MapPut("/api/local/profiles/{id:guid}/chat/notice", (HttpContext context, Guid id) =>
+    FeatureRole(context, true, async () =>
+    {
+        var bytes = await FeatureBody(context, 16 * 1024);
+        if (bytes is null || !FeatureRequestParser.TryNotice(bytes, out var request) ||
+            request!.Text is not null && !ServerChat.ValidNoticeText(request.Text))
+            return Results.BadRequest(new { code = "InvalidNotice", message = "Use only a plain-text notice of at most 2000 characters and the current revision." });
+        var room = HostChatRoom(id);
+        if (!room.Ok) return Results.Json(room, statusCode: 409);
+        try
+        {
+            serverChat.SetOwnerNotice(room.HostId, id, request.Text, request.ExpectedRevision);
+            return Results.Json(HostChatRoom(id));
+        }
+        catch (PinnedNoticeConflictException)
+        { return Results.Conflict(new { code = "NoticeChanged", message = "The notice changed. Reload before saving." }); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or
+            System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException or OverflowException)
+        { return Results.Json(new { code = "NoticeUnavailable", message = "The protected notice could not be saved. Review the room and try again." }, statusCode: 503); }
+    }));
 app.MapPost("/api/local/profiles/{id:guid}/chat/messages", (Guid id, ChatPostRequest request) =>
 {
     if (friendMode) return Results.Conflict(new { code = "FriendMode" });

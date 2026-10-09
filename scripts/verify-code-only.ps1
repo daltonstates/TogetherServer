@@ -44,6 +44,9 @@ try {
     Invoke-Checked '.NET solution compilation (no UI package or app launch)' {
         dotnet build TogetherServer.slnx -c Release --no-restore -p:CodeOnlyVerification=true
     }
+    Invoke-Checked 'Six-feature source checks (synthetic files and fake adapters only)' {
+        dotnet 'checks/TogetherServer.FeatureChecks/bin/Release/net10.0-windows/TogetherServer.FeatureChecks.dll'
+    }
     Invoke-Checked 'Git whitespace check' { git diff HEAD --check }
 
     Invoke-Checked 'Desktop diagnostic isolation' {

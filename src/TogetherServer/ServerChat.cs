@@ -12,15 +12,17 @@ public sealed record ChatDraft(Guid Id, string Text);
 public sealed record ChatSyncRequest(IReadOnlyList<ChatEntry>? Entries,
     IReadOnlyList<ChatDraft>? Drafts);
 public sealed record ChatSyncResponse(bool Ok, string Code, string Message,
-    Guid HostId, Guid ProfileId, string? PublicKey, IReadOnlyList<ChatEntry> Entries);
+    Guid HostId, Guid ProfileId, string? PublicKey, IReadOnlyList<ChatEntry> Entries,
+    PinnedServerNotice? Notice = null);
 public sealed record ChatMember(Guid DeviceId, string Name, bool Allowed);
 public sealed record ChatRoomView(bool Ok, string Code, string Message, Guid HostId,
     Guid ProfileId, IReadOnlyList<ChatEntry> Entries, IReadOnlyList<ChatDraft> Pending,
-    IReadOnlyList<ChatMember>? Members = null);
+    IReadOnlyList<ChatMember>? Members = null, PinnedServerNotice? Notice = null,
+    bool NoticeCached = false, bool NoticeSupported = false);
 public sealed record ChatPostRequest(string? Text);
 public sealed record ChatMemberChange(bool Allowed);
 
-public sealed class ServerChat(LocalData data)
+public sealed partial class ServerChat(LocalData data)
 {
     public const int MaximumTextLength = 500;
     public const int MaximumEntries = 200;
@@ -282,7 +284,11 @@ public sealed class ServerChat(LocalData data)
         lock (sync)
             foreach (var profileId in profileIds.Distinct())
             {
-                if (!preserveSharedRoomCopies) data.DeleteProtected(RoomFile(hostId, profileId));
+                if (!preserveSharedRoomCopies)
+                {
+                    data.DeleteProtected(RoomFile(hostId, profileId));
+                    ForgetNoticeCopy(hostId, profileId);
+                }
                 data.DeleteProtected(PendingFile(hostId, profileId, deviceId));
             }
     }

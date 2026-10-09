@@ -1,24 +1,42 @@
 import { useCallback, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
-import { parseChatRoomView, type ChatRoomView } from './contracts'
+import { ContractError } from './contracts'
+import { maximumNoticeTextLength, parseChatRoomWithNotice, validPinnedNoticeText,
+  type ChatRoomWithNotice } from './pinnedNoticeContracts'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 
 export function ServerChat({ profileId, host, visible, supported = true }: {
   profileId: string; host: boolean; visible: boolean; supported?: boolean
 }) {
   const base = host ? `/api/local/profiles/${profileId}/chat` : `/api/local/friend/${profileId}/chat`
-  const [room, setRoom] = useState<ChatRoomView | null>(null)
+  const [roomState, setRoomState] = useState<{ base: string; room: ChatRoomWithNotice } | null>(null)
+  const room = roomState?.base === base ? roomState.room : null
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [noticeEdit, setNoticeEdit] = useState<{ base: string; text: string; revision: number } | null>(null)
+  const [noticeError, setNoticeError] = useState('')
+  const editingNotice = noticeEdit?.base === base ? noticeEdit : null
+  const decodeRoom = useCallback((value: unknown, context?: string) => {
+    const decoded = parseChatRoomWithNotice(value, context)
+    if (decoded.profileId.toLowerCase() !== profileId.toLowerCase())
+      throw new ContractError('Chat returned a different server room.')
+    return decoded
+  }, [profileId])
+  const keepRoom = useCallback((next: ChatRoomWithNotice) => setRoomState({ base, room: next }), [base])
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    const next = host ? await getLocalJson(base, parseChatRoomView, signal) :
-      await changeJson(`${base}/sync`, 'POST', parseChatRoomView, undefined, signal)
-    setRoom(next)
+    const next = host ? await getLocalJson(base, decodeRoom, signal) :
+      await changeJson(`${base}/sync`, 'POST', decodeRoom, undefined, signal)
+    keepRoom(next)
     setError('')
+  }, [base, host, decodeRoom, keepRoom])
+  const refreshFailure = useCallback((failure: unknown) => {
+    setError(errorMessage(failure))
+    if (!host) setRoomState(current => current?.base === base ?
+      { ...current, room: { ...current.room, noticeCached: true } } : current)
   }, [base, host])
-  useSingleFlightPolling(refresh, 5000, failure => setError(errorMessage(failure)),
+  useSingleFlightPolling(refresh, 5000, refreshFailure,
     visible && supported, base)
 
   async function send(event: React.FormEvent) {
@@ -26,8 +44,8 @@ export function ServerChat({ profileId, host, visible, supported = true }: {
     if (busy || !text.trim()) return
     setBusy(true)
     try {
-      const next = await changeJson(`${base}/messages`, 'POST', parseChatRoomView, { text: text.trim() })
-      setRoom(next)
+      const next = await changeJson(`${base}/messages`, 'POST', decodeRoom, { text: text.trim() })
+      keepRoom(next)
       if (next.ok) setText('')
       setError(next.ok ? '' : next.message)
     } catch (failure) { setError(errorMessage(failure)) }
@@ -38,10 +56,35 @@ export function ServerChat({ profileId, host, visible, supported = true }: {
     setBusy(true)
     try {
       const next = await changeJson(`${base}/members/${deviceId}`, 'PUT',
-        parseChatRoomView, { allowed })
-      setRoom(next)
+        decodeRoom, { allowed })
+      keepRoom(next)
       setError('')
     } catch (failure) { setError(errorMessage(failure)) }
+    finally { setBusy(false) }
+  }
+
+  function editNotice() {
+    if (!host || !room?.ok || !room.noticeSupported) return
+    setNoticeEdit({ base, text: room.notice?.text ?? '', revision: room.notice?.revision ?? 0 })
+    setNoticeError('')
+  }
+
+  async function saveNotice(event: React.FormEvent) {
+    event.preventDefault()
+    if (busy || !host || !editingNotice || !validPinnedNoticeText(editingNotice.text.trim())) return
+    await changeNotice(editingNotice.text.trim(), editingNotice.revision)
+  }
+
+  async function changeNotice(nextText: string | null, expectedRevision: number) {
+    if (busy || !host || !room?.ok || !room.noticeSupported) return
+    setBusy(true)
+    try {
+      const next = await changeJson(`${base}/notice`, 'PUT', decodeRoom,
+        { text: nextText, expectedRevision })
+      keepRoom(next)
+      if (next.ok) { setNoticeEdit(null); setNoticeError('') }
+      else setNoticeError(next.message)
+    } catch (failure) { setNoticeError(errorMessage(failure)) }
     finally { setBusy(false) }
   }
 
@@ -49,9 +92,36 @@ export function ServerChat({ profileId, host, visible, supported = true }: {
   return <section className="server-chat" aria-label="Server chat">
     <div className="server-chat-heading"><div><h3>Server chat</h3>
       <p>Talk about this server with the people who have access to its room.</p></div>
-      <Button className="secondary" disabled={busy} onClick={() => void refresh()}>Sync now</Button></div>
+      <Button className="secondary" disabled={busy} onClick={() => void refresh().catch(refreshFailure)}>Sync now</Button></div>
     {room && !room.ok && <p className="warning-text" role="status">{room.message}</p>}
     {error && <p className="warning-text" role="alert">{error}</p>}
+    {room && <section className="server-chat-notice" aria-label="Pinned notice">
+      <div className="server-chat-notice-heading"><strong>Pinned notice</strong>
+        {host && room.ok && room.noticeSupported && !editingNotice &&
+          <Button className="secondary" disabled={busy} onClick={editNotice}>
+            {room.notice?.text ? 'Edit notice' : 'Add notice'}</Button>}
+      </div>
+      {room.notice?.text ? <><p>{room.notice.text}</p>
+        <small>{!host && room.noticeCached ? 'Cached on this PC · ' : ''}Updated{' '}
+          <time dateTime={room.notice.updatedUtc}>{new Date(room.notice.updatedUtc).toLocaleString()}</time></small>
+      </> : <p className="helper-text">{room.notice?.text === null ?
+        `${!host && room.noticeCached ? 'Cached on this PC: ' : ''}The Host cleared the notice.` : 'No pinned notice.'}</p>}
+      {!host && !room.noticeSupported && room.code === 'ChatSynced' &&
+        <p className="helper-text">Update the Host app to see current pinned notices.</p>}
+      {editingNotice && <form className="server-chat-notice-editor" onSubmit={event => void saveNotice(event)}>
+        <label htmlFor={`notice-${profileId}`}>Notice text</label>
+        <TextArea id={`notice-${profileId}`} value={editingNotice.text} maxLength={maximumNoticeTextLength} rows={4}
+          placeholder="Rules, maintenance, or what changed" disabled={busy}
+          onChange={event => setNoticeEdit({ ...editingNotice, text: event.target.value })} />
+        <div><small>{editingNotice.text.length}/{maximumNoticeTextLength}</small>
+          <Button type="submit" disabled={busy || !validPinnedNoticeText(editingNotice.text.trim())}>Save notice</Button>
+          <Button className="secondary" disabled={busy} onClick={() => { setNoticeEdit(null); setNoticeError('') }}>Cancel</Button>
+          {room.notice?.text && <Button className="secondary" disabled={busy}
+            onClick={() => void changeNotice(null, editingNotice.revision)}>Clear notice</Button>}
+        </div>
+      </form>}
+      {noticeError && <p className="warning-text" role="alert">{noticeError}</p>}
+    </section>}
     <div className="server-chat-messages" role="log" aria-live="polite" aria-label="Messages">
       {!room?.entries.length && <p className="helper-text">No messages yet.</p>}
       {room?.entries.map(entry => <div className="server-chat-message" key={entry.id}>

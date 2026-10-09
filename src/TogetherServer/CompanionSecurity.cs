@@ -409,7 +409,7 @@ public sealed class HostIdentity(LocalData data)
     }
 }
 
-public sealed class PairingService
+public sealed partial class PairingService
 {
     private static readonly TimeSpan MaximumOwnerAccess = TimeSpan.FromDays(365);
     internal static readonly DateTimeOffset PersistentServerCodeExpiry = DateTimeOffset.MaxValue;

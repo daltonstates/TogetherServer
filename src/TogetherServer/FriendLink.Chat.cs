@@ -14,8 +14,12 @@ internal sealed partial class FriendLink
         if (current is null || current.HostId == Guid.Empty)
             return new(false, "NotPaired", "Connect to a Host first.", Guid.Empty,
                 profileId, [], []);
-        if (view.State is "Revoked" or "Access expired" ||
-            current.ChatDeniedProfiles?.Contains(profileId) == true)
+        if (view.State is "Revoked" or "Access expired")
+            return new(false, view.State == "Revoked" ? "Revoked" : "AccessExpired",
+                view.State == "Revoked" ? "The Host removed this PC's access." :
+                    "The Host ended access for this PC. Ask the Host to extend or clear the deadline.",
+                current.HostId, profileId, [], []);
+        if (current.ChatDeniedProfiles?.Contains(profileId) == true)
             return new(false, "ChatAccessDenied", "The Host has removed this PC from this chat room.",
                 current.HostId, profileId, [], []);
         var profiles = view.State is "Connected" or "Disabled" ? view.Profiles :
@@ -23,9 +27,21 @@ internal sealed partial class FriendLink
         if (!profiles.Any(profile => profile.Id == profileId))
             return new(false, "UnknownProfile", "This server is not available to this PC.",
                 current.HostId, profileId, [], []);
+        current.ChatOwnerKeys.TryGetValue(profileId, out var pinnedKey);
+        var supportsNotice = view.HostCapabilities?.Contains(ServerChat.PinnedNoticeCapability) == true;
+        PinnedServerNotice? notice;
+        try { notice = chat.ReadNoticeCopy(current.HostId, profileId, pinnedKey); }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or CryptographicException or
+                                   UnauthorizedAccessException)
+        {
+            return new(false, "NoticeCopyRejected", "The saved pinned notice needs review. Chat copies on this PC are kept.",
+                current.HostId, profileId, chat.Read(current.HostId, profileId),
+                chat.Pending(current.HostId, profileId, current.DeviceId), NoticeSupported: supportsNotice);
+        }
         return new(true, code, message, current.HostId, profileId,
             chat.Read(current.HostId, profileId),
-            chat.Pending(current.HostId, profileId, current.DeviceId));
+            chat.Pending(current.HostId, profileId, current.DeviceId), Notice: notice,
+            NoticeCached: true, NoticeSupported: supportsNotice);
     }
 
     public ChatRoomView ChatRoom(Guid profileId) => LocalChat(profileId);
@@ -102,11 +118,21 @@ internal sealed partial class FriendLink
                     {
                         using var document = JsonDocument.Parse(denial);
                         if (document.RootElement.TryGetProperty("code", out var code) &&
-                            code.GetString() == "ChatAccessDenied")
+                            code.ValueKind == JsonValueKind.String)
                         {
-                            config.ChatDeniedProfiles.Add(profileId);
-                            SaveConfig();
-                            return LocalChat(profileId);
+                            var deniedCode = code.GetString();
+                            if (deniedCode == "ChatAccessDenied")
+                            {
+                                config.ChatDeniedProfiles.Add(profileId);
+                                SaveConfig();
+                                return LocalChat(profileId);
+                            }
+                            if (deniedCode is "Revoked" or "AccessExpired")
+                            {
+                                ApplyActionConnectionState(response.StatusCode,
+                                    new(false, deniedCode, "Host access is no longer available.", null));
+                                return LocalChat(profileId);
+                            }
                         }
                     }
                     catch (JsonException) { /* A generic 403 is not a room removal. */ }
@@ -136,6 +162,7 @@ internal sealed partial class FriendLink
             if (remote is not { Ok: true, PublicKey: not null, Entries: not null } ||
                 remote.HostId != config.HostId || remote.ProfileId != profileId ||
                 remote.Entries.Count > ServerChat.MaximumEntries ||
+                !ServerChat.ValidNoticePublicKey(remote.PublicKey) ||
                 config.ChatOwnerKeys.TryGetValue(profileId, out var pinned) &&
                 pinned != remote.PublicKey ||
                 !chat.Merge(config.HostId, profileId, remote.Entries, remote.PublicKey))
@@ -145,14 +172,35 @@ internal sealed partial class FriendLink
                     Code = "ChatCopyRejected",
                     Message = "The Host's chat copy or signing identity did not match this saved connection."
                 };
+            var supportsNotice = view.HostCapabilities?.Contains(ServerChat.PinnedNoticeCapability) == true;
+            if (supportsNotice && !chat.CanAcceptNoticeCopy(config.HostId, profileId, remote.Notice, remote.PublicKey))
+                return local with
+                {
+                    Ok = false,
+                    Code = "NoticeCopyRejected",
+                    Message = "The Host's pinned notice was older than the saved copy or could not be verified.",
+                    NoticeCached = true
+                };
             if (!config.ChatOwnerKeys.ContainsKey(profileId))
             {
                 config.ChatOwnerKeys[profileId] = remote.PublicKey;
-                SaveConfig();
+                try { SaveConfig(); }
+                catch { config.ChatOwnerKeys.Remove(profileId); throw; }
             }
-            config.ChatDeniedProfiles.Remove(profileId);
+            if (supportsNotice && !chat.AcceptNoticeCopy(config.HostId, profileId, remote.Notice, remote.PublicKey))
+                return LocalChat(profileId) with
+                {
+                    Ok = false,
+                    Code = "NoticeCopyRejected",
+                    Message = "The Host's pinned notice was older than the saved copy or could not be verified.",
+                    NoticeCached = true
+                };
+            if (config.ChatDeniedProfiles.Remove(profileId)) SaveConfig();
             chat.Confirm(config.HostId, profileId, config.DeviceId);
-            return LocalChat(profileId, "ChatSynced", "Messages are up to date.");
+            return LocalChat(profileId, "ChatSynced", "Messages are up to date.") with
+            {
+                NoticeCached = !supportsNotice
+            };
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or
                                    InvalidDataException or UnauthorizedAccessException or CryptographicException or

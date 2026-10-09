@@ -12,6 +12,7 @@
     <Project Path="checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj" />
     <Project Path="checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj" />
     <Project Path="checks/TogetherServer.FactorioChecks/TogetherServer.FactorioChecks.csproj" />
+    <Project Path="checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj" />
     <Project Path="checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj" />
     <Project Path="checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj" />
     <Project Path="checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj" />

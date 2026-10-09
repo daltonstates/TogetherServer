@@ -9,6 +9,11 @@ import { FriendConnectionDoctor } from './FriendConnectionDoctor'
 import { FriendRemoteRehearsal, HostRemoteRehearsal } from './RemoteRehearsal'
 import { ConnectionDetails } from './ConnectionDetails'
 import { JoinGuide } from './JoinGuide'
+import { GameCompatibilityPanel } from './GameCompatibilityPanel'
+import { OpenGameButton } from './OpenGameButton'
+import { GameSettingsPanel } from './GameSettingsPanel'
+import { BackupBookmarks } from './BackupBookmarks'
+import { WeeklySummary } from './WeeklySummary'
 import { MaintenanceGuide } from './MaintenanceGuide'
 import { TemporaryHelperAccess } from './TemporaryHelperAccess'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
@@ -1447,6 +1452,13 @@ function App() {
                    : profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                  />}
               {['Ready', 'Listening'].includes(profile.state) && profile.joinAddress && <JoinGuide kind={profile.kind} />}
+              {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.gameKind ?? profile.kind) &&
+                ['Connected', 'Disabled'].includes(snapshot.state) && <PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
+                  <GameCompatibilityPanel key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} host={false} />
+                </PaneErrorBoundary>}
+              {['Ready', 'Listening'].includes(profile.state) && profile.joinAddress && <OpenGameButton
+                key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} kind={profile.gameKind ?? (['MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) ? profile.kind : 'Unknown')}
+                available={['Connected', 'Disabled'].includes(snapshot.state) && !pending} />}
               {profile.state === 'Offline' && snapshot.state === 'Connected' && profile.canStart &&
                 <FriendStartConnectionNotice />}
               <div className="actions server-actions">
@@ -1567,6 +1579,12 @@ function App() {
                 {hostServerTab === 'chat' && <PaneErrorBoundary title="Server chat" resetKey={profile.id}>
                   <ServerChat profileId={profile.id} host visible={workspacePage === 'host' && hostServerTab === 'chat'} />
                 </PaneErrorBoundary>}
+                {hostServerTab === 'overview' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) &&
+                  <PaneErrorBoundary title="Pre-join requirements" resetKey={profile.id}><GameCompatibilityPanel key={profile.id} profileId={profile.id} host /></PaneErrorBoundary>}
+                {hostServerTab === 'files' && <PaneErrorBoundary title="Game settings" resetKey={profile.id}><GameSettingsPanel
+                  key={profile.id} profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
+                  busy={!!pending || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}
+                  onPrepareMaintenance={() => setHostServerTab('setup')} /></PaneErrorBoundary>}
                 {hostServerTab === 'files' && <PaneErrorBoundary title="Server files" resetKey={profile.id}><ServerFilesPanel
                   profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
                   busy={!!pending || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}
@@ -1575,6 +1593,10 @@ function App() {
                   onOpenDoctor={() => openHostSettings('network')} /></PaneErrorBoundary>}
                 <PaneErrorBoundary title="Recent sessions" resetKey={profile.id}><RecentSessions profileId={profile.id}
                   visible={workspacePage === 'host' && hostServerTab === 'sessions'} /></PaneErrorBoundary>
+                {hostServerTab === 'sessions' && <PaneErrorBoundary title="Seven-day summary" resetKey={profile.id}><WeeklySummary
+                  key={profile.id} profileId={profile.id} visible={workspacePage === 'host'} /></PaneErrorBoundary>}
+                {hostServerTab === 'backups' && <PaneErrorBoundary title="Backup names and pins" resetKey={profile.id}><BackupBookmarks
+                  key={profile.id} profileId={profile.id} visible={workspacePage === 'host'} onChanged={() => void loadBackups(profile.id)} /></PaneErrorBoundary>}
                 <div hidden={hostServerTab !== 'overview'}><PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                   busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary></div>
                 {hostServerTab === 'players' && status && <PaneErrorBoundary title="Players workspace" resetKey={profile.id}><PlayersPanel run={status} activity={snapshot.activity} nowMs={nowMs}
@@ -1653,7 +1675,8 @@ function App() {
                     {!profile.worldLoadRehearsalId && <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} />}
                     {backupList && <div className="backup-list">{backupList.backups.length === 0 ? <p className="helper-text">No completed backups yet. Stop the server and choose Back up now, or enable rolling backups after graceful Stop.</p> : backupList.backups.map(backup => {
                       const verification = backupVerifications[backup.id]
-                      const label = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'
+                      const category = backup.backupKind === 'PreRestore' ? 'Pre-restore snapshot' : backup.backupKind === 'Manual' ? 'Manual checkpoint' : 'Rolling backup'
+                      const label = `${backup.label || category}${backup.pinned ? ' · Pinned' : ''}`
                       return <div className="device backup-record" key={backup.id}><div><strong>{label}</strong><small>{new Date(backup.createdUtc).toLocaleString()} · {backup.fileCount} files · {formatBytes(backup.sizeBytes)}</small>{verification && <small className={verification.ok ? 'verification-ok' : 'warning-text'}>{verification.ok ? 'Integrity verified' : 'Integrity check failed'} {new Date(verification.checkedUtc).toLocaleString()}. The live world was not changed.</small>}</div><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void verifyBackup(profile.id, backup.id)}>{pending === `verify-backup-${backup.id}` ? 'Verifying…' : 'Verify'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void copyBackupToVault(profile.id, backup.id)}>{pending === `vault-backup-${backup.id}` ? 'Copying…' : 'Copy to vault'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void prepareMoveKit(profile.id, backup.id)}>{pending === `move-kit-${backup.id}` ? 'Preparing…' : 'Prepare move kit'}</Button><Button className="secondary" disabled={!!pending} onClick={() => void rehearseBackupRestore(profile.id, backup.id)}>{pending === `rehearse-backup-${backup.id}` ? 'Testing…' : 'Test restore'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => void restoreBackup(profile.id, backup.id, backup.createdUtc)}>Restore</Button></div></div>
                     })}</div>}
                   </div></PaneErrorBoundary>}

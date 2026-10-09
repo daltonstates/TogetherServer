@@ -4,7 +4,7 @@ namespace TogetherServer;
 
 // Each saved invite has its own protected credential and heartbeat sequence.
 // The visible connection can change without pausing others.
-public sealed class FriendService : IDisposable
+public sealed partial class FriendService : IDisposable
 {
     private const string IndexFile = "friend-connections.protected";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

@@ -1,6 +1,9 @@
 import type { Profile } from './GameProfile'
 import type { InternetRouteCheck, PortDiagnostics } from './ServerReadiness'
 import type { MinecraftDiscovery, MinecraftInstallation } from './MinecraftSetup'
+export { parseGameRequirements, parseGameCompatibility } from './gameCompatibilityWire'
+export type { GameRequirements, GameRequirementsResult, GameCompatibilityResult, RequiredGameAddOn } from './gameCompatibilityWire'
+export type { PinnedServerNotice, ChatRoomWithNotice } from './pinnedNoticeContracts'
 
 export type Settings = {
   maxConcurrentServers: number
@@ -80,6 +83,8 @@ export type WorldBackupRecord = {
   createdUtc: string
   sizeBytes: number
   fileCount: number
+  label?: string
+  pinned?: boolean
 }
 
 export type WorldBackupList = { backups: WorldBackupRecord[]; status: WorldBackupStatus }
@@ -195,6 +200,7 @@ export type RemoteOperation = {
 }
 
 export type PublicProfile = {
+  gameKind?: string | null
   id: string
   name: string
   state: string
@@ -768,6 +774,7 @@ const parsePublicProfile: Decoder<PublicProfile> = (value, context = 'public pro
     id: text(source.id, `${context}.id`), name: text(source.name, `${context}.name`), state: text(source.state, `${context}.state`),
     joinAddress: nullableText(source.joinAddress, `${context}.joinAddress`), canStopNow: flag(source.canStopNow, `${context}.canStopNow`),
     stopReason: nullableText(source.stopReason, `${context}.stopReason`), kind: text(source.kind, `${context}.kind`),
+    gameKind: optionalNullableText(source.gameKind, `${context}.gameKind`),
     onlinePlayers: nullableNumber(source.onlinePlayers, `${context}.onlinePlayers`), maxPlayers: nullableNumber(source.maxPlayers, `${context}.maxPlayers`),
     autoShutdownAtUtc: nullableText(source.autoShutdownAtUtc, `${context}.autoShutdownAtUtc`),
     autoShutdownReason: nullableText(source.autoShutdownReason, `${context}.autoShutdownReason`),
@@ -1331,7 +1338,9 @@ export const parseWorldBackupList: Decoder<WorldBackupList> = (value, context = 
     const entry = object(item, itemContext ?? `${context}.backups`)
     return { id: text(entry.id, `${itemContext}.id`), profileId: text(entry.profileId, `${itemContext}.profileId`), kind: text(entry.kind, `${itemContext}.kind`),
       worldId: text(entry.worldId, `${itemContext}.worldId`), backupKind: literal(entry.backupKind, ['Rolling', 'Manual', 'PreRestore'] as const, `${itemContext}.backupKind`),
-      createdUtc: text(entry.createdUtc, `${itemContext}.createdUtc`), sizeBytes: numeric(entry.sizeBytes, `${itemContext}.sizeBytes`), fileCount: numeric(entry.fileCount, `${itemContext}.fileCount`) }
+      createdUtc: text(entry.createdUtc, `${itemContext}.createdUtc`), sizeBytes: numeric(entry.sizeBytes, `${itemContext}.sizeBytes`), fileCount: numeric(entry.fileCount, `${itemContext}.fileCount`),
+      label: entry.label === undefined ? '' : boundedText(entry.label, `${itemContext}.label`, 64, true),
+      pinned: entry.pinned === undefined ? false : flag(entry.pinned, `${itemContext}.pinned`) }
   }), status: parseBackupStatus(source.status, `${context}.status`) }
 }
 
