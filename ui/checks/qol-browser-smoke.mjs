@@ -560,6 +560,101 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
     control.left >= -1 && control.right <= metrics.width + 1), `${name}: named header controls must fit inside the viewport.`)
 }
 
+async function firstUseAndSetupRecovery(page, host) {
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+  const firstHost = page.getByRole('region', { name: 'Set up a server', exact: true })
+  const viewports = [{ width: 1440, height: 900 }, { width: 390, height: 844 }]
+  const assertEmptyBackend = async () => {
+    const snapshot = await api(host, '/api/local/snapshot')
+    assert.equal(snapshot.mode, 'Host')
+    assert.equal(snapshot.settings.profiles.length, 0, 'First-use and draft review must not save a server profile.')
+    assert.equal(snapshot.runs.length, 0, 'First-use setup must not create a managed game process.')
+  }
+  const capture = async (phase, recovery = null) => {
+    for (const textScale of ['100', '150']) {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+      await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+      await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
+        value => value === (textScale === '150' ? '24px' : '16px'), `${phase} ${textScale} percent text`)
+      await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+      await firstHost.waitFor({ state: 'visible' })
+      for (const viewport of viewports) {
+        const name = `${phase}-${viewport.width}x${viewport.height}-${textScale}`
+        await screenshot(page, name, viewport, firstHost)
+        const alignment = await firstHost.evaluate(element => {
+          const bounds = element.getBoundingClientRect(), heading = document.querySelector('.page-heading').getBoundingClientRect(),
+            style = getComputedStyle(element), recovered = element.querySelector('.setup-draft-recovery')?.getBoundingClientRect()
+          return { left: bounds.left, right: bounds.right, width: bounds.width, headingLeft: heading.left, headingRight: heading.right,
+            contentLeft: bounds.left + Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.borderLeftWidth),
+            contentRight: bounds.right - Number.parseFloat(style.paddingRight) - Number.parseFloat(style.borderRightWidth),
+            recoveryLeft: recovered?.left ?? null, recoveryRight: recovered?.right ?? null }
+        })
+        report.layout.push({ name: `${name}-shared-width`, alignment })
+        assert(Math.abs(alignment.left - alignment.headingLeft) <= 1 && Math.abs(alignment.right - alignment.headingRight) <= 1,
+          `${name}: first-use content must align with the shared workspace heading width.`)
+        assert.equal(await firstHost.getByRole('button', { name: 'Host a server', exact: true }).isVisible(), true)
+        assert.equal(await firstHost.getByRole('button', { name: 'Join a server', exact: true }).isVisible(), true)
+        if (recovery) {
+          assert.equal(await recovery.getByRole('button', { name: 'Review saved setup', exact: true }).isVisible(), true)
+          assert.equal(await recovery.getByRole('button', { name: 'Discard saved setup', exact: true }).isVisible(), true)
+          assert(Math.abs(alignment.recoveryLeft - alignment.contentLeft) <= 1 && Math.abs(alignment.recoveryRight - alignment.contentRight) <= 1,
+            `${name}: protected setup recovery uses the first-use panel's content width.`)
+        }
+      }
+    }
+  }
+  await assertEmptyBackend()
+  await firstHost.waitFor({ state: 'visible' })
+  await capture('first-host-empty')
+  await firstHost.getByRole('button', { name: 'Host a server', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Add new server', exact: true })
+  await dialog.waitFor({ state: 'visible' })
+  await dialog.getByRole('heading', { name: 'Choose a game', exact: true }).waitFor()
+  await dialog.getByRole('button', { name: 'Cancel setup', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  assert.equal(await firstHost.getByRole('button', { name: 'Host a server', exact: true }).isVisible(), true)
+  await assertEmptyBackend()
+
+  // Keep only a new-world name. Never enter a password, accept terms, select a binary,
+  // Save settings, Start a server or manipulate world files in this first-use journey.
+  await firstHost.getByRole('button', { name: 'Host a server', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await dialog.getByRole('textbox', { name: /^World name/u }).fill('browser-first-use-world')
+  const password = dialog.locator('input[id^="setup-"][id$="-game-password"]')
+  assert.equal(await password.inputValue(), '', 'First-use evidence must contain no entered password.')
+  await dialog.getByRole('button', { name: 'Finish later', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  const protectedDraft = await api(host, '/api/local/ui-drafts/read', 'POST', { purpose: 'settings',
+    profileId: '00000000-0000-0000-0000-000000000000', connectionId: null, key: 'host-setup' })
+  assert.equal(protectedDraft.ok, true)
+  assert(protectedDraft.text?.includes('browser-first-use-world'), 'Finish later must keep the nonsecret setup in the real protected store.')
+  // Reload is intentional: a recovery prompt appears for the persisted draft on the next load.
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  const recovery = firstHost.getByRole('region', { name: 'Recovered server setup', exact: true })
+  await recovery.waitFor({ state: 'visible' })
+  assert.equal(await recovery.getByText('Saved server setup', { exact: true }).isVisible(), true)
+  assert.equal(await recovery.getByText('Your saved file is unchanged.', { exact: false }).count(), 0,
+    'Server setup recovery uses setup wording, rather than suggesting a saved file edit.')
+  await capture('first-host-protected-setup', recovery)
+  await recovery.getByRole('button', { name: 'Review saved setup', exact: true }).click()
+  await dialog.getByRole('heading', { name: 'Choose a world', exact: true }).waitFor()
+  assert.equal(await dialog.getByRole('textbox', { name: /^World name/u }).inputValue(), 'browser-first-use-world')
+  assert.equal(await password.inputValue(), '', 'Recovery cannot restore a game password.')
+  await dialog.getByRole('button', { name: 'Cancel setup', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  await recovery.waitFor({ state: 'hidden' })
+  await assertEmptyBackend()
+  const cleared = await api(host, '/api/local/ui-drafts/read', 'POST', { purpose: 'settings',
+    profileId: '00000000-0000-0000-0000-000000000000', connectionId: null, key: 'host-setup' })
+  assert.equal(cleared.ok, true)
+  assert.equal(cleared.text, null, 'Cancel must clear only this disposable unsaved setup draft before profile seeding.')
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption('100')
+  await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+}
+
 async function routingAndAppearance(page) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
   for (const [shortcut, destination] of [['Alt+2', 'Join'], ['Alt+3', 'Attention'], ['Alt+4', 'Settings'], ['Alt+1', 'Host']]) {
@@ -853,6 +948,7 @@ async function setupReview(page, profiles) {
   await screenshot(page, 'setup-review-wide', { width: 1440, height: 900 })
   await dialog.getByRole('button', { name: 'Finish later', exact: true }).click()
   await dialog.waitFor({ state: 'hidden' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'Review saved setup', exact: true }).click()
   await page.getByRole('dialog', { name: 'Add new server' }).getByText('Review and start', { exact: true }).waitFor()
   await page.getByRole('dialog', { name: 'Add new server' }).getByRole('button', { name: 'Cancel', exact: true }).click()
@@ -1292,11 +1388,15 @@ try {
   checkModeTransitionCorrelation()
   const { chromium } = await import('playwright')
   const host = await startInstance('host')
-  const profiles = await seedProfiles(host)
   // No Playwright browser download. The separate Windows runner supplies Microsoft Edge.
   browser = await chromium.launch({ channel: 'msedge', headless: true })
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
   const hostPage = await openPage(host, context)
+  await step('real first-use Host choices, setup cancel and protected nonsecret setup recovery at desktop/mobile text sizes',
+    () => firstUseAndSetupRecovery(hostPage, host))
+  const profiles = await seedProfiles(host)
+  await hostPage.reload({ waitUntil: 'domcontentloaded' })
+  await hostPage.getByRole('complementary', { name: 'Saved servers', exact: true }).waitFor()
   await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage))
   await step('staging header menus, long notification glyph columns, keyboard commands and mobile workspace labels at viewport boundaries', () => headerOverlayRegression(hostPage, host))
   await step('saved-server search, per-server tabs, favorites and durable manual ordering', () => serverNavigation(hostPage, profiles))

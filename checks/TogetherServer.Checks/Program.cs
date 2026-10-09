@@ -2234,6 +2234,9 @@ await Check("snapshots consume the observation supervisor cache", async () =>
     var profile = Profile("observation-cache", "observation-cache", FreePort());
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "fixture start failed");
+    var recordedFixture = data.LoadRuns().Single(run => run.ProfileId == profile.Id);
+    using var ownedFixture = Process.GetProcessById(recordedFixture.ProcessId!.Value);
+    _ = ownedFixture.Handle; // Retain the original process, so cleanup never follows a reused PID.
     try
     {
         var first = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
@@ -2249,7 +2252,34 @@ await Check("snapshots consume the observation supervisor cache", async () =>
     finally
     {
         var cleanup = await manager.StopAsync(profile.Id);
-        Require(cleanup.Ok, $"fixture cleanup failed: {cleanup.Code} {cleanup.Message}");
+        // A fresh Windows module query can temporarily be unavailable despite the supervisor's
+        // earlier matched observation. Retry only this fail-closed refusal, never signal directly.
+        // Every retry independently proves the retained fixture identity, and HostManager rechecks it.
+        var lastIdentity = "not retried";
+        for (var attempt = 0; !cleanup.Ok && cleanup.Code == "IdentityUnknown" && attempt < 40; attempt++)
+        {
+            await Task.Delay(50);
+            ownedFixture.Refresh();
+            if (ownedFixture.HasExited)
+                throw new Exception("observation-cache fixture exited before guarded cleanup; no retry signal was sent");
+            try
+            {
+                var actualPath = ownedFixture.MainModule?.FileName;
+                if (actualPath is null) { lastIdentity = "module unavailable"; continue; }
+                if (ownedFixture.Id != recordedFixture.ProcessId ||
+                    ownedFixture.StartTime.ToUniversalTime().Ticks != recordedFixture.StartTimeUtcTicks ||
+                    !Path.GetFullPath(actualPath).Equals(Path.GetFullPath(recordedFixture.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+                    throw new Exception("observation-cache fixture identity changed; guarded cleanup will not retry");
+                lastIdentity = "retained PID, start time and executable matched";
+            }
+            catch (System.ComponentModel.Win32Exception error)
+            {
+                lastIdentity = $"Windows identity query unavailable ({error.NativeErrorCode})";
+                continue;
+            }
+            cleanup = await manager.StopAsync(profile.Id);
+        }
+        Require(cleanup.Ok, $"fixture cleanup failed: {cleanup.Code} {cleanup.Message}; bounded retained identity check: {lastIdentity}");
     }
 });
 
@@ -3824,10 +3854,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-        {
-            Name: "fixturemod", Version: "1.0.0",
-            RequiredGameVersion: "2.0", Type: "Factorio mod"
-        }],
+    {
+        Name: "fixturemod", Version: "1.0.0",
+        RequiredGameVersion: "2.0", Type: "Factorio mod"
+    }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");

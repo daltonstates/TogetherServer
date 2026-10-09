@@ -41,13 +41,26 @@ internal static partial class CoreRemoteJourney
         var profile = new ServerProfile
         {
             // The fixed fixture rejects any different name/world/password before publishing readiness.
-            Kind = GameKinds.Valheim, Name = "Mixed synthetic world", ServerName = "Fixture \"Valheim\"",
-            WorldSource = "New", WorldId = "fixture-world", WorldDirectory = Path.Combine(hostData, "worlds", "fixture"),
-            PublicListing = false, GamePort = FreeUdpPair(), ExecutablePath = fixture
+            Kind = GameKinds.Valheim,
+            Name = "Mixed synthetic world",
+            ServerName = "Fixture \"Valheim\"",
+            WorldSource = "New",
+            WorldId = "fixture-world",
+            WorldDirectory = Path.Combine(hostData, "worlds", "fixture"),
+            PublicListing = false,
+            GamePort = FreeUdpPair(),
+            ExecutablePath = fixture
         };
         Directory.CreateDirectory(profile.WorldDirectory);
-        var settings = new HostSettings { Profiles = [profile], MaxConcurrentServers = 1, AutoShutdownEnabled = false,
-            CompanionBindAddress = "127.0.0.1", CompanionPort = controlPort, CompanionEndpoint = $"https://127.0.0.1:{controlPort}" };
+        var settings = new HostSettings
+        {
+            Profiles = [profile],
+            MaxConcurrentServers = 1,
+            AutoShutdownEnabled = false,
+            CompanionBindAddress = "127.0.0.1",
+            CompanionPort = controlPort,
+            CompanionEndpoint = $"https://127.0.0.1:{controlPort}"
+        };
         Process? host = null, friend = null;
         try
         {
