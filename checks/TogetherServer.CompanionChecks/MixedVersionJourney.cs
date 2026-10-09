@@ -40,12 +40,13 @@ internal static partial class CoreRemoteJourney
         var friendPort = FreeTcpPort(hostPort, controlPort);
         var profile = new ServerProfile
         {
-            Kind = GameKinds.Valheim, Name = "Mixed synthetic world", ServerName = "Mixed synthetic world",
-            WorldSource = "New", WorldId = "mixed-fixture", WorldDirectory = Path.Combine(hostData, "worlds", "fixture"),
-            GamePort = FreeUdpPair(), ExecutablePath = fixture
+            // The fixed fixture rejects any different name/world/password before publishing readiness.
+            Kind = GameKinds.Valheim, Name = "Mixed synthetic world", ServerName = "Fixture \"Valheim\"",
+            WorldSource = "New", WorldId = "fixture-world", WorldDirectory = Path.Combine(hostData, "worlds", "fixture"),
+            PublicListing = false, GamePort = FreeUdpPair(), ExecutablePath = fixture
         };
         Directory.CreateDirectory(profile.WorldDirectory);
-        var settings = new HostSettings { Profiles = [profile], MaxConcurrentServers = 1,
+        var settings = new HostSettings { Profiles = [profile], MaxConcurrentServers = 1, AutoShutdownEnabled = false,
             CompanionBindAddress = "127.0.0.1", CompanionPort = controlPort, CompanionEndpoint = $"https://127.0.0.1:{controlPort}" };
         Process? host = null, friend = null;
         try
@@ -58,7 +59,7 @@ internal static partial class CoreRemoteJourney
             using var client = LocalClient(friendPort);
             Require((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "Mixed Host setup failed.");
             Require((await PostAsync<ValheimPasswordRequest, ActionResult>(owner,
-                $"/api/local/profiles/{profile.Id}/password", new("synthetic-mixed-password"))).Ok, "Synthetic password setup failed.");
+                $"/api/local/profiles/{profile.Id}/password", new("fixture-pass-123"))).Ok, "Synthetic password setup failed.");
             var invite = await PostAsync<ServerInviteRequest, JsonElement>(owner,
                 $"/api/local/servers/{profile.Id}/invite", new(false, true, true));
             Require(invite.GetProperty("ok").GetBoolean() && invite.GetProperty("listenerActive").GetBoolean(), "Mixed invite failed.");
@@ -77,8 +78,7 @@ internal static partial class CoreRemoteJourney
             Require(connected.Profiles.Single().CanStart && connected.Profiles.Single().CanStop, "Mixed permissions were not propagated.");
             Console.WriteLine($"PASS {direction}: pinned authenticated pairing and exact per-role versions, protocol 3 and assigned status");
 
-            Require((await FriendActionAsync(client, profile.Id, "start")).Ok, "Mixed remote Start failed.");
-            var ready = await WaitForRunStateAsync(owner, profile.Id, "Ready");
+            var ready = await MixedStartReadyAsync(client, owner, profile.Id, direction);
             Require(ready.ProcessId is not null && ready.OnlinePlayers == 0, "Synthetic Ready did not report fresh zero.");
             connected = await WaitForConnectedAsync(client);
             Require(connected.Profiles.Single().State == "Ready", "Mixed Friend did not observe Ready.");
@@ -124,8 +124,7 @@ internal static partial class CoreRemoteJourney
             connected = await WaitForConnectedAsync(client);
             RequireMixedIdentity(connected, profile.Id, hostVersion, friendVersion);
             Require(connected.Profiles.Single().CanStart && connected.Profiles.Single().CanStop, "Mixed saved permissions lost on restart.");
-            Require((await FriendActionAsync(client, profile.Id, "start")).Ok, "Mixed saved access could not Start after restart.");
-            await WaitForRunStateAsync(owner, profile.Id, "Ready");
+            _ = await MixedStartReadyAsync(client, owner, profile.Id, direction + " after restart");
             Require((await FriendActionAsync(client, profile.Id, "stop")).Ok, "Mixed saved access could not Stop after restart.");
             await WaitForRunStateAsync(owner, profile.Id, "Offline");
             Require((await PostAsync<object, PairingDecision>(owner, $"/api/local/devices/{deviceId}/revoke", new { })).Ok, "Mixed revoke failed.");
@@ -138,6 +137,21 @@ internal static partial class CoreRemoteJourney
             await TryStopManagedRunAsync(hostPort, profile.Id, host);
             StopApp(friend);
             StopApp(host);
+        }
+    }
+
+    private static async Task<RunView> MixedStartReadyAsync(HttpClient friend, HttpClient owner, Guid profileId, string direction)
+    {
+        // The common helper waits for a durable operation's terminal result; acceptance alone is not readiness.
+        var started = await FriendActionAsync(friend, profileId, "start");
+        Require(started.Ok && started.Code == "ValheimStarting",
+            $"{direction}: Start did not complete as ValheimStarting: {started.Code} {started.Message}; operation={started.OperationState}");
+        try { return await WaitForRunStateAsync(owner, profileId, "Ready"); }
+        catch (Exception error)
+        {
+            throw new InvalidOperationException($"{direction}: terminal Start result {started.Code} did not prove fixture readiness. " +
+                "The synthetic executable requires the fixed fixture name, world, password, public=0 and owned save/log roots. " +
+                "Automatic shutdown is disabled for this journey. " + error.Message, error);
         }
     }
 

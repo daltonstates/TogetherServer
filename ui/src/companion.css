@@ -1459,7 +1459,7 @@ kbd {
   .command-trigger span, .command-trigger kbd { display: none; }
   .app-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .workspace-nav { flex-direction: row; gap: 3px; overflow-x: auto; padding: 5px 7px; border-right: 0; border-bottom: 1px solid var(--color-border-subtle); }
-  .workspace-nav .workspace-nav-item.ui-button { flex: 1 0 68px; flex-direction: row; min-height: 38px; padding: 6px 8px; }
+  .workspace-nav .workspace-nav-item.ui-button { flex: 1 0 68px; flex-direction: row; min-height: 44px; padding: 6px 8px; }
   .workspace-nav-count { position: static; margin-left: auto; }
   .workspace-nav-unread { top: 5px; right: 6px; }
   .workspace-scroll { padding: 14px 12px 20px; }
