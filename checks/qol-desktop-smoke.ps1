@@ -100,6 +100,180 @@ public static class TogetherServerQolWindowCheck {
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     public delegate bool EnumWindow(IntPtr window, IntPtr value);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindow callback, IntPtr value);
+    [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumWindow callback, IntPtr value);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
+    [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
+    [DllImport("user32.dll")] private static extern IntPtr GetDlgItem(IntPtr parent, int controlId);
+    [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] private static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)]
+    private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+        uint flags, uint timeout, out UIntPtr result);
+
+    public sealed class FilenameControl {
+        public IntPtr Anchor, Edit, Parent;
+        public int EditId;
+        public uint ThreadId;
+        public string AnchorClass;
+    }
+    public sealed class NativeControlFacts {
+        public string ClassName;
+        public bool Owned, Enabled, Visible, FilenameAnchor, WritableEdit;
+    }
+    public sealed class FilenameLookup {
+        public FilenameControl Control;
+        public NativeControlFacts[] Diagnostics;
+    }
+    private static string WindowClass(IntPtr window) {
+        var value = new System.Text.StringBuilder(128);
+        if (GetClassName(window, value, value.Capacity) == 0)
+            throw new InvalidOperationException("The owned native control class is unavailable.");
+        return value.ToString();
+    }
+    private static string BoundedWindowText(IntPtr window) {
+        const int capacity = 4096;
+        var buffer = Marshal.AllocHGlobal(capacity * 2);
+        try {
+            Marshal.WriteInt16(buffer, 0);
+            UIntPtr copied;
+            if (SendMessageTimeout(window, 0x000D, new IntPtr(capacity), buffer, 0x23, 1000, out copied) == IntPtr.Zero ||
+                copied.ToUInt64() >= capacity - 1)
+                throw new InvalidOperationException("The owned native text read timed out or exceeded its bound.");
+            return Marshal.PtrToStringUni(buffer, (int)copied.ToUInt64()) ?? "";
+        } finally { Marshal.FreeHGlobal(buffer); }
+    }
+    private static void AssertPicker(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        using (var process = System.Diagnostics.Process.GetProcessById(processId)) {
+            process.Refresh();
+            if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != ticks ||
+                !System.IO.Path.GetFullPath(process.MainModule.FileName).Equals(expectedPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The exact disposable app identity changed.");
+        }
+        uint dialogProcess, ownerProcess;
+        var dialogThread = GetWindowThreadProcessId(dialog, out dialogProcess);
+        GetWindowThreadProcessId(owner, out ownerProcess);
+        if (!IsWindow(dialog) || !IsWindowVisible(dialog) || !IsWindow(owner) ||
+            dialogThread == 0 || dialogProcess != processId || ownerProcess != processId ||
+            GetWindow(dialog, 4) != owner || WindowClass(dialog) != "#32770" ||
+            BoundedWindowText(dialog) != "Choose Valheim Dedicated Server")
+            throw new InvalidOperationException("The exact owned native file picker identity changed.");
+    }
+    private static IntPtr[] Descendants(IntPtr parent) {
+        if (parent == IntPtr.Zero || !IsWindow(parent))
+            throw new InvalidOperationException("A native control search requires the owned parent window.");
+        var values = new System.Collections.Generic.List<IntPtr>();
+        var exceeded = false;
+        EnumChildWindows(parent, (window, _) => {
+            if (values.Count >= 512) { exceeded = true; return false; }
+            values.Add(window); return true;
+        }, IntPtr.Zero);
+        if (exceeded) throw new InvalidOperationException("The owned native control tree exceeded its bound.");
+        return values.ToArray();
+    }
+    private static bool WritableEdit(IntPtr window, int processId) {
+        uint owner; GetWindowThreadProcessId(window, out owner);
+        return owner == processId && WindowClass(window) == "Edit" && GetDlgCtrlID(window) > 0 &&
+            IsWindowVisible(window) && IsWindowEnabled(window) && (GetWindowLong(window, -16) & 0x0800) == 0;
+    }
+    private static string DiagnosticClass(string value) {
+        switch (value) {
+            case "Edit": case "ComboBox": case "ComboBoxEx32": case "Button":
+            case "DirectUIHWND": case "DUIViewWndClassName": return value;
+            default: return "Other";
+        }
+    }
+    public static FilenameLookup FindNativeFilename(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        AssertPicker(dialog, owner, processId, ticks, expectedPath);
+        var anchors = new System.Collections.Generic.HashSet<IntPtr>();
+        var direct = GetDlgItem(dialog, 1148);
+        if (direct != IntPtr.Zero) anchors.Add(direct);
+        foreach (var window in Descendants(dialog)) if (GetDlgCtrlID(window) == 1148) anchors.Add(window);
+        if (anchors.Count > 16) throw new InvalidOperationException("The owned native filename anchors are ambiguous.");
+        var candidates = new System.Collections.Generic.Dictionary<IntPtr, FilenameControl>();
+        var facts = new System.Collections.Generic.List<NativeControlFacts>();
+        foreach (var anchor in anchors) {
+            uint anchorOwner; GetWindowThreadProcessId(anchor, out anchorOwner);
+            if (anchorOwner != processId || !IsChild(dialog, anchor) || GetDlgCtrlID(anchor) != 1148)
+                throw new InvalidOperationException("A filename anchor is outside the exact owned picker.");
+            var nodes = new System.Collections.Generic.List<IntPtr> { anchor };
+            nodes.AddRange(Descendants(anchor));
+            foreach (var window in nodes) {
+                uint controlOwner; var threadId = GetWindowThreadProcessId(window, out controlOwner);
+                var writable = WritableEdit(window, processId);
+                if (facts.Count < 16) facts.Add(new NativeControlFacts {
+                    ClassName = DiagnosticClass(WindowClass(window)), Owned = controlOwner == processId,
+                    Enabled = IsWindowEnabled(window), Visible = IsWindowVisible(window),
+                    FilenameAnchor = GetDlgCtrlID(window) == 1148, WritableEdit = writable
+                });
+                if (!writable || !IsChild(dialog, window) ||
+                    (window != anchor && !IsChild(anchor, window)) || candidates.ContainsKey(window)) continue;
+                candidates.Add(window, new FilenameControl { Anchor = anchor, Edit = window, Parent = GetParent(window),
+                    EditId = GetDlgCtrlID(window), ThreadId = threadId, AnchorClass = WindowClass(anchor) });
+            }
+        }
+        if (candidates.Count > 1) throw new InvalidOperationException("The owned picker has multiple writable native filename edits.");
+        FilenameControl selected = null;
+        foreach (var candidate in candidates.Values) selected = candidate;
+        return new FilenameLookup { Control = selected, Diagnostics = facts.ToArray() };
+    }
+    private static void AssertNativeFilename(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath,
+        FilenameControl control) {
+        AssertPicker(dialog, owner, processId, ticks, expectedPath);
+        uint anchorOwner, editOwner;
+        GetWindowThreadProcessId(control.Anchor, out anchorOwner);
+        var threadId = GetWindowThreadProcessId(control.Edit, out editOwner);
+        if (anchorOwner != processId || editOwner != processId || threadId != control.ThreadId ||
+            !IsChild(dialog, control.Anchor) || !IsChild(dialog, control.Edit) ||
+            (control.Edit != control.Anchor && !IsChild(control.Anchor, control.Edit)) ||
+            GetDlgCtrlID(control.Anchor) != 1148 || WindowClass(control.Anchor) != control.AnchorClass ||
+            GetParent(control.Edit) != control.Parent || GetDlgCtrlID(control.Edit) != control.EditId ||
+            !WritableEdit(control.Edit, processId))
+            throw new InvalidOperationException("The exact owned native filename edit identity changed.");
+        var current = FindNativeFilename(dialog, owner, processId, ticks, expectedPath).Control;
+        if (current == null || current.Edit != control.Edit)
+            throw new InvalidOperationException("The unique owned native filename edit changed.");
+    }
+    public static void SetNativeFilename(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath,
+        FilenameControl control, string fixturePath) {
+        if (String.IsNullOrWhiteSpace(fixturePath) || fixturePath.Length >= 4095 || fixturePath.IndexOf('\0') >= 0 ||
+            !System.IO.Path.IsPathFullyQualified(fixturePath) || !System.IO.File.Exists(fixturePath) ||
+            System.IO.Path.GetFileName(fixturePath) != "valheim_server.exe")
+            throw new InvalidOperationException("The filename input must be the bounded copied fixture path.");
+        AssertNativeFilename(dialog, owner, processId, ticks, expectedPath, control);
+        var text = Marshal.StringToHGlobalUni(fixturePath);
+        try {
+            UIntPtr result;
+            if (SendMessageTimeout(control.Edit, 0x000C, IntPtr.Zero, text, 0x23, 1000, out result) == IntPtr.Zero || result == UIntPtr.Zero)
+                throw new InvalidOperationException("The owned native filename edit rejected its text message.");
+        } finally { Marshal.FreeHGlobal(text); }
+    }
+    public static string ReadNativeFilename(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath,
+        FilenameControl control) {
+        AssertNativeFilename(dialog, owner, processId, ticks, expectedPath, control);
+        return BoundedWindowText(control.Edit);
+    }
+    public static void ClickNativePickerOpen(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        AssertPicker(dialog, owner, processId, ticks, expectedPath);
+        var buttons = new System.Collections.Generic.HashSet<IntPtr>();
+        var direct = GetDlgItem(dialog, 1);
+        if (direct != IntPtr.Zero) buttons.Add(direct);
+        foreach (var window in Descendants(dialog))
+            if (GetDlgCtrlID(window) == 1 && WindowClass(window) == "Button") buttons.Add(window);
+        if (buttons.Count != 1) throw new InvalidOperationException("The owned picker Open button is ambiguous.");
+        foreach (var button in buttons) {
+            uint buttonOwner; GetWindowThreadProcessId(button, out buttonOwner);
+            if (buttonOwner != processId || !IsChild(dialog, button) || GetDlgCtrlID(button) != 1 ||
+                WindowClass(button) != "Button" || !IsWindowEnabled(button) || !IsWindowVisible(button))
+                throw new InvalidOperationException("The exact owned picker Open button identity changed.");
+            AssertPicker(dialog, owner, processId, ticks, expectedPath);
+            UIntPtr result;
+            if (SendMessageTimeout(button, 0x00F5, IntPtr.Zero, IntPtr.Zero, 0x03, 1000, out result) == IntPtr.Zero && IsWindow(dialog))
+                throw new InvalidOperationException("The owned picker Open button did not acknowledge its click.");
+        }
+    }
     public static IntPtr FindOwnedDialog(int processId) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((window, _) => {
@@ -649,26 +823,66 @@ try {
     $nodePhase = Start-WebViewPhase 'picker'
     $dialog = [IntPtr]::Zero
     Wait-Until { $script:dialog = [TogetherServerQolWindowCheck]::FindOwnedDialog($app.Id); return $dialog -ne [IntPtr]::Zero } 'The owned native file picker did not open.'
-    $fileNameState = $null
-    try {
-        Wait-Until { $script:fileNameState = Find-FilenameEdit $dialog; return $null -ne $fileNameState.Control } 'The owned filename edit did not expose a writable ValuePattern.'
-    } catch {
-        if ($fileNameState) {
-            # Types/pattern availability only; never names, values, paths, IDs or other desktop controls.
-            Write-Host ('FILENAME_READINESS ' + ($fileNameState.Diagnostics | ConvertTo-Json -Depth 3 -Compress))
-        }
-        throw
-    }
-    $fileName = $fileNameState.Control
-    Assert-FilenameEdit $dialog $fileName
-    $fileName.Pattern.SetValue($selectedFixture)
-    Wait-Until {
+    $fileNameState = Find-FilenameEdit $dialog
+    if ($fileNameState.Control) {
+        $fileName = $fileNameState.Control
         Assert-FilenameEdit $dialog $fileName
-        $enteredPath = $fileName.Pattern.Current.Value
-        return ![string]::IsNullOrWhiteSpace($enteredPath) -and [IO.Path]::IsPathFullyQualified($enteredPath) -and
-            [IO.Path]::GetFullPath($enteredPath).Equals($selectedFixture, [StringComparison]::OrdinalIgnoreCase)
-    } 'The owned filename edit did not retain the exact copied fixture path.' 5
-    (Dialog-Element $dialog 'Open' '1').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $fileName.Pattern.SetValue($selectedFixture)
+        Wait-Until {
+            Assert-FilenameEdit $dialog $fileName
+            $enteredPath = $fileName.Pattern.Current.Value
+            return ![string]::IsNullOrWhiteSpace($enteredPath) -and [IO.Path]::IsPathFullyQualified($enteredPath) -and
+                [IO.Path]::GetFullPath($enteredPath).Equals($selectedFixture, [StringComparison]::OrdinalIgnoreCase)
+        } 'The owned filename edit did not retain the exact copied fixture path.' 5
+    } else {
+        # Native common-dialog providers can expose only Pane nodes to this UIA
+        # client. The fallback still writes the real owned filename Edit control.
+        Write-Host ('FILENAME_READINESS ' + ($fileNameState.Diagnostics | ConvertTo-Json -Depth 3 -Compress))
+        $nativeFileNameState = $null
+        try {
+            Wait-Until {
+                Assert-AppIdentity
+                $script:nativeFileNameState = [TogetherServerQolWindowCheck]::FindNativeFilename($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
+                return $null -ne $nativeFileNameState.Control
+            } 'The owned filename anchor did not contain a unique writable native Edit.' 10
+        } catch {
+            if ($nativeFileNameState) {
+                Write-Host ('NATIVE_FILENAME_READINESS ' + ($nativeFileNameState.Diagnostics | ConvertTo-Json -Depth 3 -Compress))
+            }
+            throw
+        }
+        $nativeFileName = $nativeFileNameState.Control
+        Assert-AppIdentity
+        [TogetherServerQolWindowCheck]::SetNativeFilename($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp, $nativeFileName, $selectedFixture)
+        Wait-Until {
+            Assert-AppIdentity
+            $enteredPath = [TogetherServerQolWindowCheck]::ReadNativeFilename($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp, $nativeFileName)
+            return ![string]::IsNullOrWhiteSpace($enteredPath) -and [IO.Path]::IsPathFullyQualified($enteredPath) -and
+                [IO.Path]::GetFullPath($enteredPath).Equals($selectedFixture, [StringComparison]::OrdinalIgnoreCase)
+        } 'The owned native filename Edit did not retain the exact copied fixture path.' 5
+        Write-Host 'Native filename used the checked owned Win32 Edit fallback.'
+    }
+    Assert-OwnedWindow $dialog
+    Require ([TogetherServerQolWindowCheck]::FindOwnedDialog($app.Id) -eq $dialog) 'The exact owned picker changed before Open.'
+    $pickerRoot = [System.Windows.Automation.AutomationElement]::FromHandle($dialog)
+    Require ($pickerRoot.Current.ProcessId -eq $app.Id -and $pickerRoot.Current.Name -eq 'Choose Valheim Dedicated Server') 'The expected picker changed before Open.'
+    $openIdCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1')
+    $openTypeCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+    $openCondition = [System.Windows.Automation.AndCondition]::new([System.Windows.Automation.Condition[]]@($openIdCondition, $openTypeCondition))
+    $openElements = $pickerRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $openCondition)
+    Require ($openElements.Count -le 1) 'The owned picker Open button is ambiguous.'
+    $openPattern = $null
+    $canInvoke = $openElements.Count -eq 1 -and
+        $openElements[0].TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$openPattern)
+    if ($canInvoke) {
+        $open = $openElements[0]
+        Require ($open.Current.ProcessId -eq $app.Id -and $open.Current.IsEnabled -and !$open.Current.IsOffscreen) 'The owned picker Open button is unavailable.'
+        $openPattern.Invoke()
+    } else {
+        Assert-AppIdentity
+        [TogetherServerQolWindowCheck]::ClickNativePickerOpen($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
+        Write-Host 'Native Open used the checked owned IDOK Button fallback.'
+    }
     Finish-WebViewPhase $nodePhase; $nodePhase = $null
     Require (Test-Path -LiteralPath (Join-Path $caseRoot 'picker-result.json')) 'Native picker did not select the disposable fixture.'
     Write-Host 'PASS native picker selects the reviewed disposable file without executing it'

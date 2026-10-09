@@ -812,7 +812,9 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'), 'Friend UI starts the actual synthetic driver')
   await rememberManagedProcesses(host)
   await api(friend, '/api/local/friend/poll', 'POST')
-  await first.getByText(/The Host reports readiness/u).waitFor()
+  const readiness = play.getByRole('status').filter({ hasText: /^The Host reports readiness\./u })
+  await readiness.waitFor({ state: 'visible' })
+  assert.equal(await readiness.count(), 1, 'The selected Friend Play flow must expose one current readiness status.')
   assert.equal(await first.getByRole('button', { name: 'Stop server', exact: true }).count(), 0)
   assert.equal(await first.getByRole('button', { name: 'View logs', exact: true }).count(), 0)
   // The OS/Open game control is only observed; this harness never invokes a native client.

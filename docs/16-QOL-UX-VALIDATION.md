@@ -129,3 +129,16 @@ No complete native or combined four-lane acceptance is claimed yet. The next can
 - PowerShell/source syntax, focused lint and whitespace passed. The app/fixture/browser/native/installer checks were not launched on the owner's desktop.
 
 The next single-build/four-runner candidate includes the guided visibility rule, native picker selection and synchronized shared-save fixture waits. Full acceptance still requires actual results from all four lanes against matching candidate bytes.
+
+## Sixth four-lane run
+
+[Run 37904618635](https://github.com/daltonstates/TogetherServer/actions/runs/37904618635), head `e7399968c9f5a3f9cf2fc87e29aee9c7d65f35ac`, built candidate `0.3.0+1ad015cc9b6d960ac74b693a07dfd32c2cd615b0`, SHA-256 `7FD029468C3CE413CA86DF843A37A6CCAB08890C11BDB3AEFC71652112C45338`.
+
+- `QolApi` passed completely again.
+- `Browser` passed **six of eight complete journeys**, including raw/guided protected recovery through immediate navigation with unchanged original files, synthetic lifecycle/log controls/contributing weekly sessions, and unified backup pin/filter/retention/verification/cancelled Restore. Screenshot review confirmed the recovered guided editor and Restore review render correctly. HTTP/JavaScript failures were zero. Friend Play then stopped at a strict lookup matching readiness in both its status and an explanatory definition; the next lookup targets the single current readiness status inside the selected Play flow. Friend signed delivery and Attention/remaining viewport journeys are still pending.
+- `Desktop` again passed appearance, 150-percent/compact sizing, native controls/monitor bounds and same-PID tray reopen. The runner's filename controls expose generic UIA panes with no writable pattern. The next check retains UIA when available and adds a narrowly guarded Win32 path for the owned filename Edit and IDOK Button, using bounded messages and exact copied-fixture readback. No global keyboard/clipboard input or direct selection API bypass is introduced.
+- `Existing` passed **585/585 UI tests**, all **113 core groups**, Valheim and Factorio. Minecraft checks exited with failure but its console attachment left no case outcome in captured stdout. Its existing `results.txt` is written before console output; the next gate emits only the single newly created bounded synthetic Minecraft/Terraria case report after the owned runner exits. It refuses linked, old, ambiguous or oversized reports and preserves the runner's failure. The actual Minecraft failed check is not established from the old stdout.
+- The updated native helper compiled as a .NET 10 library with zero warnings/errors and no native calls. Windows PowerShell 5's compiler lacks the modern `Path.IsPathFullyQualified` API used on the guarded PowerShell 7 runner; it is not the runtime/compiler target. PowerShell parsing, browser syntax/lint and whitespace passed. No local app, dialog, browser, fixture, listener or game was launched.
+- Read-only production comparisons still matched the original app PID/path/version/hash and listeners. Remote main remains unchanged.
+
+The application code is unchanged for this follow-up; the remaining corrections are test control selection and bounded diagnostic recovery. Complete native and combined candidate acceptance remain pending.

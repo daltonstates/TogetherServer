@@ -29,6 +29,54 @@ function Invoke-Checked([string]$Name, [scriptblock]$Command) {
     }
 }
 
+function Get-ConsoleCheckCases([ValidateSet('minecraft-checks', 'terraria-checks')][string]$Folder) {
+    $parent = [IO.Path]::GetFullPath((Join-Path $repository ('local-data/' + $Folder)))
+    $ancestor = [IO.DirectoryInfo]::new($parent)
+    for ($depth = 0; $null -ne $ancestor -and $depth -lt 32; $depth++) {
+        if ($ancestor.Exists -and ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Synthetic console result ancestry is linked.'
+        }
+        $ancestor = $ancestor.Parent
+    }
+    if ($null -ne $ancestor) { throw 'Synthetic console result ancestry exceeds the fixed depth bound.' }
+    if (![IO.Directory]::Exists($parent)) { return }
+    $count = 0
+    foreach ($directory in [IO.Directory]::EnumerateDirectories($parent)) {
+        if (++$count -gt 256) { throw 'Synthetic console case listing exceeds the fixed bound.' }
+        $name = [IO.Path]::GetFileName($directory)
+        if ($name -notmatch '^[0-9a-f]{32}$') { continue }
+        if (([IO.File]::GetAttributes($directory) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Synthetic console case directory is linked.'
+        }
+        $name
+    }
+}
+
+function Write-NewConsoleCheckResult([ValidateSet('minecraft-checks', 'terraria-checks')][string]$Folder, [string[]]$Before) {
+    $created = @(Get-ConsoleCheckCases $Folder | Where-Object { $_ -notin $Before })
+    if ($created.Count -ne 1) {
+        Write-Warning 'Synthetic console diagnostics unavailable: one exact new case was not identified.'
+        return
+    }
+    $case = [IO.Path]::GetFullPath((Join-Path $repository ('local-data/' + $Folder + '/' + $created[0])))
+    $resultPath = Join-Path $case 'results.txt'
+    if (![IO.File]::Exists($resultPath)) { Write-Warning 'The new synthetic console case has no results.txt.'; return }
+    if (([IO.File]::GetAttributes($resultPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Synthetic console results.txt is linked.'
+    }
+    # The synchronous owned runner has exited. Only its new top-level report is
+    # read; never enumerate a world/log tree or inspect an older case's report.
+    $stream = [IO.File]::Open($resultPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -gt 128 * 1024) { throw 'Synthetic console results.txt exceeds the fixed 128 KiB bound.' }
+        $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true))
+        try { $result = $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+    Write-Host "`n== $Folder new synthetic results.txt =="
+    Write-Host $result
+}
+
 Push-Location $repository
 try {
     if ($Build -and $AppPath) { throw 'Use either -Build or -AppPath, not both.' }
@@ -143,7 +191,36 @@ try {
         )
         foreach ($checkProject in $checkProjects) {
             $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
-            Invoke-Checked $name { dotnet run --project $checkProject -c Release }
+            $consoleCaseFolder = switch ($name) {
+                'TogetherServer.MinecraftChecks' { 'minecraft-checks' }
+                'TogetherServer.TerrariaChecks' { 'terraria-checks' }
+                default { $null }
+            }
+            if (!$consoleCaseFolder) {
+                Invoke-Checked $name { dotnet run --project $checkProject -c Release }
+                continue
+            }
+            Invoke-Checked $name {
+                $beforeCases = $null
+                if ($consoleCaseFolder) {
+                    try { $beforeCases = @(Get-ConsoleCheckCases $consoleCaseFolder) }
+                    catch { Write-Warning 'Could not safely snapshot synthetic console cases before this runner.' }
+                }
+                $runnerExitCode = $null
+                try {
+                    dotnet run --project $checkProject -c Release
+                    $runnerExitCode = $LASTEXITCODE
+                }
+                finally {
+                    if ($consoleCaseFolder -and $null -ne $beforeCases) {
+                        try { Write-NewConsoleCheckResult $consoleCaseFolder $beforeCases }
+                        catch { Write-Warning 'Could not safely emit the new synthetic console results.txt.' }
+                    }
+                }
+                if ($null -ne $runnerExitCode -and $runnerExitCode -ne 0) {
+                    throw "$name failed with exit code $runnerExitCode."
+                }
+            }
         }
         Invoke-Checked 'Core remote journey' {
             dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
