@@ -8,7 +8,7 @@ Started: 2026-10-08 21:35 America/New_York. Initial estimate: 2-4 hours for impl
 
 Nine isolated worker worktrees use disjoint files. Editors, Friend, chat/access, backups, shared saves, logs/summaries, desktop/preferences, source projections and operations are concurrent lanes. Main.tsx, contracts.ts, Program.cs, shared CSS, WorkspaceChrome.tsx, shared API/protocol integration, this ledger, validation and commits belong to the coordinator. CLI workers and implementation subagents use configured gpt-6.1-sol with max reasoning. Source builds, integration and commits are serialized.
 
-Do not launch TogetherServer, game processes, fixture/process/console runners, browser automation, installers, listeners, staging packages or native dialogs on the active desktop. Only code compilation, JSDOM, pure/synthetic/fake-adapter checks and scripts/verify-code-only.ps1 are authorized here. Production data, credentials and worlds remain untouched. No release, tag, push or deployment is part of this work. Preserve exact process identity, one-world writer, pinned TLS, per-device permissions, fail-closed Unknown occupancy, guarded maintenance and local-only shared-save authority.
+Do not launch TogetherServer, game processes, fixture/process/console runners, browser automation, installers, listeners, staging packages or native dialogs on the active desktop. Only code compilation, JSDOM, pure/synthetic/fake-adapter checks and scripts/verify-code-only.ps1 are authorized here. Production data, credentials and worlds remain untouched. The original implementation phase excluded pushes. The owner subsequently authorized a validation branch, draft PR and separate Windows CI on 2026-10-09; main, releases, tags, deployment and the installed/running application remain unchanged. Preserve exact process identity, one-world writer, pinned TLS, per-device permissions, fail-closed Unknown occupancy, guarded maintenance and local-only shared-save authority.
 
 ## Numbered implementation ledger
 
@@ -119,18 +119,18 @@ Do not launch TogetherServer, game processes, fixture/process/console runners, b
 
 Implementation: **100/100 (100 percent)**, integrated and independently mapped to current source. Completed on 2026-10-08 with nine gpt-6.1-sol/max workers: six Codex CLI lanes and three implementation subagents. The coordinator integrated and committed the authorized scope. Review follow-ups stayed within explicit file ownership; builds and commits were serialized.
 
-Passing focus-safe checks:
+Passing focus-safe checks at the original implementation baseline:
 
 - `scripts/verify-code-only.ps1`: pinned .NET 10.0.301 / Node 24.14.1; locked UI install with scripts disabled; TypeScript; zero-warning lint; locked .NET restore; complete solution compilation with zero warnings/errors; all 16 pure/synthetic/fake-adapter groups; whitespace and desktop diagnostic isolation.
 - Full UI JSDOM suite: **583/583 passed across 63 files**. Earlier failures were resolved; the final full run has no failed tests.
 - `npm run build`: TypeScript and bundled production UI passed. Vite reported its bundle-size advisory for the 893.27 kB minified main JS chunk (243.19 kB gzip); the threshold was not suppressed. Native startup/performance was not measured here.
 - `dotnet build src/TogetherServer/TogetherServer.csproj -c Release --no-restore`: application compilation with the fresh bundled UI passed, zero warnings/errors.
 
-Skipped: synthetic symbolic-link cases because the current test account could not create those links. Native window placement, tray/notification/quiet-mode/focus, picker and Quit/update/restart journeys; real browser viewport/keyboard checks; real Friend-PC/WAN/game joins; owner-installed game acceptance; valued-world save/load/change/restart acceptance. Those require an explicitly approved separate test PC or unattended Windows session. No skipped check is counted as a pass.
+Skipped at the original code-only baseline: synthetic symbolic-link cases because the current test account could not create those links. Native window placement, tray/notification/quiet-mode/focus, picker and Quit/update/restart journeys; real browser viewport/keyboard checks; real Friend-PC/WAN/game joins; owner-installed game acceptance; valued-world save/load/change/restart acceptance. Those require an explicitly approved separate test PC or unattended Windows session. Subsequent browser/native CI results are recorded in the validation ledger; no skipped check is counted as a pass.
 
-Source checks used bounded synthetic files, fake HTTP/desktop adapters and pure projections. No app, game, console fixture, browser automation, installer, staging package or listener was launched. No production data, real world, real credential, public network setting, release or tag was changed. No push or deployment was performed.
+The original source checks used bounded synthetic files, fake HTTP/desktop adapters and pure projections. No app, game, console fixture, browser automation, installer, staging package or listener was launched locally. No production data, real world, real credential, public network setting, release or tag was changed. No push or deployment was performed during that initial implementation phase.
 
-On 2026-10-09 the owner authorized additional testing on a separate Windows CI runner while preserving the running version. Follow-up fixes, the isolated draft PR and exact runtime results are recorded in [the QoL validation ledger](16-QOL-UX-VALIDATION.md). The implementation results above remain the original code-only baseline; pending runtime checks are not counted as passes.
+On 2026-10-09 the owner authorized additional testing on a separate Windows CI runner while preserving the running version. Follow-up fixes, the isolated draft PR and current exact runtime results are recorded in [the QoL validation ledger](16-QOL-UX-VALIDATION.md). The implementation results above remain the original code-only baseline; that separate ledger distinguishes completed runtime coverage, remaining checks and external acceptance.
 
 ## Integration and recovery notes
 
