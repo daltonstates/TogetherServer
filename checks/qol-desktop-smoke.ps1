@@ -39,7 +39,7 @@ $caseResults = [ordered]@{
     recovery = @{ name = 'Protected draft and normal placement recovery'; status = 'SKIP'; reason = 'Not reached.' }
     maximized = @{ name = 'Maximized cold start and normal restore'; status = 'SKIP'; reason = 'Not reached.' }
     rejectedFlush = @{ name = 'Rejected draft keeps native app open'; status = 'SKIP'; reason = 'Not reached.' }
-    startup = @{ name = 'Hidden startup and duplicate launch'; status = 'SKIP'; reason = 'Not reached.' }
+    startup = @{ name = 'Windows startup unavailable in development staging'; status = 'SKIP'; reason = 'Not reached.' }
     isolation = @{ name = 'Candidate and fake boundary unchanged'; status = 'SKIP'; reason = 'Not reached.' }
     explorerQuit = @{ name = 'Explorer tray menu Quit'; status = 'SKIP'; reason = 'Not exercised by this smoke.' }
     notifications = @{ name = 'OS balloon delivery and click'; status = 'SKIP'; reason = 'Not exercised by this smoke.' }
@@ -558,12 +558,12 @@ function Wait-OwnedWebViewDebugger {
     $elevated = ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     throw ("The disposable WebView2 debugger was not ready within 25 seconds. HostElevated=$elevated. $lastState Elevated hosts ignore WEBVIEW2 environment flags; no unrelated endpoint was contacted.")
 }
-function Start-TestApp([switch]$Startup) {
+function Start-TestApp {
     $start = [Diagnostics.ProcessStartInfo]::new($developmentApp)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.WorkingDirectory = $caseRoot
-    $start.ArgumentList.Add($(if ($Startup) { '--startup' } else { '--desktop' }))
+    $start.ArgumentList.Add('--desktop')
     $start.ArgumentList.Add('--port'); $start.ArgumentList.Add([string]$port)
     $start.EnvironmentVariables['TOGETHERSERVER_DATA_DIR'] = $fakeProductionRoot
     $start.EnvironmentVariables['TOGETHERSERVER_STAGING_DATA_DIR'] = $dataRoot
@@ -1201,19 +1201,11 @@ try {
     Begin-Case 'startup'
     Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
     Require ($app.Process.WaitForExit(25000)) 'The clean native window did not quit.'
-    $app = Start-TestApp -Startup
-    Wait-TestApp $false
-    $duplicate = Start-TestApp -Startup
-    Require ($duplicate.Process.WaitForExit(10000)) 'Duplicate startup launch did not return to the existing app.'
-    Wait-TestApp $false
-    Require ((Post-Json '/api/local/show').ok) 'Startup-hidden native window did not open.'
-    Wait-TestApp $true
-    Require-RectNear $remembered
-    Run-WebViewPhase 'inspect'
-    Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
-    Require ($app.Process.WaitForExit(25000)) 'The startup-hidden app did not later quit through native Close.'
-    Write-Host 'PASS startup and duplicate startup keep the GUI hidden; reopening restores the same saved native bounds'
-    Pass-Case 'startup'
+    # AppInstance.Resolve explicitly rejects --startup for DEVELOPMENT, and
+    # Program has no --desktop --tray launch option. Never bypass that boundary.
+    $caseResults['startup'].status = 'SKIP'
+    $caseResults['startup'].reason = 'Development staging cannot start at Windows sign-in. Open it explicitly. No explicit hidden development launch is supported; Windows --startup coverage belongs to the existing production-mode disposable-candidate gate.'
+    Write-Host ('SKIP Windows startup in development staging: ' + $caseResults['startup'].reason)
 
     Begin-Case 'isolation'
     Require ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -eq $candidateHash) 'Original candidate bytes changed.'
@@ -1274,7 +1266,7 @@ finally {
         screenshotExportCompleted = $exportSucceeded
         cases = @($caseResults.Values)
         screenshots = @($screenshots.ToArray())
-        boundary = 'Dedicated approved Windows runner; synthetic state only. Real games, installer, updater replacement and OS notification acceptance are not established.'
+        boundary = 'Dedicated approved Windows runner; synthetic state only. Windows --startup coverage belongs to the existing production-mode disposable-candidate gate. Real games, installer, updater replacement and OS notification acceptance are not established.'
     }
     [IO.File]::WriteAllText((Join-Path $evidenceRoot 'summary.json'), ($summary | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
     Write-Host 'Redacted native CI evidence exported: top-level screenshots and fixed result summary only.'

@@ -201,8 +201,19 @@ Only native checker control selection changes for the next follow-up. Its dedica
 
 - `QolApi` and `Browser` passed completely again.
 - `Desktop` passed **nine cases**, including the actual rejected-storage explanation, strictly owned ID-2 OK dismissal and preserved open app. Its later hidden-start readiness check then stopped on the two-second HttpClient timeout for `/api/local/instance`; the loop did not catch that transient timeout. The next wait treats that exact transport timeout as not-ready within its unchanged overall readiness window, while preserving request limits, identity, staging-root and failed-WebView checks. Hidden startup/duplicate and final boundary completion remain pending.
-- `Existing` remains running independently. No pending stage or combined matching-candidate acceptance is counted as passed.
+- `Existing` passed UI/core/Valheim/Factorio/Terraria, then failed one of twelve Minecraft groups because the Java live-save fixture did not reach actual status readiness. Source review found no demonstrated setup/save ordering defect; the helper's generic failure discarded its last observation. The precise cause is unconfirmed, and no budget/retry/readiness/product change is made. Prior complete gate evidence remains separate.
 
 The source wait now recognises only the HttpClient timeout form reported by [PowerShell's web cmdlet source](https://github.com/PowerShell/PowerShell/blob/master/src/Microsoft.PowerShell.Commands.Utility/commands/utility/WebCmdlet/Common/WebRequestPSCmdlet.Common.cs): `TaskCanceledException` with an immediate `TimeoutException`, through bounded PowerShell/reflection wrappers. Plain cancellation and HTTP status errors are not swallowed. Existing transport readiness failures remain transient; exact app identity is rechecked around requests and transient failures, and wrong-root/failed-WebView errors still throw. The two-second request and 25-second readiness limits are unchanged. Failure diagnostics retain fixed phase/error-kind/expected-visibility facts. PowerShell source parsing and Git whitespace passed; no local runtime was launched.
 
 The application code is unchanged. No local app, browser, native dialog, fixture, process checker or listener is launched by this follow-up.
+
+## Twelfth four-lane run and staging startup boundary
+
+[Run 37919613063](https://github.com/daltonstates/TogetherServer/actions/runs/37919613063), head `6479326cac06d5e695b6d774830b021f0816aee8`, built candidate `0.3.0+82572e75ba76347701be2d76172ff7dc0e5f6beb`, SHA-256 `C06F1232C19D1238DEC067ED0ED5BE46BEF3C77D848C95FC5F5EAD012ECB23C7`.
+
+- `QolApi` and `Browser` passed completely again.
+- `Desktop` again passed its first nine cases. Its startup requests timed out throughout the 25-second window. Source then established the exact cause: **`AppInstance.Resolve` deliberately rejects `--startup` for DEVELOPMENT/staging before Kestrel starts**, and `Program` shows the safety dialog. The harness incorrectly requested that unsupported mode. Port parsing and the application's staging safety policy are correct; existing source checks explicitly require that rejection.
+- The next native checker launches only supported `--desktop` staging instances. Its deliberately unsupported staging Windows-startup case is recorded as **SKIP with the canonical reason**; it is not claimed as a pass. Genuine Windows `--startup`, hidden startup, duplicate startup and manual reopen are covered by the existing gate's ordinary production-mode disposable candidate, which passed in run 37914798628. The staging checker still asserts clean native Close/exit, candidate/sentinel boundaries, normal/maximized recovery and same-PID tray hide/reopen. No safety guard is bypassed and no duplicate test framework is introduced.
+- `Existing` is running independently on this candidate. Matching complete acceptance remains pending.
+
+Source parsing and Git whitespace passed after removing the unsupported launch path. No local runtime was started. The application code is unchanged.
