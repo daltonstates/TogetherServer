@@ -37,9 +37,9 @@ internal static partial class CoreRemoteJourney
         {
             Kind = GameKinds.Valheim,
             Name = "Disposable QoL API",
-            ServerName = "Disposable QoL API",
+            ServerName = "Fixture \"Valheim\"",
             WorldSource = "New",
-            WorldId = "qol-fixture",
+            WorldId = "fixture-world",
             ExecutablePath = fixturePath,
             WorldDirectory = Path.Combine(hostData, "worlds", Guid.NewGuid().ToString("N")),
             GamePort = FreeUdpPair()
@@ -511,7 +511,7 @@ internal static partial class CoreRemoteJourney
         Require(manual.GetProperty("ok").GetBoolean(), "disposable offline backup failed");
         var catalog = QolCatalog(await QolRequestAsync(owner, path, HttpMethod.Get));
         var backup = catalog.Backups.Single();
-        Require(backup.ProfileId == profileId && backup.GameKind == GameKinds.Valheim && backup.WorldId == "qol-fixture" &&
+        Require(backup.ProfileId == profileId && backup.GameKind == GameKinds.Valheim && backup.WorldId == "fixture-world" &&
             backup.BackupKind == BackupKinds.Manual && backup.MetadataAvailable && backup.PayloadSha256 is { Length: 64 } &&
             backup.SizeBytes > 0 && backup.FileCount > 0 && backup.CreatedUtc != default && backup.Evidence.Count == 0,
             "completed catalog omitted exact metadata or inferred unmeasured protection evidence");
@@ -614,7 +614,7 @@ internal static partial class CoreRemoteJourney
         Require(selection.GetProperty("ok").GetBoolean(), "primary saved Host selection failed");
         Require((await WaitForConnectedAsync(joining, allowDisabled: true)).ConnectionId == primary, "saved Host selection was not canonical");
         Require((await PostAsync<ValheimPasswordRequest, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/password",
-            new("synthetic-qol-fixture-password"))).Ok, "synthetic fixture password was rejected");
+            new("fixture-pass-123"))).Ok, "synthetic fixture password was rejected");
         Require((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { })).Ok,
             "owned synthetic fixture did not start");
         _ = await WaitForRunStateAsync(owner, profile.Id, "Ready");

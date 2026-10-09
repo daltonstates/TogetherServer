@@ -3,6 +3,7 @@ param(
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
+    [ValidateSet('All', 'Existing', 'Qol')][string]$Suite = 'All',
     [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
@@ -117,68 +118,78 @@ try {
             throw 'Core route checks must use in-memory TestServer; packaged journeys own real sockets.'
         }
     }
-    Invoke-Checked 'UI lint' {
-        Push-Location ui
-        try { npm run lint }
-        finally { Pop-Location }
-    }
-    Invoke-Checked 'UI unit tests' {
-        Push-Location ui
-        try { npm test }
-        finally { Pop-Location }
-    }
-    Invoke-Checked 'Locked application restore' { dotnet restore src/TogetherServer/TogetherServer.csproj --locked-mode }
-    $checkProjects = @(
-        'checks/TogetherServer.Checks/TogetherServer.Checks.csproj',
-        'checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj',
-        'checks/TogetherServer.FactorioChecks/TogetherServer.FactorioChecks.csproj',
-        'checks/TogetherServer.TerrariaChecks/TogetherServer.TerrariaChecks.csproj',
-        'checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj',
-        'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
-        'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',
-        'checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj',
-        'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj',
-        'checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj'
-    )
-    foreach ($checkProject in $checkProjects) {
-        $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
-        Invoke-Checked $name { dotnet run --project $checkProject -c Release }
-    }
-    Invoke-Checked 'Core remote journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
-    }
-    Invoke-Checked 'QoL packaged API journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --qol-api-journey
-    }
-    Invoke-Checked 'World-load packaged rehearsal' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --world-load-rehearsal
-    }
-    Invoke-Checked 'Shared Worlds packaged journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-world-journey
-    }
-    Invoke-Checked 'Staging LiveSave owner action' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --live-save-action
-    }
-    Invoke-Checked 'Shared LiveSave packaged transfer journey' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-live-transfer-journey
-    }
-    Invoke-Checked 'TogetherServer.CompanionChecks' {
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
-    }
-    Invoke-Checked 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
-    Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
-    Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
-    Invoke-Checked 'QoL bundled browser journeys' {
-        node ui/checks/qol-browser-smoke.mjs --app-path $AppPath --allow-interactive-tests --output-dir local-data/ci-evidence/qol-browser
-    }
-    if (!$SkipDesktop) {
-        Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -AllowInteractiveTests }
-        Invoke-Checked 'Packaged interactive desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -Interactive -AllowInteractiveTests }
-        Invoke-Checked 'QoL native desktop smoke' { & checks/qol-desktop-smoke.ps1 -AppPath $AppPath -AllowInteractiveTests }
-    }
-    else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
+    if ($Suite -ne 'Qol') {
+        Invoke-Checked 'UI lint' {
+            Push-Location ui
+            try { npm run lint }
+            finally { Pop-Location }
+        }
+        Invoke-Checked 'UI unit tests' {
+            Push-Location ui
+            try { npm test }
+            finally { Pop-Location }
+        }
+        Invoke-Checked 'Locked application restore' { dotnet restore src/TogetherServer/TogetherServer.csproj --locked-mode }
+        $checkProjects = @(
+            'checks/TogetherServer.Checks/TogetherServer.Checks.csproj',
+            'checks/TogetherServer.ValheimChecks/TogetherServer.ValheimChecks.csproj',
+            'checks/TogetherServer.FactorioChecks/TogetherServer.FactorioChecks.csproj',
+            'checks/TogetherServer.TerrariaChecks/TogetherServer.TerrariaChecks.csproj',
+            'checks/TogetherServer.MinecraftChecks/TogetherServer.MinecraftChecks.csproj',
+            'checks/TogetherServer.MinecraftSetupChecks/TogetherServer.MinecraftSetupChecks.csproj',
+            'checks/TogetherServer.CustomChecks/TogetherServer.CustomChecks.csproj',
+            'checks/TogetherServer.SharedHistoryChecks/TogetherServer.SharedHistoryChecks.csproj',
+            'checks/TogetherServer.UpdateChecks/TogetherServer.UpdateChecks.csproj'
+        )
+        foreach ($checkProject in $checkProjects) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($checkProject)
+            Invoke-Checked $name { dotnet run --project $checkProject -c Release }
+        }
+        Invoke-Checked 'Core remote journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --core-remote-journey
+        }
+        Invoke-Checked 'World-load packaged rehearsal' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --world-load-rehearsal
+        }
+        Invoke-Checked 'Shared Worlds packaged journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-world-journey
+        }
+        Invoke-Checked 'Staging LiveSave owner action' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --live-save-action
+        }
+        Invoke-Checked 'Shared LiveSave packaged transfer journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-live-transfer-journey
+        }
+        Invoke-Checked 'TogetherServer.CompanionChecks' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
+        }
+        Invoke-Checked 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
+        Invoke-Checked 'Packaged served smoke' { & checks/served-smoke.ps1 -AppPath $AppPath }
+        Invoke-Checked 'Production plus staging isolation smoke' { & checks/staging-smoke.ps1 -AppPath $AppPath }
+        if (!$SkipDesktop) {
+            Invoke-Checked 'Packaged hidden desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -AllowInteractiveTests }
+            Invoke-Checked 'Packaged interactive desktop smoke' { & checks/desktop-smoke.ps1 -AppPath $AppPath -Port 0 -Interactive -AllowInteractiveTests }
+        }
+        else { Write-Host 'SKIP packaged hidden desktop smoke (-SkipDesktop was supplied).' }
 
-    Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
+        Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
+    }
+
+    if ($Suite -ne 'Existing') {
+        Invoke-Checked 'TogetherServer.FeatureChecks' {
+            dotnet run --project checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj -c Release
+        }
+        Invoke-Checked 'QoL packaged API journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --qol-api-journey
+        }
+        Invoke-Checked 'QoL bundled browser journeys' {
+            node ui/checks/qol-browser-smoke.mjs --app-path $AppPath --allow-interactive-tests --output-dir local-data/ci-evidence/qol-browser
+        }
+        if (!$SkipDesktop) {
+            Invoke-Checked 'QoL native desktop smoke' { & checks/qol-desktop-smoke.ps1 -AppPath $AppPath -AllowInteractiveTests }
+        }
+        else { Write-Host 'SKIP QoL native desktop smoke (-SkipDesktop was supplied).' }
+    }
 
     $finalHash = (Get-FileHash -LiteralPath $AppPath -Algorithm SHA256).Hash
     if ($finalHash -ne $candidateHash) { throw 'Candidate bytes changed during verification.' }
@@ -186,7 +197,7 @@ try {
 }
 finally {
     New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
-    @{ candidate = $candidateIdentity; checks = @($checkEvidence.ToArray());
+    @{ suite = $Suite; candidate = $candidateIdentity; checks = @($checkEvidence.ToArray());
         boundary = 'Separate approved Windows session; synthetic and loopback evidence does not establish real game, WAN, join or save acceptance.' } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'release-gate-report.json') -Encoding utf8
     Pop-Location

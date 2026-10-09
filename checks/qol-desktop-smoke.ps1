@@ -251,11 +251,14 @@ try {
     assert.equal(baseline.ok, true); assert.equal(baseline.text, null);
     let observed = false;
     const held = [];
+    const settleDraft = route => mode === 'arm-failed-draft'
+      ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, text: null, revision: baseline.revision, message: 'Synthetic draft storage rejection.' }) })
+      : route.continue();
     await page.exposeBinding('__qolSmokeNativeFlush', async (_source, requestId) => {
       assert.match(requestId, /^[0-9a-f-]{36}$/i);
       observed = true;
       fs.writeFileSync(out(`${mode}-native-request.json`), JSON.stringify({ observed: true }));
-      for (const route of held.splice(0)) await route.continue();
+      for (const route of held.splice(0)) await settleDraft(route);
     });
     await page.evaluate(() => {
       window.__qolSmokeNativeListener = event => {
@@ -266,9 +269,8 @@ try {
     await page.route('**/api/local/ui-drafts', async route => {
       const body = route.request().postDataJSON();
       if (body?.purpose !== 'chat' || body.profileId !== profileId || body.text !== marker) return route.continue();
-      if (mode === 'arm-failed-draft') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, text: null, revision: baseline.revision, message: 'Synthetic draft storage rejection.' }) });
       if (!observed) { held.push(route); return; }
-      return route.continue();
+      return settleDraft(route);
     });
     await page.getByLabel('Message', { exact: true }).fill(marker);
     await page.waitForFunction(() => document.querySelector('.server-chat-compose')?.textContent?.includes('Saving unfinished message'));

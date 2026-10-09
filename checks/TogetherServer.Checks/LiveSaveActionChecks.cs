@@ -6,6 +6,10 @@ internal static class LiveSaveActionChecks
     internal static async Task RunAsync(string root, string fixture)
     {
         static void Require(bool value, string message) { if (!value) throw new Exception(message); }
+        static string Describe(LiveSaveActionResult result) =>
+            $"Ok={result.Ok}; Code={result.Code}; Message={result.Message}; " +
+            $"AttemptState={result.Attempt?.State ?? "none"}; AttemptCode={result.Attempt?.Code ?? "none"}; " +
+            $"AttemptMessage={result.Attempt?.Message ?? "none"}";
         LiveSavePublicationBoundaryChecks.Run(Path.Combine(root, "live-publication-boundaries"), fixture);
         using var data = new LocalData(Path.Combine(root, "live-action"));
         var games = new GameServerRegistry(data, true, PortProbeMode.ObserveOnly);
@@ -39,14 +43,15 @@ internal static class LiveSaveActionChecks
                 "the typed game adapter was missing, mismatched, or enabled before its own acceptance");
         }
         manager.EnableStagingLiveFixture();
-        Require((await manager.StartAsync(profile.Id)).Ok, "fixture Start failed");
+        var started = await manager.StartAsync(profile.Id);
+        Require(started.Ok, $"fixture Start failed: Code={started.Code}; Message={started.Message}");
         try
         {
             File.WriteAllText(file, "running synthetic change");
             var id = Guid.NewGuid();
             var duplicate = await Task.WhenAll(manager.SaveAndShareAsync(profile.Id, new(id)), manager.SaveAndShareAsync(profile.Id, new(id)));
             Require(duplicate.All(item => item.Ok) && duplicate[0].Attempt?.VersionHash == duplicate[1].Attempt?.VersionHash,
-                "duplicate requests repeated publication or lost exact identity");
+                $"duplicate requests repeated publication or lost exact identity: first [{Describe(duplicate[0])}]; second [{Describe(duplicate[1])}]");
             var current = (await manager.SharedWorldStatusAsync(profile.Id)).Latest!;
             Require(current.CaptureKind == SharedWorldCaptureKinds.LiveSave && SharedWorldService.VerifySignature(current), "fixture current live copy was not signed");
             manager.LiveAvailableBytesForChecks = () => 0;
@@ -77,27 +82,56 @@ internal static class LiveSaveActionChecks
             Require((await targetedCapture).Code == "LiveSaveCanceled" && (await targetedWithdrawal).Ok &&
                 (await manager.SharedWorldStatusAsync(profile.Id)).Latest?.Number == current.Number + 1,
                 "the exact active withdrawal did not cancel its own capture safely");
-            var overlapped = manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid()));
-            await Task.Delay(30);
-            var stop = manager.StopAsync(profile.Id);
-            Require((await overlapped).Code == "LiveSaveCanceled" && (await stop).Ok, "concurrent owner Stop failed to cancel bounded capture and stop exact fixture");
-            Require((await manager.StartAsync(profile.Id)).Ok, "fixture could not restart after failed/canceled saves");
-            manager.LiveAfterSignedDirectoryForChecks = () => throw new IOException("simulated crash before latest pointer");
+            Task<ActionResult>? stop = null;
+            // The hook runs after the exact fixture completion and source scan,
+            // while this capture owns the lifecycle gate. Owner Stop cancels
+            // the active request before waiting for that gate; neither a slow
+            // CI scheduler nor the fixture's response delay selects the overlap.
+            manager.LiveAfterSourceScanForChecks = () => stop = manager.StopAsync(profile.Id);
+            LiveSaveActionResult overlapped;
+            try { overlapped = await manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid())); }
+            finally { manager.LiveAfterSourceScanForChecks = null; }
+            Require(stop is not null,
+                $"concurrent owner Stop never reached the completed source scan: {Describe(overlapped)}");
+            var stopped = await stop!;
+            Require(overlapped.Code == "LiveSaveCanceled" && stopped.Ok,
+                $"concurrent owner Stop failed to cancel bounded capture and stop exact fixture: capture [{Describe(overlapped)}]; " +
+                $"Stop Code={stopped.Code}; Message={stopped.Message}");
+            var restartedAfterCancellation = await manager.StartAsync(profile.Id);
+            Require(restartedAfterCancellation.Ok,
+                $"fixture could not restart after failed/canceled saves: Code={restartedAfterCancellation.Code}; Message={restartedAfterCancellation.Message}");
+            var reachedSignedDirectory = false;
+            manager.LiveAfterSignedDirectoryForChecks = () =>
+            {
+                reachedSignedDirectory = true;
+                throw new IOException("simulated crash before latest pointer");
+            };
             var failed = await manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid()));
-            Require(!failed.Ok && (await manager.SharedWorldStatusAsync(profile.Id)).LiveSave?.Available == false,
-                "interrupted signed directory allowed another live capture");
+            Require(reachedSignedDirectory && !failed.Ok && failed.Attempt is not null,
+                $"interrupted-copy fixture did not reach its signed-directory crash point: ReachedSignedDirectory={reachedSignedDirectory}; {Describe(failed)}");
+            var blockedStatus = await manager.SharedWorldStatusAsync(profile.Id);
+            Require(blockedStatus.LiveSave?.Available == false,
+                $"interrupted signed directory allowed another live capture: {Describe(failed)}; " +
+                $"LiveSave Code={blockedStatus.LiveSave?.Code ?? "none"}; Message={blockedStatus.LiveSave?.Message ?? "none"}");
             var orphan = await manager.SharedLiveOrphanReviewAsync(profile.Id);
-            Require(orphan is { Code: "Verified", VersionHash: not null }, "sealed interrupted copy not reviewable");
-            Require((await manager.QuarantineSharedLiveOrphanAsync(profile.Id, orphan.VersionHash!)).Ok, "exact signed orphan quarantine failed");
+            Require(orphan is { Code: "Verified", VersionHash: not null },
+                $"sealed interrupted copy not reviewable: Code={orphan.Code}; Message={orphan.Message}; " +
+                $"HasVersionHash={orphan.VersionHash is not null}; capture [{Describe(failed)}]; " +
+                $"LiveSave Code={blockedStatus.LiveSave?.Code ?? "none"}; Message={blockedStatus.LiveSave?.Message ?? "none"}");
+            var quarantined = await manager.QuarantineSharedLiveOrphanAsync(profile.Id, orphan.VersionHash!);
+            Require(quarantined.Ok,
+                $"exact signed orphan quarantine failed: Code={quarantined.Code}; Message={quarantined.Message}");
             var withdrawnPrivateSnapshots = new ManagedLiveSnapshotStore(data, games);
             var failedRun = data.LoadRuns().Single();
             var failedPrivate = withdrawnPrivateSnapshots.Stage(profile, failedRun,
                 ValheimManagedSnapshotAdapter.Completion(profile, failedRun), reservedSnapshotId: failed.Attempt!.RequestId);
-            Require((await manager.WithdrawLiveSaveAsync(profile.Id, new(failed.Attempt!.RequestId))).Ok, "failed attempt withdrawal failed");
+            var failedWithdrawal = await manager.WithdrawLiveSaveAsync(profile.Id, new(failed.Attempt!.RequestId));
+            Require(failedWithdrawal.Ok, $"failed attempt withdrawal failed: {Describe(failedWithdrawal)}");
             Require(!Directory.Exists(failedPrivate.SnapshotDirectory) && File.Exists(file),
                 "explicit withdrawal retained its sealed private crash copy or deleted source bytes");
             manager.LiveAfterSignedDirectoryForChecks = null;
-            Require((await manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid()))).Ok, "new request could not save again after withdrawal/review");
+            var savedAfterReview = await manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid()));
+            Require(savedAfterReview.Ok, $"new request could not save again after withdrawal/review: {Describe(savedAfterReview)}");
             byte[]? publishingJournal = null;
             manager.LiveAfterSignedDirectoryForChecks = () => publishingJournal = data.LoadProtected("live-save-attempts.protected");
             var interruptedRequestId = Guid.NewGuid();

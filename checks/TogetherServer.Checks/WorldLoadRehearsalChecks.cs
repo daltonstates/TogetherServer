@@ -7,6 +7,10 @@ internal static class WorldLoadRehearsalChecks
     internal static async Task RunAsync(string root, string fixture, Action<string, string> createJunction)
     {
         static void Require(bool value, string message) { if (!value) throw new Exception(message); }
+        static string Describe(WorldLoadRehearsalResult result) =>
+            $"{result.Code}: {result.Message}; rehearsal state={result.Rehearsal?.State ?? "unavailable"}, " +
+            $"starts={result.Rehearsal?.ManagedStarts.ToString() ?? "unavailable"}, " +
+            $"graceful stops={result.Rehearsal?.GracefulStops.ToString() ?? "unavailable"}";
         using var data = new LocalData(Path.Combine(root, "world-load"));
         var games = new GameServerRegistry(data, true, PortProbeMode.ObserveOnly);
         var sourceRoot = Path.Combine(root, "world-load-source");
@@ -16,7 +20,7 @@ internal static class WorldLoadRehearsalChecks
         data.SaveSettings(new() { Profiles = [profile] });
         var backups = new WorldBackupService(data, TimeProvider.System, _ => long.MaxValue, games);
         var checkpoint = backups.Create(profile, BackupKinds.Manual, sourceRoot);
-        Require(checkpoint.Ok && checkpoint.Backup is not null, "completed fixture backup missing");
+        Require(checkpoint.Ok && checkpoint.Backup is not null, "completed fixture backup missing: " + checkpoint.Code + " " + checkpoint.Message);
         var backup = checkpoint.Backup!;
         var manager = new HostManager(data, games);
         manager.WorldLoadAvailableBytesForChecks = () => 0;
@@ -24,7 +28,7 @@ internal static class WorldLoadRehearsalChecks
         manager.WorldLoadAvailableBytesForChecks = () => long.MaxValue;
         Require(!(await manager.PrepareWorldLoadRehearsalAsync(Guid.NewGuid(), backup.Id)).Ok, "wrong source accepted");
         var prepared = await manager.PrepareWorldLoadRehearsalAsync(profile.Id, backup.Id);
-        Require(prepared.Ok && prepared.Rehearsal?.CanLaunch == true, "reviewed isolated fixture was not prepared: " + prepared.Code);
+        Require(prepared.Ok && prepared.Rehearsal?.CanLaunch == true, "reviewed isolated fixture was not prepared: " + Describe(prepared));
         var trial = prepared.Rehearsal!;
         Require(trial.WorldDirectory != sourceRoot && File.ReadAllText(Path.Combine(trial.WorldDirectory, "copy.bin")) == "synthetic baseline",
             "source was swapped or working copy not exact");
@@ -42,7 +46,7 @@ internal static class WorldLoadRehearsalChecks
             {
                 var rejected = await current.WorldLoadRehearsalAsync(trial.Id, "start");
                 Require(!rejected.Ok && rejected.Code == "WorldLoadReviewRequired" && launches == 0,
-                    phase + " did not reject the substituted path before launch: " + rejected.Code);
+                    phase + " did not reject the substituted path before launch: " + Describe(rejected));
                 var run = (await current.SnapshotAsync()).Runs.Single(item => item.ProfileId == trial.RehearsalProfileId);
                 Require(run.State == "Offline" && run.ProcessId is null, phase + " created a managed run");
                 Require(rejected.Rehearsal?.CopyIdentity == trial.CopyIdentity &&
@@ -101,8 +105,10 @@ internal static class WorldLoadRehearsalChecks
         Require(!(await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Restart", true))).Ok, "restart confirmation skipped load");
         Require((await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Load", false))).Rehearsal?.LoadOutcome == "OwnerFailed",
             "failed load not retained");
-        Require((await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Load", true, "fixture 1"))).Ok, "owner load confirmation rejected");
-        Require((await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Change", true))).Ok, "owner change confirmation rejected");
+        var loadConfirmed = await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Load", true, "fixture 1"));
+        Require(loadConfirmed.Ok, "owner load confirmation rejected: " + Describe(loadConfirmed));
+        var changeConfirmed = await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Change", true));
+        Require(changeConfirmed.Ok, "owner change confirmation rejected: " + Describe(changeConfirmed));
         Require(!(await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Restart", true))).Ok, "unobserved managed restart accepted");
         Require(!(await manager.WorldLoadRehearsalAsync(trial.Id, "cleanup")).Ok, "cleanup skipped owner stopped confirmation");
         var linked = Path.Combine(trial.WorldDirectory, "linked");
@@ -113,28 +119,39 @@ internal static class WorldLoadRehearsalChecks
         var freshManager = new HostManager(data, games);
         Require((await freshManager.WorldLoadRehearsalAsync(trial.Id)).Rehearsal?.LoadOutcome == "OwnerConfirmed", "rehearsal result was not durable");
         manager = freshManager;
-        Require((await manager.WorldLoadRehearsalAsync(trial.Id, "start")).Ok, "restored plain copy cannot start");
+        var firstStart = await manager.WorldLoadRehearsalAsync(trial.Id, "start");
+        Require(firstStart.Ok, "restored plain copy cannot start: " + Describe(firstStart));
         try
         {
             File.WriteAllText(Path.Combine(trial.WorldDirectory, "copy.bin"), "recognizable synthetic change");
-            Require((await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Change", true))).Ok,
-                "synthetic saved-change confirmation failed");
+            var savedChange = await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Change", true));
+            Require(savedChange.Ok, "synthetic saved-change confirmation failed: " + Describe(savedChange));
         }
-        finally { Require((await manager.WorldLoadRehearsalAsync(trial.Id, "stop")).Ok, "first exact trial Stop failed"); }
+        finally
+        {
+            var firstStop = await manager.WorldLoadRehearsalAsync(trial.Id, "stop");
+            Require(firstStop.Ok, "first exact trial Stop failed: " + Describe(firstStop));
+        }
         manager = new HostManager(data, games);
         var stoppedTrial = (await manager.WorldLoadRehearsalAsync(trial.Id)).Rehearsal;
         Require(stoppedTrial is { ManagedStarts: 1, GracefulStops: 1 },
             "the first exact Start/Stop was not retained across Host reconstruction");
         await RequireRootSwapRejectedAsync(manager, "Restart after exact Stop and Host reconstruction");
         await RequireSubtreeSwapRejectedAsync(manager, "Restart after exact Stop and Host reconstruction");
-        Require((await manager.WorldLoadRehearsalAsync(trial.Id, "start")).Ok, "restored plain copy cannot restart");
+        var secondStart = await manager.WorldLoadRehearsalAsync(trial.Id, "start");
+        Require(secondStart.Ok, "restored plain copy cannot restart: " + Describe(secondStart));
         try
         {
-            Require(File.ReadAllText(Path.Combine(trial.WorldDirectory, "copy.bin")) == "recognizable synthetic change" &&
-                (await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Restart", true))).Ok,
-                "a normal restart did not preserve the changed disposable copy and owner-reported result");
+            Require(File.ReadAllText(Path.Combine(trial.WorldDirectory, "copy.bin")) == "recognizable synthetic change",
+                "a normal restart did not preserve the changed disposable copy");
+            var restartConfirmed = await manager.WorldLoadRehearsalAsync(trial.Id, "confirm", new("Restart", true));
+            Require(restartConfirmed.Ok, "a normal restart did not retain its owner-reported result: " + Describe(restartConfirmed));
         }
-        finally { Require((await manager.WorldLoadRehearsalAsync(trial.Id, "stop")).Ok, "second exact trial Stop failed"); }
+        finally
+        {
+            var secondStop = await manager.WorldLoadRehearsalAsync(trial.Id, "stop");
+            Require(secondStop.Ok, "second exact trial Stop failed: " + Describe(secondStop));
+        }
         var referenced = Copy((await manager.SnapshotAsync()).Settings);
         var other = new ServerProfile { Name = "Other disposable reference", WorldId = "other", WorldDirectory = trial.WorldDirectory, ExecutablePath = fixture };
         referenced.Profiles.Add(other);

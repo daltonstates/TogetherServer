@@ -10,9 +10,8 @@ import { fileURLToPath } from 'node:url'
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const options = parseArguments(process.argv.slice(2))
-if (!options.allowInteractive || process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' ||
-    process.env.RUNNER_OS !== 'Windows') {
-  throw new Error('ForegroundSafety: QoL browser smoke requires --allow-interactive-tests on the separately approved Windows GitHub Actions runner.')
+if (!options.allowInteractive || process.platform !== 'win32') {
+  throw new Error('ForegroundSafety: QoL browser smoke requires --allow-interactive-tests and explicit owner approval for a separate Windows test PC or unattended CI runner. Never run on the active owner desktop.')
 }
 assert(options.appPath && path.isAbsolute(options.appPath), 'Supply the exact absolute candidate with --app-path.')
 const appPath = await realpath(options.appPath)
@@ -28,7 +27,7 @@ const instances = []
 const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
-const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures on a separate Windows CI runner. No real game, WAN, join or save acceptance.',
+const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
   journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], cleanup: [], startedUtc: new Date().toISOString() }
 let browser
 let failed = false
@@ -459,7 +458,9 @@ async function lifecycleLogsAndSessions(page, host, profiles) {
   const completed = weekly.getByRole('button', { name: /^Completed sessions:/u })
   await completed.click()
   assert.equal(await completed.getAttribute('aria-pressed'), 'true')
-  await weekly.getByText('Stopped gracefully', { exact: true }).waitFor()
+  assert.match(run.operationId, /^[\da-f-]{36}$/iu, 'The actual managed run must have an archive identity.')
+  await weekly.locator('.recent-session-list .recent-session-card').filter({ hasText: `Run ${run.operationId.slice(0, 8)}` })
+    .getByText('Stopped gracefully', { exact: true }).waitFor()
   assert(await weekly.locator('.weekly-runtime-chart svg').count() > 0, 'Recorded UTC-day activity must come from the actual archived session.')
   await screenshot(page, 'sessions-wide', { width: 1440, height: 900 })
 }
@@ -484,6 +485,12 @@ async function backupCatalog(page, host, profiles) {
   await catalog.getByText('Retention preview', { exact: true }).click()
   await catalog.getByLabel('Preview unpinned retention count', { exact: true }).fill('1')
   await catalog.getByText(/Changing this preview removes nothing/u).waitFor()
+  assert((await api(host, '/api/local/snapshot')).runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Offline'),
+    'Restore-cancellation sentinels are written only while the disposable fixture is Offline.')
+  const currentDb = 'Current synthetic DB after backups; cancel must preserve this.'
+  const currentFwl = 'Current synthetic FWL after backups; cancel must preserve this.'
+  await writeFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), currentDb)
+  await writeFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.fwl'), currentFwl)
   await first.getByRole('button', { name: 'Review Restore', exact: true }).click()
   const review = catalog.getByRole('region', { name: 'Review Restore', exact: true })
   const restore = review.getByRole('button', { name: 'Restore reviewed backup', exact: true })
@@ -493,7 +500,8 @@ async function backupCatalog(page, host, profiles) {
   await screenshot(page, 'backup-restore-review', { width: 1440, height: 900 })
   await review.getByRole('button', { name: 'Cancel Restore', exact: true }).click()
   // Cancelling review cannot change either synthetic world file.
-  assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), 'utf8'), 'Disposable synthetic DB bytes.')
+  assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), 'utf8'), currentDb)
+  assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.fwl'), 'utf8'), currentFwl)
   await catalog.getByRole('button', { name: 'Verify', exact: true }).first().click()
   await catalog.getByText(/Local integrity: Passed/u).first().waitFor()
 }
@@ -529,7 +537,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await api(friend, '/api/local/friend/poll', 'POST')
   await first.getByText(/The Host reports readiness/u).waitFor()
   assert.equal(await first.getByRole('button', { name: 'Stop server', exact: true }).count(), 0)
-  assert.equal(await first.getByRole('button', { name: 'Open logs', exact: true }).count(), 0)
+  assert.equal(await first.getByRole('button', { name: 'View logs', exact: true }).count(), 0)
   // The OS/Open game control is only observed; this harness never invokes a native client.
   await first.getByRole('button', { name: 'Open chat', exact: true }).first().click()
   const chat = first.locator('.server-chat')
@@ -563,6 +571,7 @@ async function attentionAndLargeText(page) {
   const appearance = page.getByRole('group', { name: 'Appearance' })
   await appearance.getByLabel('Text size', { exact: true }).selectOption('150')
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+  await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole('complementary', { name: 'Saved servers' }).locator('.server-master-item').first().click()
   await screenshot(page, 'host-narrow-150', { width: 390, height: 844 })
   await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 })
