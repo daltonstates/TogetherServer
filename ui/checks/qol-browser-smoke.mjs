@@ -28,7 +28,7 @@ const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
-  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [],
+  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [],
   cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const pendingResponseClassifications = new Set()
@@ -595,8 +595,53 @@ async function setupReview(page, profiles) {
   await page.getByRole('dialog', { name: 'Add new server' }).getByRole('button', { name: 'Cancel', exact: true }).click()
   await page.getByRole('dialog', { name: 'Add new server' }).waitFor({ state: 'hidden' })
 }
+async function recordGuidedEditorDom(page, phase) {
+  const panels = page.locator('.server-detail .game-settings-panel')
+  const panelCount = await panels.count()
+  const workspace = page.locator('.server-detail')
+  const workspaceCount = await workspace.count()
+  const workspaceName = workspaceCount === 1 ? await workspace.evaluate(element => {
+    const label = element.getAttribute('aria-label')
+    if (label) return label
+    return (element.getAttribute('aria-labelledby') ?? '').split(/\s+/u).filter(Boolean)
+      .map(id => document.getElementById(id)?.textContent ?? '').join(' ')
+  }) : null
+  const selectedTabs = page.locator('.server-detail [aria-label="Selected server sections"] button[aria-current="page"]')
+  const selectedTabCount = await selectedTabs.count()
+  const reloads = page.getByRole('button', { name: 'Reload game settings', exact: true })
+  const reloadCount = await reloads.count()
+  const reloadDomCount = await page.locator('.server-detail .game-settings-panel button')
+    .filter({ hasText: /^Reload game settings$/u }).count()
+  const fallbackText = 'Game settings could not be shown'
+  const fallback = page.locator('.server-detail .pane-error[role="alert"]')
+    .filter({ has: page.getByText(fallbackText, { exact: true }) })
+  const fallbackCount = await fallback.count()
+  const panelAriaLabel = panelCount === 1 ? await panels.getAttribute('aria-label') : null
+  const state = { phase, panelCount,
+    panelAriaLabel: panelAriaLabel === null ? null : redact(panelAriaLabel).slice(0, 120),
+    panelVisible: panelCount === 1 ? await panels.isVisible() : false,
+    panelAriaHidden: panelCount === 1 ? await panels.getAttribute('aria-hidden') : null,
+    panelHiddenAncestor: panelCount === 1 ? await panels.evaluate(element => !!element.closest('[aria-hidden="true"], [inert]')) : false,
+    regionCount: await page.getByRole('region', { name: 'Simple game settings', exact: true }).count(),
+    reloadDomCount, reloadCount, reloadVisible: reloadCount === 1 ? await reloads.isVisible() : false,
+    fallbackCount, fallbackText: fallbackCount > 0 ? fallbackText : null,
+    workspaceCount, workspaceName: workspaceName === null ? null : redact(workspaceName).slice(0, 120),
+    selectedTabCount, selectedTab: selectedTabCount === 1 ? redact(await selectedTabs.innerText()).slice(0, 40) : null,
+    workspaceTab: workspaceCount === 1 ? await workspace.getAttribute('data-server-tab') : null }
+  report.guidedEditorDom.push(state)
+  return state
+}
 async function editorRecovery(page, host, profiles) {
   await selectServer(page, profiles.bedrock.name, 'Files')
+  const settings = page.getByRole('region', { name: 'Simple game settings', exact: true })
+  await recordGuidedEditorDom(page, 'initial')
+  try {
+    await settings.waitFor({ state: 'visible' })
+  } catch (error) {
+    await recordGuidedEditorDom(page, 'initial-failed')
+    throw new Error(`The initial guided settings region was not visible; inspect guidedEditorDom. ${redact(error.message)}`, { cause: error })
+  }
+  await recordGuidedEditorDom(page, 'initial-visible')
   const files = page.getByRole('region', { name: 'Server files and settings' })
   const row = files.locator('.server-file-row').filter({ hasText: 'server.properties' })
   await row.getByRole('button', { name: 'Edit file', exact: true }).click()
@@ -616,7 +661,7 @@ async function editorRecovery(page, host, profiles) {
   await files.getByRole('button', { name: 'Review file changes', exact: true }).click()
   await files.getByRole('region', { name: 'Review raw file changes' }).getByText(/QoL browser raw draft/u).waitFor()
   await files.getByRole('button', { name: 'Discard unsaved file edits', exact: true }).click()
-  const settings = page.getByRole('region', { name: 'Simple game settings' })
+  await recordGuidedEditorDom(page, 'before-guided')
   const difficulty = settings.getByRole('combobox', { name: /^Difficulty/u })
   const guided = await api(host, `/api/local/profiles/${profiles.bedrock.id}/game-settings`)
   const settingKeys = guided?.settings && typeof guided.settings === 'object' && !Array.isArray(guided.settings)
@@ -634,13 +679,14 @@ async function editorRecovery(page, host, profiles) {
       'Discard and the guided read must leave the original synthetic file unchanged.')
     await difficulty.selectOption('hard')
   } catch (error) {
+    await recordGuidedEditorDom(page, 'guided-failed')
     const regionCount = await settings.count()
     const notices = regionCount === 1
       ? await settings.locator(':scope > .notice, :scope > .helper-text').allTextContents() : []
     const notice = redact(notices.join(' ').replace(/\b[a-f\d]{64}\b/giu, '[hash]'))
     const selectCount = regionCount === 1 ? await settings.locator('select').count() : 0
     const difficultyCount = regionCount === 1 ? await difficulty.count() : 0
-    throw new Error(`Guided settings precondition/control failed: ${guidedSummary}; ` +
+    throw new Error(`Guided settings precondition/control failed; inspect guidedEditorDom: ${guidedSummary}; ` +
       `regions=${regionCount}, selects=${selectCount}, difficultyControls=${difficultyCount}, notice=${notice}; ${redact(error.message)}`, { cause: error })
   }
   await settings.getByLabel('Search game settings', { exact: true }).fill('players')

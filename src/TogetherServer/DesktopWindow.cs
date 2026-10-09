@@ -560,12 +560,24 @@ internal sealed class DesktopWindow
         titleBar.DoubleClick += Toggle;
         mark.DoubleClick += Toggle;
         title.DoubleClick += Toggle;
-        window.Resize += (_, _) =>
+        var maximizeChromeUpdateQueued = false;
+        void RefreshMaximizeChrome()
         {
-            maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
-            maximize.AccessibleName = window.WindowState == FormWindowState.Maximized
-                ? "Restore " + displayName : "Maximize " + displayName;
-        };
+            if (window.IsDisposed || window.Disposing || maximize.IsDisposed) return;
+            UpdateMaximizeChrome(window, maximize);
+            // Resize can run inside the native state setter. Refresh once more
+            // after that message completes, including saved-state restoration.
+            if (maximizeChromeUpdateQueued || !window.IsHandleCreated) return;
+            maximizeChromeUpdateQueued = true;
+            window.BeginInvoke(new Action(() =>
+            {
+                maximizeChromeUpdateQueued = false;
+                if (!window.IsDisposed && !window.Disposing && !maximize.IsDisposed)
+                    UpdateMaximizeChrome(window, maximize);
+            }));
+        }
+        window.Resize += (_, _) => RefreshMaximizeChrome();
+        window.Shown += (_, _) => RefreshMaximizeChrome();
 
         titleBar.Controls.Add(mark);
         titleBar.Controls.Add(title);
@@ -608,12 +620,19 @@ internal sealed class DesktopWindow
     private static void ChromeLeave(object? sender, EventArgs _) =>
         ((Button)sender!).BackColor = Color.Transparent;
 
-    private static void ToggleMaximize(Form window, Button maximize)
+    private void UpdateMaximizeChrome(Form window, Button maximize)
+    {
+        var maximized = window.WindowState == FormWindowState.Maximized;
+        maximize.Text = maximized ? "❐" : "□";
+        maximize.AccessibleName = (maximized ? "Restore " : "Maximize ") + displayName;
+    }
+
+    private void ToggleMaximize(Form window, Button maximize)
     {
         if (window.WindowState == FormWindowState.Maximized) window.WindowState = FormWindowState.Normal;
         else if (window is ChromeForm chrome) chrome.MaximizeWithinWorkingArea();
         else window.WindowState = FormWindowState.Maximized;
-        maximize.Text = window.WindowState == FormWindowState.Maximized ? "❐" : "□";
+        UpdateMaximizeChrome(window, maximize);
     }
 
     internal static string? CiWebViewDebugArguments(bool staging, string? enteredPort)

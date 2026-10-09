@@ -59,13 +59,14 @@ Copy-Item -LiteralPath $fixture -Destination $selectedFixture
 if ((Get-FileHash -LiteralPath $developmentApp -Algorithm SHA256).Hash -ne $candidateHash) { throw 'Candidate copy hash mismatch.' }
 $listeners = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | ForEach-Object Port)
 $ports = @()
-for ($i = 0; $i -lt 200 -and $ports.Count -lt 2; $i++) {
+for ($i = 0; $i -lt 200 -and $ports.Count -lt 3; $i++) {
     $value = Get-Random -Minimum 51000 -Maximum 60000
     if ($listeners -notcontains $value -and $ports -notcontains $value) { $ports += $value }
 }
-if ($ports.Count -ne 2) { throw 'Two unused loopback app/debugging ports were not found without binding a listener.' }
+if ($ports.Count -ne 3) { throw 'Three unused disposable app/debugging/advertised companion ports were not found without binding a listener.' }
 $port = $ports[0]
 $debugPort = $ports[1]
+$companionPort = $ports[2]
 $debugUserDataRoot = Join-Path $dataRoot 'webview2'
 # The Runtime appends EBWebView to the API's userDataFolder for Chromium's
 # --user-data-dir. Microsoft documents that fixed suffix here:
@@ -303,8 +304,8 @@ const out = name => {
 };
 const headers = { Origin: base, 'X-TogetherServer-Local': '1' };
 let browser;
-async function json(url, body) {
-  const response = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+async function json(url, body, timeoutMs = null) {
+  const response = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(timeoutMs === null ? {} : { signal: AbortSignal.timeout(timeoutMs) }) });
   assert.ok(response.ok, `local HTTP ${response.status}`);
   return response.json();
 }
@@ -322,10 +323,44 @@ try {
   page.on('pageerror', error => errors.push(error.message.slice(0, 300)));
   const workspaces = page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true });
   const openChat = async () => {
-    await workspaces.getByRole('button', { name: 'Host', exact: true }).click();
-    await page.locator('.server-master-item').filter({ hasText: 'Native desktop fixture' }).click();
-    await page.getByRole('navigation', { name: 'Selected server sections', exact: true }).getByRole('button', { name: 'Chat', exact: true }).click();
-    await page.getByLabel('Message', { exact: true }).waitFor();
+    let roomScope = { received: false, ready: false, code: 'Unavailable', profileMatches: false, hostIdentityPresent: false };
+    try {
+      await workspaces.getByRole('button', { name: 'Host', exact: true }).click();
+      await page.locator('.server-master-item').filter({ hasText: 'Native desktop fixture' }).click();
+      await page.getByRole('navigation', { name: 'Selected server sections', exact: true }).getByRole('button', { name: 'Chat', exact: true }).click();
+      const room = await json(`/api/local/profiles/${profileId}/chat`, undefined, 5000);
+      roomScope = { received: true, ready: room.ok === true,
+        code: ['ChatReady', 'ChatUnavailable', 'UnknownProfile', 'ChatReviewRequired'].includes(room.code) ? room.code : 'Other',
+        profileMatches: typeof room.profileId === 'string' && room.profileId.toLowerCase() === profileId.toLowerCase(),
+        hostIdentityPresent: typeof room.hostId === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(room.hostId) && room.hostId !== '00000000-0000-0000-0000-000000000000' };
+      assert.ok(roomScope.ready && roomScope.profileMatches && roomScope.hostIdentityPresent,
+        'The saved disposable Host chat room must be ready in the expected profile scope.');
+      const detail = page.locator('.server-detail[aria-label="Native desktop fixture workspace"]');
+      const message = detail.getByLabel('Message', { exact: true });
+      await message.waitFor({ state: 'visible' });
+      assert.equal(await detail.getAttribute('data-server-tab'), 'chat');
+      assert.ok(await message.getAttribute('id') === `chat-${profileId}`, 'The visible Message control belongs to another profile.');
+    } catch (error) {
+      // Export only reviewed codes, counts and booleans: never room/message text,
+      // Host/profile IDs, invite codes, endpoint addresses or raw DOM content.
+      const panel = await page.evaluate(expectedProfile => {
+        const detail = document.querySelector('.server-detail[aria-label="Native desktop fixture workspace"]');
+        const chat = detail?.querySelector('.server-chat');
+        const tab = detail?.getAttribute('data-server-tab');
+        const count = selector => Math.min(8, detail?.querySelectorAll(selector).length ?? 0);
+        return { hostWorkspaceSelected: !!document.querySelector('.workspace-nav [aria-label="Host"][aria-current="page"]'),
+          expectedDetailPresent: !!detail, chatTabSelected: tab === 'chat', chatPanelPresent: !!chat,
+          composerPresent: !!chat?.querySelector('.server-chat-compose'),
+          expectedMessagePresent: !!document.getElementById(`chat-${expectedProfile}`),
+          textAreaCount: count('textarea'), alertCount: count('[role="alert"]'),
+          warningCount: count('.warning-text'), panelErrorCount: count('.pane-error') };
+      }, profileId).catch(() => ({ unavailable: true }));
+      const diagnostics = { schemaVersion: 1, phase: mode, room: roomScope, panel, pageErrorCount: Math.min(8, errors.length) };
+      fs.writeFileSync(out('native-chat-readiness.json'), JSON.stringify(diagnostics));
+      fs.writeSync(2, `CHAT_READINESS ${JSON.stringify(diagnostics)}\n`);
+      await page.screenshot({ path: out('native-chat-not-ready.png') }).catch(() => {});
+      throw error;
+    }
   };
   if (mode === 'appearance') {
     await workspaces.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -474,7 +509,26 @@ try {
         worldSource = 'New'; worldDirectory = (Join-Path $dataRoot 'worlds/native-fixture'); gamePort = 2458;
         executablePath = (Join-Path $caseRoot 'never-launched/TogetherServer.Fixture.exe') })
     $settings.remoteControlsEnabled = $false; $settings.companionListeningEnabled = $false
+    $settings.companionPort = $companionPort
+    $settings.companionBindAddress = '127.0.0.1'
+    $settings.companionEndpoint = "https://127.0.0.1:$companionPort"
     Require ((Post-Json '/api/local/settings' $settings 'PUT').ok) 'Disposable fixture profile metadata was not accepted.'
+    # Host chat requires a durable Host identity. Create it through the normal
+    # owner invite API while its companion listener and remote controls stay off.
+    $invite = Post-Json "/api/local/servers/$profileId/invite" @{ refresh = $false; canStart = $false;
+        enableConnections = $false; durationMinutes = 30; deviceLimit = 1; requireApproval = $true; canViewLogs = $false }
+    Require ($invite.ok -and $invite.listenerActive -eq $false) 'The disposable chat identity did not initialize with its listener off.'
+    Require ((Post-Json "/api/local/servers/$profileId/pairing/close").ok) 'The disposable identity initialization invite did not close.'
+    $invite = $null
+    $chatScope = Invoke-RestMethod "$baseUrl/api/local/profiles/$profileId/chat" -Headers $headers -TimeoutSec 5 -NoProxy
+    [guid]$chatHostId = [guid]::Empty
+    Require ($chatScope.ok -and $chatScope.profileId -eq $profileId -and
+        [guid]::TryParse([string]$chatScope.hostId, [ref]$chatHostId) -and $chatHostId -ne [guid]::Empty) 'The saved disposable Host chat room is not ready.'
+    $currentSnapshot = Invoke-RestMethod "$baseUrl/api/local/snapshot" -TimeoutSec 5 -NoProxy
+    $companion = Invoke-RestMethod "$baseUrl/api/local/companion" -TimeoutSec 5 -NoProxy
+    $managedRuns = @($currentSnapshot.runs | Where-Object { $null -ne $_.processId -or $_.state -ne 'Offline' })
+    Require (!$currentSnapshot.settings.remoteControlsEnabled -and !$currentSnapshot.settings.companionListeningEnabled -and
+        !$companion.listenerActive -and $managedRuns.Count -eq 0) 'Chat identity initialization enabled controls, a listener or a managed game.'
     Run-WebViewPhase 'appearance'
     Pass-Case 'appearance'
 
