@@ -553,7 +553,8 @@ describe('reading and queued messages', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
     await screen.findByText(later.text)
     expect(log.scrollTop).toBe(100)
-    expect(unread).toHaveBeenLastCalledWith(1)
+    // The message DOM can commit before the passive unread observer runs.
+    await waitFor(() => expect(unread).toHaveBeenLastCalledWith(1))
     fireEvent.click(screen.getByRole('button', { name: 'New messages (1) · Jump to latest' }))
     expect(log.scrollTop).toBe(2000)
     expect(unread).toHaveBeenLastCalledWith(0)

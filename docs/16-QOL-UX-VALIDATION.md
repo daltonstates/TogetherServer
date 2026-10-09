@@ -16,10 +16,11 @@ Implementation baseline: `390da9a6c7cc0d52195e7b04fed8a7b0bed2196d`. The origina
 
 | Work | Current state | Evidence |
 | --- | --- | --- |
-| Existing complete packaged gate | Latest candidate passed games and eight core remote groups, then failed initial shared-save rehearsal preflight. Current state proves consent/grants/enrollment/roster present; underlying result code is still missing | [Run 37929393929](https://github.com/daltonstates/TogetherServer/actions/runs/37929393929); complete earlier run 37919613063 |
-| New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed all 19 safe groups and the complete packaged API journey on the latest candidate | Run 37929393929; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
-| New main React browser workflows, keyboard, recovery and viewport screenshots | All eight journeys and the final strict request audit passed; zero unexpected HTTP or JavaScript errors | Run 37929393929; `ui/checks/qol-browser-smoke.mjs` |
-| Native Quit draft receipt, placement, tray and fixture picker coverage | Passed all 11 supported native cases and exact cleanup; three explicit skips recorded below | Run 37929393929; `checks/qol-desktop-smoke.ps1` |
+| Existing complete packaged gate | Latest candidate stopped at a chat unread-count unit-test assertion: 591/592 UI tests passed. Matching full acceptance pending | [Run 37932496881](https://github.com/daltonstates/TogetherServer/actions/runs/37932496881); complete earlier run 37919613063 |
+| Focused remote rehearsal | Passed both complete normal/denial/restart groups on the latest candidate; the earlier preflight failure did not recur | Run 37932496881; `checks/TogetherServer.CompanionChecks/RemoteRehearsalJourney.cs` |
+| New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed all 19 safe groups and the complete packaged API journey on the latest candidate | Run 37932496881; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
+| New main React browser workflows, keyboard, recovery and viewport screenshots | All eight journeys and the final strict request audit passed | Run 37932496881; `ui/checks/qol-browser-smoke.mjs` |
+| Native Quit draft receipt, placement, tray and fixture picker coverage | Passed the native lane; exact case/skip evidence inspection pending | Run 37932496881; `checks/qol-desktop-smoke.ps1` |
 | Expanded release gate and CI evidence retention | One immutable build shared with four separate Windows verification runners | `scripts/verify-release.ps1`, `.github/workflows/windows-ci.yml` |
 | Real Friend-PC/WAN/game/world-save acceptance | Not performed | Separate owner-installed binaries, test PCs/routes and copied-world acceptance required |
 
@@ -266,7 +267,7 @@ No local app, process fixture, browser, listener or native dialog was launched. 
 
 Final formatting verification for all six affected C# sources and Git whitespace passed. Only the reviewed concurrency fix, two safe regression groups, failure diagnostics and this evidence record are included in the follow-up commit; no main merge, deployment, release or tag is authorized.
 
-## Current candidate: fifteenth four-lane run
+## Fifteenth four-lane run
 
 [Run 37929393929](https://github.com/daltonstates/TogetherServer/actions/runs/37929393929), branch head `a646f99ee4817b5516a20026fae4ddfbf7a40118`, built unsigned candidate `0.3.0+e823952c60d1106b4ecadb689cadde2d83709749`, SHA-256 **`0078B435D10ED0B00B94AF9073810523F4C85D9D66B919D5B1790949B6E6F454`**. Downloaded candidate and the `QolApi`, `Browser` and `Desktop` reports match that source/version/hash.
 
@@ -288,3 +289,15 @@ An additional `Rehearsal` suite uses the existing guarded Companion runner's `--
 Code-only verification passed again with all 19 groups and zero compilation warnings/errors. All **16 focused rehearsal UI tests** passed, including diagnostic retention, malformed-code rejection and preserved external-evidence boundaries. Focused zero-warning lint, C# formatting and guarded-script syntax passed. No local app, process fixture, browser, dialog or listener was launched.
 
 Read-only review identified further potential Check/automatic-Receive interleavings around signed manifest staging and initial trusted-anchor advancement. Neither is established as this CI failure's cause; no product ancestry/manifest/retry policy changes are inferred before obtaining the actual result code.
+
+## Current candidate: first five-lane run
+
+[Run 37932496881](https://github.com/daltonstates/TogetherServer/actions/runs/37932496881), branch head `80aa55f3efb058d687af70cbaabcf88df5cbce78`, built candidate `0.3.0+f72f41e9cb0636494a6d74a3e7268bc17bc62c5e`, SHA-256 **`784BEA86E4D1DC4883F9BCC15763A69A5ED2F39E62C9CB3D1107203609F848F2`**.
+
+- Focused `Rehearsal` **passed both groups**: normal pinned pairing, Receive consent/grant, two-way signed chat, multi-chunk hashes/exact-copy receipt, repeat/redaction, wrong-profile/removed-room denial, durable restart and revocation. The earlier preflight failure did not recur; this does not retroactively establish its missing result code or cause.
+- `QolApi`, `Browser` and `Desktop` **passed** on the same immutable build. Detailed artifact review remains pending.
+- `Existing`: **591/592 UI tests passed**. The unchanged chat reading-position test observed the new message while the unread callback's last value was still zero, then expected one. The earlier scroll-position assertion passed. No later existing-gate stage was reached. A bounded test synchronization review is in progress; no product change or deadline/retry waiver is inferred.
+
+Seven-day artifacts: Rehearsal 11616193398, QolApi 11617057854, Browser 11617455680, Desktop 11616568199, failed Existing 11617097631. One-day candidate 11617177138. Whole matching-candidate acceptance remains pending; no local runtime was launched.
+
+The chat test source establishes the exact ordering gap: accepted-message DOM commit can precede the passive `onUnreadChange` observer. The test now waits for the actual last unread callback value one using its existing `waitFor` bound; it preserves message, scroll position, Jump action, final unread zero and persisted-read assertions. No repeated user/API action, added sleep or deadline/retry change is introduced. Focused chat tests passed **52/52**; the complete JSDOM suite subsequently passed **592/592 across 63 files**, and focused zero-warning lint passed. Product source is unchanged by this follow-up; a new matching full Windows gate remains required.
