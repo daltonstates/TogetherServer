@@ -28,7 +28,7 @@ const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
-  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatDelivery: [],
+  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], expectedModeCancellations: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatDelivery: [],
   cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const pendingResponseClassifications = new Set()
@@ -62,21 +62,35 @@ function redact(value) {
     .replace(/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/giu, '[id]')
     .replace(/(?:https?:\/\/|[A-Za-z]:[\\/])[^\s"'<>]+/gu, '[location]').slice(0, 600)
 }
-async function boundedResponseJson(response, maximumBytes = 2048) {
+async function boundedResponseJson(response, maximumBytes = 2048, diagnostics) {
   const headers = response.headers()
-  if (!/^application\/json(?:;|$)/iu.test(headers['content-type'] ?? '')) return null
+  const jsonContentType = /^application\/json(?:;|$)/iu.test(headers['content-type'] ?? '')
   const length = headers['content-length']
-  if (length !== undefined && (!/^\d{1,9}$/u.test(length) || Number(length) > maximumBytes)) return null
+  const validLength = length === undefined || /^\d{1,9}$/u.test(length)
+  if (diagnostics) {
+    diagnostics.contentType = jsonContentType ? 'json' : headers['content-type'] ? 'other' : 'missing'
+    diagnostics.declaredBytes = length !== undefined && validLength ? Number(length) : null
+  }
+  const outcome = value => { if (diagnostics) diagnostics.bodyOutcome = value }
+  if (!jsonContentType) { outcome('non-json-content-type'); return null }
+  if (!validLength) { outcome('invalid-content-length'); return null }
+  if (length !== undefined && Number(length) > maximumBytes) { outcome('declared-body-over-limit'); return null }
   let timer
+  let stage = 'body'
   try {
     const bytes = await Promise.race([
       response.body(),
       new Promise(resolve => { timer = setTimeout(() => resolve(null), 5000) })
     ])
-    if (!bytes || bytes.length > maximumBytes) return null
+    if (!bytes) { outcome('body-read-timeout'); return null }
+    if (bytes.length > maximumBytes) { outcome('body-over-limit'); return null }
+    if (diagnostics) diagnostics.bodyBytes = bytes.length
+    stage = 'json'
     const value = JSON.parse(bytes.toString('utf8'))
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
-  } catch { return null }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) { outcome('non-object-json'); return null }
+    outcome('json-object')
+    return value
+  } catch { outcome(stage === 'json' ? 'invalid-json' : 'body-read-failed'); return null }
   finally { clearTimeout(timer) }
 }
 const guidPattern = '[\\da-f]{8}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{12}'
@@ -150,11 +164,19 @@ async function observeBrowserResponse(collector, response, order) {
     }
   }
   if (status < 400) return
-  const body = url.origin === collector.origin ? await boundedResponseJson(response) : null
+  const responseShape = { contentType: null, declaredBytes: null, bodyBytes: null, bodyOutcome: 'foreign-origin',
+    codeField: 'unread', alternateCodeField: false, requestFailure: null, requestFailureOrder: null }
+  const body = url.origin === collector.origin ? await boundedResponseJson(response, 2048, responseShape) : null
   const bodyReady = ++collector.order
   const code = typeof body?.code === 'string' && /^[a-z][a-z\d]{0,63}$/iu.test(body.code) ? body.code : null
-  collector.responses.push({ url: response.url(), status, code, role: roleBoundRead(request, url, collector.origin), started,
-    responded: order, bodyReady, evidence: { method: request.method(), status, route: redact(url.pathname), code }, classified: false, consoleConsumed: false })
+  if (body) {
+    responseShape.codeField = !Object.hasOwn(body, 'code') ? 'missing' : code ? 'valid' : typeof body.code === 'string' ? 'invalid-string' : 'non-string'
+    responseShape.alternateCodeField = Object.hasOwn(body, 'Code')
+  }
+  const failure = request.failure()
+  responseShape.requestFailure = !failure ? null : failure.errorText === 'net::ERR_ABORTED' ? 'aborted' : 'other'
+  collector.responses.push({ request, url: response.url(), status, code, role: roleBoundRead(request, url, collector.origin), started,
+    responded: order, bodyReady, evidence: { method: request.method(), status, route: redact(url.pathname), code, responseShape }, classified: false, consoleConsumed: false })
 }
 function modeBeforeRequest(collector, started) {
   // A delayed snapshot may have captured its mode before a later successful
@@ -177,14 +199,28 @@ function modeTransitionWindow(collector, transition, index) {
   return { acknowledgement, ended: transition.responded === null ? null :
     Math.min(acknowledgement?.bodyReady ?? transition.responded, nextStarted) }
 }
-function expectedModeTransition(collector, response) {
-  if (response.status !== 409 || !response.role || response.started === undefined ||
-      response.code !== (response.role === 'Host' ? 'FriendMode' : 'HostMode')) return null
+function correlatedModeTransition(collector, response) {
+  if (!response.role || !Number.isSafeInteger(response.started)) return null
   return collector.transitions.find((transition, index) => {
     if (!transition.confirmed || transition.from !== response.role || transition.to === response.role) return false
     const { ended } = modeTransitionWindow(collector, transition, index)
     return response.started < ended && response.responded > transition.started
   }) ?? null
+}
+function expectedModeTransition(collector, response) {
+  if (response.status !== 409 || response.code !== (response.role === 'Host' ? 'FriendMode' : 'HostMode')) return null
+  return correlatedModeTransition(collector, response)
+}
+function expectedModeCancellation(collector, response) {
+  if (response.status !== 409 || response.code !== null || response.abort?.kind !== 'aborted' ||
+      !['body-read-failed', 'body-read-timeout'].includes(response.evidence.responseShape.bodyOutcome) ||
+      response.abort.order <= response.responded || response.abort.order > response.bodyReady) return null
+  const transition = correlatedModeTransition(collector, response)
+  if (!transition) return null
+  // A fresh acknowledgement fences new reads. An earlier in-flight read may
+  // finish cancelling after that acknowledgement as its old UI scope unmounts.
+  const nextStarted = collector.transitions[collector.transitions.indexOf(transition) + 1]?.started ?? Infinity
+  return response.abort.order < nextStarted ? transition : null
 }
 function checkModeTransitionCorrelation() {
   const transition = { id: 1, from: 'Host', to: 'Friend', started: 10, responded: 20, bodyReady: 28, confirmed: true }
@@ -202,9 +238,22 @@ function checkModeTransitionCorrelation() {
   assert.equal(expectedModeTransition(collector, { ...denial, started: 50, responded: 51 }), null, 'Post-ack wrong-role reads remain failures.')
   assert.equal(expectedModeTransition(collector, { ...denial, status: 400 }), null)
   assert.equal(expectedModeTransition(collector, { ...denial, code: 'UnknownProfile' }), null)
+  assert.equal(expectedModeTransition(collector, { ...denial, code: null }), null, 'An unread or untyped denial remains a failure, even during a real transition.')
   assert.equal(expectedModeTransition(collector, { ...denial, role: null }), null)
+  const cancelled = { ...denial, code: null, bodyReady: 49, abort: { kind: 'aborted', order: 48 },
+    evidence: { responseShape: { bodyOutcome: 'body-read-failed' } } }
+  assert.equal(expectedModeCancellation(collector, cancelled), transition, 'A real scoped request abort is separate from an inferred mode denial.')
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, abort: null }), null)
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, code: 'UnknownProfile' }), null)
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, role: null }), null)
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, started: 50 }), null, 'Post-ack aborts do not excuse wrong-role requests.')
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, started: 45, responded: 46, bodyReady: 52,
+    abort: { kind: 'aborted', order: 51 } }), transition, 'An earlier in-flight read can cancel after acknowledgement; the request start remains fenced.')
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, abort: { kind: 'aborted', order: 50 } }), null, 'An abort after the failed body read cannot establish its cause.')
+  assert.equal(expectedModeCancellation(collector, { ...cancelled, evidence: { responseShape: { bodyOutcome: 'json-object' } } }), null, 'Readable untyped HTTP failures remain failures.')
   collector.transitions.push({ id: 2, from: 'Friend', to: 'Host', started: 44, responded: 60, bodyReady: 61, confirmed: true })
   assert.equal(expectedModeTransition(collector, denial), null, 'A later transition cannot extend an earlier allowance.')
+  assert.equal(expectedModeCancellation(collector, cancelled), null)
 }
 async function flushBrowserEvidence() {
   while (pendingResponseClassifications.size > 0) await Promise.allSettled([...pendingResponseClassifications])
@@ -214,10 +263,19 @@ async function flushBrowserEvidence() {
     }
     for (const response of collector.responses) {
       if (response.classified) continue
+      const failure = collector.requestFailures.get(response.request)
+      response.abort = failure?.kind === 'aborted' ? failure : null
+      response.evidence.responseShape.requestFailure = failure?.kind ?? response.evidence.responseShape.requestFailure
+      response.evidence.responseShape.requestFailureOrder = failure?.order ?? null
       const transition = expectedModeTransition(collector, response)
-      response.expected = !!transition
+      const cancellation = transition ? null : expectedModeCancellation(collector, response)
+      response.expected = !!transition || !!cancellation
+      response.expectedAs = transition ? 'expected-mode-denial' : cancellation ? 'expected-mode-cancellation' : 'failed-request'
       if (transition) report.expectedModeDenials.push({ ...response.evidence, page: collector.id, transition: transition.id,
         fromMode: transition.from, toMode: transition.to, transitionCode: 'ModeChanged',
+        requestOrder: response.started, responseOrder: response.responded, bodyReadyOrder: response.bodyReady })
+      else if (cancellation) report.expectedModeCancellations.push({ ...response.evidence, page: collector.id, transition: cancellation.id,
+        fromMode: cancellation.from, toMode: cancellation.to, transitionCode: 'ModeChanged',
         requestOrder: response.started, responseOrder: response.responded, bodyReadyOrder: response.bodyReady })
       else report.failedRequests.push({ ...response.evidence, page: collector.id, readRole: response.role,
         requestOrder: response.started ?? null, responseOrder: response.responded, bodyReadyOrder: response.bodyReady })
@@ -230,7 +288,7 @@ async function flushBrowserEvidence() {
       if (corresponding) {
         corresponding.consoleConsumed = true
         report.deduplicatedConsoleHttpErrors.push({ ...corresponding.evidence, page: collector.id,
-          observedAs: corresponding.expected ? 'expected-mode-denial' : 'failed-request' })
+          observedAs: corresponding.expectedAs })
       } else report.browserErrors.push({ kind: 'console', message: redact(message.text) })
     }
   }
@@ -433,7 +491,7 @@ async function openPage(instance, context) {
   const page = await context.newPage()
   page.setDefaultTimeout(15_000)
   const collector = { id: browserCollectors.length + 1, origin: instance.origin, order: 0, mode: null, modeOrder: 0,
-    requestOrders: new WeakMap(), modeRequests: new WeakMap(), transitions: [], snapshots: [], responses: [], consoleErrors: [] }
+    requestOrders: new WeakMap(), requestFailures: new WeakMap(), modeRequests: new WeakMap(), transitions: [], snapshots: [], responses: [], consoleErrors: [] }
   browserCollectors.push(collector)
   page.on('request', request => observeBrowserRequest(collector, request))
   page.on('pageerror', error => report.browserErrors.push({ kind: 'pageerror', message: redact(error.message) }))
@@ -442,7 +500,9 @@ async function openPage(instance, context) {
   })
   page.on('requestfailed', request => {
     const failure = request.failure()?.errorText ?? 'Request failed'
-    if (failure.includes('ERR_ABORTED')) return // Normal scoped polling/navigation cancellation.
+    const kind = failure === 'net::ERR_ABORTED' ? 'aborted' : 'other'
+    collector.requestFailures.set(request, { kind, order: ++collector.order })
+    if (kind === 'aborted') return // Preserve actual cancellation metadata for any observed HTTP response.
     const url = new URL(request.url())
     report.failedRequests.push({ method: request.method(), route: redact(url.pathname), failure: redact(failure) })
   })

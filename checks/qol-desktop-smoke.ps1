@@ -128,6 +128,21 @@ public static class TogetherServerQolWindowCheck {
         public FilenameControl Control;
         public NativeControlFacts[] Diagnostics;
     }
+    public sealed class IdOkControlFacts {
+        public string ClassName, ParentClassName;
+        public int ControlId, ParentControlId;
+        public bool Owned, Visible, Enabled, InDialog, ParentOwned, ParentInDialog, SameDialogThread, ParentSameDialogThread;
+    }
+    public sealed class IdOkFacts {
+        public string State;
+        public int RawIdOkCount, ButtonCount, ReadyButtonCount;
+        public bool DirectControlPresent, CaptionMatches, CanonicalTextMatches, MainOwnerMatches;
+        public IdOkControlFacts[] Controls;
+    }
+    public sealed class IdOkLookup {
+        public IntPtr Handle;
+        public IdOkFacts Diagnostics;
+    }
     private static string WindowClass(IntPtr window) {
         var value = new System.Text.StringBuilder(128);
         if (GetClassName(window, value, value.Capacity) == 0)
@@ -186,7 +201,7 @@ public static class TogetherServerQolWindowCheck {
     private static string DiagnosticClass(string value) {
         switch (value) {
             case "Edit": case "ComboBox": case "ComboBoxEx32": case "Button":
-            case "DirectUIHWND": case "DUIViewWndClassName": return value;
+            case "DirectUIHWND": case "DUIViewWndClassName": case "Static": case "#32770": return value;
             default: return "Other";
         }
     }
@@ -260,21 +275,57 @@ public static class TogetherServerQolWindowCheck {
         AssertNativeFilename(dialog, owner, processId, ticks, expectedPath, control);
         return BoundedWindowText(control.Edit);
     }
-    private static IntPtr OwnedIdOkButton(IntPtr dialog, int processId) {
+    private static IdOkLookup InspectOwnedIdOk(IntPtr dialog, int processId) {
+        var nodes = new System.Collections.Generic.HashSet<IntPtr>(Descendants(dialog));
+        var rawIdOk = new System.Collections.Generic.HashSet<IntPtr>();
         var buttons = new System.Collections.Generic.HashSet<IntPtr>();
         var direct = GetDlgItem(dialog, 1);
-        if (direct != IntPtr.Zero) buttons.Add(direct);
-        foreach (var window in Descendants(dialog))
-            if (GetDlgCtrlID(window) == 1 && WindowClass(window) == "Button") buttons.Add(window);
-        if (buttons.Count != 1) throw new InvalidOperationException("The owned dialog IDOK Button is ambiguous.");
+        if (direct != IntPtr.Zero) nodes.Add(direct);
+        var facts = new System.Collections.Generic.List<IdOkControlFacts>();
+        uint dialogProcess; var dialogThread = GetWindowThreadProcessId(dialog, out dialogProcess);
+        foreach (var window in nodes) {
+            uint controlOwner; var threadId = GetWindowThreadProcessId(window, out controlOwner);
+            var parent = GetParent(window);
+            uint parentOwner; var parentThread = GetWindowThreadProcessId(parent, out parentOwner);
+            var controlId = GetDlgCtrlID(window);
+            var controlClass = WindowClass(window);
+            if (facts.Count < 16) facts.Add(new IdOkControlFacts {
+                ClassName = DiagnosticClass(controlClass), ControlId = controlId,
+                Owned = controlOwner == processId, Visible = IsWindowVisible(window), Enabled = IsWindowEnabled(window),
+                InDialog = IsChild(dialog, window), ParentOwned = parentOwner == processId,
+                ParentInDialog = parent == dialog || IsChild(dialog, parent), ParentControlId = GetDlgCtrlID(parent),
+                ParentClassName = parent == IntPtr.Zero ? "Absent" : DiagnosticClass(WindowClass(parent)),
+                SameDialogThread = threadId != 0 && threadId == dialogThread,
+                ParentSameDialogThread = parentThread != 0 && parentThread == dialogThread
+            });
+            if (controlId != 1) continue;
+            if (controlOwner != processId || !IsChild(dialog, window))
+                throw new InvalidOperationException("An IDOK control is outside the exact owned dialog.");
+            rawIdOk.Add(window);
+            // A container with ID 1 is metadata, not a second callable Button.
+            if (controlClass == "Button") buttons.Add(window);
+        }
+        var readyCount = 0;
+        IntPtr selected = IntPtr.Zero;
         foreach (var button in buttons) {
             uint buttonOwner; GetWindowThreadProcessId(button, out buttonOwner);
             if (buttonOwner != processId || !IsChild(dialog, button) || GetDlgCtrlID(button) != 1 ||
-                WindowClass(button) != "Button" || !IsWindowEnabled(button) || !IsWindowVisible(button))
+                WindowClass(button) != "Button")
                 throw new InvalidOperationException("The exact owned dialog IDOK Button identity changed.");
-            return button;
+            if (IsWindowEnabled(button) && IsWindowVisible(button)) { readyCount++; selected = button; }
         }
-        throw new InvalidOperationException("The owned dialog IDOK Button is unavailable.");
+        var state = buttons.Count > 1 ? "Multiple" : buttons.Count == 0 ? "Missing" : readyCount == 0 ? "NotReady" : "Ready";
+        return new IdOkLookup {
+            Handle = state == "Ready" ? selected : IntPtr.Zero,
+            Diagnostics = new IdOkFacts { State = state, RawIdOkCount = rawIdOk.Count, ButtonCount = buttons.Count,
+                ReadyButtonCount = readyCount, DirectControlPresent = direct != IntPtr.Zero, Controls = facts.ToArray() }
+        };
+    }
+    private static IntPtr OwnedIdOkButton(IntPtr dialog, int processId) {
+        var lookup = InspectOwnedIdOk(dialog, processId);
+        if (lookup.Diagnostics.State != "Ready")
+            throw new InvalidOperationException("The owned dialog IDOK Button state is " + lookup.Diagnostics.State + ".");
+        return lookup.Handle;
     }
     private static void ClickOwnedIdOk(IntPtr dialog, int processId, Action validateDialog) {
         validateDialog();
@@ -310,6 +361,14 @@ public static class TogetherServerQolWindowCheck {
     public static IntPtr DraftRejectionOkHandle(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
         AssertDraftRejection(dialog, owner, processId, ticks, expectedPath);
         return OwnedIdOkButton(dialog, processId);
+    }
+    public static IdOkLookup DraftRejectionOkReadiness(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        AssertDraftRejection(dialog, owner, processId, ticks, expectedPath);
+        var lookup = InspectOwnedIdOk(dialog, processId);
+        lookup.Diagnostics.CaptionMatches = true;
+        lookup.Diagnostics.CanonicalTextMatches = true;
+        lookup.Diagnostics.MainOwnerMatches = true;
+        return lookup;
     }
     public static void ClickNativeDraftRejectionOk(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
         ClickOwnedIdOk(dialog, processId, () => AssertDraftRejection(dialog, owner, processId, ticks, expectedPath));
@@ -1034,7 +1093,25 @@ try {
     Wait-Until { $script:dialog = [TogetherServerQolWindowCheck]::FindOwnedDialog($app.Id); return $dialog -ne [IntPtr]::Zero } 'Native Quit did not explain the rejected draft acknowledgement.'
     Assert-AppIdentity
     Require (Test-Path -LiteralPath (Join-Path $caseRoot 'arm-failed-draft-native-request.json')) 'Failure case did not use the native flush bridge.'
-    $okHandle = [TogetherServerQolWindowCheck]::DraftRejectionOkHandle($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
+    $okReadiness = @{ Observed = $null }
+    try {
+        Wait-Until {
+            Assert-AppIdentity
+            $okReadiness.Observed = [TogetherServerQolWindowCheck]::DraftRejectionOkReadiness($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
+            if ($okReadiness.Observed.Diagnostics.State -eq 'Multiple') {
+                throw 'The exact rejected-draft dialog has multiple native IDOK Buttons; dismissal refused.'
+            }
+            return $okReadiness.Observed.Diagnostics.State -eq 'Ready'
+        } 'The exact rejected-draft IDOK Button did not become uniquely visible and enabled within 5 seconds.' 5
+    } catch {
+        if ($okReadiness.Observed) {
+            # Native control IDs identify layout only; PID/thread/HWND/profile IDs and all text/paths stay private.
+            Write-Host ('DRAFT_REJECTION_IDOK_READINESS ' + ($okReadiness.Observed.Diagnostics | ConvertTo-Json -Depth 4 -Compress))
+        }
+        throw
+    }
+    Write-Host ('DRAFT_REJECTION_IDOK_READINESS ' + ($okReadiness.Observed.Diagnostics | ConvertTo-Json -Depth 4 -Compress))
+    $okHandle = $okReadiness.Observed.Handle
     $okElement = [System.Windows.Automation.AutomationElement]::FromHandle($okHandle)
     $okPattern = $null
     if ($okElement.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$okPattern)) {
