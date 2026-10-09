@@ -466,8 +466,13 @@ async function openPage(instance, context) {
   assert(await page.locator('script[src^="/assets/"]').count() > 0, 'The candidate must serve its bundled React assets.')
   return page
 }
-async function screenshot(page, name, viewport) {
+async function screenshot(page, name, viewport, subject) {
   await page.setViewportSize(viewport)
+  if (subject) {
+    assert.equal(await subject.count(), 1, `${name}: the screenshot subject must be unique.`)
+    await subject.waitFor({ state: 'visible' })
+    await subject.scrollIntoViewIfNeeded()
+  }
   const metrics = await page.evaluate(() => ({ width: window.innerWidth,
     documentWidth: document.documentElement.scrollWidth, theme: document.documentElement.dataset.theme,
     density: document.documentElement.dataset.density, textScale: getComputedStyle(document.documentElement).getPropertyValue('--qol-text-scale').trim(),
@@ -477,8 +482,8 @@ async function screenshot(page, name, viewport) {
       .map(control => { const bounds = control.getBoundingClientRect(); return { name: control.getAttribute('aria-label'),
         left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height } }) }))
   report.layout.push({ name, ...metrics })
-  await page.screenshot({ path: path.join(evidenceRoot, `${name}.png`), fullPage: true,
-    mask: [page.locator('code'), page.locator('input[type="password"]'), page.locator('.invite-input')] })
+  await page.screenshot({ path: path.join(evidenceRoot, `${name}.png`), fullPage: false,
+    mask: [page.locator('code:visible'), page.locator('input[type="password"]:visible'), page.locator('.invite-input:visible')] })
   report.screenshots.push(`${name}.png`)
   assert(metrics.documentWidth <= metrics.width + 1, `${name}: the rendered page must not overflow horizontally.`)
   assert.equal(metrics.headerControls.length, 3, `${name}: all three header controls must be present.`)
@@ -904,11 +909,14 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   } catch (error) {
     throw new Error(`Automatic signed chat delivery failed; inspect chatDelivery. ${redact(error.message)}`, { cause: error })
   }
+  const chatViewport = page.viewportSize() ?? { width: 1440, height: 900 }
+  await screenshot(page, 'friend-chat-confirmed-narrow', { width: 390, height: 844 }, signedMessage)
+  await page.setViewportSize(chatViewport)
   await page.getByRole('button', { name: 'Add another Host', exact: true }).click()
   await page.getByRole('button', { name: 'Cancel and return to saved Host', exact: true }).click()
   await first.getByRole('region', { name: 'Play', exact: true }).waitFor()
-  await screenshot(page, 'friend-play-wide', { width: 1440, height: 900 })
-  await screenshot(page, 'friend-play-narrow', { width: 390, height: 844 })
+  await screenshot(page, 'friend-play-wide', { width: 1440, height: 900 }, play)
+  await screenshot(page, 'friend-play-narrow', { width: 390, height: 844 }, play)
 }
 async function attentionAndLargeText(page) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
@@ -926,8 +934,9 @@ async function attentionAndLargeText(page) {
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole('complementary', { name: 'Saved servers' }).locator('.server-master-item').first().click()
-  await screenshot(page, 'host-narrow-150', { width: 390, height: 844 })
-  await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 })
+  const selectedDetailHeader = page.locator('.server-detail-card > .profile-top')
+  await screenshot(page, 'host-narrow-150', { width: 390, height: 844 }, selectedDetailHeader)
+  await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 }, selectedDetailHeader)
   assert(report.layout.every(layout => layout.liveStatusCount > 0), 'Each rendered surface should retain accessible status announcements.')
 }
 async function cleanupOwnedResources() {

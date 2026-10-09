@@ -146,7 +146,8 @@ public static class TogetherServerQolWindowCheck {
             return Marshal.PtrToStringUni(buffer, (int)copied.ToUInt64()) ?? "";
         } finally { Marshal.FreeHGlobal(buffer); }
     }
-    private static void AssertPicker(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+    private static void AssertOwnedDialog(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath,
+        string expectedTitle) {
         using (var process = System.Diagnostics.Process.GetProcessById(processId)) {
             process.Refresh();
             if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != ticks ||
@@ -159,8 +160,11 @@ public static class TogetherServerQolWindowCheck {
         if (!IsWindow(dialog) || !IsWindowVisible(dialog) || !IsWindow(owner) ||
             dialogThread == 0 || dialogProcess != processId || ownerProcess != processId ||
             GetWindow(dialog, 4) != owner || WindowClass(dialog) != "#32770" ||
-            BoundedWindowText(dialog) != "Choose Valheim Dedicated Server")
-            throw new InvalidOperationException("The exact owned native file picker identity changed.");
+            BoundedWindowText(dialog) != expectedTitle)
+            throw new InvalidOperationException("The exact owned native dialog identity changed.");
+    }
+    private static void AssertPicker(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        AssertOwnedDialog(dialog, owner, processId, ticks, expectedPath, "Choose Valheim Dedicated Server");
     }
     private static IntPtr[] Descendants(IntPtr parent) {
         if (parent == IntPtr.Zero || !IsWindow(parent))
@@ -256,24 +260,59 @@ public static class TogetherServerQolWindowCheck {
         AssertNativeFilename(dialog, owner, processId, ticks, expectedPath, control);
         return BoundedWindowText(control.Edit);
     }
-    public static void ClickNativePickerOpen(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
-        AssertPicker(dialog, owner, processId, ticks, expectedPath);
+    private static IntPtr OwnedIdOkButton(IntPtr dialog, int processId) {
         var buttons = new System.Collections.Generic.HashSet<IntPtr>();
         var direct = GetDlgItem(dialog, 1);
         if (direct != IntPtr.Zero) buttons.Add(direct);
         foreach (var window in Descendants(dialog))
             if (GetDlgCtrlID(window) == 1 && WindowClass(window) == "Button") buttons.Add(window);
-        if (buttons.Count != 1) throw new InvalidOperationException("The owned picker Open button is ambiguous.");
+        if (buttons.Count != 1) throw new InvalidOperationException("The owned dialog IDOK Button is ambiguous.");
         foreach (var button in buttons) {
             uint buttonOwner; GetWindowThreadProcessId(button, out buttonOwner);
             if (buttonOwner != processId || !IsChild(dialog, button) || GetDlgCtrlID(button) != 1 ||
                 WindowClass(button) != "Button" || !IsWindowEnabled(button) || !IsWindowVisible(button))
-                throw new InvalidOperationException("The exact owned picker Open button identity changed.");
-            AssertPicker(dialog, owner, processId, ticks, expectedPath);
-            UIntPtr result;
-            if (SendMessageTimeout(button, 0x00F5, IntPtr.Zero, IntPtr.Zero, 0x03, 1000, out result) == IntPtr.Zero && IsWindow(dialog))
-                throw new InvalidOperationException("The owned picker Open button did not acknowledge its click.");
+                throw new InvalidOperationException("The exact owned dialog IDOK Button identity changed.");
+            return button;
         }
+        throw new InvalidOperationException("The owned dialog IDOK Button is unavailable.");
+    }
+    private static void ClickOwnedIdOk(IntPtr dialog, int processId, Action validateDialog) {
+        validateDialog();
+        var button = OwnedIdOkButton(dialog, processId);
+        var parent = GetParent(button);
+        uint buttonOwner; var threadId = GetWindowThreadProcessId(button, out buttonOwner);
+        validateDialog();
+        uint currentOwner; var currentThread = GetWindowThreadProcessId(button, out currentOwner);
+        if (OwnedIdOkButton(dialog, processId) != button || GetParent(button) != parent ||
+            currentOwner != buttonOwner || currentThread != threadId)
+            throw new InvalidOperationException("The captured owned IDOK Button identity changed before its click.");
+        UIntPtr result;
+        if (SendMessageTimeout(button, 0x00F5, IntPtr.Zero, IntPtr.Zero, 0x03, 1000, out result) == IntPtr.Zero && IsWindow(dialog))
+            throw new InvalidOperationException("The owned dialog IDOK Button did not acknowledge its click.");
+    }
+    public static void ClickNativePickerOpen(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        ClickOwnedIdOk(dialog, processId, () => AssertPicker(dialog, owner, processId, ticks, expectedPath));
+    }
+    private static void AssertDraftRejection(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        AssertOwnedDialog(dialog, owner, processId, ticks, expectedPath, "TogetherServer");
+        const string expectedMessage = "TogetherServer is still open because unfinished edits could not be confirmed as protected drafts. Review the draft message in the window, retry saving it, or deliberately discard it before quitting.";
+        var matched = 0;
+        foreach (var window in Descendants(dialog)) {
+            uint controlOwner; GetWindowThreadProcessId(window, out controlOwner);
+            if (controlOwner != processId || !IsChild(dialog, window) || !IsWindowVisible(window) || WindowClass(window) != "Static") continue;
+            var textStyle = GetWindowLong(window, -16) & 0x001F;
+            // Exclude icon/bitmap Static controls; only their text styles are read.
+            if (textStyle != 0 && textStyle != 1 && textStyle != 2 && textStyle != 11 && textStyle != 12) continue;
+            if (BoundedWindowText(window) == expectedMessage) matched++;
+        }
+        if (matched != 1) throw new InvalidOperationException("The owned MessageBox is not the exact rejected-draft explanation.");
+    }
+    public static IntPtr DraftRejectionOkHandle(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        AssertDraftRejection(dialog, owner, processId, ticks, expectedPath);
+        return OwnedIdOkButton(dialog, processId);
+    }
+    public static void ClickNativeDraftRejectionOk(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
+        ClickOwnedIdOk(dialog, processId, () => AssertDraftRejection(dialog, owner, processId, ticks, expectedPath));
     }
     public static IntPtr FindOwnedDialog(int processId) {
         IntPtr found = IntPtr.Zero;
@@ -995,7 +1034,23 @@ try {
     Wait-Until { $script:dialog = [TogetherServerQolWindowCheck]::FindOwnedDialog($app.Id); return $dialog -ne [IntPtr]::Zero } 'Native Quit did not explain the rejected draft acknowledgement.'
     Assert-AppIdentity
     Require (Test-Path -LiteralPath (Join-Path $caseRoot 'arm-failed-draft-native-request.json')) 'Failure case did not use the native flush bridge.'
-    (Dialog-Element $dialog 'OK' '1').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    $okHandle = [TogetherServerQolWindowCheck]::DraftRejectionOkHandle($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
+    $okElement = [System.Windows.Automation.AutomationElement]::FromHandle($okHandle)
+    $okPattern = $null
+    if ($okElement.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$okPattern)) {
+        Assert-AppIdentity
+        Require ($okElement.Current.ProcessId -eq $app.Id -and $okElement.Current.IsEnabled -and !$okElement.Current.IsOffscreen -and
+            [TogetherServerQolWindowCheck]::DraftRejectionOkHandle($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp) -eq $okHandle) 'The exact rejected-draft OK control changed before dismissal.'
+        $okPattern.Invoke()
+    } else {
+        Assert-AppIdentity
+        [TogetherServerQolWindowCheck]::ClickNativeDraftRejectionOk($dialog, $windowHandle, $app.Id, $app.Ticks, $developmentApp)
+        Write-Host 'Rejected native draft dismissal used the checked owned IDOK Button fallback.'
+    }
+    Wait-Until {
+        Assert-AppIdentity
+        return ![TogetherServerQolWindowCheck]::IsWindowVisible($dialog)
+    } 'The exact rejected-draft explanation did not dismiss while the app stayed open.' 5
     Finish-WebViewPhase $nodePhase; $nodePhase = $null
     Wait-TestApp $true
     Run-WebViewPhase 'clear'

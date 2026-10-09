@@ -426,8 +426,8 @@ try
         using (var offline = RemoteStopSafety.TryAcquire(await host.SnapshotAsync(), stopProfile.Id, stopData, games))
             Require(!offline.Allowed && offline.Code == "ServerNotReady", "remote Stop was offered while the server was offline");
         var started = await host.StartAsync(stopProfile.Id);
-        Require(started.Ok, "restricted synthetic server did not start");
-        await WaitForReady(host, stopProfile.Id);
+        Require(started.Ok, $"restricted synthetic server did not start: {started.Code} {started.Message}");
+        await WaitForReady(host, stopProfile.Id, started, stopData, "remote-stop-first-start");
         try
         {
             var snapshot = await host.SnapshotAsync();
@@ -792,18 +792,74 @@ static void CreateChunkedWorld(string folder, int revision)
     File.WriteAllText(Path.Combine(folder, $"players.{revision}.chunk"), $"synthetic player chunk {revision}");
 }
 
-static async Task WaitForReady(HostManager host, Guid id)
+static async Task WaitForReady(HostManager host, Guid id, ActionResult? launch = null,
+    LocalData? checkData = null, string phase = "readiness")
 {
+    var elapsed = Stopwatch.StartNew();
+    RunView? lastView = null;
     for (var i = 0; i < 60; i++)
     {
         await host.RefreshObservationsAsync();
-        var state = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == id).State;
-        if (state == "Ready") return;
-        if (state is "Failed" or "Unknown") throw new Exception("Synthetic process failed before readiness: " + state);
+        lastView = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == id);
+        if (lastView.State == "Ready") return;
+        if (lastView.State == "Failed")
+            throw ReadinessFailure("Synthetic process failed before readiness: Failed", lastView,
+                launch, checkData, id, phase, i + 1, elapsed.ElapsedMilliseconds);
+        // Unknown can be an initial identity/observation gap. It never proves
+        // readiness or permits Stop; it may only consume the existing wait budget.
         await Task.Delay(100);
     }
-    throw new Exception("Synthetic server-connected log did not arrive.");
+    throw ReadinessFailure("Synthetic server did not reach Ready within the existing readiness budget.",
+        lastView, launch, checkData, id, phase, 60, elapsed.ElapsedMilliseconds);
 }
+
+static Exception ReadinessFailure(string message, RunView? view, ActionResult? launch,
+    LocalData? checkData, Guid id, string phase, int attempts, long elapsedMilliseconds)
+{
+    var launchView = launch?.Snapshot.Runs.FirstOrDefault(run => run.ProfileId == id);
+    ManagedRun? recorded = null;
+    string? recordReadError = null;
+    if (checkData is not null)
+    {
+        try { recorded = checkData.LoadRuns().SingleOrDefault(run => run.ProfileId == id); }
+        catch (Exception ex) { recordReadError = ex.GetType().Name; }
+    }
+    var diagnostic = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        phase,
+        attempts,
+        elapsedMilliseconds,
+        launch = launch is null ? null : new
+        {
+            launch.Ok,
+            launch.Code,
+            message = DiagnosticText(launch.Message),
+            snapshotState = launchView?.State,
+            snapshotDetail = DiagnosticText(launchView?.Detail)
+        },
+        snapshotState = view?.State,
+        snapshotDetail = DiagnosticText(view?.Detail),
+        observationSource = view?.PlayerObservationSource,
+        snapshotProcessPresent = view?.ProcessId is not null,
+        snapshotOperationPresent = view?.RunOperationId is not null,
+        onlinePlayers = view?.OnlinePlayers,
+        trustedPlayers = view?.PlayerCountTrusted,
+        recordReadError,
+        managedRecordPresent = checkData is null || recordReadError is not null
+            ? (bool?)null : recorded is not null,
+        managedIdentity = recorded is null ? null : new
+        {
+            processPresent = recorded.ProcessId is not null,
+            startTicksPresent = recorded.StartTimeUtcTicks is not null,
+            executablePresent = !string.IsNullOrWhiteSpace(recorded.ExecutablePath),
+            operationPresent = recorded.OperationId != Guid.Empty,
+            recorded.WasReady
+        }
+    });
+    return new Exception(message + " Diagnostic: " + diagnostic);
+}
+
+static string? DiagnosticText(string? value) => value is { Length: > 320 } ? value[..320] : value;
 
 static int FreePort()
 {
