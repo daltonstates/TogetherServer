@@ -16,10 +16,10 @@ Implementation baseline: `390da9a6c7cc0d52195e7b04fed8a7b0bed2196d`. The origina
 
 | Work | Current state | Evidence |
 | --- | --- | --- |
-| Existing complete packaged gate | Latest candidate passed game checks and eight core remote groups, then failed remote rehearsal's shared-save preflight; exact cause under review. Prior complete gates remain separately recorded | [Run 37924411320](https://github.com/daltonstates/TogetherServer/actions/runs/37924411320); complete earlier run 37919613063 |
-| New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed all 17 safe groups and the complete packaged API journey on the latest candidate | Run 37924411320; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
-| New main React browser workflows, keyboard, recovery and viewport screenshots | All eight journeys and the final strict request audit passed; zero unexpected HTTP or JavaScript errors | Run 37924411320; `ui/checks/qol-browser-smoke.mjs` |
-| Native Quit draft receipt, placement, tray and fixture picker coverage | Passed all 11 supported native cases and exact cleanup; three explicit skips recorded below | Run 37924411320; `checks/qol-desktop-smoke.ps1` |
+| Existing complete packaged gate | Latest candidate passed games and eight core remote groups, then failed initial shared-save rehearsal preflight. Current state proves consent/grants/enrollment/roster present; underlying result code is still missing | [Run 37929393929](https://github.com/daltonstates/TogetherServer/actions/runs/37929393929); complete earlier run 37919613063 |
+| New protected drafts, notification/update guards, backup catalog and scoped probe API journey | Passed all 19 safe groups and the complete packaged API journey on the latest candidate | Run 37929393929; `checks/TogetherServer.CompanionChecks/QolApiJourney.cs` |
+| New main React browser workflows, keyboard, recovery and viewport screenshots | All eight journeys and the final strict request audit passed; zero unexpected HTTP or JavaScript errors | Run 37929393929; `ui/checks/qol-browser-smoke.mjs` |
+| Native Quit draft receipt, placement, tray and fixture picker coverage | Passed all 11 supported native cases and exact cleanup; three explicit skips recorded below | Run 37929393929; `checks/qol-desktop-smoke.ps1` |
 | Expanded release gate and CI evidence retention | One immutable build shared with four separate Windows verification runners | `scripts/verify-release.ps1`, `.github/workflows/windows-ci.yml` |
 | Real Friend-PC/WAN/game/world-save acceptance | Not performed | Separate owner-installed binaries, test PCs/routes and copied-world acceptance required |
 
@@ -243,7 +243,7 @@ The read-only production comparison at **11:21 UTC** matched the original execut
 
 Only two check sources and the delivery records change in this follow-up. Application behavior is unchanged, and no local app, browser, fixture, console runner, native dialog or listener was launched.
 
-## Current candidate: fourteenth four-lane run
+## Fourteenth four-lane run
 
 [Run 37924411320](https://github.com/daltonstates/TogetherServer/actions/runs/37924411320), branch head `f3c3a7acad0cec59604d4eb9bf3f9719878dfa7c`, built unsigned candidate `0.3.0+6b32e357766de1b57506469e8fb86f3f0b12e7fb`, SHA-256 **`EDEDE1EFFAC51DA5BE30FA42ED141117C2F9F9222EF5653464474DE35B255119`**. The downloaded executable and the `QolApi`, `Browser` and `Desktop` reports agree on that exact source/version/hash.
 
@@ -265,3 +265,26 @@ Pure nonce and actual-FriendLink fake-HTTP concurrency regressions are registere
 No local app, process fixture, browser, listener or native dialog was launched. Remote rehearsal assertion failures now retain initial/repeat/restart phase plus bounded GET-only current state; the original failure is rethrown and its lost preflight result is not invented. The proven concurrency corrections do not establish which path caused the earlier CI failure. A new exact-candidate Windows gate is required.
 
 Final formatting verification for all six affected C# sources and Git whitespace passed. Only the reviewed concurrency fix, two safe regression groups, failure diagnostics and this evidence record are included in the follow-up commit; no main merge, deployment, release or tag is authorized.
+
+## Current candidate: fifteenth four-lane run
+
+[Run 37929393929](https://github.com/daltonstates/TogetherServer/actions/runs/37929393929), branch head `a646f99ee4817b5516a20026fae4ddfbf7a40118`, built unsigned candidate `0.3.0+e823952c60d1106b4ecadb689cadde2d83709749`, SHA-256 **`0078B435D10ED0B00B94AF9073810523F4C85D9D66B919D5B1790949B6E6F454`**. Downloaded candidate and the `QolApi`, `Browser` and `Desktop` reports match that source/version/hash.
+
+- `QolApi`: **passed** all 19 safe groups, including both enrollment regressions, and the complete packaged API journey.
+- `Browser`: **8 passed**, strict request/error audit passed, actual signed chat delivery confirmed, zero unexpected HTTP/JavaScript failures. One cancelled read is separately retained with the strict actual-mode-transition/request/response/abort correlation; it is not counted as an HTTP denial or guessed from an unread body. The same three browser external/unsupported cases remain unexercised.
+- `Desktop`: **11 PASS, 0 FAIL, 3 SKIP**, assertions/screenshots/exact cleanup complete. Staging Windows startup, Explorer tray-context Quit and OS balloon delivery/click remain the explicitly recorded skips.
+- `Existing`: **585 UI tests, all 113 core groups, all game/setup/Custom checks, Shared History, 15 updater groups and eight core remote groups passed**. Initial rehearsal then failed shared-save preflight again. Four GET-only diagnostics succeeded: selected scope/assignment matched; consent, Receive grant, enrollment, signed roster/floor and current member/access were valid; Host version was present, local verified version/receipt absent and a Receive error present. These facts do not identify the lost result code. Later stages were not reached; complete matching acceptance remains pending.
+
+Seven-day evidence: QolApi 11615817499, Browser 11615772361, Desktop 11615328327, failed Existing 11615978773. One-day candidate: 11616135029. A fresh ignored DEVELOPMENT package at `local-data/qol-development-20261009-a646f99/` contains the exact candidate and generated launch/readme files. Its copied hash was verified, it contains no production state and it was not launched; previous candidates were not overwritten.
+
+Read-only production metadata again matched the original PID/path/version/hash and both listeners at **12:23 UTC**. The active desktop uses only source/fake checks; all interactive checks remain on the owner-approved separate Windows CI runners.
+
+## Preserve the actual rehearsal preflight failure
+
+The rehearsal's transfer stage now retains the actual shared-check result as optional `diagnosticCode`. A backend allowlist retains only reviewed local result codes; unknown values, URLs, paths, identifiers, hashes and peer text become `UnclassifiedSharedCheckFailure`. Friendly guidance, all stage assertions, redaction and grant/signing/history verification are unchanged. The UI decoder preserves the bounded code in the copied report; it does not add technical controls to the product flow.
+
+An additional `Rehearsal` suite uses the existing guarded Companion runner's `--remote-rehearsal` entry point on a fifth separate standard Windows VM. It provides early direct feedback while the complete `Existing` lane continues unchanged; it is not a replacement or acceptance waiver. Every lane still downloads the one immutable build and uses explicit interactive-test opt-in only on approved CI.
+
+Code-only verification passed again with all 19 groups and zero compilation warnings/errors. All **16 focused rehearsal UI tests** passed, including diagnostic retention, malformed-code rejection and preserved external-evidence boundaries. Focused zero-warning lint, C# formatting and guarded-script syntax passed. No local app, process fixture, browser, dialog or listener was launched.
+
+Read-only review identified further potential Check/automatic-Receive interleavings around signed manifest staging and initial trusted-anchor advancement. Neither is established as this CI failure's cause; no product ancestry/manifest/retry policy changes are inferred before obtaining the actual result code.

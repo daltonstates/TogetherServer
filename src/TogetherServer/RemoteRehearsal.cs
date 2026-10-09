@@ -13,13 +13,29 @@ public sealed record RemoteRehearsalExchangeRequest(Guid RequestId, Guid ChatMes
 public sealed record RemoteRehearsalSetup(bool Ok, string Code, string Message, Guid? ProfileId = null);
 public sealed record RemoteRehearsalExchange(bool Ok, string Code, Guid? ReplyId = null,
     string? VersionHash = null, bool ReceiptConfirmed = false, bool LocalListener = false);
-public sealed record RehearsalStage(string Id, string State, string Detail);
+public sealed record RehearsalStage(string Id, string State, string Detail, string? DiagnosticCode = null);
 public sealed record RemoteRehearsalReport(int Schema, DateTimeOffset GeneratedUtc,
     string NetworkContext, IReadOnlyList<RehearsalStage> Stages);
 
 internal static class RemoteRehearsal
 {
     internal const string MarkerName = "remote-rehearsal.protected";
+    // Reports exclude peer text, paths, identities and payload hashes. Retain
+    // only reviewed result codes from the normal shared-save preflight.
+    internal static string SharedCheckFailureCode(string? code) => code switch
+    {
+        "ConnectionClosed" or "NotPaired" or "ConsentRequired" or "UnknownProfile" or
+        "SharedWorldsUpdateRequired" or "EnrollmentDenied" or "InvalidChallenge" or
+        "KeyReviewRequired" or "RosterUnavailable" or "RosterRejected" or "RosterRollback" or
+        "RosterCatchUpPending" or "AuthorityUnavailable" or "AuthorityRejected" or
+        "AuthorityCatchUpPending" or "ConnectionChanged" or "SigningIdentityChanged" or
+        "SourceReviewRequired" or "ConsentWithdrawn" or "InvalidManifest" or "GroupMismatch" or
+        "VersionRollback" or "VersionCatchUpPending" or "VersionChainInvalid" or "VersionConflict" or
+        "InsufficientSpace" or "CheckFailed" or "Revoked" or "AccessExpired" or "ApprovalPending" or
+        "PermissionDenied" or "SharingOff" or "NoPublishedSave" or "SharedVersionUnavailable" or
+        "SharedChunkUnavailable" or "HostDenied" => code,
+        _ => "UnclassifiedSharedCheckFailure"
+    };
     internal sealed record Marker(int Schema, Guid ProfileId, string WorldDirectory);
     internal static Marker? Read(LocalData data)
     {

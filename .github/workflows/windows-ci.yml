@@ -56,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [Existing, QolApi, Browser, Desktop]
+        suite: [Existing, QolApi, Browser, Desktop, Rehearsal]
     name: Verify ${{ matrix.suite }}
     runs-on: windows-latest
     timeout-minutes: 60

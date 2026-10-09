@@ -3,7 +3,7 @@ param(
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
-    [ValidateSet('All', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop')][string]$Suite = 'All',
+    [ValidateSet('All', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop', 'Rehearsal')][string]$Suite = 'All',
     [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
@@ -252,6 +252,11 @@ try {
         Invoke-Checked 'Update handoff smoke' { & checks/update-handoff-smoke.ps1 -AppPath $AppPath }
     }
 
+    if ($Suite -eq 'Rehearsal') {
+        Invoke-Checked 'Remote rehearsal diagnostic journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --remote-rehearsal
+        }
+    }
     if ($Suite -in 'All', 'Qol', 'QolApi') {
         Invoke-Checked 'TogetherServer.FeatureChecks' {
             dotnet run --project checks/TogetherServer.FeatureChecks/TogetherServer.FeatureChecks.csproj -c Release

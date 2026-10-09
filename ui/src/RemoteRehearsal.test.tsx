@@ -33,6 +33,19 @@ describe('remote rehearsal evidence', () => {
     value.stages[0].detail = 'x'.repeat(501)
     expect(() => parseRehearsalReport(value)).toThrow()
   })
+  it('retains the backend diagnostic code in the copied redacted report', () => {
+    const value = report()
+    const stages = value.stages.map(stage => stage.id === 'transfer'
+      ? { ...stage, state: 'Unavailable', diagnosticCode: 'ConnectionChanged' } : stage)
+    const parsed = parseRehearsalReport({ ...value, stages })
+    expect(parsed.stages[4].diagnosticCode).toBe('ConnectionChanged')
+    expect(JSON.stringify(parsed)).toContain('"diagnosticCode":"ConnectionChanged"')
+    expect(parsed.stages[6].state).toBe('Unverified')
+  })
+  it.each(['https://127.0.0.1:5131', 'C:\\private\\world', 'bad code', 'A'.repeat(65), ['ConnectionChanged'], {}])('rejects malformed diagnostic code %s', diagnosticCode => {
+      const stages = report().stages.map(stage => stage.id === 'transfer' ? { ...stage, diagnosticCode } : stage)
+      expect(() => parseRehearsalReport({ ...report(), stages })).toThrow()
+  })
   it('prepares fixed staging data and leaves pairing and Receive visible', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, message: 'Pair the test PC and grant Receive.' })))
     vi.stubGlobal('fetch', fetch)

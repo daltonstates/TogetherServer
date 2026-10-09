@@ -6,7 +6,7 @@ import { ContractError, type Decoder, type FriendSnapshot } from './contracts'
 export type RehearsalReport = {
   schema: 1; generatedUtc: string
   networkContext: 'Loopback' | 'OwnerReportedSameLan' | 'OwnerReportedSeparateNetwork' | 'Unspecified'
-  stages: { id: string; state: 'Passed' | 'Failed' | 'Unverified' | 'Unavailable'; detail: string }[]
+  stages: { id: string; state: 'Passed' | 'Failed' | 'Unverified' | 'Unavailable'; detail: string; diagnosticCode?: string | null }[]
 }
 const labels: Record<string, string> = {
   listener: 'Host local listener', outsideTcp: 'Independent outside TCP', connection: 'Pinned and authenticated connection',
@@ -26,7 +26,11 @@ export const parseRehearsalReport: Decoder<RehearsalReport> = (value, context = 
     const item = record(value, context)
     if (item.id !== Object.keys(labels)[index] || typeof item.state !== 'string' || !['Passed', 'Failed', 'Unverified', 'Unavailable'].includes(item.state) ||
       typeof item.detail !== 'string' || item.detail.length > 500) throw new ContractError(`${context}: invalid rehearsal stage`)
-    return { id: String(item.id), state: item.state as RehearsalReport['stages'][number]['state'], detail: item.detail }
+    if (item.diagnosticCode !== undefined && item.diagnosticCode !== null &&
+      (typeof item.diagnosticCode !== 'string' || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(item.diagnosticCode)))
+      throw new ContractError(`${context}: invalid rehearsal diagnostic code`)
+    return { id: String(item.id), state: item.state as RehearsalReport['stages'][number]['state'], detail: item.detail,
+      ...(item.diagnosticCode !== undefined ? { diagnosticCode: item.diagnosticCode as string | null } : {}) }
   })
   if (stages[1].state === 'Passed' || stages[6].state === 'Passed') throw new ContractError(`${context}: unobserved external evidence`)
   return { schema: 1, generatedUtc: source.generatedUtc, networkContext: source.networkContext as RehearsalReport['networkContext'], stages }
