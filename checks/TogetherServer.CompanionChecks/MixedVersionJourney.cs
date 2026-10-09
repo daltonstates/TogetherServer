@@ -100,16 +100,25 @@ internal static partial class CoreRemoteJourney
 
             settings.RemoteControlsEnabled = false;
             Require((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "Mixed disable failed.");
-            Require((await PostAsync<object, FriendView>(client, "/api/local/friend/poll", new { })).State == "Disabled", "Mixed disable notice missing.");
-            Require((await FriendActionAsync(client, profile.Id, "start")).Code == "RemoteControlsDisabled", "Mixed disabled Host accepted Start.");
-            Require((await FriendActionAsync(client, profile.Id, "refresh")).Ok, "Mixed disabled status refresh failed.");
+            var disabledStart = await FriendActionAsync(client, profile.Id, "start");
+            Require(!disabledStart.Ok && disabledStart.Code == "RemoteControlsDisabled", "Mixed disabled Host accepted Start.");
+            // Offline player-query refresh has no live process and can correctly be unavailable.
+            // Authenticated polling is the heartbeat/status surface that must remain available while controls are paused.
+            var disabledStatus = await PostAsync<object, FriendView>(client, "/api/local/friend/poll", new { });
+            RequireMixedIdentity(disabledStatus, profile.Id, hostVersion, friendVersion, "Disabled");
+            Require(!disabledStatus.RemoteControlsEnabled && disabledStatus.Profiles.Single().State == "Offline",
+                "Mixed paused status did not retain the assigned offline server and disabled control state.");
+            await WaitForRunStateAsync(owner, profile.Id, "Offline");
             settings.RemoteControlsEnabled = true;
             Require((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok, "Mixed re-enable failed.");
             Require((await PutAsync<DeviceServerAccessRequest, PairingDecision>(owner,
                 $"/api/local/devices/{deviceId}/servers", new([]))).Ok, "Mixed assignment removal failed.");
             Require((await PostAsync<object, FriendView>(client, "/api/local/friend/poll", new { })).Profiles.Count == 0,
                 "Mixed unassigned server remained visible.");
-            Require((await FriendActionAsync(client, profile.Id, "start")).Code == "PermissionDenied", "Mixed unassigned Start accepted.");
+            var unassignedStart = await FriendActionAsync(client, profile.Id, "start");
+            Require(!unassignedStart.Ok && (unassignedStart.Code is "PermissionDenied" or "UnknownProfile"),
+                $"Mixed unassigned Start was not rejected by the local assignment or Host permission gate: {unassignedStart.Code}.");
+            await WaitForRunStateAsync(owner, profile.Id, "Offline");
             Require((await PutAsync<DeviceServerAccessRequest, PairingDecision>(owner,
                 $"/api/local/devices/{deviceId}/servers", new([profile.Id]))).Ok, "Mixed assignment restoration failed.");
 
@@ -130,6 +139,7 @@ internal static partial class CoreRemoteJourney
             Require((await PostAsync<object, PairingDecision>(owner, $"/api/local/devices/{deviceId}/revoke", new { })).Ok, "Mixed revoke failed.");
             Require((await PostAsync<object, FriendView>(client, "/api/local/friend/poll", new { })).State == "Revoked", "Mixed revocation not propagated.");
             Require(!(await FriendActionAsync(client, profile.Id, "start")).Ok, "Mixed revoked access accepted Start.");
+            await WaitForRunStateAsync(owner, profile.Id, "Offline");
             Console.WriteLine($"PASS {direction}: disable/status, assignment enforcement, saved pin/access reconnect and restart, revocation");
         }
         finally
@@ -155,8 +165,9 @@ internal static partial class CoreRemoteJourney
         }
     }
 
-    private static void RequireMixedIdentity(FriendView view, Guid profileId, string hostVersion, string friendVersion) =>
-        Require(view.State == "Connected" && view.LastConnectedUtc is not null && view.ConnectionCode is null &&
+    private static void RequireMixedIdentity(FriendView view, Guid profileId, string hostVersion, string friendVersion,
+        string expectedState = "Connected") =>
+        Require(view.State == expectedState && view.LastConnectedUtc is not null && view.ConnectionCode is null &&
             view.ProtocolCompatible && view.HostProtocolVersion == 3 && view.HostVersion == hostVersion &&
             view.FriendVersion == friendVersion && view.Profiles.Single().Id == profileId,
             "Mixed role versions, protocol 3, authenticated status or exact assignment did not match.");

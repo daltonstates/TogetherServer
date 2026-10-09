@@ -823,7 +823,9 @@ async function serverNavigation(page, profiles) {
 }
 async function setupReview(page, profiles) {
   await selectServer(page, profiles.valheim.name)
-  await page.getByRole('complementary', { name: 'Saved servers' }).getByRole('button', { name: 'Add server', exact: true }).click()
+  const addServer = page.locator('.page-heading-actions').getByRole('button', { name: 'Add server', exact: true })
+  assert.equal(await addServer.count(), 1, 'The populated Host page exposes one canonical Add server action.')
+  await addServer.click()
   const dialog = page.getByRole('dialog', { name: 'Add new server' })
   await dialog.getByRole('region', { name: 'Setup blockers' }).waitFor()
   assert(await dialog.getByRole('region', { name: 'Setup blockers' }).getByRole('button').count() >= 2, 'Setup must show its blockers together.')
@@ -1012,7 +1014,9 @@ async function backupCatalog(page, host, profiles) {
   await first.getByText('Name and retention', { exact: true }).click()
   await first.getByLabel('Backup name', { exact: true }).fill('Browser checkpoint')
   await first.getByRole('checkbox', { name: 'Pin this backup', exact: true }).check()
-  await first.getByRole('button', { name: 'Save name and pin', exact: true }).click()
+  const pinnedCatalog = page.waitForResponse(response => response.request().method() === 'GET' &&
+    response.url() === `${host.origin}/api/local/profiles/${profiles.valheim.id}/backup-catalog`)
+  await Promise.all([pinnedCatalog, first.getByRole('button', { name: 'Save name and pin', exact: true }).click()])
   first = catalog.locator('.backup-bookmark').filter({ hasText: 'Browser checkpoint' })
   await first.getByText('Pinned', { exact: true }).waitFor()
   await catalog.getByLabel('Search backups', { exact: true }).fill('Browser checkpoint')
@@ -1042,7 +1046,16 @@ async function backupCatalog(page, host, profiles) {
   // Cancelling review cannot change either synthetic world file.
   assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), 'utf8'), currentDb)
   assert.equal(await readFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.fwl'), 'utf8'), currentFwl)
-  await catalog.getByRole('button', { name: 'Verify', exact: true }).first().click()
+  // Verify refreshes the catalog, then the owning workspace reloads its backup facts.
+  // The latter remounts each disclosure, so reopen Review on the canonical refreshed row.
+  let verificationCatalogReads = 0
+  const refreshedEvidence = page.waitForResponse(response => response.request().method() === 'GET' &&
+    response.url() === `${host.origin}/api/local/profiles/${profiles.valheim.id}/backup-catalog` &&
+    ++verificationCatalogReads === 2)
+  await Promise.all([refreshedEvidence, catalog.getByRole('button', { name: 'Verify', exact: true }).first().click()])
+  const verified = catalog.locator('.backup-bookmark').filter({ hasText: 'Browser checkpoint' })
+  await verified.getByText('Recorded integrity passed; game save health unverified.', { exact: true }).waitFor()
+  await verified.getByRole('button', { name: 'Review backup', exact: true }).click()
   await catalog.getByLabel('Recorded protection results').locator('small').filter({ hasText: /Local integrity: Passed/u }).first().waitFor()
 }
 
