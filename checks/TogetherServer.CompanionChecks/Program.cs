@@ -1630,16 +1630,60 @@ try
     }
     Require((await PublicStatus(publicClient, joinCredential)).Protocol?.Compatible == true,
         "spoofed device headers consumed the victim's authenticated request allowance");
-    var limited = false;
-    for (var i = 0; i < 220; i++)
+    Require((await PublicStatus(publicClient, rotatedCredential)).Protocol?.Compatible == true,
+        "the burst device was not authenticated before checking its request limit");
+    // A burst can straddle the existing device window's boundary. More than two
+    // complete 180-per-minute budgets within one minute must hit its own limiter.
+    const int devicePermitLimit = 180;
+    const int burstRequestCount = 2 * devicePermitLimit + 1;
+    const int burstConcurrency = 8;
+    var rateResponses = new List<(HttpStatusCode? Status, string? Code)>();
+    var nextRateRequest = 0;
+    var rateBurst = Stopwatch.StartNew();
+    await Task.WhenAll(Enumerable.Range(0, burstConcurrency).Select(async _ =>
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
-        request.Headers.Add("X-Device-Id", rotatedCredential.DeviceId.ToString());
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", rotatedCredential.Credential);
-        using var response = await publicClient.SendAsync(request);
-        if (response.StatusCode == HttpStatusCode.TooManyRequests) limited = true;
-    }
-    Require(limited, "an authenticated device did not reach its own request limit");
+        while (Interlocked.Increment(ref nextRateRequest) <= burstRequestCount)
+        {
+            HttpStatusCode? status = null;
+            string? code = null;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");
+                request.Headers.Add("X-Device-Id", rotatedCredential.DeviceId.ToString());
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", rotatedCredential.Credential);
+                using var response = await publicClient.SendAsync(request);
+                status = response.StatusCode;
+                if (status == HttpStatusCode.TooManyRequests)
+                {
+                    using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                    code = body.RootElement.ValueKind == JsonValueKind.Object &&
+                        body.RootElement.TryGetProperty("code", out var field) &&
+                        field.ValueKind == JsonValueKind.String && field.GetString() == "RateLimited"
+                        ? "RateLimited" : "UnexpectedRateLimitBody";
+                }
+            }
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                code = error.GetType().Name;
+            }
+            lock (rateResponses) rateResponses.Add((status, code));
+        }
+    }));
+    rateBurst.Stop();
+    var responseCounts = string.Join(",", rateResponses.GroupBy(response =>
+            (response.Status is { } status ? ((int)status).ToString() : "transport") +
+            (response.Code is null ? "" : "/" + response.Code))
+        .OrderBy(group => group.Key, StringComparer.Ordinal).Select(group => $"{group.Key}:{group.Count()}"));
+    var burstDiagnostic = $"requests={rateResponses.Count}; concurrency={burstConcurrency}; " +
+        $"elapsedMs={rateBurst.ElapsedMilliseconds}; outcomes={responseCounts}";
+    Console.WriteLine("Authenticated device burst: " + burstDiagnostic);
+    Require(rateResponses.Count == burstRequestCount && rateBurst.Elapsed < TimeSpan.FromMinutes(1),
+        "the authenticated device burst did not stay within one rate-limit window duration; " + burstDiagnostic);
+    Require(rateResponses.All(response => response.Status == HttpStatusCode.OK && response.Code is null ||
+        response.Status == HttpStatusCode.TooManyRequests && response.Code == "RateLimited"),
+        "the authenticated device burst returned an unexpected status or non-device limit; " + burstDiagnostic);
+    Require(rateResponses.Any(response => response.Status == HttpStatusCode.TooManyRequests && response.Code == "RateLimited"),
+        "an authenticated device did not reach its own request limit; " + burstDiagnostic);
     Require((await PublicStatus(publicClient, joinCredential)).Protocol?.Compatible == true,
         "one authenticated device's burst throttled another device behind the same source IP");
     Console.WriteLine("PASS authenticated per-device limiting ignores spoofed headers and isolates one source IP"); passes++;

@@ -87,16 +87,29 @@ CustomScriptBundle ContractV2Scripts(string status = "") => Scripts(string.IsNul
 
 async Task<RunView> WaitForState(HostManager manager, Guid profileId, string state)
 {
-    var deadline = DateTime.UtcNow.AddSeconds(12);
+    // A cold hosted runner can spend the old 12-second budget on three independently
+    // timed-out PowerShell probes. Ready gets a bounded 30-second startup window;
+    // every probe still uses the production four-second limit and Unknown never passes.
+    var readyExpected = state == "Ready";
+    var budget = TimeSpan.FromSeconds(readyExpected ? 30 : 12);
+    var elapsed = System.Diagnostics.Stopwatch.StartNew();
+    var attempts = 0;
+    var samples = new List<string>();
     RunView? view = null;
-    while (DateTime.UtcNow < deadline)
+    while (elapsed.Elapsed < budget)
     {
+        attempts++;
+        var probe = System.Diagnostics.Stopwatch.StartNew();
         await manager.RefreshObservationsAsync();
         view = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profileId);
+        probe.Stop();
+        if (samples.Count == 6) samples.RemoveAt(0);
+        samples.Add($"{attempts}:{view.State}/{probe.ElapsedMilliseconds}ms");
         if (view.State == state) return view;
         await Task.Delay(150);
     }
-    throw new Exception($"Expected {state}, last state was {view?.State}: {view?.Detail}");
+    throw new Exception($"Expected {state}, last state was {view?.State}: {view?.Detail}; " +
+        $"probes={attempts}; elapsedMs={elapsed.ElapsedMilliseconds}; recentSamples={string.Join(",", samples)}");
 }
 
 await Check("protected scripts are required and never authorize remote stop", async () =>
@@ -140,8 +153,7 @@ await Check("protected scripts are required and never authorize remote stop", as
         Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts())).Code == "ProfileInUse",
             "running scripts were editable");
         activeManager = new HostManager(data, games);
-        await activeManager.RefreshObservationsAsync();
-        var reattached = (await activeManager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
+        var reattached = await WaitForState(activeManager, profile.Id, "Ready");
         Require(reattached.State == "Ready" && reattached.OnlinePlayers == 0 && !reattached.PlayerCountTrusted,
             "a restarted Host did not reattach the exact custom Start wrapper safely");
     }
