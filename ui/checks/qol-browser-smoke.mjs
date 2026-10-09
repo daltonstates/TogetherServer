@@ -28,7 +28,7 @@ const ownedProcesses = new Map()
 const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
-  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [],
+  journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatDelivery: [],
   cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const pendingResponseClassifications = new Set()
@@ -793,7 +793,8 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   const page = await openPage(friend, context)
   await page.getByLabel('Server code', { exact: true }).fill(invitation.password)
   await page.getByRole('button', { name: 'Connect', exact: true }).click()
-  await eventually(() => api(friend, '/api/local/snapshot'), value => value.state === 'Connected' && value.profiles.some(profile => profile.id === profiles.valheim.id), 'pinned loopback Friend pairing')
+  const paired = await eventually(() => api(friend, '/api/local/snapshot'), value => value.state === 'Connected' && value.profiles.some(profile => profile.id === profiles.valheim.id), 'pinned loopback Friend pairing')
+  assert(guidExpression.test(paired.connectionId) && guidExpression.test(paired.hostId), 'Pairing must identify the actual saved connection and pinned Host.')
   const devices = (await api(host, '/api/local/companion')).devices
   assert.equal(devices.length, 1, 'Only the synthetic Friend PC should be paired in the disposable Host.')
   const access = await api(host, `/api/local/devices/${devices[0].id}/servers`, 'PUT',
@@ -826,10 +827,83 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).getByRole('button', { name: 'Join', exact: true }).click()
   await chat.getByRole('button', { name: 'Use recovered message', exact: true }).click()
   assert.equal(await chat.getByLabel('Message', { exact: true }).inputValue(), message)
-  await chat.getByRole('button', { name: 'Send', exact: true }).click()
-  await chat.getByText(message, { exact: true }).waitFor()
-  const room = await api(host, `/api/local/profiles/${profiles.valheim.id}/chat`)
-  assert(room.entries.some(entry => entry.text === message), 'The browser message must reach the real signed Host room.')
+  const selected = await api(friend, '/api/local/snapshot')
+  assert.equal(selected.connectionId, paired.connectionId, 'Recovered compose must stay on the selected saved Host.')
+  assert.equal(selected.hostId, paired.hostId, 'Recovered compose must retain the paired Host identity.')
+  assert(selected.profiles.some(profile => profile.id === profiles.valheim.id), 'The recovered room must remain assigned to this Friend.')
+  const hostRoomRoute = `/api/local/profiles/${profiles.valheim.id}/chat`
+  // The existing read-only room GET returns the selected saved link's cache.
+  // Scope is checked in its payload and the selected snapshot on every receipt poll.
+  const friendRoomRoute = `/api/local/friend/${profiles.valheim.id}/chat`
+  const scopedFriendRoomRoute = `/api/local/friend/connections/${paired.connectionId}/servers/${profiles.valheim.id}/chat`
+  const hostRoomBefore = await api(host, hostRoomRoute)
+  assert.equal(hostRoomBefore.ok, true)
+  assert.equal(hostRoomBefore.hostId, paired.hostId, 'Delivery must target the actual paired Host room.')
+  assert.equal(hostRoomBefore.profileId, profiles.valheim.id)
+  assert(!hostRoomBefore.entries.some(entry => entry.text === message), 'This journey must prove a new delivery, not an older matching message.')
+  const signedMessage = chat.getByRole('log', { name: 'Messages', exact: true })
+    .locator('.server-chat-message:not(.pending)').filter({ has: page.getByText(message, { exact: true }) })
+  const code = value => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(value) ? value : null
+  const diagnostics = { stage: 'automatic-delivery', postStatus: null, postCode: null, postPendingCount: null,
+    friendState: redact(selected.state), selectedScopeMatches: true, hostCode: null, friendCode: null,
+    hostScopeMatches: false, friendScopeMatches: false, hostMatchCount: 0, friendMatchCount: 0,
+    friendPendingCount: null, signedUiCount: 0, pendingUiCount: 0, receiptMatches: false, delivered: false }
+  report.chatDelivery.push(diagnostics)
+  const postUrl = new URL(`${scopedFriendRoomRoute}/messages`, friend.origin).href
+  try {
+    // Observe the real UI Send receipt. Visible text can still be compose or a local pending entry.
+    const [response] = await Promise.all([
+      page.waitForResponse(value => value.url() === postUrl && value.request().method() === 'POST'),
+      chat.getByRole('button', { name: 'Send', exact: true }).click()
+    ])
+    diagnostics.postStatus = response.status()
+    const posted = await boundedResponseJson(response, 768 * 1024)
+    diagnostics.postCode = code(posted?.code)
+    diagnostics.postPendingCount = Array.isArray(posted?.pending) ? posted.pending.length : null
+    assert.equal(response.status(), 200, 'The selected room Send must return an actual local receipt.')
+    assert.equal(posted?.ok, true, 'The selected room must accept the browser message.')
+    assert.equal(posted.hostId, paired.hostId)
+    assert.equal(posted.profileId, profiles.valheim.id)
+    assert.equal(response.request().postDataJSON().text, message, 'The observed Send must contain the recovered compose text.')
+    const matchesMessage = entry => entry.text === message && entry.hostId === paired.hostId &&
+      entry.profileId === profiles.valheim.id && entry.authorId === devices[0].id &&
+      guidExpression.test(entry.id) && typeof entry.signature === 'string' && entry.signature.length > 0
+    // Do not invoke Sync now here: automatic Send/background sync must independently deliver.
+    await eventually(async () => {
+      const [hostRoom, friendRoom, current, signedUiCount, pendingUiCount] = await Promise.all([
+        api(host, hostRoomRoute), api(friend, friendRoomRoute), api(friend, '/api/local/snapshot'), signedMessage.count(),
+        chat.locator('.server-chat-messages .server-chat-message.pending').filter({ has: page.getByText(message, { exact: true }) }).count()
+      ])
+      diagnostics.friendState = redact(current.state)
+      diagnostics.selectedScopeMatches = current.connectionId === paired.connectionId && current.hostId === paired.hostId &&
+        current.profiles.some(profile => profile.id === profiles.valheim.id)
+      diagnostics.hostCode = code(hostRoom.code)
+      diagnostics.friendCode = code(friendRoom.code)
+      diagnostics.hostScopeMatches = hostRoom.ok === true && hostRoom.hostId === paired.hostId && hostRoom.profileId === profiles.valheim.id
+      diagnostics.friendScopeMatches = friendRoom.ok === true && friendRoom.hostId === paired.hostId && friendRoom.profileId === profiles.valheim.id
+      const hostEntries = Array.isArray(hostRoom.entries) ? hostRoom.entries.filter(matchesMessage) : []
+      const friendEntries = Array.isArray(friendRoom.entries) ? friendRoom.entries.filter(matchesMessage) : []
+      diagnostics.hostMatchCount = hostEntries.length
+      diagnostics.friendMatchCount = friendEntries.length
+      diagnostics.friendPendingCount = Array.isArray(friendRoom.pending) ? friendRoom.pending.length : null
+      diagnostics.signedUiCount = signedUiCount
+      diagnostics.pendingUiCount = pendingUiCount
+      diagnostics.receiptMatches = hostEntries.length === 1 && friendEntries.length === 1 &&
+        hostEntries[0].id === friendEntries[0].id && hostEntries[0].signature === friendEntries[0].signature
+      return diagnostics.selectedScopeMatches && diagnostics.hostScopeMatches && diagnostics.friendScopeMatches && diagnostics.receiptMatches &&
+        signedUiCount === 1 && pendingUiCount === 0 && !friendRoom.pending.some(entry => entry.text === message)
+    }, delivered => delivered, 'automatic signed Host delivery and selected Friend UI receipt')
+    await signedMessage.waitFor({ state: 'visible' })
+    assert.equal(await signedMessage.count(), 1, 'Exactly one non-pending signed UI entry must confirm automatic delivery.')
+    const afterDelivery = await api(friend, '/api/local/snapshot')
+    diagnostics.selectedScopeMatches = afterDelivery.connectionId === paired.connectionId && afterDelivery.hostId === paired.hostId &&
+      afterDelivery.profiles.some(profile => profile.id === profiles.valheim.id)
+    diagnostics.friendState = redact(afterDelivery.state)
+    assert.equal(diagnostics.selectedScopeMatches, true, 'Delivery must preserve the exact selected Host and server assignment.')
+    diagnostics.delivered = true
+  } catch (error) {
+    throw new Error(`Automatic signed chat delivery failed; inspect chatDelivery. ${redact(error.message)}`, { cause: error })
+  }
   await page.getByRole('button', { name: 'Add another Host', exact: true }).click()
   await page.getByRole('button', { name: 'Cancel and return to saved Host', exact: true }).click()
   await first.getByRole('region', { name: 'Play', exact: true }).waitFor()

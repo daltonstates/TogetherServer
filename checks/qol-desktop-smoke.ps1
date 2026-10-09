@@ -28,6 +28,7 @@ $evidenceParent = [IO.Path]::GetFullPath((Join-Path $repository 'local-data/ci-e
 $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $evidenceParent $caseId))
 $testSucceeded = $false
 $cleanupSucceeded = $true
+$currentNativePhase = 'setup'
 $caseResults = [ordered]@{
     appearance = @{ name = 'Native WebView with 150 percent text'; status = 'SKIP'; reason = 'Not reached.' }
     compact = @{ name = 'Compact native window'; status = 'SKIP'; reason = 'Not reached.' }
@@ -301,6 +302,7 @@ public static class TogetherServerQolWindowCheck {
 
 function Require([bool]$Value, [string]$Message) { if (!$Value) { throw $Message } }
 function Begin-Case([string]$Key) {
+    $script:currentNativePhase = $Key
     $caseResults[$Key].status = 'FAIL'
     $caseResults[$Key].reason = 'Case did not complete.'
 }
@@ -320,15 +322,51 @@ function Record-Process([Diagnostics.Process]$Process, [string]$ExpectedPath) {
     $ticks = 0L
     try { $ticks = $Process.StartTime.ToUniversalTime().Ticks }
     catch { if (!$Process.HasExited) { throw } }
-    $identity = @{ Process = $Process; Id = $Process.Id; Ticks = $ticks; Path = [IO.Path]::GetFullPath($ExpectedPath) }
+    $identity = @{ Process = $Process; Id = $Process.Id; Ticks = $ticks; Path = [IO.Path]::GetFullPath($ExpectedPath);
+        Phase = $currentNativePhase; PathVerified = $false }
     $processes.Add($identity)
     return $identity
 }
+function Read-AppIdentityState {
+    Require ($null -ne $app) 'The disposable app identity is not recorded.'
+    $process = $app.Process
+    $process.Refresh()
+    if ($process.HasExited) { return @{ State = 'Exited'; PathPresent = $false; ExitCode = $process.ExitCode } }
+    try {
+        if ($app.Ticks -le 0 -or !$app.Path.Equals($developmentApp, [StringComparison]::OrdinalIgnoreCase) -or
+            $process.Id -ne $app.Id -or $process.StartTime.ToUniversalTime().Ticks -ne $app.Ticks) {
+            return @{ State = 'Mismatch'; PathPresent = $false; ExitCode = $null }
+        }
+        $observedPath = [string]$process.Path
+        $pathPresent = ![string]::IsNullOrWhiteSpace($observedPath)
+        $process.Refresh()
+        if ($process.HasExited) { return @{ State = 'Exited'; PathPresent = $pathPresent; ExitCode = $process.ExitCode } }
+        if ($process.Id -ne $app.Id -or $process.StartTime.ToUniversalTime().Ticks -ne $app.Ticks) {
+            return @{ State = 'Mismatch'; PathPresent = $pathPresent; ExitCode = $null }
+        }
+        if (!$pathPresent) { return @{ State = 'PathPending'; PathPresent = $false; ExitCode = $null } }
+        if (![IO.Path]::IsPathFullyQualified($observedPath) -or
+            ![IO.Path]::GetFullPath($observedPath).Equals($app.Path, [StringComparison]::OrdinalIgnoreCase)) {
+            return @{ State = 'Mismatch'; PathPresent = $true; ExitCode = $null }
+        }
+        return @{ State = 'Ready'; PathPresent = $true; ExitCode = $null }
+    } catch {
+        $process.Refresh()
+        if ($process.HasExited) { return @{ State = 'Exited'; PathPresent = $false; ExitCode = $process.ExitCode } }
+        throw
+    }
+}
+function Write-AppIdentityDiagnostic($State) {
+    $facts = [ordered]@{ phase = $app.Phase; state = 'Unreadable'; exitCode = $null; pathPresent = $false }
+    if ($State) { $facts.state = $State.State; $facts.exitCode = $State.ExitCode; $facts.pathPresent = $State.PathPresent }
+    Write-Host ('APP_IDENTITY_READINESS ' + ($facts | ConvertTo-Json -Compress))
+}
 function Assert-AppIdentity {
-    Require ($null -ne $app -and !$app.Process.HasExited) 'The disposable development app exited unexpectedly.'
-    $app.Process.Refresh()
-    Require ($app.Process.StartTime.ToUniversalTime().Ticks -eq $app.Ticks -and
-        [IO.Path]::GetFullPath($app.Process.Path).Equals($developmentApp, [StringComparison]::OrdinalIgnoreCase)) 'The test app process identity changed.'
+    $state = Read-AppIdentityState
+    if ($state.State -ne 'Ready') {
+        Write-AppIdentityDiagnostic $state
+        throw 'The live disposable app no longer matches its recorded PID, start time and executable path.'
+    }
 }
 function Wait-OwnedWebViewDebugger {
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
@@ -416,6 +454,24 @@ function Start-TestApp([switch]$Startup) {
     return Record-Process $process $developmentApp
 }
 function Wait-TestApp([bool]$Visible) {
+    if (!$app.PathVerified) {
+        $identityReadiness = @{ Observed = $null }
+        try {
+            Wait-Until {
+                $identityReadiness.Observed = Read-AppIdentityState
+                $observed = $identityReadiness.Observed
+                if ($observed.State -in @('Exited', 'Mismatch')) {
+                    throw 'The disposable app exited or changed identity during startup.'
+                }
+                if ($observed.State -ne 'Ready') { return $false }
+                $app.PathVerified = $true
+                return $true
+            } 'The recorded disposable app did not expose its verified executable path within 10 seconds.' 10
+        } catch {
+            Write-AppIdentityDiagnostic $identityReadiness.Observed
+            throw
+        }
+    }
     Wait-Until {
         Assert-AppIdentity
         try {
@@ -607,6 +663,13 @@ try {
   } else if (mode === 'inspect' || mode === 'inspect-compact') {
     await page.locator('.shell').waitFor();
     await page.screenshot({ path: out(mode === 'inspect-compact' ? 'native-compact-150-percent.png' : 'native-final-window.png') });
+    if (mode === 'inspect-compact') {
+      const banner = page.locator('.staging-banner');
+      await banner.waitFor({ state: 'visible' });
+      const widths = await banner.evaluate(element => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }));
+      assert.ok(widths.clientWidth > 0 && widths.scrollWidth <= widths.clientWidth + 1,
+        `The visible compact staging banner overflowed horizontally (${widths.scrollWidth}/${widths.clientWidth}).`);
+    }
   } else throw new Error('Unknown fixed smoke phase.');
   assert.deepEqual(errors, [], 'Native WebView had uncaught page errors.');
   if (browser.isConnected() && !page.isClosed()) {
