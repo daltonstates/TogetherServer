@@ -74,14 +74,14 @@ try {
     if (!$css.Content.Contains('.access-deadline') -or !$css.Content.Contains('.friend-access-expired')) {
         throw 'The owner access deadline styles were not bundled.'
     }
-    $rawControls = Get-ChildItem -LiteralPath (Join-Path $repository 'ui/src') -Filter '*.tsx' |
-        Where-Object Name -NE 'Controls.tsx' |
+    $rawControls = Get-ChildItem -LiteralPath (Join-Path $repository 'ui/src') -Filter '*.tsx' -Recurse |
+        Where-Object { $_.Name -ne 'Controls.tsx' -and $_.Name -notmatch '\.(?:test|spec)\.tsx$' } |
         Select-String -CaseSensitive -Pattern '<(button|input|select|textarea)\b'
     if ($rawControls) { throw "A page bypasses the shared control library: $($rawControls[0].Path):$($rawControls[0].LineNumber)" }
     $requiredUiText = @(
         'Host a server', 'Join a server', 'Choose a game', 'Create new', 'Use existing',
         'Browse for a world folder', 'Use an existing server', 'TogetherServer installs the latest official server',
-        'Servers found on this PC', 'Finish later', 'Continue server setup', 'Save and start',
+        'Servers found on this PC', 'Finish later', 'Continue setup', 'Save and start',
         'Start server', 'Invite friends',
         'Paste your server code', 'Saved servers',
         'App preferences, Friend access, timers, and advanced Host controls.', 'PC name', 'Server access', 'Choose servers', 'Search servers',
@@ -93,7 +93,7 @@ try {
         'Game server', 'Friend app', 'Outside connection', 'Reachable outside network', 'Recommended next step',
         'Connection details', 'Hidden for stream safety', 'Server IP', 'Game password',
         'Use an eye to show only that value', 'Copy keeps it hidden', 'Notifications', 'Recent app and connection activity',
-        'Attention Center', 'Search commands', 'Ctrl+K from anywhere', 'Overview', 'Players', 'Backups', 'Setup',
+        'Attention Center', 'Search commands', 'Ctrl+K from anywhere', 'Overview', 'Players', 'Backups', 'Settings & files', 'Maintenance & setup',
         'Recent sessions', 'They do not show who joined or prove that a join or world save succeeded.',
         'Clear activity', 'Update TogetherServer', 'Not now', 'is available',
         'Refreshing connection details', 'Connection details updated.',
