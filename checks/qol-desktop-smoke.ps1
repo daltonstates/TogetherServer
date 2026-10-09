@@ -162,7 +162,6 @@ function Wait-TestApp([bool]$Visible) {
             if ($window.loadState -eq 'Failed') { throw "Native WebView failed: $($window.loadErrorCode) $($window.loadFailureKind)" }
             return $window.available -and $window.rendered -and $window.customChrome -and $window.visible -eq $Visible
         } catch [System.Net.Http.HttpRequestException] { return $false }
-        catch [Microsoft.PowerShell.Commands.HttpResponseException] { return $false }
         catch [System.Net.WebException] { return $false }
     } 'The development WebView did not reach the expected rendered/visibility state.'
     if ($Visible) {

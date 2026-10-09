@@ -5,13 +5,13 @@ export function AppearancePreferences({ value, onChange }: {
   value: UiPreferences; onChange: (next: UiPreferences) => void
 }) {
   return <fieldset className="appearance-preferences"><legend>Appearance</legend>
-    <label>Theme<Select value={value.theme} onChange={event => onChange({ ...value, theme: event.target.value as UiPreferences['theme'] })}>
+    <label>Theme<Select aria-label="Theme" value={value.theme} onChange={event => onChange({ ...value, theme: event.target.value as UiPreferences['theme'] })}>
       <option value="system">Use Windows preference</option><option value="dark">Dark</option><option value="light">Light</option>
     </Select></label>
-    <label>Layout<Select value={value.density} onChange={event => onChange({ ...value, density: event.target.value as UiPreferences['density'] })}>
+    <label>Layout<Select aria-label="Layout" value={value.density} onChange={event => onChange({ ...value, density: event.target.value as UiPreferences['density'] })}>
       <option value="comfortable">Comfortable</option><option value="compact">Compact</option>
     </Select></label>
-    <label>Text size<Select value={value.textScale} onChange={event => onChange({ ...value, textScale: Number(event.target.value) as UiPreferences['textScale'] })}>
+    <label>Text size<Select aria-label="Text size" value={value.textScale} onChange={event => onChange({ ...value, textScale: Number(event.target.value) as UiPreferences['textScale'] })}>
       {[100, 115, 130, 150].map(scale => <option value={scale} key={scale}>{scale}%</option>)}
     </Select></label>
     <label className="check-row"><Input type="checkbox" checked={value.highContrast} onChange={event => onChange({ ...value, highContrast: event.target.checked })} />Stronger contrast and status outlines</label>

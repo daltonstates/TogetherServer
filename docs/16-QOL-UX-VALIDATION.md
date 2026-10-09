@@ -67,3 +67,14 @@ The next CI run builds one candidate once, then downloads those same bytes and f
 - Read-only interim production comparisons matched the baseline process identity, executable version/hash and listeners. No local runtime check was launched.
 
 The next run separates `Existing`, `QolApi`, `Browser` and `Desktop` onto four independent Windows runners using the same single build artifact. Each has its own evidence report and disposable roots. Native Quit/recovery/placement/picker coverage can therefore run while browser and established journeys are checked. `All` and `Qol` retain serial combined modes; every interactive mode keeps the foreground-safety guard. No new runner class, paid service or production listener is introduced.
+
+## First four-lane run
+
+[Run 37894019360](https://github.com/daltonstates/TogetherServer/actions/runs/37894019360), head `3e23ae241c66c8cddf35b17a5f0ccea18299cf7a`, uses candidate `0.3.0+5f5e9dd5e12f4b0c792bb5812e1613032d28ea9a`, SHA-256 `408CCE48B717BAF711ECF97BBE503B8508A6C78556CEC0B98E0BED46687FE28C`.
+
+- `QolApi` passed completely again.
+- `Browser` verified the previously failing Host shortcut and command-palette navigation. It then timed out at the exact Theme label on the visibly rendered Appearance controls. The artifact contains **zero unexpected HTTP failures or browser errors**; seven exact `FriendMode` denials were correlated with the real Host-to-Join transition, retained separately and deduplicated from Chromium's corresponding console messages. Static Appearance control names are now explicit; select lookups are being checked against their actual labels.
+- `Desktop` stopped before launching an app: PowerShell 7 rejects catching its `HttpResponseException` after the base `HttpRequestException`. The redundant derived catch is removed. Windows PowerShell 5 source parsing had not resolved that PowerShell 7 type hierarchy; this failure is not recorded as native runtime coverage.
+- `Existing` remains running. No pending stage is counted as passed.
+
+Follow-up commits use a per-source-revision CI concurrency group so correcting browser/native checks does not cancel an older ongoing isolated acceptance job. Every run still builds one immutable candidate; final combined acceptance requires all lanes on the same candidate, with older results retained as diagnostic evidence.
