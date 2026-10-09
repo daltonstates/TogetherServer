@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Input } from './Controls'
 import { Icon, type IconName } from './Icon'
 
@@ -20,6 +20,60 @@ const navigation: Array<{ id: WorkspacePage; label: string; icon: IconName; shor
   { id: 'attention', label: 'Attention', icon: 'bell', shortcut: 'Alt+3' },
   { id: 'settings', label: 'Settings', icon: 'settings', shortcut: 'Alt+4' }
 ]
+
+/** Header disclosures share dismissal, focus recovery and the available viewport height. */
+export function HeaderTools({ children }: { children: ReactNode }) {
+  const toolsRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const tools = toolsRef.current
+    if (!tools) return
+    const menus = () => Array.from(tools.querySelectorAll<HTMLDetailsElement>(':scope > details'))
+    const closeOutside = (event: Event) => {
+      if (!(event.target instanceof Node)) return
+      const target = event.target
+      menus().forEach(menu => { if (!menu.contains(target)) menu.open = false })
+    }
+    const updateHeight = () => {
+      tools.style.setProperty('--header-menu-height', `${Math.max(0, window.innerHeight - tools.getBoundingClientRect().bottom - 22)}px`)
+    }
+    const keepOneOpen = (event: Event) => {
+      const opened = event.target
+      if (!(opened instanceof HTMLDetailsElement) || !opened.open) return
+      menus().forEach(menu => { if (menu !== opened) menu.open = false })
+      updateHeight()
+    }
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      const opened = menus().find(menu => menu.open)
+      if (!opened) return
+      event.preventDefault()
+      event.stopPropagation()
+      menus().forEach(menu => { menu.open = false })
+      opened.querySelector('summary')?.focus()
+    }
+    tools.addEventListener('toggle', keepOneOpen, true)
+    tools.addEventListener('click', closeOutside, true)
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('focusin', closeOutside)
+    document.addEventListener('keydown', dismiss, true)
+    window.addEventListener('resize', updateHeight)
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(updateHeight) : null
+    observer?.observe(tools.closest('header') ?? tools)
+    updateHeight()
+    return () => {
+      tools.removeEventListener('toggle', keepOneOpen, true)
+      tools.removeEventListener('click', closeOutside, true)
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('focusin', closeOutside)
+      document.removeEventListener('keydown', dismiss, true)
+      window.removeEventListener('resize', updateHeight)
+      observer?.disconnect()
+    }
+  }, [])
+
+  return <div ref={toolsRef} className="header-tools">{children}</div>
+}
 
 export function WorkspaceNavigation({ page, activeRuns, unread, onNavigate }: {
   page: WorkspacePage
@@ -48,6 +102,7 @@ export function CommandPalette({ open, commands, onClose }: {
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const visible = useMemo(() => {
@@ -74,6 +129,10 @@ export function CommandPalette({ open, commands, onClose }: {
   }, [open])
 
   useEffect(() => setActiveIndex(index => Math.min(index, Math.max(visible.length - 1, 0))), [visible.length])
+  const activeCommandId = visible[activeIndex]?.id
+  useEffect(() => {
+    if (open) listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' })
+  }, [open, activeCommandId, activeIndex])
 
   const run = (command: WorkspaceCommand | undefined) => {
     if (!command || command.disabled) return
@@ -90,14 +149,14 @@ export function CommandPalette({ open, commands, onClose }: {
         role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls="workspace-command-options"
         aria-activedescendant={visible[activeIndex] ? `workspace-command-${visible[activeIndex].id}` : undefined}
         onKeyDown={event => {
-          if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex(index => Math.min(index + 1, visible.length - 1)) }
+          if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex(index => Math.min(index + 1, Math.max(0, visible.length - 1))) }
           if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex(index => Math.max(index - 1, 0)) }
           if (event.key === 'Enter') { event.preventDefault(); run(visible[activeIndex]) }
         }} />
-      <kbd>Esc</kbd>
+      <Button className="secondary command-close" aria-label="Close commands" onClick={onClose}>Close</Button>
     </div>
     <h2 id="command-palette-title" className="sr-only">Command palette</h2>
-    <div className="command-list" id="workspace-command-options" role="listbox" aria-label="Commands">
+    <div ref={listRef} className="command-list" id="workspace-command-options" role="listbox" aria-label="Commands">
       {visible.map((command, index) => <Button key={command.id} id={`workspace-command-${command.id}`} role="option" aria-selected={index === activeIndex}
         className={index === activeIndex ? 'command-item selected' : 'command-item'} aria-disabled={command.disabled} tabIndex={-1}
         onMouseEnter={() => setActiveIndex(index)} onClick={() => run(command)}>

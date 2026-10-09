@@ -108,7 +108,7 @@
 :is(.backup-catalog, .friend-play-flow, .friend-connection-explanation,
   .host-lifecycle-summary, .server-files-panel, .game-settings-panel,
   .server-addons-panel, .attention-workspace, .recent-sessions,
-  .access-deadline, .notification-panel, .server-log-viewer,
+  .access-deadline, .server-log-viewer,
   [aria-label="Receive save copies"], [aria-label="Host on this PC"]) {
   min-inline-size: 0;
   max-inline-size: 100%;
@@ -416,7 +416,7 @@
 .attention-workspace .notification-item { margin: 0; padding: var(--qol-space); border-radius: var(--qol-radius); }
 .attention-workspace .notification-item > div { min-inline-size: 0; flex: 1; }
 .attention-history-event { padding: .55rem .65rem; margin-block: .4rem; border-inline-start: 2px solid var(--color-border); background: var(--color-surface); }
-.notification-panel { inline-size: min(27rem, calc(100vw - 1.5rem)); max-block-size: min(35rem, calc(100dvh - 6rem)); overflow-y: auto; }
+.notification-panel { inline-size: min(27rem, calc(100vw - 28px)); max-inline-size: calc(100vw - 28px); max-block-size: min(35rem, var(--header-menu-height, calc(100dvh - 6rem))); color: var(--color-text-secondary); font-size: .8125rem; line-height: 1.55; overflow-wrap: anywhere; overflow-y: auto; }
 .notification-panel :is(strong, p, small) { overflow-wrap: anywhere; }
 .notification-item.read { opacity: 1; }
 .notification-item.read > div > strong { color: var(--color-text-muted); }
@@ -502,7 +502,6 @@
   .backup-catalog-filters > .ui-button { grid-column: 1; }
   .backup-catalog-filters > label:not(:first-child) { margin-block-start: .4rem; }
   :is(.game-settings-preview, [aria-label="Review server setup changes"], [aria-label="Review world import"]) dl > div { grid-template-columns: minmax(0, 1fr); }
-  .notification-panel { position: fixed; inset-inline: .75rem; inset-block-start: 4.5rem; inline-size: auto; max-block-size: calc(100dvh - 5.5rem); }
   :is(.backup-catalog, .friend-play-flow, .host-lifecycle-summary, .server-files-panel,
     .game-settings-panel, .attention-workspace, .access-deadline, .notification-panel,
     [aria-label="Host on this PC"]) .ui-button { min-block-size: 2.75rem; }

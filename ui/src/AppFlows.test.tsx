@@ -6,8 +6,13 @@ import type { EditorDraftGuardChange } from './editorProtectedDraft'
 import { readProtectedDraft } from './protectedUiDrafts'
 import { serializeProtectedSetupDraft } from './setupDraft'
 import { App } from './main'
+import themeCss from './theme.css?inline'
+import baseCss from './style.css?inline'
 import companionCss from './companion.css?inline'
 import qolCss from './qol.css?inline'
+
+// vitest.config.ts explicitly enables these inline imports; load the whole cascade.
+const shellCss = [themeCss, baseCss, companionCss, qolCss].join('\n')
 
 // Exercise the real shell, selection, guards and handlers. Leaf data/workflows have their own suites.
 const transport = vi.hoisted(() => ({ read: vi.fn(), change: vi.fn(), flush: vi.fn(), failures: { logs: false, sessions: false, files: false } }))
@@ -110,7 +115,7 @@ beforeEach(() => {
   document.head.querySelector('[data-flow-styles]')?.remove()
   const styles = document.createElement('style')
   styles.dataset.flowStyles = 'true'
-  styles.textContent = companionCss + '\n' + qolCss
+  styles.textContent = shellCss
   document.head.append(styles)
 })
 
@@ -131,6 +136,25 @@ function expectNoServerAction() {
 }
 
 describe('Host task structure', () => {
+  it('opens usable header disclosures and lets Escape dismiss them before leaving Settings', async () => {
+    await openHost()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('heading', { name: 'Settings', level: 1 })
+    const notifications = screen.getByLabelText('Notifications')
+    fireEvent.click(notifications)
+    const panel = document.querySelector('.notification-panel')!
+    expect(shellCss).toContain('.notification-panel')
+    // This used to be 100% of a 34px bell, despite its wider declared inline size.
+    expect(getComputedStyle(panel).maxInlineSize).toMatch(/100vw/)
+    expect(getComputedStyle(notifications.closest('details')!).position).toBe('static')
+    expect(getComputedStyle(document.querySelector('.header-tools')!).position).toBe('relative')
+    fireEvent.keyDown(notifications, { key: 'Escape' })
+    expect(notifications.closest('details')).not.toHaveAttribute('open')
+    expect(notifications).toHaveFocus()
+    expect(screen.getByRole('heading', { name: 'Settings', level: 1 })).toBeInTheDocument()
+    expectNoServerAction()
+  })
+
   it('shows one Start, keeps its preflight before it and places lifecycle controls before supporting content', async () => {
     transport.change.mockImplementation(async (path: string) => {
       if (path.endsWith('/start')) {

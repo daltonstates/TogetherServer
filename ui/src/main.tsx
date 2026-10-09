@@ -73,7 +73,7 @@ import {
   writeActivityClearMarkersTo
 } from './notificationState'
 import {
-  CommandPalette, StatusStrip, WorkspaceNavigation,
+  CommandPalette, HeaderTools, StatusStrip, WorkspaceNavigation,
   type WorkspaceCommand, type WorkspacePage
 } from './WorkspaceChrome'
 import './theme.css'
@@ -1628,7 +1628,7 @@ export function App() {
         <Button aria-current={snapshot?.mode === 'Host' ? 'page' : undefined} className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</Button>
         <Button aria-current={snapshot?.mode === 'Friend' ? 'page' : undefined} className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</Button>
       </nav>
-      <div className="header-tools">
+      <HeaderTools>
         <details className="notification-menu" onToggle={event => { if (event.currentTarget.open) setNotificationUnread(false) }}>
           <summary aria-label={notificationUnread ? 'Notifications, new activity' : 'Notifications'} title={notificationUnread ? 'New activity' : 'Notifications'}>
             <Icon name="bell" size={19} />
@@ -1649,7 +1649,7 @@ export function App() {
           <Button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button>
         </div></details>
         <Button className="command-trigger" aria-label="Commands" title="Commands (Ctrl K)" onClick={() => setCommandPaletteOpen(true)}><Icon name="search" size={16} /><span>Commands</span><kbd>Ctrl K</kbd></Button>
-      </div>
+      </HeaderTools>
     </header>
 
     {update?.state === 'Available' && !update.promptSnoozed && !uiPreferences.quietMode && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
