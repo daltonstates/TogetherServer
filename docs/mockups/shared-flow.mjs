@@ -50,6 +50,7 @@ export function createSharedFlow({icon,escape}) {
     if (['handoff-waiting','receipt-pending'].includes(scene)) { state.status = 'Offline'; state.processes.original = 'Offline'; state.version = 13; state.copies.original = 13; state.phase = 'final-copy'; state.consent.successor = true; state.trusted.successor = true; if (scene === 'receipt-pending') state.copies.successor = 13; }
     if (['chosen','setup','route-needed','ready-to-start','starting','hosting','offline','unknown','fenced'].includes(scene)) {
       state.authority = 'successor'; state.version = 13; state.copies.original = 13; state.copies.successor = 13; state.consent.successor = true; state.trusted.successor = true; state.receipt = true; state.status = 'Offline'; state.processes.original = scene === 'fenced' ? 'Unknown' : 'Offline'; state.phase = 'setup'; state.restored = false; state.route = false;
+      state.connected.successor = 'successor';
       if (['route-needed','ready-to-start','starting','hosting','offline','unknown','fenced'].includes(scene)) { state.restored = true; state.phase = 'route'; }
       if (['ready-to-start','starting','hosting','offline','unknown','fenced'].includes(scene)) { state.route = true; state.phase = 'start'; }
       if (scene === 'starting') { state.phase = 'starting'; state.status = 'Starting'; state.processes.successor = 'Starting'; }
@@ -72,7 +73,7 @@ export function createSharedFlow({icon,escape}) {
       if (['consent-off','untrusted','stalled','error'].includes(state.scene)) state.scene = 'normal';
     }
     if (name === 'transfer') { state.status = 'Offline'; state.processes.original = 'Offline'; state.version = 13; state.copies.original = 13; state.phase = 'final-copy'; }
-    if (name === 'complete') { state.authority = 'successor'; state.phase = 'setup'; state.restored = false; state.route = false; }
+    if (name === 'complete') { state.authority = 'successor'; state.connected.successor = 'successor'; state.phase = 'setup'; state.restored = false; state.route = false; }
     if (name === 'restore') { state.restored = true; state.phase = 'route'; }
     if (name === 'route') { state.route = true; state.phase = 'start'; }
     if (name === 'start') { state.status = 'Starting'; state.phase = 'starting'; }
@@ -84,7 +85,7 @@ export function createSharedFlow({icon,escape}) {
     if (name === 'offer') state.phase = 'vote';
     if (name === 'vote') {
       state.voters.push(state.client);
-      if (state.voters.length === 2) { state.authority = 'successor'; state.status = 'Offline'; state.phase = 'setup'; state.restored = false; state.route = false; }
+      if (state.voters.length === 2) { state.authority = 'successor'; state.connected.successor = 'successor'; state.status = 'Offline'; state.phase = 'setup'; state.restored = false; state.route = false; }
     }
     if (['start','remote-start','remote-stop','observe','stop'].includes(name)) state.processes[state.authority] = state.status;
     return true;

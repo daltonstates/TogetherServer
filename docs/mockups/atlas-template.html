@@ -98,10 +98,14 @@
     #ts-ui-atlas .ts-checkrow span { min-inline-size:0; overflow-wrap:anywhere; }
     #ts-ui-atlas .ts-checkrow input { margin-block-start:3px; }
     #ts-ui-atlas .ts-checkrow small { margin-block-start:3px; }
-    #ts-ui-atlas .ts-kv { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.25fr); gap:8px 14px; margin:10px 0 0; min-inline-size:0; }
+    #ts-ui-atlas .ts-kv { display:grid; grid-template-columns:minmax(0,min(38%,180px)) minmax(0,1fr); gap:8px 14px; margin:10px 0 0; min-inline-size:0; }
     #ts-ui-atlas .ts-kv dt { color:var(--ts-muted); margin:0; overflow-wrap:anywhere; }
     #ts-ui-atlas .ts-kv dd { margin:0; overflow-wrap:anywhere; }
     #ts-ui-atlas .ts-kv > div { display:contents; }
+    #ts-ui-atlas .ts-kv dd:has([data-secret]) { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+    #ts-ui-atlas .ts-input-action { display:flex; align-items:center; gap:6px; min-inline-size:0; }
+    #ts-ui-atlas .ts-input-action input { flex:1; }
+    #ts-ui-atlas .ts-server-save { margin-block-start:8px !important; }
     #ts-ui-atlas .ts-details { border-block-start:1px solid var(--ts-soft-line); padding-block:10px 4px; min-inline-size:0; }
     #ts-ui-atlas .ts-details summary { cursor:pointer; font-weight:550; line-height:1.5; }
     #ts-ui-atlas .ts-details[open] > :not(summary) { margin-block-start:10px; }
@@ -120,8 +124,8 @@
     #ts-ui-atlas .ts-timeline article:last-child { border:0; }
     #ts-ui-atlas .ts-timeline strong { display:block; margin-block-start:5px; }
     #ts-ui-atlas .ts-secret-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 0; border-block-end:1px solid var(--ts-soft-line); }
-    #ts-ui-atlas .ts-secret-row > span:first-child { flex:1 1 120px; color:var(--ts-muted); }
-    #ts-ui-atlas .ts-secret-row .ts-secret { flex:1 1 140px; }
+    #ts-ui-atlas .ts-secret-row > span:first-child { flex:0 1 120px; color:var(--ts-muted); }
+    #ts-ui-atlas .ts-secret-row .ts-secret { flex:0 1 auto; overflow-wrap:anywhere; }
     #ts-ui-atlas .ts-command-list { display:grid; gap:4px; margin-block-start:4px; }
     #ts-ui-atlas .ts-command-list .ts-button { justify-content:flex-start; border-color:transparent; background:transparent; padding:12px; }
     #ts-ui-atlas .ts-command-list .ts-button:hover { background:var(--ts-raised); }
@@ -207,6 +211,7 @@
       #ts-ui-atlas .ts-overlay { padding:18px 8px; }
       #ts-ui-atlas .ts-kv { grid-template-columns:minmax(0,1fr); gap:3px; }
       #ts-ui-atlas .ts-kv dd { margin-block-end:9px; }
+      #ts-ui-atlas .ts-kv dd:has([data-secret]) [data-secret] { flex:1 1 100%; }
       #ts-ui-atlas input:not([type="checkbox"]):not([type="radio"]), #ts-ui-atlas select, #ts-ui-atlas textarea { font-size:max(16px,1em); min-block-size:44px; }
       #ts-ui-atlas .ts-secret-row .ts-secret { flex:1 1 100%; order:1; }
       #ts-ui-atlas .ts-table { font-size:.91em; }
@@ -301,7 +306,7 @@
           const name = utilities[control.dataset.action];
           // Labels are an explicit design choice. Never infer that an action is a utility
           // from its implementation marker: Save can mean an entire hosting workflow.
-          if (name && !control.querySelector('.ts-icon') && !control.hasAttribute('data-icon')) control.insertAdjacentHTML('afterbegin',icon(name));
+          if (name && !control.querySelector('.ts-icon,[data-icon]') && !control.hasAttribute('data-icon')) control.insertAdjacentHTML('afterbegin',icon(name));
         });
         element.querySelectorAll('[data-icon]').forEach(control => {
           const name = control.dataset.icon;
@@ -381,8 +386,11 @@
         const gameBlocked = !host && (!['Ready','Listening'].includes(state) || ['stale','expired','revoked','error','loading','blocked','no-assignment','unassigned','approval','unknown','identity','empty','update-required'].includes(ui.state));
         const life = online ? action('stop','Stop server',host ? `data-dialog="confirm-stop" ${hostBlocked || busy ? 'disabled' : ''}` : `data-action="stop" ${stopBlocked || busy ? 'disabled' : ''}`,host ? 'ts-primary' : '',true) : action('play','Start server',`${host && sharedContext && ui.state === 'normal' && sharedFlow.state.authority === 'successor' ? 'data-shared-action="open-guide"' : 'data-action="start"'} ${hostBlocked ? 'disabled' : startAttrs}`,'ts-primary',true);
         const extra = host ? action('invite','Invite friends','data-dialog="invite-code"','',true) + action('more','More server actions','data-dialog="server-actions"') : action('game','Open game',`data-action="open-game" ${gameBlocked ? 'disabled' : ''}`,online && !gameBlocked ? 'ts-primary' : '',true) + action('more','Server tools','data-dialog="join-tools"');
-        const identity = sharedContext ? host ? sharedFlow.owner() ? 'This PC is the designated Host' : `Current Host: ${sharedFlow.clients[sharedFlow.state.authority]}` : sharedFlow.state.connected[sharedFlow.state.client] === sharedFlow.state.authority ? `Connected to ${sharedFlow.clients[sharedFlow.state.authority]}` : 'Connect to the current Host before playing' : host ? 'Hosted on this PC' : ui.connection;
-        return `<section class="ts-server-command" aria-label="${host ? 'Host' : 'Join'} server actions"><div class="ts-server-identity"><h2>${escape(name)}</h2><p>${escape(name === 'MapleCraft' ? 'Minecraft Java' : name === 'Preview server' ? 'Terraria preview' : 'Valheim')} · ${escape(identity)}</p><div class="ts-server-facts"><span class="ts-badge" data-tone="active">${escape(state)}</span><span>${escape(count)}</span></div><p style="margin-block-start:7px">${escape(countdown)}</p>${hostBlocked && sharedContext ? '<p>This PC must complete the guided hosting steps before Start.</p>' : ''}${stopBlocked ? '<p class="ts-danger-text">Stop requires current access and a fresh zero-player count.</p>' : ''}</div><div class="ts-lifecycle-actions">${page.id === 'join-shared' ? '' : life + extra}</div></section>`;
+        const currentHost = sharedFlow.clients[sharedFlow.state.authority];
+        const identity = sharedContext ? sharedFlow.state.scene === 'conflicts' ? 'Current Host disputed · status Unknown' : sharedFlow.currentStatus() === 'Unknown' ? `Last known Host: ${currentHost}` : host ? sharedFlow.owner() ? `Hosted on this PC · ${currentHost}` : `Current Host: ${currentHost} · ${sharedFlow.currentStatus()}` : sharedFlow.state.connected[sharedFlow.state.client] === sharedFlow.state.authority ? `Connected to ${currentHost}` : `Current Host: ${currentHost} · connect before playing` : host ? 'Hosted on this PC' : ui.connection;
+        const sharedSave = sharedContext ? `<p class="ts-server-save">${sharedFlow.currentStatus() === 'Unknown' ? 'Last known' : 'Latest'} completed save: version ${sharedFlow.state.version}</p>` : '';
+        const connect = !host && sharedContext && sharedFlow.state.connected[sharedFlow.state.client] !== sharedFlow.state.authority ? action('link','Connect to Host',`data-shared-action="join-current" ${!sharedFlow.can('connect') ? 'disabled' : ''}`,'ts-primary',true) : '';
+        return `<section class="ts-server-command" aria-label="${host ? 'Host' : 'Join'} server actions" ${sharedContext ? `data-shared-host="${sharedFlow.state.scene === 'conflicts' ? 'disputed' : sharedFlow.state.authority}"` : ''}><div class="ts-server-identity"><h2>${escape(name)}</h2><p>${escape(name === 'MapleCraft' ? 'Minecraft Java' : name === 'Preview server' ? 'Terraria preview' : 'Valheim')} · ${escape(identity)}</p><div class="ts-server-facts"><span class="ts-badge" data-tone="active">${escape(state)}</span><span>${escape(count)}</span></div><p style="margin-block-start:7px">${escape(countdown)}</p>${sharedSave}${hostBlocked && sharedContext ? '<p>This PC must complete the guided hosting steps before Start.</p>' : ''}${stopBlocked ? '<p class="ts-danger-text">Stop requires current access and a fresh zero-player count.</p>' : ''}</div><div class="ts-lifecycle-actions">${page.id === 'join-shared' ? '' : life + connect + extra}</div></section>`;
       };
       const renderPage = () => {
         hideTooltip();
@@ -394,7 +402,8 @@
         const sharedContext = ['host-overview','join-play'].includes(page.id) && (page.area === 'host' ? ui.server : ui.roomServer) === sharedFlow.state.world;
         let content = variant(page,ui.state);
         if (sharedContext && sharedFlow.state.authority === 'successor') content = content.replaceAll('192.0.2.10:2456','192.0.2.20:2456').replaceAll('192.0.2.40:2456','192.0.2.20:2456');
-        body.innerHTML = `<header class="ts-titlebar"><span class="ts-brand-mark">${staging ? 'D' : 'T'}</span><span class="ts-brand-name">TogetherServer${staging ? ' DEVELOPMENT' : ''}</span><div class="ts-title-actions">${action('bell','Notifications','data-dialog="notification-menu"')}${action('settings','App preferences','data-dialog="quick-settings"')}${action('search','Commands (Ctrl K)','data-dialog="command-palette"')}</div></header>${staging ? '<aside class="ts-staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong>Isolated test data · local UI 5128 · Friend control 5132</aside>' : ''}${ui.notice ? `<p class="ts-toast" role="status">${escape(ui.notice)}</p>` : ''}<div class="ts-layout"><nav class="ts-rail" aria-label="TogetherServer workspaces">${rail.map(([id,label,name,target]) => `<button type="button" aria-label="${label}" data-ts-tooltip="${label}" data-workspace="${id}" data-page="${target}" ${area === id ? 'aria-current="page"' : ''}>${icon(name)}</button>`).join('')}</nav>${sectionNavigation(page)}<main class="ts-main">${sharedContext ? sharedFlow.hostBanner() : ''}${page.id === 'join-shared' ? '' : serverHeader(page)}<div class="ts-page-heading"><h2>${escape(page.title)}</h2><p>${escape(page.description || '')}</p></div><div class="ts-content" data-current-page="${escape(page.id)}">${content}</div></main></div><footer class="ts-statusbar"><span>This PC: ${escape(sharedFlow.clients[sharedFlow.state.client])} · Friend checks continue</span><span>v0.3.2</span></footer>`;
+        const heading = ['host-overview','join-play'].includes(page.id) ? '' : `<div class="ts-page-heading"><h2>${escape(page.title)}</h2><p>${escape(page.description || '')}</p></div>`;
+        body.innerHTML = `<header class="ts-titlebar"><span class="ts-brand-mark">${staging ? 'D' : 'T'}</span><span class="ts-brand-name">TogetherServer${staging ? ' DEVELOPMENT' : ''}</span><div class="ts-title-actions">${action('bell','Notifications','data-dialog="notification-menu"')}${action('settings','App preferences','data-dialog="quick-settings"')}${action('search','Commands (Ctrl K)','data-dialog="command-palette"')}</div></header>${staging ? '<aside class="ts-staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong>Isolated test data · local UI 5128 · Friend control 5132</aside>' : ''}${ui.notice ? `<p class="ts-toast" role="status">${escape(ui.notice)}</p>` : ''}<div class="ts-layout"><nav class="ts-rail" aria-label="TogetherServer workspaces">${rail.map(([id,label,name,target]) => `<button type="button" aria-label="${label}" data-ts-tooltip="${label}" data-workspace="${id}" data-page="${target}" ${area === id ? 'aria-current="page"' : ''}>${icon(name)}</button>`).join('')}</nav>${sectionNavigation(page)}<main class="ts-main">${page.id === 'join-shared' ? '' : serverHeader(page)}${heading}<div class="ts-content" data-current-page="${escape(page.id)}">${content}</div></main></div><footer class="ts-statusbar"><span>This PC: ${escape(sharedFlow.clients[sharedFlow.state.client])} · Friend checks continue</span><span>v0.3.2</span></footer>`;
         enhanceIcons(body);
         restoreFields(body.querySelector('.ts-content'),page,ui.state);
         syncAppearance(body);
@@ -482,7 +491,7 @@
         if (!notice) { notice = document.createElement('p'); notice.className = 'ts-toast'; notice.setAttribute('role','status'); body.querySelector('.ts-titlebar')?.after(notice); }
         notice.textContent = message;
       };
-      const hideSecrets = () => { if (revealTimer) clearTimeout(revealTimer); revealTimer = null; root.querySelectorAll('[data-revealed]').forEach(secret => { secret.textContent = secret.dataset.mask || '••••••••••••'; delete secret.dataset.revealed; }); };
+      const hideSecrets = () => { if (revealTimer) clearTimeout(revealTimer); revealTimer = null; root.querySelectorAll('[data-revealed]').forEach(secret => { secret.textContent = secret.dataset.mask || '••••••••••••'; delete secret.dataset.revealed; }); root.querySelectorAll('input[data-revealed-password]').forEach(field => { field.type = 'password'; delete field.dataset.revealedPassword; field.closest('.ts-field')?.querySelector('[data-action="reveal"]')?.setAttribute('aria-pressed','false'); }); };
       const pending = (control, result, next) => {
         if (pendingTimer) return;
         const epoch = ++operationEpoch;
@@ -503,6 +512,12 @@
         const name = control.dataset.action;
         if (name === 'reveal') {
           const row = control.closest('dd, .ts-secret-row, .ts-row, tr, .ts-field');
+          const password = row?.querySelector('input[type="password"],input[data-revealed-password]');
+          if (password) {
+            const shown = password.hasAttribute('data-revealed-password'); hideSecrets();
+            if (!shown) { if (!password.value) password.value = control.dataset.value || 'demo-game-password'; password.type = 'text'; password.dataset.revealedPassword = 'true'; control.setAttribute('aria-pressed','true'); revealTimer = setTimeout(hideSecrets,30000); }
+            return;
+          }
           const candidate = row?.querySelector('[data-secret]') || Array.from(row?.querySelectorAll('code,.ts-code') || []).find(element => element.textContent.includes('•'));
           const secret = candidate || (!control.dataset.value ? (ui.dialog ? overlay : body).querySelector('[data-secret]') : null);
           const value = control.dataset.value || secret?.dataset.secret;

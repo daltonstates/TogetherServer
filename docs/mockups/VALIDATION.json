@@ -1,6 +1,6 @@
 {
   "scope": "Synthetic mockup atlas only",
-  "generatedAt": "2026-10-10T22:26:58.242Z",
+  "generatedAt": "2026-10-10T22:43:18.114Z",
   "globalOnly": false,
   "pages": 29,
   "dialogs": 158,
@@ -11,12 +11,12 @@
     {
       "name": "Isolated self-contained output",
       "status": "PASS",
-      "detail": "276968 bytes; no network, app, storage or clipboard action."
+      "detail": "279342 bytes; no network, app, storage or clipboard action."
     },
     {
       "name": "Navigation and icon vocabulary",
       "status": "PASS",
-      "detail": "1026 cross-view links; named icon controls and selectable variants."
+      "detail": "1019 cross-view links; named icon controls and selectable variants."
     },
     {
       "name": "Source coverage",
@@ -75,6 +75,11 @@
     },
     {
       "name": "Reported navigation and dialog-label regressions",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "Rendered-review icon, hierarchy and action-emphasis regressions",
       "status": "PASS",
       "detail": ""
     },
