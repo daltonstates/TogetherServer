@@ -17,12 +17,15 @@ export type DesktopNotificationSaver = (change: NotificationPreferenceChange, si
 const defaultLoader: DesktopNotificationLoader = signal => getLocalJson('/api/local/desktop/notifications', parseNotificationPreferences, signal)
 
 export function DesktopPreferencesPanel({ servers = [], quietMode, onQuietModeChange, loader = defaultLoader,
-  saver = saveNotificationPreferences }: { servers?: DesktopNotificationServer[]; quietMode?: boolean;
-  onQuietModeChange?: (quiet: boolean) => void; loader?: DesktopNotificationLoader; saver?: DesktopNotificationSaver }) {
+  saver = saveNotificationPreferences, onBusyChange }: { servers?: DesktopNotificationServer[]; quietMode?: boolean;
+  onQuietModeChange?: (quiet: boolean) => void; loader?: DesktopNotificationLoader; saver?: DesktopNotificationSaver;
+  onBusyChange?: (busy: boolean) => void }) {
   const titleId = useId()
   const [preferences, setPreferences] = useState<NotificationPreferences | null>(null)
   const [scope, setScope] = useState('all')
   const [busy, setBusy] = useState(false)
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   const [error, setError] = useState(false)
   const [message, setMessage] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
@@ -94,11 +97,14 @@ const stageLabels: Record<UpdatePreparation['stage'], string> = { Idle: 'Update 
   Restarting: 'Restarting TogetherServer', Blocked: 'Update needs attention', Failed: 'Update preparation failed' }
 
 export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparationLoader,
-  snoozeSaver }: { update: DesktopUpdateDetails; busy?: boolean; onSnoozed?: () => void | Promise<void>;
+  snoozeSaver, onBusyChange }: { update: DesktopUpdateDetails; busy?: boolean; onSnoozed?: () => void | Promise<void>;
     preparationLoader?: (signal?: AbortSignal) => Promise<UpdatePreparation>;
-    snoozeSaver?: (version: string, duration: UpdateReminderDuration) => Promise<{ ok: boolean; message: string }> }) {
+    snoozeSaver?: (version: string, duration: UpdateReminderDuration) => Promise<{ ok: boolean; message: string }>;
+    onBusyChange?: (busy: boolean) => void }) {
   const [polledPreparation, setPolledPreparation] = useState<{ version: string | null; value: UpdatePreparation } | null>(null)
   const [snoozeBusy, setSnoozeBusy] = useState(false)
+  useEffect(() => { onBusyChange?.(snoozeBusy) }, [snoozeBusy, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   const [message, setMessage] = useState('')
   useSingleFlightPolling(async signal => {
     const next = await (preparationLoader ? preparationLoader(signal) :

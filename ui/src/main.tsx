@@ -2,17 +2,20 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ApiError, changeJson, errorMessage, getJson, getLocalJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
+import { AppSettings } from './AppSettings'
+import { HostSettingsTools, type HostSettingsPatch } from './HostSettingsTools'
+import { FriendPcCard } from './FriendPcCard'
+import { SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
-import { ConnectionDoctor } from './ConnectionDoctor'
 import { FriendConnectionDoctor, FriendGameCheckResult, friendGameCheckIdentity } from './FriendConnectionDoctor'
 import { FriendPlayFlow, friendConnectionExplanation } from './FriendPlayFlow'
-import { FriendRemoteRehearsal, HostRemoteRehearsal } from './RemoteRehearsal'
+import { FriendRemoteRehearsal } from './RemoteRehearsal'
 import { ConnectionDetails } from './ConnectionDetails'
 import { GameCompatibilityPanel } from './GameCompatibilityPanel'
 import { GameSettingsPanel } from './GameSettingsPanel'
 import { BackupCatalog } from './BackupCatalog'
-import { DesktopPreferencesPanel, UpdateDetailsPanel } from './DesktopPreferencesPanel'
+import { UpdateDetailsPanel } from './DesktopPreferencesPanel'
 import { parseDesktopUpdateDetails, type DesktopUpdateDetails } from './desktopPreferencesWire'
 import { parseNotificationPreferences } from './desktopPreferencesWire'
 import { subscribeToDesktopNotifications, subscribeToDesktopDraftFlush, type DesktopNotificationTarget } from './desktopNotificationBridge'
@@ -36,7 +39,7 @@ import {
 } from './features/setup/HostSetupDialog'
 import { useHostSetup } from './features/setup/useHostSetup'
 import { defaultUiPreferences, readUiPreferences, writeUiPreferences, type UiPreferences } from './qolPreferences'
-import { ActionFeedback, AppearancePreferences, pendingDescription, TimerPresets } from './QolWidgets'
+import { ActionFeedback, pendingDescription, TimerPresets } from './QolWidgets'
 import { currentActionNotice, currentRemoteOperation, serverActionNotice, type ActionNotice } from './actionFeedback'
 import {
   parseActionResult, parseAppInstance, parseBackupSafetyResult, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
@@ -81,6 +84,9 @@ import './style.css'
 import './companion.css'
 import './qol.css'
 import './core.css'
+import './settings.css'
+import './settings-integration.css'
+import './friend-access.css'
 
 type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
 type HostServerTab = 'overview' | 'chat' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
@@ -94,6 +100,15 @@ const hostServerTabIcons: Record<HostServerTab, IconName> = {
 }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
+type DeviceAccessTab = 'permissions' | 'servers' | 'time' | 'details'
+const permissionLabels: Record<PermissionAction, { label: string; icon: IconName }> = {
+  canStart: { label: 'Start servers', icon: 'play' }, canStop: { label: 'Request Stop', icon: 'stop' },
+  canExtendTimer: { label: 'Add shutdown time', icon: 'clock' }, canViewLogs: { label: 'View logs', icon: 'logs' }
+}
+function serverAccessKey(ids: readonly string[], permissions: PermissionDraft) {
+  return JSON.stringify([...new Set(ids)].sort().map(id => [id, permissions[id]?.canStart ?? false,
+    permissions[id]?.canStop ?? false, permissions[id]?.canExtendTimer ?? false, permissions[id]?.canViewLogs ?? false]))
+}
 
 function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
   const ref = useRef<HTMLInputElement | null>(null)
@@ -380,6 +395,12 @@ export function App() {
   const [serverAccessDraft, setServerAccessDraft] = useState<string[]>([])
   const [serverPermissionDraft, setServerPermissionDraft] = useState<PermissionDraft>({})
   const [serverAccessSearch, setServerAccessSearch] = useState('')
+  const [serverAccessOriginal, setServerAccessOriginal] = useState('')
+  const [deviceAccessTab, setDeviceAccessTab] = useState<DeviceAccessTab>('permissions')
+  const [discardDeviceEdits, setDiscardDeviceEdits] = useState(false)
+  const [removeDeviceConfirm, setRemoveDeviceConfirm] = useState(false)
+  const [deadlineDraftState, setDeadlineDraftState] = useState({ dirty: false, saving: false })
+  const [hostSettingsDraftDirty, setHostSettingsDraftDirty] = useState(false)
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('app')
   const [revealedConnections, setRevealedConnections] = useState<Record<string, boolean>>({})
   const [revealedGamePasswords, setRevealedGamePasswords] = useState<Record<string, string>>({})
@@ -391,7 +412,6 @@ export function App() {
   const connectionRevealRequestRef = useRef<Record<string, number>>({})
   const addressRecoveryRef = useRef<HTMLDetailsElement>(null)
   const recoveryAddressInputRef = useRef<HTMLInputElement>(null)
-  const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
   const updatePromptRef = useModalDialog(showUpdatePrompt)
   const workspaceNavigationRef = useRef<(page: WorkspacePage) => void>(() => {})
   const notificationNavigationRef = useRef<(target: DesktopNotificationTarget) => void>(() => {})
@@ -461,7 +481,7 @@ export function App() {
     draft, dirty, passwords, customScripts, customScriptsSaved, customScriptsLoading, discovery,
     minecraftDiscovery, minecraftTerms, sourceRoots, showSetup, setupStep, minecraftSetupMode,
     showPasswords, editedProfile, setupIssues, stepIssues, customScriptsChanged, setupRef,
-    sensitiveDraft, edit, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
+    sensitiveDraft, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
     synchronizeHostSnapshot, resetForMode, saveSetup, updateProfile, editCustomScripts, updateCustomPort,
     addCustomPort, removeCustomPort, browseCustomDirectory, browseFactorio, browseTerraria, applyMinecraftInstallation, scanMinecraft,
     installMinecraft, changeGameKind, addProfile, removeProfile, cancelSetup, finishSetupLater, openSetup,
@@ -472,8 +492,11 @@ export function App() {
   } = setup
   const beforeLeavingApp = async () => {
     if (!await beforeChangingScope()) return false
-    if ((sensitiveDraft || dirty && workspacePage === 'settings') && !window.confirm(
-      'Continue closing or restarting TogetherServer? Protected nonsecret setup and editor drafts are kept on this PC. Unsaved passwords, custom scripts and advanced app settings are discarded.')) return false
+    const pcEdits = serverAccessDevice && (serverAccessDirty || deadlineDraftState.dirty ||
+      (deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() !== serverAccessDevice.name ||
+      (permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)) !== matchingPermissionPreset(serverAccessDevice))
+    if ((sensitiveDraft || dirty && workspacePage === 'settings' || hostSettingsDraftDirty || pcEdits) && !window.confirm(
+      'Continue closing or restarting TogetherServer? Protected nonsecret setup and editor drafts are kept on this PC. Unsaved passwords, custom scripts, settings and PC access edits are discarded.')) return false
     return true
   }
   beforeLeavingAppRef.current = beforeLeavingApp
@@ -575,13 +598,14 @@ export function App() {
     catch { /* An update check must not interrupt hosting or joining. */ }
   }, 30 * 60 * 1000)
 
-  const checkUpdate = async () => {
+  const checkUpdate = async (review = true) => {
     setUpdateBusy(true)
     try {
       const result = await changeJson('/api/local/update/check', 'POST', parseDesktopUpdateDetails)
       setUpdate(result)
-      if (result.state === 'Available') setShowUpdatePrompt(true)
+      if (result.state === 'Available' && review) setShowUpdatePrompt(true)
       if (result.state !== 'Available') setNotice({ good: result.state === 'Current' || result.state === 'NoRelease', text: result.message })
+      return result
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setUpdateBusy(false) }
   }
@@ -880,7 +904,6 @@ export function App() {
     } finally { window.clearTimeout(timeout); setPending('') }
   }
   const revokeDevice = async (id: string) => {
-    if (!window.confirm('Revoke this Friend device now? Its next request will be denied.')) return
     setPending(id)
     try {
       const result = await change(`/api/local/devices/${id}/revoke`, 'POST')
@@ -919,18 +942,13 @@ export function App() {
         globalPermissionRequest(device, action, value))
       setNotice({ good: result.ok, text: result.message })
       setActionNotices(current => ({ ...current, [device.id]: { good: result.ok, text: result.message } }))
+      if (result.ok) setPermissionPresetDraft(current => { const next = { ...current }; delete next[device.id]; return next })
       await refreshCompanion()
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }); setActionNotices(current => ({ ...current, [device.id]: { good: false, text: errorMessage(error) } })) }
     finally { setPending('') }
   }
   const applyDevicePermissionPreset = async (device: Device, preset: PermissionPreset) => {
-    if (preset === 'custom') return
-    const requested = permissionPresetRequest(preset)
-    const rows = (['canStart', 'canStop', 'canExtendTimer', 'canViewLogs'] as PermissionAction[]).map(action => {
-      const before = permissionMix(device, action)
-      return `${({ canStart: 'Start', canStop: 'Request Stop', canExtendTimer: 'Add time', canViewLogs: 'View logs' })[action]}: ${before.mixed ? 'server exceptions' : before.all ? 'allowed' : 'off'} → ${requested[action] ? 'allowed' : 'off'}`
-    })
-    if (!window.confirm(`Apply ${permissionPresets[preset].label} to ${device.name}?\n\n${rows.join('\n')}\n\nApplies to ${device.assignedProfileIds.length} assigned servers and clears per-server exceptions. Current access expiry and server safety checks still apply.`)) return
+    if (preset === 'custom' || device.temporaryHelperActive || device.revoked || !device.paired || device.approvalPending) return
     setPending(device.id)
     try {
       const result = await change(`/api/local/devices/${device.id}/permissions`, 'PUT',
@@ -1306,28 +1324,52 @@ export function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const openDeviceServerAccess = (device: Device) => {
+  const prepareDeviceServerAccess = (device: Device) => {
     const savedIds = new Set(snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : [])
-    setNotice(null)
-    setServerAccessSearch('')
-    setServerAccessDraft(device.assignedProfileIds.filter(id => savedIds.has(id)))
-    setServerPermissionDraft(Object.fromEntries([...savedIds].map(profileId => {
+    const ids = device.assignedProfileIds.filter(id => savedIds.has(id))
+    const permissions = Object.fromEntries([...savedIds].map(profileId => {
       const permission = devicePermission(device, profileId)
       return [profileId, { canStart: permission.canStart, canStop: permission.canStop,
         canExtendTimer: permission.canExtendTimer, canViewLogs: permission.canViewLogs }]
-    })))
+    }))
+    setServerAccessSearch('')
+    setServerAccessDraft(ids)
+    setServerPermissionDraft(permissions)
+    setServerAccessOriginal(serverAccessKey(ids, permissions))
+  }
+  const openDeviceServerAccess = (device: Device) => {
+    setNotice(null)
+    prepareDeviceServerAccess(device)
+    setDeviceNames(current => ({ ...current, [device.id]: device.name }))
+    setPermissionPresetDraft(current => ({ ...current, [device.id]: matchingPermissionPreset(device) }))
+    setDeviceAccessTab('permissions')
+    setDiscardDeviceEdits(false)
+    setRemoveDeviceConfirm(false)
+    setDeadlineDraftState({ dirty: false, saving: false })
     setServerAccessDeviceId(device.id)
   }
-  const closeDeviceServerAccess = () => {
-    if (pending) return
+  const finishDeviceServerAccess = () => {
+    if (pending || deadlineDraftState.saving) return
     setServerAccessDeviceId('')
     setServerAccessDraft([])
     setServerPermissionDraft({})
     setServerAccessSearch('')
+    setDiscardDeviceEdits(false)
+    setRemoveDeviceConfirm(false)
     setNotice(null)
   }
+  const closeDeviceServerAccess = () => {
+    if (pending || deadlineDraftState.saving) return
+    if (serverAccessDirty || deadlineDraftState.dirty || serverAccessDevice && ((deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() !== serverAccessDevice.name ||
+      (permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)) !== matchingPermissionPreset(serverAccessDevice))) {
+      setDiscardDeviceEdits(true)
+      return
+    }
+    finishDeviceServerAccess()
+  }
   const saveDeviceServerAccess = async () => {
-    if (!serverAccessDeviceId || !serverAccessDevice || serverAccessDevice.temporaryHelperActive || serverAccessDevice.revoked) return
+    if (!serverAccessDeviceId || !serverAccessDevice || serverAccessDevice.temporaryHelperActive || serverAccessDevice.revoked ||
+      !serverAccessDevice.paired || serverAccessDevice.approvalPending || !serverAccessDirty) return
     setPending(serverAccessDeviceId)
     try {
       const result = await change(`/api/local/devices/${serverAccessDeviceId}/servers`, 'PUT',
@@ -1339,12 +1381,11 @@ export function App() {
           canViewLogs: serverPermissionDraft[profileId]?.canViewLogs ?? serverAccessDevice?.canViewLogs ?? false
         })) })
       setNotice({ good: result.ok, text: result.message })
+      setActionNotices(current => ({ ...current, [serverAccessDeviceId]: { good: result.ok, text: result.message } }))
       await refreshCompanion()
       if (result.ok) {
-        setServerAccessDeviceId('')
-        setServerAccessDraft([])
-        setServerPermissionDraft({})
-        setServerAccessSearch('')
+        setServerAccessOriginal(serverAccessKey(serverAccessDraft, serverPermissionDraft))
+        setDiscardDeviceEdits(false)
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
@@ -1375,13 +1416,22 @@ export function App() {
     finally { setPending('') }
   }
 
-  const changeRoute = (mode: Settings['connectionRoute']['mode'], address = '') => {
-    if (!draft) return
-    const selected = address.trim()
-    const endpoint = selected ? `https://${selected}:${draft.companionPort}` :
-      mode === 'DirectInternet' && draft.publicGameIp ? `https://${draft.publicGameIp}:${draft.companionPort}` : draft.companionEndpoint
-    edit({ ...draft, connectionRoute: { mode, address: selected }, companionEndpoint: endpoint,
-      companionBindAddress: mode === 'DirectInternet' ? '0.0.0.0' : selected || draft.companionBindAddress })
+  const saveSettingsPatch = async (patch: HostSettingsPatch): Promise<boolean> => {
+    if (snapshot?.mode !== 'Host' || pending || dirty) return false
+    setPending('save-settings')
+    setNotice(null)
+    try {
+      const result = await changeAction('/api/local/settings', 'PUT', { ...snapshot.settings, ...patch })
+      applySnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) {
+        acceptSavedSettings(result.snapshot.settings)
+        void checkPorts()
+        return true
+      }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+    return false
   }
   const certificateAction = async (action: 'stage' | 'activate' | 'retire-previous') => {
     setPending(`certificate-${action}`)
@@ -1568,6 +1618,7 @@ export function App() {
     })
   }, [liveConnectionKeySignature])
   const serverAccessDevice = companion?.devices.find(device => device.id === serverAccessDeviceId && !device.revoked)
+  const serverAccessDirty = !!serverAccessDeviceId && serverAccessKey(serverAccessDraft, serverPermissionDraft) !== serverAccessOriginal
   const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
     `${profile.name} ${profileGameLabel(profile)}`.toLocaleLowerCase().includes(normalizedServerSearch))
@@ -1748,19 +1799,12 @@ export function App() {
       </AttentionWorkspace></PaneErrorBoundary>}
 
       {workspacePage === 'settings' && snapshot?.mode === 'Friend' && <section className="settings-workspace" aria-labelledby="friend-app-settings-title">
-        <div className="modal-heading"><div><h2 id="friend-app-settings-title">App settings</h2><p>Windows behavior and update preferences for this app.</p></div><Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>Back to Join</Button></div>
-        <div className="settings-content"><section className="settings-section app-settings-page"><h3>Application</h3><AppearancePreferences value={uiPreferences} onChange={setUiPreferences} />
-          <DesktopPreferencesPanel servers={snapshot.profiles.map(profile => ({ id: profile.id, name: profile.name, connectionId: snapshot.connectionId }))}
-            quietMode={uiPreferences.quietMode} onQuietModeChange={quietMode => setUiPreferences(current => ({ ...current, quietMode }))} />
-          {update && <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={reloadUpdate} />}
-          <div className="app-settings-grid">
-            <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} /></label>
-            <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
-          </div>
-          <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : `Updates install only when you choose · ${update?.publisherTrust ?? 'checking trust'}. A verified local-state checkpoint is required before replacement.`}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
-          <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Hosted servers on this PC still keep the existing Quit guard.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
-          <div className="shortcut-reference"><strong>Keyboard shortcuts</strong><span><kbd>Ctrl K</kbd> Command palette</span><span><kbd>Alt 1</kbd> Host</span><span><kbd>Alt 2</kbd> Join</span><span><kbd>Alt 3</kbd> Attention</span><span><kbd>Alt 4</kbd> Settings</span><span><kbd>Esc</kbd> Close or go back</span></div>
-        </section></div>
+        <div className="modal-heading"><div><h2 id="friend-app-settings-title">App settings</h2><p>Preferences for this PC.</p></div><Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>Back to Join</Button></div>
+        <div className="settings-content"><AppSettings preferences={uiPreferences} onPreferencesChange={setUiPreferences}
+          servers={snapshot.profiles.map(profile => ({ id: profile.id, name: profile.name, connectionId: snapshot.connectionId }))}
+          desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
+          onDesktopChange={patch => void saveDesktopPreference(patch)} notice={notice} onClearNotice={() => setNotice(null)}
+          onCheckUpdate={async () => (await checkUpdate(false))?.state === 'Available'} onReviewUpdate={() => setShowUpdatePrompt(true)} onReloadUpdate={reloadUpdate} onQuit={() => void quitApp()} /></div>
       </section>}
 
       {workspacePage === 'join' && snapshot?.mode === 'Friend' && <>
@@ -2213,191 +2257,128 @@ export function App() {
           onRemoveProfile={profile => void removeProfile(profile)} onSave={startAfterSave => void saveSetup(startAfterSave)} />}
         </>}
         {workspacePage === 'settings' && <section className="settings-workspace host-settings-dialog" aria-labelledby="host-settings-title">
-          <div className="modal-heading"><div><h2 id="host-settings-title">Settings</h2><p>App preferences, Friend access, timers, and advanced Host controls.</p></div>
+          <div className="modal-heading"><div><h2 id="host-settings-title">Settings</h2><p>App preferences and Host controls, grouped by task.</p></div>
             <Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>{dirty ? 'Cancel changes' : 'Back to Host'}</Button></div>
           {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-          <nav className="settings-tabs" aria-label="Host settings sections">
-            <Button aria-current={hostSettingsSection === 'app' ? 'page' : undefined} className={hostSettingsSection === 'app' ? 'selected' : ''} onClick={() => setHostSettingsSection('app')}>App</Button>
-            <Button aria-current={hostSettingsSection === 'access' ? 'page' : undefined} className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</Button>
-            <Button aria-current={hostSettingsSection === 'stop' ? 'page' : undefined} className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Stop & timer</Button>
-            <Button aria-current={hostSettingsSection === 'network' ? 'page' : undefined} className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</Button>
-            <Button aria-current={hostSettingsSection === 'diagnostics' ? 'page' : undefined} className={hostSettingsSection === 'diagnostics' ? 'selected' : ''} onClick={() => setHostSettingsSection('diagnostics')}>Diagnostics</Button>
-            <Button aria-current={hostSettingsSection === 'advanced' ? 'page' : undefined} className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</Button>
-          </nav>
-            <div className="settings-content">
-              {hostSettingsSection === 'app' && <section className="settings-section app-settings-page"><h3>Application</h3><AppearancePreferences value={uiPreferences} onChange={setUiPreferences} />
-                <DesktopPreferencesPanel servers={savedProfiles} quietMode={uiPreferences.quietMode}
-                  onQuietModeChange={quietMode => setUiPreferences(current => ({ ...current, quietMode }))} />
-                {update && <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={reloadUpdate} />}
-                <p>These preferences affect this Windows app. Hosting and Friend checks continue when the window is hidden.</p>
-                <div className="app-settings-grid">
-                  <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} /></label>
-                  <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
-                  <label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong><small>Uses a scoped idle-sleep request only while an exact managed server process is running. Manual sleep can still interrupt hosting.</small>{snapshot.hostingPower && <small>Current state: {snapshot.hostingPower.state}. {snapshot.hostingPower.message}</small>}</span><Input type="checkbox" checked={draft.keepAwakeWhileHosting} disabled={!!pending} onChange={event => void saveHostFlags({ keepAwakeWhileHosting: event.target.checked })} /></label>
-                </div>
-                <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : `Updates are checked automatically, installed only when you choose, and require a verified local-state recovery checkpoint · ${update?.publisherTrust ?? 'checking trust'}.`}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
-                <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Active or unresolved managed servers still block Quit.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
-                <div className="shortcut-reference"><strong>Keyboard shortcuts</strong><span><kbd>Ctrl K</kbd> Command palette</span><span><kbd>Alt 1</kbd> Host</span><span><kbd>Alt 2</kbd> Join</span><span><kbd>Alt 3</kbd> Attention</span><span><kbd>Alt 4</kbd> Settings</span><span><kbd>Esc</kbd> Close or go back</span></div>
-              </section>}
-              {hostSettingsSection === 'access' && <section className="settings-section"><h3>Friend access</h3>
-                <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
-                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Once a server code exists, Friend connections stay available while the Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
-                  <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
-                <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length} totalCount={companion?.devices.length ?? 0} onChange={setDeviceFilters} />
-                {visibleDevices.length ? <div className="device-list"><h3>Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can give that PC access to any of your saved servers.</p>{visibleDevices.map(device => <div className="device access-device" key={device.id}>
-                  <FriendAccessSummary device={device} servers={savedProfiles} nowMs={nowMs} />
-                  <ActionFeedback notice={currentActionNotice(actionNotices[device.id], snapshot, feedbackNowMs)} />
-                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Connected with an older code' : `Connected with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
-                    <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Saved access expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Remove access</Button></div></div>
-                  <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}
-                    onSave={request => saveDeviceAccessExpiry(device.id, request)} onRefresh={refreshCompanion} />
-                  <TemporaryHelperAccess device={device} nowMs={nowMs} busy={!!pending}
-                    onGrant={duration => void saveTemporaryHelper(device.id, duration)}
-                    onEnd={() => void saveTemporaryHelper(device.id)} />
-                  <fieldset className="usual-permissions" disabled={device.temporaryHelperActive || device.revoked}><legend>Usual permissions</legend>
-                  {(() => {
-                    const selectedPreset = permissionPresetDraft[device.id] ?? matchingPermissionPreset(device)
-                    const preset = selectedPreset === 'custom' ? null : permissionPresets[selectedPreset]
-                    return <div className="permission-preset"><label>Permission preset<Select value={selectedPreset}
-                      disabled={!!pending || !device.paired || device.approvalPending}
-                      onChange={event => setPermissionPresetDraft(current => ({ ...current, [device.id]: event.target.value as PermissionPreset }))}>
-                      <option value="status">Status only</option><option value="start">Can start</option>
-                      <option value="helper">Trusted helper</option><option value="custom">Custom</option>
-                    </Select></label><div><p>{preset?.detail ?? 'This PC has individual or per-server choices. Use the controls below to keep editing them.'}</p>
-                      <small>Applying a preset updates every assigned server and clears its per-server exceptions.</small>
-                      {selectedPreset !== 'custom' && <FriendAccessReview before={{ ...device, serverPermissions: device.serverPermissions ?? [] }}
-                        after={{ ...device, ...permissionPresetRequest(selectedPreset), serverPermissions: [] }} servers={savedProfiles} clearsExceptions />}</div>
-                      <Button className="secondary" disabled={!!pending || !preset || selectedPreset === matchingPermissionPreset(device)}
-                        onClick={() => void applyDevicePermissionPreset(device, selectedPreset)}>Apply preset</Button></div>
-                  })()}
-                  <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStart', permissionMix(device, 'canStart').mixed ? true : event.target.checked)} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canExtendTimer', permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked)} /><span><strong>Add shutdown time</strong><small>Off by default. Friends can add only the fixed increment, including while players are online.</small></span></label>
-                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canViewLogs').mixed} checked={permissionMix(device, 'canViewLogs').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canViewLogs', permissionMix(device, 'canViewLogs').mixed ? true : event.target.checked)} /><span><strong>View logs</strong><small>{permissionMix(device, 'canViewLogs').mixed ? device.canViewLogs ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canViewLogs').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}. Read-only and independent of remote controls.</small></span></label></div>
-                  </fieldset>
-                </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs have connected yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
-              </section>}
-              {hostSettingsSection === 'network' && <section className="settings-section">
-              {appInstance?.isStaging && <HostRemoteRehearsal />}
-              <h3>Connection checks</h3>
-              <PaneErrorBoundary title="Connection Doctor" resetKey={selectedHostProfileId}><ConnectionDoctor
-                profile={selectedHostProfile} run={selectedHostRun} ports={portDiagnostics}
-                routeCheck={internetRouteCheck} devices={companion?.devices ?? []}
-                busy={checkingPorts || checkingInternetRoute || !!pending} routeMode={draft.connectionRoute?.mode ?? 'DirectInternet'}
-                onRefresh={() => { void checkPorts(true); void refreshCompanion() }}
-                onTestRoute={() => void checkInternetRoute()} onOpenAccess={() => setHostSettingsSection('access')}
-                onOpenDiagnostics={() => setHostSettingsSection('diagnostics')} /></PaneErrorBoundary>
-              <div className="settings-grid companion-fields">
-                <label>Friend route<Select value={draft.connectionRoute?.mode ?? 'DirectInternet'} onChange={event => changeRoute(event.target.value as Settings['connectionRoute']['mode'], event.target.value === 'DirectInternet' ? '' : draft.connectionRoute?.address ?? '')}>
-                  <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option>
-                </Select><small>Mesh and advanced routes use networking you install and manage. TogetherServer still verifies the Host, each Friend PC, and which servers it can use.</small></label>
-                {(draft.connectionRoute?.mode ?? 'DirectInternet') !== 'DirectInternet' && <label>Selected route IPv4<Input value={draft.connectionRoute?.address ?? ''} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /><small>TogetherServer only reads adapters; it does not install clients or change network policy.</small></label>}
-                {draft.connectionRoute?.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>{routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select><small>{routeDiscovery?.privateMeshCandidates.length ? 'Selecting an address does not configure that network.' : 'No known Tailscale or ZeroTier adapter is currently up; enter an address manually if appropriate.'}</small></label>}
-              </div>
-              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {friendAppStatus}.</p>
-              {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
-              {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
-              <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Refresh public address</>}</Button></div>
-              <div className={checkingInternetRoute ? 'internet-route-test refreshing' : 'internet-route-test'} aria-busy={checkingInternetRoute}><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? <><Icon name="loader" />Testing TCP port…</> : 'Test Friend app port from internet'}</Button>
-                <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no server code or saved access is sent.</small>
-                {internetRouteCheck && <p className={`internet-route-result ${previousRouteVerdict ? 'neutral' : internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
-                  <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `Reachable outside network · TCP ${internetRouteCheck.port}` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
-                  <span>{internetRouteCheck.detail}</span><small>Checked {new Date(internetRouteCheck.checkedUtc).toLocaleString()}. {previousRouteVerdict && 'This result is no longer current for the saved connection, server code address, or time; test again after checking them. '}This tests TCP access only; your Friend still needs to connect with the code, and the game join needs its own test.</small>
-                </p>}
-              </div>
-              {portDiagnostics?.control.lanForwardDetail && <div className="lan-target-hint"><strong>Router forwarding target on this PC</strong>
-                <p>{portDiagnostics.control.lanForwardDetail}</p>
-                {portDiagnostics.control.lanAddresses?.map(item => <p key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code> · {item.interfaceName} · gateway {item.gateway}</p>)}
-              </div>}
-              <p className="helper-text">A Friend on another network must test the app connection and game join separately. Router and firewall changes remain yours to approve.</p>
-              <div className="next-action"><span>Friend app connections are <strong>{draft.companionListeningEnabled ? 'on' : 'off'}</strong>.</span><Button className="text-button" onClick={() => setHostSettingsSection('access')}>Manage access</Button></div>
-              <details className="advanced-block"><summary>Technical connection details</summary><p className="helper-text">Friend app HTTPS uses TCP {draft.companionPort}. Game ports are separate. Friend PCs connect outbound.</p>{companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}</details>
-              </section>}
-
-              {hostSettingsSection === 'stop' && <section className="settings-section"><h3>Empty-server countdown</h3>
-                <p>When a Ready server reports 0 players, TogetherServer counts down and stops it gracefully. Friend apps do not gate the timer. A player or unavailable count pauses the countdown, while added time stays saved and is applied to the next zero-player countdown. A fresh zero-player server check is still required at the end.</p>
-                <div className="idle-settings"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong><small>Off by default. Host and Friend cards share the countdown or explain why it is paused.</small></span><Input type="checkbox" checked={draft.autoShutdownEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ autoShutdownEnabled: event.target.checked })} /></label>
-                  <label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" value={draft.idleMinutes} disabled={!!pending} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Minutes, from 1 to 1440.</small></label>
-                  <label>Friend extension increment<Input type="number" min="1" max="120" value={draft.friendTimerExtensionMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMinutes: Number(event.target.value) })} /><small>Fixed minutes added per approved Friend request.</small></label>
-                  <label>Friend extension maximum<Input type="number" min="1" max="1440" value={draft.friendTimerExtensionMaximumMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMaximumMinutes: Number(event.target.value) })} /><small>Total Friend-added minutes allowed during one server run.</small></label>
-                  <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save-idle', '/api/local/settings', 'PUT', draft)}>Save timer</Button></div></div>
-                <h3>Remote Stop safety</h3>
-                <p>There are no player IDs to enter. Each game server reports its current online-player count. A Friend Stop request is allowed only at 0, then TogetherServer checks the count again immediately before sending the graceful stop command.</p>
-                <div className="stop-checklist"><strong>How it works</strong><ul>
-                  <li className="done"><Icon name="check" />The server must be running and Ready</li>
-                  <li className="done"><Icon name="check" />Unknown player counts block Friend Stop</li>
-                  <li className="done"><Icon name="check" />One or more online players block Friend Stop</li>
-                  <li className={draft.remoteControlsEnabled ? 'done' : ''}><Icon name={draft.remoteControlsEnabled ? 'check' : 'warning'} />Friend controls are {draft.remoteControlsEnabled ? 'on' : 'paused'}</li>
-                </ul></div>
-                {savedProfiles.map(profile => {
-                  const run = snapshot.runs.find(item => item.profileId === profile.id)
-                  const safety = companion?.stopSafety?.[profile.id]
-                  return <div className="safety-status" key={profile.id}>
-                    <strong>{profile.name}: {run?.state === 'Ready' ? playerCount(run.onlinePlayers, run.maxPlayers) : run?.state ?? 'Unknown'}</strong>
-                    <p>{safety?.reason ?? 'Checking the server player count…'}</p>
-                    <small>The local Stop button on the Host page remains available for the owner's decision.</small>
-                  </div>
-                })}
-              </section>}
-
-              {hostSettingsSection === 'diagnostics' && <PaneErrorBoundary title="Preflight & diagnostics" resetKey={selectedHostProfileId}><OwnerDiagnostics
-                selectedProfileId={selectedHostProfileId}
-                onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
-
-              {hostSettingsSection === 'advanced' && <section className="settings-section">
-        <details className="advanced-block host-move-guide"><summary>Move hosting to another PC</summary>
-          <p>On the old Host, stop the server, make a new backup, then choose Prepare move kit beside that backup. Take the verified .backup folder to the new PC.</p>
-          <Button className="secondary" disabled={!!pending} onClick={() => void inspectMoveKit()}>{pending === 'inspect-move-kit' ? 'Checking…' : 'Inspect move kit on this PC'}</Button>
-          {moveKit?.kit && <div className="device"><strong>{moveKit.kit.name} · {gameLabel(moveKit.kit.kind)}</strong><small>World {moveKit.kit.worldId} · port {moveKit.kit.gamePort} · {moveKit.fileCount} verified files</small>
-            <ol><li>Install the same game server version and create a fresh server on this PC.</li><li>While it is offline, copy the kit’s payload into that server’s save location. Keep any existing save separate; do not overwrite it. Use the world name shown above.</li><li>Set up TogetherServer for that server and select its locally installed executable. Recreate game settings and passwords, then test a real join and saved change.</li><li>Give Friends a new server code and pair each PC again. Retire the old Host only after the new one passes your checks.</li></ol>
-            <small>The move kit contains world files and basic setup details. It does not contain game binaries, saved Friend access, private keys, or game passwords.</small>
-            <Button className="secondary" onClick={addProfile}>Set up new Host</Button></div>}
-        </details>
-                <h3>Advanced network and game paths</h3>
-              <div className="settings-grid companion-fields">
-                <label>Maximum servers running at once<Input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /><small>Most homes should leave this at 1.</small></label>
-                <label>Friend app TCP port<Input type="number" min="1024" max="65535" value={draft.companionPort} onChange={event => {
-                  const port = Number(event.target.value)
-                  let endpoint = draft.companionEndpoint
-                  if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
-                  edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
-                }} /></label>
-                <label>Custom secure address<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder={`https://127.0.0.1:${appInstance?.companionPort ?? 5131}`} /></label>
-                <label>Bind IP<Input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
-              </div>
-              {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
-              {companion?.certificates && <div className="safety-status"><strong>Secure Host identity</strong><p>Current identity is valid until {new Date(companion.certificates.activeExpiresUtc).toLocaleString()}.</p>
-                {companion.certificates.nextFingerprint ? <p>The next identity is ready and connected Friends are receiving it.</p> : <p>TogetherServer prepares the next identity automatically within 30 days of expiry.</p>}
-                {companion.certificates.previousAcceptedUntilUtc && <p>The old identity will be accepted until {new Date(companion.certificates.previousAcceptedUntilUtc).toLocaleString()}.</p>}
-                <div className="actions"><Button className="secondary" disabled={!!pending || !!companion.certificates.nextFingerprint} onClick={() => void certificateAction('stage')}>Prepare next identity</Button>
-                  <Button className="secondary" disabled={!!pending || !companion.certificates.nextFingerprint} onClick={() => void certificateAction('activate')}>Use prepared identity</Button>
-                  {companion.certificates.previousFingerprint && <Button className="text-button danger" disabled={!!pending} onClick={() => void certificateAction('retire-previous')}>Stop accepting old identity</Button>}</div>
-              </div>}
-              <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</Button></div>
-              {companion?.devices.some(device => device.revoked) ? <details className="advanced-block"><summary>Revoked Friend PCs</summary><div className="profile-list device-list">{companion.devices.filter(device => device.revoked).map(device => <div className="device" key={device.id}>
-                <div><strong>{device.name} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</strong><small>Revoked</small></div>
-              </div>)}</div></details> : null}
-              </section>}
-            </div>
+          <div className="settings-layout"><nav className="settings-tabs" aria-label="Host settings sections">
+            <Button aria-current={hostSettingsSection === 'app' ? 'page' : undefined} className={hostSettingsSection === 'app' ? 'selected' : ''} onClick={() => setHostSettingsSection('app')}><Icon name="settings" />App</Button>
+            <Button aria-current={hostSettingsSection === 'access' ? 'page' : undefined} className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}><Icon name="users" />Friend access</Button>
+            <Button aria-current={hostSettingsSection === 'stop' ? 'page' : undefined} className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}><Icon name="clock" />Stop & timer</Button>
+            <Button aria-current={hostSettingsSection === 'network' ? 'page' : undefined} className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}><Icon name="link" />Connection help</Button>
+            <Button aria-current={hostSettingsSection === 'diagnostics' ? 'page' : undefined} className={hostSettingsSection === 'diagnostics' ? 'selected' : ''} onClick={() => setHostSettingsSection('diagnostics')}><Icon name="logs" />Diagnostics</Button>
+            <Button aria-current={hostSettingsSection === 'advanced' ? 'page' : undefined} className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}><Icon name="plug" />Advanced</Button>
+          </nav><div className="settings-content">
+            {dirty && <p className="warning-text" role="status">Finish or cancel your server setup changes before editing Host settings.</p>}
+            {hostSettingsSection === 'app' && <AppSettings preferences={uiPreferences} onPreferencesChange={setUiPreferences} servers={savedProfiles}
+              desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
+              onDesktopChange={patch => void saveDesktopPreference(patch)} keepAwake={{ enabled: draft.keepAwakeWhileHosting,
+                detail: snapshot.hostingPower ? `${snapshot.hostingPower.state}. ${snapshot.hostingPower.message}` : undefined,
+                onChange: enabled => void saveHostFlags({ keepAwakeWhileHosting: enabled }) }}
+              notice={notice} onClearNotice={() => setNotice(null)} onCheckUpdate={async () => (await checkUpdate(false))?.state === 'Available'}
+              onReviewUpdate={() => setShowUpdatePrompt(true)} onReloadUpdate={reloadUpdate} onQuit={() => void quitApp()} />}
+            {hostSettingsSection === 'access' && <section className="settings-section">
+              <SettingsSectionHeading icon="users" title="Friend access" description="Choose a PC to manage its servers, permissions, and access time." />
+              <div className="access-toggles settings-controls"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Connections stay available while this Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
+                <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Each PC's permissions and server safety checks still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
+              <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length} totalCount={companion?.devices.length ?? 0} onChange={setDeviceFilters} />
+              {!companion ? <p role="status">Loading Friend access...</p> : visibleDevices.length ? <div className="friend-pc-grid" aria-label="Friend PCs">
+                {visibleDevices.map(device => <FriendPcCard key={device.id} device={device} servers={savedProfiles} nowMs={nowMs} busy={!!pending}
+                  onManage={() => openDeviceServerAccess(device)} onApprove={() => void approveDevice(device.id)}
+                  feedback={<ActionFeedback notice={currentActionNotice(actionNotices[device.id], snapshot, feedbackNowMs)} />} />)}
+              </div> : <div className="empty compact-empty">{companion.devices.length ? <><p>No Friend PCs match these filters.</p><Button className="secondary" onClick={() => setDeviceFilters(defaultFriendPcFilters)}>Clear filters</Button></> :
+                <p>No Friend PCs have connected yet. Choose Invite friends on a server to copy its private code.</p>}</div>}
+            </section>}
+            {(hostSettingsSection === 'stop' || hostSettingsSection === 'network' || hostSettingsSection === 'advanced') && <HostSettingsTools key={hostSettingsSection}
+              section={hostSettingsSection} snapshot={snapshot} companion={companion} ports={portDiagnostics} routeCheck={internetRouteCheck}
+              previousRouteVerdict={previousRouteVerdict} routeDiscovery={routeDiscovery} selectedProfileId={selectedHostProfileId} busy={!!pending} dirty={dirty}
+              checkingPorts={checkingPorts} checkingRoute={checkingInternetRoute} detectingAddress={detectingPublicIp} friendAppStatus={friendAppStatus}
+              addressError={publicIpDetection && !publicIpDetection.ok ? publicIpDetection.message : null}
+              isStaging={appInstance?.isStaging ?? false} notice={notice} moveKit={moveKit} onClearNotice={() => setNotice(null)} onDraftStateChange={setHostSettingsDraftDirty} onSave={saveSettingsPatch}
+              onAutoShutdown={enabled => void saveHostFlags({ autoShutdownEnabled: enabled })}
+              onRefresh={() => { void checkPorts(true); void refreshCompanion() }} onTestRoute={() => void checkInternetRoute()} onDetectAddress={() => void detectPublicIp()}
+              onOpenAccess={() => setHostSettingsSection('access')} onOpenDiagnostics={() => setHostSettingsSection('diagnostics')}
+              onCertificate={action => void certificateAction(action)} onInspectMoveKit={() => void inspectMoveKit()} onNewHost={addProfile} />}
+            {hostSettingsSection === 'diagnostics' && <PaneErrorBoundary title="Preflight & diagnostics" resetKey={selectedHostProfileId}><OwnerDiagnostics
+              selectedProfileId={selectedHostProfileId} onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
+          </div></div>
         </section>}
-        {savedProfiles.length > 0 && serverAccessDevice && <dialog ref={serverAccessRef} className="panel modal-dialog server-access-dialog" aria-labelledby="server-access-title" onCancel={event => { event.preventDefault(); closeDeviceServerAccess() }}>
-          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>Selected servers expose their connection details. Start, Stop, Add shutdown time, and View logs stay independent.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
-          {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-          <label className="server-picker-search">Search servers<Input value={serverAccessSearch} autoFocus placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
-          <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!!pending || visibleServerAccessProfiles.length === 0} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!!pending || serverAccessDraft.length === 0} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
-          <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
-            const assigned = serverAccessDraft.includes(profile.id)
-            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer, canViewLogs: serverAccessDevice.canViewLogs }
-            return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
-              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label><label><Input type="checkbox" checked={permission.canExtendTimer} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canExtendTimer: event.target.checked } }))} /> Add time</label><label><Input type="checkbox" checked={permission.canViewLogs} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canViewLogs: event.target.checked } }))} /> View logs</label></div></div>
-          })}
-            {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>
-          <div className="server-picker-footer"><span>Changes apply when you save.</span><div className="actions"><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button><Button disabled={!!pending} onClick={() => void saveDeviceServerAccess()}>{pending === serverAccessDevice.id ? 'Saving…' : 'Save access'}</Button></div></div>
-          <FriendAccessReview before={{ ...serverAccessDevice, serverPermissions: serverAccessDevice.serverPermissions ?? [] }}
-            after={{ ...serverAccessDevice, assignedProfileIds: serverAccessDraft, serverPermissions: serverAccessDraft.map(profileId => ({
-              ...devicePermission(serverAccessDevice, profileId), ...serverPermissionDraft[profileId] })) }} servers={savedProfiles} />
-        </dialog>}
+        {workspacePage === 'settings' && serverAccessDevice && <SettingsDialog title={`Manage access for ${serverAccessDevice.name}`} wide busy={!!pending || deadlineDraftState.saving}
+          description="Permissions, servers, access time, and PC details." onClose={closeDeviceServerAccess}
+          footer={<><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={closeDeviceServerAccess}>{deviceAccessTab === 'servers' ? 'Cancel' : 'Done'}</Button>
+            {deviceAccessTab === 'servers' && <Button disabled={!!pending || !serverAccessDirty || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending}
+              onClick={() => void saveDeviceServerAccess()}><Icon name={pending === serverAccessDevice.id ? 'loader' : 'check'} />{pending === serverAccessDevice.id ? 'Saving...' : 'Save access'}</Button>}</>}>
+          <nav className="settings-dialog-tabs" aria-label="PC access sections">
+            {([['permissions', 'shield', 'Permissions'], ['servers', 'server', 'Servers'], ['time', 'clock', 'Access time'], ['details', 'monitor', 'PC details']] as const).map(([tab, icon, label]) =>
+              <Button key={tab} aria-current={deviceAccessTab === tab ? 'page' : undefined} className={deviceAccessTab === tab ? 'selected' : ''} disabled={!!pending || deadlineDraftState.saving}
+                onClick={() => { if (tab === 'servers' && !serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab(tab); setRemoveDeviceConfirm(false) }}><Icon name={icon} />{label}</Button>)}
+          </nav>
+          <ActionFeedback notice={currentActionNotice(actionNotices[serverAccessDevice.id], snapshot, feedbackNowMs)} />
+          {notice && !notice.good && <p className="warning-text" role="status">{notice.text}</p>}
+          {discardDeviceEdits && <div className="settings-inline-confirm" role="alert"><strong>Discard unsaved PC changes?</strong><p>Changes you have already saved remain in place.</p><div className="actions"><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={() => setDiscardDeviceEdits(false)}>Continue editing</Button><Button className="danger-outline" disabled={!!pending || deadlineDraftState.saving} onClick={finishDeviceServerAccess}>Discard changes</Button></div></div>}
+          {deviceAccessTab === 'permissions' && <div className="settings-dialog-stack">
+            {serverAccessDevice.temporaryHelperActive && <p className="warning-text" role="status">The last Host view includes temporary helper permissions. End helper access under Access time and refresh before editing usual permissions.</p>}
+            {serverAccessDirty && <p className="warning-text" role="status">Save or discard your server edits before changing usual permissions. <Button className="text-button" onClick={() => setDeviceAccessTab('servers')}>Review server edits</Button></p>}
+            <fieldset className="device-permissions-editor" disabled={!!pending || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending || serverAccessDirty}>
+              <legend>Usual permissions</legend>
+              {(() => {
+                const selectedPreset = permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)
+                const preset = selectedPreset === 'custom' ? null : permissionPresets[selectedPreset]
+                const changed = selectedPreset !== matchingPermissionPreset(serverAccessDevice)
+                return <div className="device-preset-editor"><label>Permission preset<Select value={selectedPreset} onChange={event => setPermissionPresetDraft(current => ({ ...current, [serverAccessDevice.id]: event.target.value as PermissionPreset }))}>
+                  <option value="status">Status only</option><option value="start">Can start</option><option value="helper">Trusted helper</option><option value="custom">Custom</option></Select></label>
+                  <p className="helper-text">{preset?.detail ?? 'Individual permissions or per-server exceptions.'}</p>
+                  {preset && changed && <><FriendAccessReview before={{ ...serverAccessDevice, serverPermissions: serverAccessDevice.serverPermissions ?? [] }}
+                    after={{ ...serverAccessDevice, ...permissionPresetRequest(selectedPreset as Exclude<PermissionPreset, 'custom'>), serverPermissions: [] }} servers={savedProfiles} clearsExceptions />
+                    <div className="actions"><Button onClick={() => void applyDevicePermissionPreset(serverAccessDevice, selectedPreset)}><Icon name="check" />Apply preset</Button></div></>}
+                </div>
+              })()}
+              <details className="settings-disclosure"><summary><Icon name="settings" />Individual permissions</summary><p className="helper-text">These switches save immediately and keep exceptions for the other permissions.</p>
+                <div className="device-permissions-grid">{(Object.keys(permissionLabels) as PermissionAction[]).map(action => {
+                  const mix = permissionMix(serverAccessDevice, action)
+                  return <label className="device-permission-toggle" key={action}><MixedCheckbox type="checkbox" mixed={mix.mixed} checked={mix.all} onChange={event => void setDevicePermissions(serverAccessDevice, action, mix.mixed ? true : event.target.checked)} />
+                    <span><strong><Icon name={permissionLabels[action].icon} />{permissionLabels[action].label}</strong><small>{mix.mixed ? `${mix.all ? 'On' : 'Off'} with server exceptions` : mix.all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                })}</div><p className="helper-text">Stop needs a fresh zero-player check. Restart needs Start and Stop. Logs and Add shutdown time are separate grants.</p>
+              </details>
+            </fieldset>
+            <div className="settings-detail-row device-assignment-row"><div><strong>{serverAccessDevice.assignedProfileIds.length} assigned {serverAccessDevice.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small>{serverAssignmentPreview(serverAccessDevice, savedProfiles)}</small></div>
+              <Button className="secondary" disabled={!!pending} onClick={() => { if (!serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab('servers') }}><Icon name="server" />Choose servers</Button></div>
+            <details className="settings-disclosure"><summary><Icon name="eye" />Current effective access</summary><FriendAccessSummary device={serverAccessDevice} servers={savedProfiles} nowMs={nowMs} /></details>
+          </div>}
+          {deviceAccessTab === 'servers' && <div className="settings-dialog-stack">
+            <p className="helper-text">Assignment gives status and connection details. Each server's Start, Stop, Add time, and View logs choices stay independent.</p>
+            {serverAccessDevice.temporaryHelperActive && <p className="warning-text" role="status">End temporary helper access and refresh before editing saved server permissions.</p>}
+            <fieldset className="server-picker-fieldset" disabled={!!pending || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending}>
+              <legend className="sr-only">Server access</legend>
+              <label className="server-picker-search">Search servers<Input value={serverAccessSearch} placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
+              <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!visibleServerAccessProfiles.length} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!serverAccessDraft.length} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
+              <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
+                const assigned = serverAccessDraft.includes(profile.id)
+                const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer, canViewLogs: serverAccessDevice.canViewLogs }
+                return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
+                  <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}>{(['canStart', 'canStop', 'canExtendTimer', 'canViewLogs'] as PermissionAction[]).map(action => <label key={action}><Input type="checkbox" checked={permission[action]} disabled={!assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, [action]: event.target.checked } }))} /><Icon name={permissionLabels[action].icon} />{action === 'canStart' ? 'Start' : action === 'canStop' ? 'Stop' : action === 'canExtendTimer' ? 'Add time' : 'View logs'}</label>)}</div></div>
+              })}{!visibleServerAccessProfiles.length && <p className="server-picker-empty">{savedProfiles.length ? `No servers match “${serverAccessSearch.trim()}”.` : 'No saved servers are available.'}</p>}</div>
+            </fieldset>
+            {serverAccessDirty && <><FriendAccessReview before={{ ...serverAccessDevice, serverPermissions: serverAccessDevice.serverPermissions ?? [] }}
+              after={{ ...serverAccessDevice, assignedProfileIds: serverAccessDraft, serverPermissions: serverAccessDraft.map(profileId => ({ ...devicePermission(serverAccessDevice, profileId), ...serverPermissionDraft[profileId] })) }} servers={savedProfiles} />
+              <div className="actions"><Button className="text-button" disabled={!!pending} onClick={() => prepareDeviceServerAccess(serverAccessDevice)}>Discard server edits</Button></div></>}
+          </div>}
+          <div className="settings-dialog-stack" hidden={deviceAccessTab !== 'time'}>
+            <OwnerAccessDeadlineEditor device={serverAccessDevice} disabled={!!pending || !serverAccessDevice.paired} onSave={request => saveDeviceAccessExpiry(serverAccessDevice.id, request)} onRefresh={refreshCompanion} onDraftStateChange={setDeadlineDraftState} />
+            <TemporaryHelperAccess device={serverAccessDevice} nowMs={nowMs} busy={!!pending || serverAccessDirty || deadlineDraftState.saving}
+              onGrant={duration => void saveTemporaryHelper(serverAccessDevice.id, duration)} onEnd={() => void saveTemporaryHelper(serverAccessDevice.id)} />
+            {serverAccessDirty && <p className="helper-text">Save or discard server edits before changing temporary helper access.</p>}
+          </div>
+          {deviceAccessTab === 'details' && <div className="settings-dialog-stack">
+            <div className="device-name-editor"><label>PC name<Input value={deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name} maxLength={48} disabled={!!pending} onChange={event => setDeviceNames(current => ({ ...current, [serverAccessDevice.id]: event.target.value }))} /></label>
+              <Button className="secondary" disabled={!!pending || !(deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() || (deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() === serverAccessDevice.name} onClick={() => void saveDeviceName(serverAccessDevice.id)}>Save name</Button></div>
+            <div className="settings-detail-row"><strong>Paired with</strong><span>{serverAccessDevice.profileId === '00000000-0000-0000-0000-000000000000' ? 'An older code' : `Code for ${savedProfiles.find(profile => profile.id === serverAccessDevice.profileId)?.name ?? 'a removed server'}`}</span></div>
+            <div className="settings-detail-row"><strong>Last authenticated report</strong><span>{serverAccessDevice.lastHeartbeatUtc ? new Date(serverAccessDevice.lastHeartbeatUtc).toLocaleString() : 'No fresh report'}</span></div>
+            <div className="settings-detail-row"><strong>Renewable credential</strong><span>{serverAccessDevice.credentialExpiresUtc ? `Expires ${new Date(serverAccessDevice.credentialExpiresUtc).toLocaleString()}` : 'Expiry unavailable'}</span><small>Independent of the owner access deadline under Access time.</small></div>
+            {serverAccessDevice.approvalPending && <div className="actions"><Button disabled={!!pending} onClick={() => void approveDevice(serverAccessDevice.id)}>Approve this PC</Button></div>}
+            <div className="settings-danger-row"><span><strong>Remove this PC's access</strong><small>Its next request will be denied.</small></span><Button className="danger-outline" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(true)}>Remove access</Button></div>
+            {removeDeviceConfirm && <div className="settings-inline-confirm" role="alert"><strong>Remove access for {serverAccessDevice.name}?</strong><p>This PC will need a new code to connect again.</p><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(false)}>Keep access</Button><Button className="danger-outline" disabled={!!pending} onClick={() => void revokeDevice(serverAccessDevice.id)}>Confirm remove access</Button></div></div>}
+          </div>}
+        </SettingsDialog>}
       </>}
       </div></main>
     </div>

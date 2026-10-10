@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import hostWire from '../../contracts/host-snapshot.v1.json'
-import { parseSnapshot, type FriendSnapshot, type HostSnapshot, type Snapshot } from './contracts'
+import { parseSnapshot, type Device, type FriendSnapshot, type HostSnapshot, type Snapshot } from './contracts'
 import type { EditorDraftGuardChange } from './editorProtectedDraft'
 import { readProtectedDraft } from './protectedUiDrafts'
 import { serializeProtectedSetupDraft } from './setupDraft'
@@ -11,9 +11,12 @@ import baseCss from './style.css?inline'
 import companionCss from './companion.css?inline'
 import qolCss from './qol.css?inline'
 import coreCss from './core.css?inline'
+import settingsCss from './settings.css?inline'
+import settingsIntegrationCss from './settings-integration.css?inline'
+import friendAccessCss from './friend-access.css?inline'
 
 // vitest.config.ts explicitly enables these inline imports; load the whole cascade.
-const shellCss = [themeCss, baseCss, companionCss, qolCss, coreCss].join('\n')
+const shellCss = [themeCss, baseCss, companionCss, qolCss, coreCss, settingsCss, settingsIntegrationCss, friendAccessCss].join('\n')
 
 // Exercise the real shell, selection, guards and handlers. Leaf data/workflows have their own suites.
 const transport = vi.hoisted(() => ({ read: vi.fn(), change: vi.fn(), flush: vi.fn(), failures: { logs: false, sessions: false, files: false } }))
@@ -141,7 +144,7 @@ describe('Host task structure', () => {
     await openHost()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await screen.findByRole('heading', { name: 'Settings', level: 1 })
-    const notifications = screen.getByLabelText('Notifications')
+    const notifications = within(document.querySelector('.header-tools')! as HTMLElement).getByLabelText('Notifications')
     fireEvent.click(notifications)
     const panel = document.querySelector('.notification-panel')!
     expect(shellCss).toContain('.notification-panel')
@@ -432,6 +435,8 @@ describe('Host task structure', () => {
     const sections = await screen.findByRole('navigation', { name: 'Host settings sections' })
     fireEvent.click(within(sections).getByRole('button', { name: 'Connection help' }))
     expect(await screen.findByText('Test with another owned PC')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Prepare rehearsal' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Test with another owned PC Open rehearsal' }))
     expect(screen.getByRole('button', { name: 'Prepare rehearsal' })).toBeInTheDocument()
     expect(transport.change).not.toHaveBeenCalled()
   })
@@ -484,6 +489,177 @@ function friend(): FriendSnapshot {
       canExtendTimer: false, timerExtensionMinutes: 15, timerExtensionRemainingMinutes: 60, canViewLogs: false }]
   }
 }
+
+function testPc(id: string, name: string): Device {
+  return { id, name, profileId: hostWire.settings.profiles[0].id, assignedProfileIds: [hostWire.settings.profiles[0].id],
+    canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false,
+    revoked: false, paired: true, approvalPending: false,
+    credentialExpiresUtc: new Date(Date.now() + 90 * 86400000).toISOString(), lastHeartbeatUtc: new Date().toISOString(),
+    serverPermissions: [], accessExpiresUtc: null, accessExpired: false, temporaryHelperActive: false }
+}
+
+function withPcs(devices: Device[]) {
+  const info = { ...companion, devices }
+  const read = transport.read.getMockImplementation()!
+  transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/companion' ? info : read(path, ...args))
+  transport.change.mockImplementation(async (path: string, _method: string, _parse: unknown, rawBody: unknown) => {
+    const device = info.devices.find(device => path.includes(device.id))
+    if (device && path.endsWith('/servers')) {
+      const request = rawBody as { profileIds: string[]; permissions: Device['serverPermissions'] }
+      device.assignedProfileIds = request.profileIds
+      device.serverPermissions = request.permissions
+    }
+    if (device && path.endsWith('/permissions')) {
+      const request = rawBody as { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }
+      device.canStart = request.canStart; device.canStop = request.canStop
+      device.canExtendTimer = request.canExtendTimer; device.canViewLogs = request.canViewLogs
+      device.serverPermissions = []
+    }
+    if (device && path.endsWith('/approve')) device.approvalPending = false
+    if (device && path.endsWith('/name')) device.name = (rawBody as { name: string }).name
+    if (device && path.endsWith('/access-expiry')) {
+      device.accessExpiresUtc = new Date(Date.now() + 30 * 86400000).toISOString()
+      return { ok: true, code: 'Saved', message: 'Deadline saved.', accessExpiresUtc: device.accessExpiresUtc, accessExpired: false }
+    }
+    if (device && path.endsWith('/revoke')) device.revoked = true
+    return { ok: true, code: 'Saved', message: 'Access saved.', snapshot: state }
+  })
+  return info
+}
+
+async function openAccess() {
+  await openHost()
+  fireEvent.click(within(screen.getByRole('navigation', { name: 'TogetherServer workspaces' })).getByRole('button', { name: 'Settings' }))
+  const sections = await screen.findByRole('navigation', { name: 'Host settings sections' })
+  fireEvent.click(within(sections).getByRole('button', { name: 'Friend access' }))
+}
+
+const pcId = '44444444-4444-4444-8444-444444444441'
+const secondPcId = '44444444-4444-4444-8444-444444444442'
+
+describe('Friend PC settings flow', () => {
+  it('separates PCs into cards and opens only the chosen PC editor', async () => {
+    withPcs([testPc(pcId, 'Living room PC'), testPc(secondPcId, 'Laptop')])
+    await openAccess()
+    const first = screen.getByRole('article', { name: 'Living room PC' })
+    const second = screen.getByRole('article', { name: 'Laptop' })
+    expect(first).not.toBe(second)
+    expect(first).toHaveClass('friend-pc-card')
+    expect(screen.queryByRole('textbox', { name: 'PC name' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Permission preset' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    fireEvent.click(within(second).getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Laptop' })
+    expect(within(dialog).getByRole('combobox', { name: 'Permission preset' })).toHaveValue('start')
+    expect(within(dialog).queryByText('Review access changes')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('textbox', { name: 'PC name' })).not.toBeInTheDocument()
+    expect(transport.change.mock.calls.filter(([path]) => path.startsWith('/api/local/devices/'))).toHaveLength(0)
+  })
+
+  it('reviews a changed preset and applies all four grants in one request without a native confirmation', async () => {
+    withPcs([testPc(pcId, 'Living room PC')])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Living room PC' })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Permission preset' }), { target: { value: 'helper' } })
+    expect(within(dialog).getByRole('list', { name: 'Server access before and after' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('table')).not.toBeInTheDocument()
+    expect(transport.change.mock.calls.filter(([path]) => path.startsWith('/api/local/devices/'))).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply preset' }))
+    await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/devices/${pcId}/permissions`, 'PUT', expect.any(Function),
+      { canStart: true, canStop: true, canExtendTimer: true, canViewLogs: true, scope: null }, undefined))
+    await waitFor(() => expect(within(dialog).queryByText('Review access changes')).not.toBeInTheDocument())
+    expect(window.confirm).not.toHaveBeenCalled()
+    expectNoServerAction()
+  })
+
+  it('requires a deliberate discard for unsaved server changes and reopens the saved assignment', async () => {
+    withPcs([testPc(pcId, 'Living room PC')])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    let dialog = screen.getByRole('dialog', { name: 'Manage access for Living room PC' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Servers' }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: new RegExp(hostWire.settings.profiles[0].name) }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Discard unsaved PC changes?')
+    expect(transport.change.mock.calls.filter(([path]) => path.startsWith('/api/local/devices/'))).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    dialog = screen.getByRole('dialog', { name: 'Manage access for Living room PC' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Servers' }))
+    expect(within(dialog).getByRole('checkbox', { name: new RegExp(hostWire.settings.profiles[0].name) })).toBeChecked()
+  })
+
+  it('keeps an unsaved PC name when saving server access from another tab', async () => {
+    withPcs([testPc(pcId, 'Living room PC')])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Living room PC' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'PC details' }))
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'PC name' }), { target: { value: 'Unsaved name' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Servers' }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: new RegExp(hostWire.settings.profiles[0].name) }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save access' }))
+    await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/devices/${pcId}/servers`, 'PUT', expect.any(Function),
+      { profileIds: [], permissions: [] }, undefined))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save access' })).toBeDisabled())
+    fireEvent.click(within(dialog).getByRole('button', { name: 'PC details' }))
+    expect(within(dialog).getByRole('textbox', { name: 'PC name' })).toHaveValue('Unsaved name')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Discard unsaved PC changes?')
+    expect(transport.change.mock.calls.some(([path]) => path.endsWith('/name'))).toBe(false)
+  })
+
+  it('preserves a deadline choice across tabs, guards closing, and saves only the deadline', async () => {
+    const pc = testPc(pcId, 'Living room PC')
+    withPcs([pc])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Living room PC' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Access time' }))
+    fireEvent.click(within(dialog).getByText('Change deadline'))
+    fireEvent.click(within(dialog).getByRole('radio', { name: '30 days' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Permissions' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Access time' }))
+    expect(within(dialog).getByRole('radio', { name: '30 days' })).toBeChecked()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Discard unsaved PC changes?')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Continue editing' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save deadline' }))
+    await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/devices/${pcId}/access-expiry`, 'PUT', expect.any(Function), { duration: 'ThirtyDays' }))
+    await within(dialog).findByText('Deadline saved.')
+    expect(pc.assignedProfileIds).toEqual([id])
+    expect(pc.canStart).toBe(true)
+    expect(pc.canStop).toBe(false)
+    expect(pc.canViewLogs).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('blocks saved permission editing after an expired helper projection until a fresh Host view arrives', async () => {
+    withPcs([{ ...testPc(pcId, 'Living room PC'), temporaryHelperActive: true,
+      temporaryHelperUntilUtc: new Date(Date.now() - 1000).toISOString(), canStop: true, canExtendTimer: true, canViewLogs: true }])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Living room PC' })
+    expect(within(dialog).getByRole('combobox', { name: 'Permission preset' })).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Servers' }))
+    expect(within(dialog).getByRole('checkbox', { name: new RegExp(hostWire.settings.profiles[0].name) })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Save access' })).toBeDisabled()
+    expect(transport.change.mock.calls.filter(([path]) => path.startsWith('/api/local/devices/'))).toHaveLength(0)
+  })
+
+  it('distinguishes an empty filter result from having no paired PCs', async () => {
+    withPcs([testPc(pcId, 'Living room PC')])
+    await openAccess()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search Friend PCs' }), { target: { value: 'No matching PC' } })
+    expect(screen.getByText('No Friend PCs match these filters.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByRole('article', { name: 'Living room PC' })).toBeInTheDocument()
+    expectNoServerAction()
+  })
+})
 
 describe('Friend task structure', () => {
   it('does not keep a completed remote startup banner on a Ready server', async () => {

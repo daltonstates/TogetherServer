@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 
 export type IconName = 'play' | 'stop' | 'copy' | 'invite' | 'refresh' | 'server' |
   'game' | 'plug' | 'check' | 'warning' | 'settings' | 'search' | 'link' |
-  'eye' | 'eyeOff' | 'bell' | 'loader' | 'plus' | 'users' | 'chat' | 'logs' | 'clock' | 'archive'
+  'eye' | 'eyeOff' | 'bell' | 'loader' | 'plus' | 'users' | 'chat' | 'logs' | 'clock' | 'archive' |
+  'close' | 'chevronRight' | 'monitor' | 'shield' | 'palette' | 'power' | 'keyboard'
 
 const paths: Record<IconName, ReactNode> = {
   play: <path d="m6 4 8 6-8 6V4Z" />,
@@ -27,7 +28,14 @@ const paths: Record<IconName, ReactNode> = {
   chat: <path d="M5 3h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H8l-5 3V5a2 2 0 0 1 2-2Z" />,
   logs: <><rect x="4" y="2.5" width="12" height="15" rx="2" /><path d="M7 6h6M7 10h6M7 14h4" /></>,
   clock: <><circle cx="10" cy="10" r="7" /><path d="M10 6v4l3 2" /></>,
-  archive: <><rect x="3" y="3" width="14" height="4" rx="1" /><path d="M4 7v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7M8 10h4" /></>
+  archive: <><rect x="3" y="3" width="14" height="4" rx="1" /><path d="M4 7v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7M8 10h4" /></>,
+  close: <path d="m5 5 10 10M15 5 5 15" />,
+  chevronRight: <path d="m8 5 5 5-5 5" />,
+  monitor: <><rect x="2.5" y="3" width="15" height="10" rx="2" /><path d="M10 13v4M6 17h8" /></>,
+  shield: <><path d="m10 2 7 3v5c0 4-7 8-7 8s-7-4-7-8V5l7-3Z" /><path d="m6.5 9 2.5 2.5 4.5-5" /></>,
+  palette: <><path d="M10 2a8 8 0 1 0 0 16h1a2 2 0 0 0 1-3.7 1.5 1.5 0 0 1 .8-2.8H15a3 3 0 0 0 3-3C18 5 14.4 2 10 2Z" /><path d="M6 6h.01M11 5h.01M15 8h.01M5 11h.01" /></>,
+  power: <><path d="M10 2v8M5 4.5a7 7 0 1 0 10 0" /></>,
+  keyboard: <><rect x="2" y="5" width="16" height="10" rx="2" /><path d="M5 8h.01M8 8h.01M11 8h.01M14 8h.01M5 11h.01M8 11h.01M11 11h.01M14 11h.01M6 13h8" /></>
 }
 
 export function Icon({ name, size = 17 }: { name: IconName; size?: number }) {

@@ -615,7 +615,7 @@ async function firstUseAndSetupRecovery(page, host) {
     for (const textScale of ['100', '150']) {
       await page.setViewportSize({ width: 1440, height: 900 })
       await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-      await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+      await setAppearanceTextScale(page, textScale)
       await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
         value => value === (textScale === '150' ? '24px' : '16px'), `${phase} ${textScale} percent text`)
       await navigation.getByRole('button', { name: 'Host', exact: true }).click()
@@ -716,8 +716,31 @@ async function firstUseAndSetupRecovery(page, host) {
   assert.equal(cleared.text, null, 'Cancel must clear only this disposable unsaved setup draft before profile seeding.')
   await page.setViewportSize({ width: 1440, height: 900 })
   await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-  await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption('100')
+  await setAppearanceTextScale(page, '100')
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+}
+
+async function openAppearanceEditor(page) {
+  const appearance = page.getByRole('group', { name: 'Appearance' })
+  // Baseline snapshots retain the historical inline preferences.
+  if (await appearance.isVisible()) return appearance
+  await page.getByRole('button', { name: 'Appearance Edit appearance', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Appearance', exact: true }).waitFor({ state: 'visible' })
+  await appearance.waitFor({ state: 'visible' })
+  return appearance
+}
+
+async function closeAppearanceEditor(page) {
+  const dialog = page.getByRole('dialog', { name: 'Appearance', exact: true })
+  if (!await dialog.isVisible()) return
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+}
+
+async function setAppearanceTextScale(page, textScale) {
+  const appearance = await openAppearanceEditor(page)
+  await appearance.getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+  await closeAppearanceEditor(page)
 }
 
 async function routingAndAppearance(page) {
@@ -750,7 +773,7 @@ async function routingAndAppearance(page) {
   await page.getByRole('region', { name: 'Synthetic Bedrock B workspace', exact: true }).waitFor()
   assert.equal(await page.locator('.server-detail').getAttribute('data-server-tab'), 'files')
   await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-  const appearance = page.getByRole('group', { name: 'Appearance' })
+  const appearance = await openAppearanceEditor(page)
   for (const theme of ['system', 'light', 'dark']) {
     await appearance.getByRole('combobox', { name: /^Theme$/u }).selectOption(theme)
     await eventually(() => page.locator('html').getAttribute('data-theme'), value => value === theme, `apply ${theme} theme`)
@@ -765,12 +788,18 @@ async function routingAndAppearance(page) {
   await appearance.getByRole('checkbox', { name: 'Stronger contrast and status outlines' }).check()
   await eventually(() => page.locator('html').getAttribute('data-density'), value => value === 'compact', 'compact layout')
   await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize), value => value === '24px', '150 percent root text size')
+  await screenshot(page, 'appearance-dialog-wide-150', { width: 1440, height: 900 }, page.getByRole('dialog', { name: 'Appearance', exact: true }))
+  await screenshot(page, 'appearance-dialog-narrow-150', { width: 390, height: 844 }, page.getByRole('dialog', { name: 'Appearance', exact: true }))
+  await closeAppearanceEditor(page)
   await screenshot(page, 'settings-wide-150', { width: 1440, height: 900 })
   await screenshot(page, 'settings-narrow-150', { width: 390, height: 844 })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openAppearanceEditor(page)
   await appearance.getByRole('combobox', { name: /^Text size$/u }).selectOption('100')
   await appearance.getByRole('combobox', { name: /^Layout$/u }).selectOption('comfortable')
   await appearance.getByRole('combobox', { name: /^Theme$/u }).selectOption('dark')
   await appearance.getByRole('checkbox', { name: 'Stronger contrast and status outlines' }).uncheck()
+  await closeAppearanceEditor(page)
   await page.setViewportSize({ width: 1440, height: 900 })
 }
 async function headerOverlayRegression(page, host) {
@@ -847,7 +876,7 @@ async function headerOverlayRegression(page, host) {
           const viewport = { width: 1180, height: 774 }, name = `baseline-a1eb74e-notifications-1180x774-${textScale}`
           await page.setViewportSize(viewport)
           await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-          await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+          await setAppearanceTextScale(page, textScale)
           await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
             value => value === (textScale === '150' ? '24px' : '16px'), `baseline ${textScale} percent text`)
           await navigation.getByRole('button', { name: 'Host', exact: true }).click()
@@ -876,7 +905,7 @@ async function headerOverlayRegression(page, host) {
     for (const textScale of ['100', '150']) {
       await page.setViewportSize({ width: 1440, height: 900 })
       await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-      await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
+      await setAppearanceTextScale(page, textScale)
       await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
         value => value === (textScale === '150' ? '24px' : '16px'), `${textScale} percent overlay text`)
       await navigation.getByRole('button', { name: 'Host', exact: true }).click()
@@ -956,7 +985,7 @@ async function headerOverlayRegression(page, host) {
     await page.reload({ waitUntil: 'domcontentloaded' })
     await navigation.waitFor()
     await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-    await page.getByRole('group', { name: 'Appearance' }).getByRole('combobox', { name: /^Text size$/u }).selectOption('100')
+    await setAppearanceTextScale(page, '100')
     await navigation.getByRole('button', { name: 'Host', exact: true }).click()
   }
 }
@@ -1420,8 +1449,7 @@ async function attentionAndLargeText(page) {
   await attention.getByRole('button', { name: 'Dismiss notice', exact: true }).first().click()
   await screenshot(page, 'attention-narrow', { width: 390, height: 844 })
   await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-  const appearance = page.getByRole('group', { name: 'Appearance' })
-  await appearance.getByRole('combobox', { name: /^Text size$/u }).selectOption('150')
+  await setAppearanceTextScale(page, '150')
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole('complementary', { name: 'Saved servers' }).locator('.server-master-item').first().click()
