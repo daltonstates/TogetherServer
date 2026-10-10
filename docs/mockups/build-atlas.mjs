@@ -36,16 +36,27 @@ const extras = {
 };
 
 const catalogs = [globalCatalog, nativeCatalog, extras, sharedCatalog];
-extras.dialogs.find(dialog => dialog.id === 'server-actions').html += '<button type="button" class="ts-button" data-primary-action data-dialog="host-overview-details" data-icon="check">Server details and checks</button>';
+const serverTools = extras.dialogs.find(dialog => dialog.id === 'server-actions');
+serverTools.title = 'Server tools';
+serverTools.description = '';
+const menuItem = (label,icon,marker,description='') => `<button type="button" class="ts-button" data-primary-action data-icon="${icon}" ${marker}><span>${label}${description ? `<small>${description}</small>` : ''}</span></button>`;
+serverTools.html = `<div class="ts-action-menu"><section class="ts-menu-group"><small>Server</small>${menuItem('Restart server','refresh','data-dialog="confirm-restart"')}${menuItem('Restart with a checkpoint','archive','data-dialog="confirm-safe-restart"','Protect the world before starting again.')}${menuItem('Edit server setup','settings','data-dialog="setup-game"')}</section><section class="ts-menu-group"><small>Access</small>${menuItem('Friend access','users','data-page="host-pc-access"')}${menuItem('Server notifications','bell','data-dialog="server-notifications"')}</section><section class="ts-menu-group"><small>Checks</small>${menuItem('Check server health','check','data-action="refresh"')}${menuItem('Details and diagnostics','logs','data-dialog="host-overview-details"')}</section></div>`;
 if (!globalOnly) {
   for (const name of ['catalog-host.json','catalog-join.json','catalog-access.json']) {
     catalogs.push(JSON.parse(await readFile(path.join(directory,name),'utf8')));
   }
 }
 const catalog = { schema:1, pages:catalogs.flatMap(part => part.pages || []), dialogs:catalogs.flatMap(part => part.dialogs || []), coverage:catalogs.flatMap(part => part.coverage || []) };
+const pageDescriptions = {
+  'host-overview':'', 'join-play':'', 'host-chat':'', 'join-chat':'', 'host-first-use':'Choose a game to host, or connect to a friend.',
+  'host-all-servers':'Choose a server to manage.', 'host-players':'Players online and shutdown timing.',
+  'host-backups':'Keep a copy of your world or restore an earlier save.', 'host-files':'Change this server’s game settings and files.',
+  'host-maintenance':'Prepare a safe window for server changes.', 'join-shared':'', 'join-pairing':'Connect with a private server code.'
+};
+for (const page of catalog.pages) if (Object.hasOwn(pageDescriptions,page.id)) page.description = pageDescriptions[page.id];
 const sharedPage = catalog.pages.find(page => page.id === 'join-shared');
 if (sharedPage) {
-  sharedPage.description = 'Get the save, prepare hosting, then choose Start.';
+  sharedPage.description = '';
   sharedPage.html = '<section data-shared-landing><h3>Get save → Prepare hosting → Start server</h3></section>';
   sharedPage.states = [...new Set([...sharedPage.states.map(state => state === 'default' ? 'normal' : state),...sharedStates])];
   sharedPage.variants = {};

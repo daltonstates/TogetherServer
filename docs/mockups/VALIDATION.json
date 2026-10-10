@@ -1,6 +1,7 @@
 {
   "scope": "Synthetic mockup atlas only",
-  "generatedAt": "2026-10-10T21:54:49.393Z",
+  "generatedAt": "2026-10-10T23:12:02.191Z",
+  "sourceSha256": "c4e6eba878971ba8b6962e5368bee10fb25de7631d7d5dfdbbd59ccf80297c6f",
   "globalOnly": false,
   "pages": 29,
   "dialogs": 158,
@@ -11,12 +12,12 @@
     {
       "name": "Isolated self-contained output",
       "status": "PASS",
-      "detail": "274921 bytes; no network, app, storage or clipboard action."
+      "detail": "279367 bytes; no network, app, storage or clipboard action."
     },
     {
       "name": "Navigation and icon vocabulary",
       "status": "PASS",
-      "detail": "1026 cross-view links; named icon controls and selectable variants."
+      "detail": "1019 cross-view links; named icon controls and selectable variants."
     },
     {
       "name": "Source coverage",
@@ -70,6 +71,16 @@
     },
     {
       "name": "Game-specific setup navigation",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "Reported navigation and dialog-label regressions",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "Rendered-review icon, hierarchy and action-emphasis regressions",
       "status": "PASS",
       "detail": ""
     },
@@ -129,8 +140,12 @@
       "detail": ""
     }
   ],
+  "externalVisualReview": {
+    "report": "VISUAL-REVIEW.json",
+    "runId": 38093652729,
+    "sourceSha256": "c4e6eba878971ba8b6962e5368bee10fb25de7631d7d5dfdbbd59ccf80297c6f"
+  },
   "skipped": [
-    "Actual browser pixel/layout review on an approved separate session",
     "Native application and game acceptance; application code has not changed"
   ]
 }

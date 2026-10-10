@@ -75,14 +75,15 @@ export async function verifySharedInteractions({root,document,dom,change,click,c
     choose('join-play');
     if (client !== 'successor') {
       assert(root.querySelector('.ts-server-command [data-action="open-game"]').disabled,'Unreviewed new Host connection allowed Open game.');
-      assert(root.querySelector('[data-shared-host]').textContent.includes('not yet checked'),'An unconnected client claimed fresh readiness.');
+      assert.equal(root.querySelector('.ts-server-command .ts-badge').textContent,'Unknown','An unconnected client claimed fresh readiness.');
       click('[data-shared-action="join-current"]'); await perform('connect'); click('.ts-dialog-body [data-page="join-play"]');
     }
+    assert.equal(root.querySelector('.ts-server-command [data-action="open-game"]').disabled,false,`${client} lost fresh play readiness after observing or connecting to the new Host.`);
     for (const page of ['join-shared','join-play','host-overview']) {
       choose(page);
       const banner = root.querySelector('[data-shared-host]');
       assert.equal(banner.dataset.sharedHost,'successor',`${client}/${page} lost current Host`);
-      assert(banner.textContent.includes('Friend PC A · Ready'),`${client}/${page} changed replicated readiness`);
+      assert(banner.textContent.includes('Friend PC A') && banner.textContent.includes('Ready'),`${client}/${page} changed replicated readiness`);
     }
   }
   choose('join-play');

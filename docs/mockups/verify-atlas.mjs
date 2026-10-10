@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -201,6 +202,42 @@ if (!globalOnly) {
   assert(next,'World step has no next action.'); next.click();
   assert.equal(root.querySelector('[data-review="state"]').value,'java','World-to-app step lost the selected game.');
   passed('Game-specific setup navigation');
+  choose('host-overview');
+  assert.equal(dom.window.getComputedStyle(root.querySelector('.ts-section-picker')).display,'none','Desktop shows both section picker and sidebar navigation.');
+  choose('server-actions');
+  const healthAction = root.querySelector('.ts-dialog-body [data-action="refresh"]');
+  assert.equal(healthAction.textContent.trim(),'Check server health','Tools menu lost its action label.');
+  assert(!root.querySelector('.ts-action-menu .ts-iconbutton'),'Tools menu has a dangling icon-only action.');
+  choose('tool-move');
+  assert(root.querySelector('.ts-dialog-body .ts-primary').textContent.includes('Set up the new Host'));
+  assert(!root.querySelector('.ts-dialog-body > ol'),'Move dialog leads with a long checklist.');
+  passed('Reported navigation and dialog-label regressions');
+  choose('join-play');
+  const addressRow = root.querySelector('.ts-secret-row');
+  assert(addressRow?.querySelector('[data-action="reveal"]') && addressRow.querySelector('[data-action="copy"]'),'Join address utilities became detached.');
+  assert(!root.querySelector('.ts-content [data-dialog="join-tools"]'),'Play duplicates its tools destination.');
+  for (const id of ['join-play','join-chat','join-chat-queue','join-notice','join-recover']) {
+    choose(id);
+    for (const control of root.querySelectorAll('.ts-product button')) assert(control.querySelectorAll('.ts-icon').length <= 1,`${id} has duplicate action icons.`);
+  }
+  choose('host-overview');
+  assert.equal(root.querySelectorAll('.ts-main h2').length,1,'Overview repeats its page/world heading.');
+  assert(!root.querySelector('.ts-main > .ts-world-host'),'Overview repeats the world identity in a banner.');
+  for (const id of ['setup-game','setup-world','setup-app']) {
+    choose(id);
+    assert(!root.querySelector('.ts-dialog-footer .ts-primary'),'Pausing setup competes with the next step.');
+  }
+  choose('setup-world');
+  const passwordField = root.querySelector('.ts-input-action input');
+  assert(passwordField,'Setup password reveal became detached from its field.');
+  passwordField.value = 'example-only-password';
+  click('.ts-input-action [data-action="reveal"]');
+  assert.equal(passwordField.type,'text','Password reveal did not update its own field.');
+  dom.window.dispatchEvent(new dom.window.Event('blur'));
+  assert.equal(passwordField.type,'password','Focus loss retained the revealed password field.');
+  choose('tool-file-draft');
+  assert(!root.querySelector('[data-confirm="Discard recovered draft"]').classList.contains('ts-primary'),'Discard competes with draft recovery.');
+  passed('Rendered-review icon, hierarchy and action-emphasis regressions');
   verifySharedModel(passed);
   await verifySharedInteractions({root,document,dom,change,click,choose,passed});
   choose('app-appearance'); verifyTooltip({root,dom,passed});
@@ -264,6 +301,13 @@ assert.equal(offlineRoot.querySelector('[data-current-dialog]').dataset.currentD
 assert.equal(offlineErrors.length,0,offlineErrors.map(error => error.message).join('\n'));
 offlineDom.window.close();
 passed('Offline boot, tooltips and dialog navigation');
-const report = {scope:'Synthetic mockup atlas only',generatedAt:new Date().toISOString(),globalOnly,pages:catalog.pages.length,dialogs:catalog.dialogs.length,sourceMappings:catalog.coverage.length,confirmationCallSites:confirmations.length,renderedStates,results,skipped:['Actual browser pixel/layout review on an approved separate session','Native application and game acceptance; application code has not changed']};
+const sourceSha256 = createHash('sha256').update(offline).digest('hex');
+let externalVisualReview = null;
+try {
+  const review = JSON.parse(await readFile(path.join(directory,'VISUAL-REVIEW.json'),'utf8'));
+  if (review.sourceSha256 === sourceSha256 && review.manualReview === 'complete') externalVisualReview = {report:'VISUAL-REVIEW.json',runId:review.runId,sourceSha256};
+} catch (error) { if (error.code !== 'ENOENT') throw error; }
+const skipped = [...(externalVisualReview ? [] : ['Actual browser pixel/layout review on an approved separate session']), 'Native application and game acceptance; application code has not changed'];
+const report = {scope:'Synthetic mockup atlas only',generatedAt:new Date().toISOString(),sourceSha256,globalOnly,pages:catalog.pages.length,dialogs:catalog.dialogs.length,sourceMappings:catalog.coverage.length,confirmationCallSites:confirmations.length,renderedStates,results,externalVisualReview,skipped};
 await writeFile(path.join(directory,'VALIDATION.json'),JSON.stringify(report,null,2)+'\n','utf8');
-console.log(`PASS ${results.length} atlas checks; ${renderedStates} rendered states. Browser/native checks unrun.`);
+console.log(`PASS ${results.length} atlas checks; ${renderedStates} rendered states. ${externalVisualReview ? 'Separate browser evidence matches this source.' : 'Browser review unrun for this source.'} Native acceptance unrun.`);

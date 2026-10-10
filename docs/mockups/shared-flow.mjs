@@ -50,6 +50,7 @@ export function createSharedFlow({icon,escape}) {
     if (['handoff-waiting','receipt-pending'].includes(scene)) { state.status = 'Offline'; state.processes.original = 'Offline'; state.version = 13; state.copies.original = 13; state.phase = 'final-copy'; state.consent.successor = true; state.trusted.successor = true; if (scene === 'receipt-pending') state.copies.successor = 13; }
     if (['chosen','setup','route-needed','ready-to-start','starting','hosting','offline','unknown','fenced'].includes(scene)) {
       state.authority = 'successor'; state.version = 13; state.copies.original = 13; state.copies.successor = 13; state.consent.successor = true; state.trusted.successor = true; state.receipt = true; state.status = 'Offline'; state.processes.original = scene === 'fenced' ? 'Unknown' : 'Offline'; state.phase = 'setup'; state.restored = false; state.route = false;
+      state.connected.successor = 'successor';
       if (['route-needed','ready-to-start','starting','hosting','offline','unknown','fenced'].includes(scene)) { state.restored = true; state.phase = 'route'; }
       if (['ready-to-start','starting','hosting','offline','unknown','fenced'].includes(scene)) { state.route = true; state.phase = 'start'; }
       if (scene === 'starting') { state.phase = 'starting'; state.status = 'Starting'; state.processes.successor = 'Starting'; }
@@ -72,7 +73,7 @@ export function createSharedFlow({icon,escape}) {
       if (['consent-off','untrusted','stalled','error'].includes(state.scene)) state.scene = 'normal';
     }
     if (name === 'transfer') { state.status = 'Offline'; state.processes.original = 'Offline'; state.version = 13; state.copies.original = 13; state.phase = 'final-copy'; }
-    if (name === 'complete') { state.authority = 'successor'; state.phase = 'setup'; state.restored = false; state.route = false; }
+    if (name === 'complete') { state.authority = 'successor'; state.connected.successor = 'successor'; state.phase = 'setup'; state.restored = false; state.route = false; }
     if (name === 'restore') { state.restored = true; state.phase = 'route'; }
     if (name === 'route') { state.route = true; state.phase = 'start'; }
     if (name === 'start') { state.status = 'Starting'; state.phase = 'starting'; }
@@ -84,13 +85,13 @@ export function createSharedFlow({icon,escape}) {
     if (name === 'offer') state.phase = 'vote';
     if (name === 'vote') {
       state.voters.push(state.client);
-      if (state.voters.length === 2) { state.authority = 'successor'; state.status = 'Offline'; state.phase = 'setup'; state.restored = false; state.route = false; }
+      if (state.voters.length === 2) { state.authority = 'successor'; state.connected.successor = 'successor'; state.status = 'Offline'; state.phase = 'setup'; state.restored = false; state.route = false; }
     }
     if (['start','remote-start','remote-stop','observe','stop'].includes(name)) state.processes[state.authority] = state.status;
     return true;
   };
   const hostStatus = () => state.scene === 'conflicts' ? 'Hosting decision disputed · game status Unknown' : currentStatus() === 'Unknown' ? `Last known Host: ${clients[state.authority]} · Unknown` : state.status === 'Ready' ? owner() || state.connected[state.client] === state.authority ? `Hosted by ${clients[state.authority]} · Ready` : `Current Host: ${clients[state.authority]} · status not yet checked on this PC` : `${clients[state.authority]} · ${state.status === 'Starting' ? 'Starting' : state.phase === 'start' ? 'Offline' : 'Preparing'} · server ${state.status}`;
-  const hostBanner = () => `<section class="ts-world-host" data-shared-host="${state.scene === 'conflicts' ? 'disputed' : state.authority}" aria-label="Current shared-world Host"><div><strong>Alderheim · ${escape(hostStatus())}</strong><small>${state.scene === 'conflicts' ? 'Current Host disputed; resolve the conflicting histories.' : `${currentStatus() === 'Unknown' ? 'Last known' : 'Latest'} completed save: version ${state.version}${currentStatus() === 'Ready' ? ' · current gameplay can include newer changes' : ''}`}</small></div>${button('Join current Host','join-current',false,`${!can('connect') ? 'disabled' : ''}`)}</section>`;
+  const hostBanner = (primaryJoin=false) => `<section class="ts-world-host" data-shared-host="${state.scene === 'conflicts' ? 'disputed' : state.authority}" aria-label="Current shared-world Host"><div><strong>Alderheim · ${escape(hostStatus())}</strong><small>${state.scene === 'conflicts' ? 'Current Host disputed; resolve the conflicting histories.' : `${currentStatus() === 'Unknown' ? 'Last known' : 'Latest'} completed save: version ${state.version}${currentStatus() === 'Ready' ? ' · current gameplay can include newer changes' : ''}`}</small></div>${button('Join current Host','join-current',primaryJoin,`${!can('connect') ? 'disabled' : ''}`)}</section>`;
   const progress = () => {
     const received = state.copies[state.client] === state.version;
     const prepared = state.client === 'successor' && state.restored && state.route && owner();
@@ -106,8 +107,8 @@ export function createSharedFlow({icon,escape}) {
     }
     if (state.phase === 'route' && state.client !== 'successor') return {title:'Check Friend PC A’s new connection',text:'The next Host needs this check from another approved PC before Start.',html:button('Check new Host connection','open-guide',true)};
     if (state.recovery && ['recover','vote'].includes(state.phase)) return {title:state.phase === 'recover' ? 'Recover from the last completed save' : 'Group approval is needed',text:'The original Host may still be running. Recovery is a deliberate group decision and can miss newer gameplay.',html:button(state.phase === 'vote' ? 'Review recovery vote' : 'Review recovery','open-guide',true)};
-    if (state.client === 'friend') return {title:state.copies.friend === state.version ? 'Your saved copy is current' : 'Keep a save on this PC',text:'This PC can receive copies and play. Hosting here needs the owner’s Eligible host grant.',html:state.copies.friend === state.version ? button('Join current Host','join-current',true,`${state.status !== 'Ready' ? 'disabled' : ''}`) : button('Get latest save','open-guide',true)};
-    if (state.scene === 'fenced' || state.authority === 'successor' && state.client === 'original') return {title:'This world moved to Friend PC A',text:'This PC retains its copy. Starting or publishing the shared world here is blocked by the current hosting decision.',html:button('Join current Host','join-current',true,`${state.status !== 'Ready' ? 'disabled' : ''}`)};
+    if (state.client === 'friend') return {title:state.copies.friend === state.version ? 'Your saved copy is current' : 'Keep a save on this PC',text:'This PC can receive copies and play. Hosting here needs the owner’s Eligible host grant.',primaryJoin:state.copies.friend === state.version,html:state.copies.friend === state.version ? '' : button('Get latest save','open-guide',true)};
+    if (state.scene === 'fenced' || state.authority === 'successor' && state.client === 'original') return {title:'This world moved to Friend PC A',text:'This PC retains its copy. Starting or publishing the shared world here is blocked by the current hosting decision.',primaryJoin:true,html:''};
     if (state.client === 'original' && state.authority === 'original') return {title:state.phase === 'complete' ? 'The next PC confirmed the final save' : state.phase === 'final-copy' ? 'Waiting for Friend PC A to get the final save' : 'Move hosting to Friend PC A',text:state.phase === 'final-copy' ? 'Keep this server Offline. Friend PC A must get version 13 and confirm its exact copy.' : 'Prepare the final save, then complete the transfer after the selected PC confirms it.',html:button(state.phase === 'complete' ? 'Complete hosting transfer' : 'Review hosting transfer','open-guide',true)};
     if (state.copies.successor !== state.version || state.phase === 'final-copy') return {title:state.phase === 'final-copy' ? 'Get the final save' : 'Get a save to host',text:`Completed version ${state.version} is available. Your private copy is preserved while receiving.`,html:button(state.phase === 'final-copy' ? 'Get final save' : 'Get latest save','open-guide',true)};
     if (state.phase === 'complete') return {title:'Your final save is confirmed',text:'Original Host PC must complete the hosting transfer. Getting a save does not grant hosting authority.',html:button('View hosting progress','open-guide',true)};
@@ -120,7 +121,8 @@ export function createSharedFlow({icon,escape}) {
   };
   const landing = () => {
     const step = next();
-    return `${hostBanner()}<section class="ts-panel ts-flow-panel" data-shared-landing>${progress()}<div class="ts-next-action"><h3>${escape(step.title)}</h3><p>${escape(step.text)}</p>${step.html}</div><div class="ts-sharing-summary"><span>${state.copies[state.client] ? `This PC’s verified copy: version ${state.copies[state.client]}` : 'No verified copy on this PC'}</span>${link('Manage sharing','shared-manage','settings')}</div></section>`;
+    const hostingSteps = state.client === 'successor' && grants().eligible ? progress() : '';
+    return `${hostBanner(Boolean(step.primaryJoin))}<section class="ts-panel ts-flow-panel" data-shared-landing>${hostingSteps}<div class="ts-next-action"><h3>${escape(step.title)}</h3><p>${escape(step.text)}</p>${step.html}</div><div class="ts-sharing-summary"><span>${state.copies[state.client] ? `This PC’s verified copy: version ${state.copies[state.client]}` : 'No verified copy on this PC'}</span>${link('Manage sharing','shared-manage','settings')}</div></section>`;
   };
   const guide = () => {
     let content = '';

@@ -53,7 +53,7 @@
 | native-close-warning | Dialog | app | TogetherServer is still open | normal, draft-save-failed, managed-server-active, close-failed |
 | join-host-picker | Dialog | join | Saved Hosts | normal, empty, loading, error |
 | server-picker | Dialog | host | Saved servers | normal, empty, loading, error |
-| server-actions | Dialog | host | More server actions | normal, blocked, loading |
+| server-actions | Dialog | host | Server tools | normal, blocked, loading |
 | shared-host-guide | Dialog | shared | Host this shared save | normal, empty, loading, error, blocked, recovery, success, consent-off, untrusted, low-space, stalled, verifying, receipt-pending, expired, revoked, fenced, conflicts, received, handoff-needed, handoff-waiting, chosen, setup, route-needed, ready-to-start, starting, hosting, offline, unknown |
 | shared-manage | Dialog | shared | Manage sharing | normal, loading, error |
 | tool-countdown | Dialog | host-pc | Empty-server countdown | normal, empty, loading, error, blocked, recovery, success |
