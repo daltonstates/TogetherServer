@@ -7,6 +7,7 @@ import { maximumNoticeTextLength, parseChatRoomWithNotice, validPinnedNoticeText
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft, type DraftIdentity } from './protectedUiDrafts'
 import { Icon } from './Icon'
+import { successFeedbackMs } from './actionFeedback'
 
 const messageLimit = 500
 const messageIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -283,6 +284,11 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   const syncFeedbackId = useId()
   const currentSync = syncState?.scope === syncScope ? syncState : null
   const syncing = currentSync?.status === 'pending'
+  useEffect(() => {
+    if (currentSync?.status !== 'success') return
+    const timer = window.setTimeout(() => setSyncState(current => current === currentSync ? null : current), successFeedbackMs)
+    return () => window.clearTimeout(timer)
+  }, [currentSync])
   const [queueEdit, setQueueEdit] = useState<{ id: string; text: string; expectedText: string } | null>(null)
   const [queueError, setQueueError] = useState('')
   const [following, setFollowing] = useState(true)

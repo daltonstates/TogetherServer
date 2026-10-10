@@ -37,6 +37,7 @@ import {
 import { useHostSetup } from './features/setup/useHostSetup'
 import { defaultUiPreferences, readUiPreferences, writeUiPreferences, type UiPreferences } from './qolPreferences'
 import { ActionFeedback, AppearancePreferences, pendingDescription, TimerPresets } from './QolWidgets'
+import { currentActionNotice, currentRemoteOperation, serverActionNotice, type ActionNotice } from './actionFeedback'
 import {
   parseActionResult, parseAppInstance, parseBackupSafetyResult, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
   parseDataRecoveryView, parseDesktopPreferenceResult, parseDesktopPreferences,
@@ -266,8 +267,16 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [appInstance, setAppInstance] = useState<AppInstanceView | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const feedbackNowMs = Date.now()
   const [pending, setPending] = useState('')
-  const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
+  const [noticeState, setNoticeState] = useState<ActionNotice | null>(null)
+  const setNotice = useCallback<React.Dispatch<React.SetStateAction<ActionNotice | null>>>(next => {
+    setNoticeState(current => {
+      const value = typeof next === 'function' ? next(current) : next
+      return value ? { ...value, receivedAtMs: Date.now() } : null
+    })
+  }, [])
+  const notice = currentActionNotice(noticeState, snapshot, feedbackNowMs)
   const [loadError, setLoadError] = useState('')
   const [update, setUpdate] = useState<DesktopUpdateDetails | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
@@ -284,7 +293,14 @@ export function App() {
   const [reorderServers, setReorderServers] = useState(false)
   const [hostSearch, setHostSearch] = useState('')
   const [deviceFilters, setDeviceFilters] = useState(defaultFriendPcFilters)
-  const [actionNotices, setActionNotices] = useState<Record<string, { good: boolean; text: string }>>({})
+  const [actionNotices, setActionNoticeState] = useState<Record<string, ActionNotice>>({})
+  const setActionNotices = useCallback<React.Dispatch<React.SetStateAction<Record<string, ActionNotice>>>>(next => {
+    setActionNoticeState(current => {
+      const value = typeof next === 'function' ? next(current) : next
+      return Object.fromEntries(Object.entries(value).map(([id, result]) => [id,
+        result === current[id] ? result : { ...result, receivedAtMs: Date.now() }]))
+    })
+  }, [])
   const scrollPositions = useRef<Record<string, number>>({})
   const scrollContainer = useRef<HTMLDivElement | null>(null)
   const currentScrollKey = useRef('')
@@ -1077,9 +1093,11 @@ export function App() {
     if (action === 'stop' || action === 'restart') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}-address`)
     try {
       const result = await change(`/api/local/friend/${id}/${action}`, 'POST')
-      setNotice({ good: result.ok, text: result.message })
-      setActionNotices(current => ({ ...current, [id]: { good: result.ok, text: result.message } }))
-      applySnapshot(await readSnapshot())
+      const next = await readSnapshot()
+      const feedback = serverActionNotice(result.ok, result.message, next, id, action)
+      setNotice(feedback)
+      setActionNotices(current => ({ ...current, [id]: feedback }))
+      applySnapshot(next)
     } catch (error) {
       const text = errorMessage(error)
       setNotice({ good: false, text })
@@ -1150,9 +1168,11 @@ export function App() {
     try {
       const result = await changeAction(path, method, body)
       applySnapshot(result.snapshot)
-      setNotice({ good: result.ok, text: result.message })
       const profileId = snapshot?.mode === 'Host' ? snapshot.settings.profiles.find(item => path.includes(item.id))?.id : undefined
-      if (profileId) setActionNotices(current => ({ ...current, [profileId]: { good: result.ok, text: result.message } }))
+      const feedback = profileId ? serverActionNotice(result.ok, result.message, result.snapshot, profileId, path.split('/').at(-1) ?? '')
+        : { good: result.ok, text: result.message }
+      setNotice(feedback)
+      if (profileId) setActionNotices(current => ({ ...current, [profileId]: feedback }))
       if (result.ok && key.startsWith('save')) acceptSavedSettings(result.snapshot.settings)
       if (result.ok) void checkPorts()
     } catch (error) {
@@ -1197,8 +1217,9 @@ export function App() {
     try {
       const result = await changeAction(`/api/local/profiles/${profileId}/safe-restart`, 'POST')
       applySnapshot(result.snapshot)
-      setNotice({ good: result.ok, text: result.message })
-      setActionNotices(current => ({ ...current, [profileId]: { good: result.ok, text: result.message } }))
+      const feedback = serverActionNotice(result.ok, result.message, result.snapshot, profileId, 'safe-restart')
+      setNotice(feedback)
+      setActionNotices(current => ({ ...current, [profileId]: feedback }))
       const list = await getJson(`/api/local/profiles/${profileId}/backups`, parseWorldBackupList)
       setBackupLists(current => ({ ...current, [profileId]: list }))
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }); setActionNotices(current => ({ ...current, [profileId]: { good: false, text: errorMessage(error) } })) }
@@ -1789,8 +1810,8 @@ export function App() {
                 {profile.state === 'Ready' && <span className="server-player-count"><Icon name="users" size={14} />{playerCount(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.onlinePlayers : null, profile.maxPlayers)}</span>}
                 {profile.state === 'Ready' && profile.onlinePlayers === 0 && friendConnectionExplanation(snapshot, nowMs).currentAccess && <ServerCountdown deadline={profile.autoShutdownAtUtc} nowMs={nowMs} />}
               </div></div>
-              {profile.operation && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
-              <ActionFeedback notice={actionNotices[profile.id] ?? null} />
+              {profile.operation && currentRemoteOperation(profile, nowMs) && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
+              <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
 
 
               {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
@@ -1975,7 +1996,7 @@ export function App() {
                   {!dirty && hasUnsavedServerEdits && <p className="inline-blocker">Save or discard file changes before starting.</p>}
                   {dataRecovery?.lifecycleBlocked && <p className="inline-blocker">Start and Restart need local data recovery. <Button className="text-button" onClick={() => openHostSettings('diagnostics')}>Review recovery</Button></p>}
                   {profile.maintenance?.enabled && <p className="inline-blocker">Maintenance is on; Friend controls are paused. <Button className="text-button" onClick={() => selectHostTab('setup')}>Continue maintenance</Button></p>}
-                  <ActionFeedback notice={actionNotices[profile.id] ?? null} />
+                  <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
                 </div>
                 <nav className="server-tabs" aria-label="Selected server sections">
                   {(['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => selectHostTab(tab)}><Icon name={hostServerTabIcons[tab]} /><span>{hostServerTabLabels[tab]}</span></Button>)}
@@ -2225,7 +2246,7 @@ export function App() {
                 <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length} totalCount={companion?.devices.length ?? 0} onChange={setDeviceFilters} />
                 {visibleDevices.length ? <div className="device-list"><h3>Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can give that PC access to any of your saved servers.</p>{visibleDevices.map(device => <div className="device access-device" key={device.id}>
                   <FriendAccessSummary device={device} servers={savedProfiles} nowMs={nowMs} />
-                  <ActionFeedback notice={actionNotices[device.id] ?? null} />
+                  <ActionFeedback notice={currentActionNotice(actionNotices[device.id], snapshot, feedbackNowMs)} />
                   <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Connected with an older code' : `Connected with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
                     <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Saved access expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Remove access</Button></div></div>
                   <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}

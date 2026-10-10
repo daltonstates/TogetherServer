@@ -201,6 +201,30 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
+  it('removes startup receipts from the header and notification menu when a fresh snapshot reaches Ready', async () => {
+    const message = 'Valheim process launched. Waiting for its server-connected log signal.'
+    transport.change.mockImplementation(async (path: string) => {
+      if (path.endsWith('/start')) {
+        const next = structuredClone(host())
+        next.runs[0].state = 'Starting'
+        state = next
+      }
+      return { ok: true, message, snapshot: state }
+    })
+    const workspace = await openHost()
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Start server' }))
+    await within(workspace).findByText(message)
+    const ready = structuredClone(host())
+    ready.runs[0].state = 'Ready'
+    state = ready
+    await waitFor(() => expect(within(workspace.querySelector('.server-command-header')!).getByText('Ready', { selector: '.status' })).toBeVisible(), { timeout: 5000 })
+    // Fresh canonical status must supersede the initial request result.
+    expect(within(workspace).queryByText(message)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText(/Notifications/))
+    expect(document.querySelector('.notification-panel')).not.toHaveTextContent(message)
+    expect(transport.change.mock.calls.filter(([path]) => path.endsWith('/start'))).toHaveLength(1)
+  }, 8000)
+
   it('keeps the player-impact confirmation when Stop moves next to server status', async () => {
     host().runs[0].state = 'Ready'
     host().runs[0].onlinePlayers = 2
@@ -462,6 +486,17 @@ function friend(): FriendSnapshot {
 }
 
 describe('Friend task structure', () => {
+  it('does not keep a completed remote startup banner on a Ready server', async () => {
+    const connected = friend()
+    const message = 'Remote process launched. Waiting for readiness.'
+    connected.profiles[0].operation = { id: 'operation', action: 'start', state: 'Succeeded', ok: true,
+      code: 'Started', message, requestedUtc: new Date().toISOString(), completedUtc: new Date().toISOString() }
+    state = connected
+    render(<App />)
+    await screen.findByRole('region', { name: 'Play' })
+    expect(screen.queryByText(message)).not.toBeInTheDocument()
+    expectNoServerAction()
+  })
   it('puts play before connection maintenance and opens the moved doctor with keyboard focus', async () => {
     state = friend()
     render(<App />)
