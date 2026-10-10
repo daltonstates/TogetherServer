@@ -603,7 +603,7 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
 
 async function firstUseAndSetupRecovery(page, host) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
-  const firstHost = page.getByRole('region', { name: 'Set up a server', exact: true })
+  const firstHost = page.getByRole('region', { name: 'Host or join a server', exact: true })
   const viewports = [{ width: 1440, height: 900 }, { width: 390, height: 844 }]
   const assertEmptyBackend = async () => {
     const snapshot = await api(host, '/api/local/snapshot')
@@ -1416,7 +1416,7 @@ async function attentionAndLargeText(page) {
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole('complementary', { name: 'Saved servers' }).locator('.server-master-item').first().click()
-  const selectedDetailHeader = page.locator('.server-detail-card > .profile-top')
+  const selectedDetailHeader = page.locator('.server-detail-card > .server-command-header > .profile-top')
   await screenshot(page, 'host-narrow-150', { width: 390, height: 844 }, selectedDetailHeader)
   await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 }, selectedDetailHeader)
   assert(report.layout.filter(layout => 'liveStatusCount' in layout).every(layout => layout.liveStatusCount > 0),

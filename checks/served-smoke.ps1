@@ -106,7 +106,7 @@ try {
         'Empty-server countdown', 'Stop empty servers automatically',
         'Wait after the server reaches 0 players', 'Stops in', 'Timer not running',
         'Retry player count', 'Refresh player count',
-        'Saved if players join and applied when the server next reaches 0 players.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
+        'while added time stays saved and is applied to the next zero-player countdown.', 'Friend apps do not gate the timer', 'Remote Stop safety', 'There are no player IDs to enter',
         'Custom game', 'local PowerShell actions', 'Status and players script',
         'contract v2 checks and the guided live test are required', 'TogetherServer never force-kills the game.',
         'steam://install/896660'

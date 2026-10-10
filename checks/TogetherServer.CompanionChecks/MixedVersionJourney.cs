@@ -15,11 +15,18 @@ internal static partial class CoreRemoteJourney
             string.Equals(Path.GetExtension(legacyApp), ".exe", StringComparison.OrdinalIgnoreCase),
             "Supply separate existing current and legacy EXEs and the fixed synthetic Valheim fixture.");
         var currentVersion = MixedAppVersion(currentApp);
-        Require(MixedAppVersion(legacyApp) == "0.3.0", "The separately supplied legacy EXE must have file version 0.3.0.");
-        Require(currentVersion == "0.3.1", "The release candidate must have file version 0.3.1.");
-        await MixedRolesAsync(currentApp, legacyApp, fixture, "0.3.1", "0.3.0", "new-host-old-friend");
-        await MixedRolesAsync(legacyApp, currentApp, fixture, "0.3.0", "0.3.1", "old-host-new-friend");
-        Console.WriteLine("Mixed-version journey: both 0.3.0/0.3.1 role directions passed. Synthetic loopback only; no real Friend-network or game acceptance.");
+        var legacyVersion = MixedAppVersion(legacyApp);
+        var compiledVersion = typeof(ServerProfile).Assembly.GetName().Version;
+        Require(compiledVersion is not null && compiledVersion.Revision == 0 &&
+            currentVersion == compiledVersion.ToString(3),
+            "The release candidate file version must match the compiled current TogetherServer assembly version.");
+        Require(legacyVersion is "0.3.0" or "0.3.1",
+            "The separately supplied legacy EXE must be a published 0.3.0 or 0.3.1 release.");
+        Require(Version.Parse(legacyVersion).CompareTo(Version.Parse(currentVersion)) < 0,
+            "The legacy EXE version must be strictly older than the current release candidate.");
+        await MixedRolesAsync(currentApp, legacyApp, fixture, currentVersion, legacyVersion, "new-host-old-friend");
+        await MixedRolesAsync(legacyApp, currentApp, fixture, legacyVersion, currentVersion, "old-host-new-friend");
+        Console.WriteLine($"Mixed-version journey: both {legacyVersion}/{currentVersion} role directions passed. Synthetic loopback only; no real Friend-network or game acceptance.");
     }
 
     private static string MixedAppVersion(string path)
@@ -32,6 +39,7 @@ internal static partial class CoreRemoteJourney
     private static async Task MixedRolesAsync(string hostApp, string friendApp, string fixture,
         string hostVersion, string friendVersion, string direction)
     {
+        Console.WriteLine($"Mixed-version {direction}: Host {hostVersion}, Friend {friendVersion}.");
         var root = Path.GetFullPath(Path.Combine("local-data", "mixed-version-journey", direction, Guid.NewGuid().ToString("N")));
         var hostData = Path.Combine(root, "host");
         var friendData = Path.Combine(root, "friend");

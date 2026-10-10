@@ -121,7 +121,15 @@ jobs:
 
   mixed-version:
     needs: candidate
-    name: Verify 0.3.0 compatibility
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - legacy-version: '0.3.0'
+            legacy-sha256: E2741B7425C497A7850BC95B5B844A4503099BF6A575484476B4A37330CDCE8E
+          - legacy-version: '0.3.1'
+            legacy-sha256: 5ED1EC1755855F38BAA87415A580ACF63D06FA610660D9F7A897FC22008559AA
+    name: Verify ${{ matrix.legacy-version }} compatibility
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -139,30 +147,31 @@ jobs:
           name: windows-candidate
           path: .
 
-      - name: Fetch and verify the exact published 0.3.0 app
+      - name: Fetch and verify the exact published legacy app
         shell: pwsh
         run: |
-          $legacyRoot = New-Item -ItemType Directory -Path local-data/compatibility/0.3.0 -Force
+          $legacyVersion = '${{ matrix.legacy-version }}'
+          $legacyRoot = New-Item -ItemType Directory -Path "local-data/compatibility/$legacyVersion" -Force
           $legacy = Join-Path $legacyRoot.FullName 'TogetherServer.exe'
-          Invoke-WebRequest -Uri 'https://github.com/daltonstates/TogetherServer/releases/download/v0.3.0/TogetherServer-win-x64.exe' -OutFile $legacy
-          $expected = 'E2741B7425C497A7850BC95B5B844A4503099BF6A575484476B4A37330CDCE8E'
-          if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $expected) { throw 'Published 0.3.0 digest mismatch.' }
-          if ((Get-Item -LiteralPath $legacy).VersionInfo.FileVersion -ne '0.3.0.0') { throw 'Legacy app version mismatch.' }
+          Invoke-WebRequest -Uri "https://github.com/daltonstates/TogetherServer/releases/download/v$legacyVersion/TogetherServer-win-x64.exe" -OutFile $legacy
+          $expected = '${{ matrix.legacy-sha256 }}'
+          if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $expected) { throw "Published $legacyVersion digest mismatch." }
+          if ((Get-Item -LiteralPath $legacy).VersionInfo.FileVersion -ne "$legacyVersion.0") { throw 'Legacy app version mismatch.' }
 
       - name: Test both old and new Host/Friend role directions
         shell: pwsh
         run: |
           $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/mixed-version -Force
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          $legacy = (Resolve-Path local-data/compatibility/0.3.0/TogetherServer.exe).Path
+          $legacy = (Resolve-Path 'local-data/compatibility/${{ matrix.legacy-version }}/TogetherServer.exe').Path
           dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $candidate --mixed-version-journey --legacy-app-path $legacy --allow-interactive-tests 2>&1 | Tee-Object -FilePath (Join-Path $evidence.FullName 'journey.log')
           if ($LASTEXITCODE -ne 0) { throw 'Mixed-version compatibility failed.' }
 
-      - name: Verify the published 0.3.0 app can update to this exact candidate
+      - name: Verify the published legacy app can update to this exact candidate
         shell: pwsh
         run: |
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          $legacy = (Resolve-Path local-data/compatibility/0.3.0/TogetherServer.exe).Path
+          $legacy = (Resolve-Path 'local-data/compatibility/${{ matrix.legacy-version }}/TogetherServer.exe').Path
           ./checks/update-handoff-smoke.ps1 -AppPath $candidate -LegacyAppPath $legacy -AllowInteractiveTests 2>&1 | Tee-Object -FilePath local-data/ci-evidence/mixed-version/update-handoff.log
           # The PowerShell smoke throws on failure; unlike dotnet it does not set LASTEXITCODE.
 
@@ -170,7 +179,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: mixed-version-evidence
+          name: mixed-version-evidence-${{ matrix.legacy-version }}
           path: local-data/ci-evidence/mixed-version/
           if-no-files-found: ignore
           retention-days: 7

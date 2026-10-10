@@ -10,7 +10,7 @@
     <Title>TogetherServer</Title>
     <Product>TogetherServer</Product>
     <Description>Host and join game servers with friends</Description>
-    <Version>0.3.1</Version>
+    <Version>0.3.2</Version>
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

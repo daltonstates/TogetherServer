@@ -5,8 +5,30 @@ $repository = Split-Path -Parent $PSScriptRoot
 if (!$AppPath) { $AppPath = Join-Path $repository 'local-data/release-candidate/TogetherServer.exe' }
 $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $sourceApp = if ($LegacyAppPath) { (Resolve-Path -LiteralPath $LegacyAppPath).Path } else { $appPath }
-$candidateVersion = ([Version](Get-Item -LiteralPath $appPath).VersionInfo.FileVersion).ToString(3)
-if ($LegacyAppPath -and (([Version](Get-Item -LiteralPath $sourceApp).VersionInfo.FileVersion).ToString(3) -ne '0.3.0' -or $candidateVersion -ne '0.3.1')) { throw 'Mixed update acceptance requires exact 0.3.0 source and 0.3.1 candidate versions.' }
+function Get-HandoffAppVersion([string]$Path) {
+    $fileInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    if ([string]::IsNullOrWhiteSpace($fileInfo.FileVersion) -or $fileInfo.FilePrivatePart -ne 0) {
+        throw 'Update handoff requires a file version with no private component.'
+    }
+    return [Version]::new($fileInfo.FileMajorPart, $fileInfo.FileMinorPart, $fileInfo.FileBuildPart)
+}
+$candidateFileVersion = Get-HandoffAppVersion $appPath
+$candidateVersion = $candidateFileVersion.ToString(3)
+$project = [xml](Get-Content -LiteralPath (Join-Path $repository 'src/TogetherServer/TogetherServer.csproj') -Raw)
+$projectVersion = [Version]$project.Project.PropertyGroup.Version
+if ($projectVersion.Revision -gt 0 -or $candidateVersion -ne $projectVersion.ToString(3)) {
+    throw "Update handoff candidate version $candidateVersion does not match current project version $projectVersion."
+}
+$sourceFileVersion = if ($LegacyAppPath) { Get-HandoffAppVersion $sourceApp } else { $candidateFileVersion }
+$sourceVersion = $sourceFileVersion.ToString(3)
+if ($LegacyAppPath -and $sourceVersion -notin '0.3.0', '0.3.1') {
+    throw 'Mixed update acceptance requires a published 0.3.0 or 0.3.1 source EXE.'
+}
+if ($LegacyAppPath -and $sourceFileVersion.CompareTo($candidateFileVersion) -ge 0) {
+    throw 'Mixed update acceptance requires a source version strictly older than the candidate.'
+}
+$sourceSchemaVersion = if ($LegacyAppPath -and $sourceVersion -eq '0.3.0') { 2 } else { 4 }
+$targetSchemaVersion = 4
 $signature = Get-AuthenticodeSignature -LiteralPath $appPath
 if ($signature.Status -eq 'Valid' -and $signature.SignerCertificate) {
     $publisherHasher = [Security.Cryptography.SHA256]::Create()
@@ -64,10 +86,10 @@ function Write-HandoffCheckpoint {
         $copiedFiles += @{name=$stateFile.Name;length=$stateFile.Length;sha256=(Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash}
     }
     $schema = Get-Content -LiteralPath (Join-Path $dataRoot 'storage-schema.json') -Raw | ConvertFrom-Json
-    if ($schema.version -ne $(if ($LegacyAppPath) { 2 } else { 4 })) { throw 'Unexpected source storage schema.' }
+    if ($schema.version -ne $sourceSchemaVersion) { throw 'Unexpected source storage schema.' }
     $manifest = [ordered]@{
         schemaVersion=1;id=([guid]::ParseExact($checkpointId, 'N')).ToString('D');createdUtc=[DateTimeOffset]::UtcNow.ToString('O')
-        currentVersion=$(if ($LegacyAppPath) { '0.3.0' } else { '0.0.0' });targetVersion=$candidateVersion
+        currentVersion=$(if ($LegacyAppPath) { $sourceVersion } else { '0.0.0' });targetVersion=$candidateVersion
         storageSchemaVersion=$schema.version;previousExecutableSha256=$previousHash;files=$copiedFiles
     } | ConvertTo-Json -Depth 5
     $manifestPath = Join-Path $checkpoint 'checkpoint-manifest.json'
@@ -143,7 +165,7 @@ try {
                 if ($legacySnapshot.mode -eq 'Host') { $legacyReady = $true; break }
             } catch { Start-Sleep -Milliseconds 100 }
         }
-        if (!$legacyReady) { throw 'Disposable 0.3.0 did not initialize its data.' }
+        if (!$legacyReady) { throw "Disposable $sourceVersion did not initialize its data." }
         $legacySnapshot.settings.idleMinutes = 42
         $legacyHeaders = @{Origin=$legacyBase;'X-TogetherServer-Local'='1'}
         $saved = Invoke-RestMethod -Uri "$legacyBase/api/local/settings" -Method Put -Headers $legacyHeaders -ContentType 'application/json' -Body ($legacySnapshot.settings | ConvertTo-Json -Depth 12)
@@ -169,7 +191,7 @@ try {
     Write-Host "PASS $verificationLabel-verified updater helper rechecked the local-state checkpoint and signaled readiness before old process exit"
     if ($LegacyAppPath) {
         $oldQuit = Invoke-RestMethod -Uri "$legacyBase/api/local/quit" -Method Post -Headers $legacyHeaders
-        if (!$oldQuit.ok) { throw 'Disposable 0.3.0 refused guarded Quit.' }
+        if (!$oldQuit.ok) { throw "Disposable $sourceVersion refused guarded Quit." }
     }
     if (!$updater.WaitForExit(20000) -or $updater.ExitCode -ne 0) { throw 'Updater did not finish the replacement and relaunch.' }
     # Record the replacement before hash or API assertions can fail. Cleanup never
@@ -217,8 +239,8 @@ try {
     }
     if (!$running) { throw 'The replaced EXE did not relaunch its local app.' }
     if ($LegacyAppPath) {
-        if ($snapshot.settings.idleMinutes -ne 42 -or (Get-Content -LiteralPath (Join-Path $dataRoot 'storage-schema.json') -Raw | ConvertFrom-Json).version -ne 4) { throw 'Legacy settings or schema migration were not preserved.' }
-        Write-Host 'PASS actual 0.3.0 to 0.3.1 handoff preserved settings, migrated schema 2 to 4, and retained the exact old EXE'
+        if ($snapshot.settings.idleMinutes -ne 42 -or (Get-Content -LiteralPath (Join-Path $dataRoot 'storage-schema.json') -Raw | ConvertFrom-Json).version -ne $targetSchemaVersion) { throw 'Legacy settings or schema migration were not preserved.' }
+        Write-Host "PASS actual $sourceVersion to $candidateVersion handoff preserved settings, verified schema $sourceSchemaVersion to $targetSchemaVersion, and retained the exact old EXE"
     }
     if ($relaunched.HasExited -or $appIdentity.Ticks -le 0 -or $relaunched.Id -ne $appIdentity.Id -or
         $relaunched.StartTime.ToUniversalTime().Ticks -ne $appIdentity.Ticks -or

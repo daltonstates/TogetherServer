@@ -19,7 +19,7 @@ if (args.Skip(1).Contains("--mixed-version-journey", StringComparer.OrdinalIgnor
 {
     var legacyIndex = Array.FindIndex(args, argument => argument.Equals("--legacy-app-path", StringComparison.OrdinalIgnoreCase));
     if (legacyIndex < 0 || legacyIndex + 1 >= args.Length)
-        throw new ArgumentException("Mixed-version checks require --legacy-app-path pointing to the separate 0.3.0 EXE.");
+        throw new ArgumentException("Mixed-version checks require --legacy-app-path pointing to a separate published 0.3.0 or 0.3.1 EXE.");
     if (!OperatingSystem.IsWindows() || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
         !args.Contains("--allow-interactive-tests", StringComparer.OrdinalIgnoreCase))
         throw new InvalidOperationException("Mixed-version process checks require an explicitly opted-in hosted Windows CI runner; never run on the owner's active desktop.");
