@@ -1,6 +1,6 @@
 {
   "scope": "Synthetic mockup atlas only",
-  "generatedAt": "2026-10-10T23:02:14.701Z",
+  "generatedAt": "2026-10-10T23:12:02.191Z",
   "sourceSha256": "c4e6eba878971ba8b6962e5368bee10fb25de7631d7d5dfdbbd59ccf80297c6f",
   "globalOnly": false,
   "pages": 29,
@@ -140,9 +140,12 @@
       "detail": ""
     }
   ],
-  "externalVisualReview": null,
+  "externalVisualReview": {
+    "report": "VISUAL-REVIEW.json",
+    "runId": 38093652729,
+    "sourceSha256": "c4e6eba878971ba8b6962e5368bee10fb25de7631d7d5dfdbbd59ccf80297c6f"
+  },
   "skipped": [
-    "Actual browser pixel/layout review on an approved separate session",
     "Native application and game acceptance; application code has not changed"
   ]
 }

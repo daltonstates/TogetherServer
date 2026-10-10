@@ -17,3 +17,5 @@ The generated coverage table maps existing pages, dialogs, and confirmations to 
 Automated validation stays code-only on the owner's active desktop. Browser and native-window acceptance require an approved separate test session or hosted runner.
 
 `render-atlas.mjs` prepares actual Chromium screenshots and contact sheets for an explicitly approved separate runner. It refuses to launch without `--allow-isolated-browser-tests`; the switch alone is not permission. The screenshot-only `mockup-visual-review.yml` workflow runs on a temporary `review/ui-mockups-*` branch after owner approval. It renders synthetic pages/dialogs without launching TogetherServer, a game, fixtures or a listener. Manual inspection of its PNG evidence is required before calling the design visually reviewed.
+
+The current revision was rendered and visually reviewed on the approved hosted Windows runner. `VISUAL-REVIEW.json` binds the 445 screenshots and manual inspection to the exact standalone source hash. `VALIDATION.json` records that external evidence only while the source matches. Native application/game acceptance remains separate and unrun.
