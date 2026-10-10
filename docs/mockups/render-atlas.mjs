@@ -106,7 +106,7 @@ try {
     await page.locator('[data-review="screen"]').selectOption('join-shared');
     await saveImage(entries.find(entry=>entry.id==='join-shared'),'dark','desktop',100,'hosting',`-${client}`);
     if(client!=='successor') {
-      await page.locator('[data-shared-action="join-current"]').click();
+      await page.locator('.ts-world-host [data-shared-action="join-current"]').click();
       await page.locator('[data-ack]').check();
       await page.locator('[data-shared-action="connect"]').click();
       await page.locator('.ts-dialog-body [data-page="join-play"]').waitFor();
@@ -138,4 +138,8 @@ try {
   await writeFile(path.join(output,'VISUAL-REPORT.json'),JSON.stringify(report,null,2)+'\n');
   console.log(`Rendered ${screenshots.length} screenshots. ${failures.length} findings. Manual visual inspection still required.`);
   if(failures.length) process.exitCode=1;
+} catch (error) {
+  failures.push({kind:'runner',message:error.message});
+  await writeFile(path.join(output,'VISUAL-REPORT.json'),JSON.stringify({sourceSha256:createHash('sha256').update(source).digest('hex'),pages:catalog.pages.length,dialogs:catalog.dialogs.length,screenshots:screenshots.length,complete:false,failures,images:screenshots,scope:'Partial isolated synthetic atlas rendering; no application/game/native acceptance'},null,2)+'\n');
+  throw error;
 } finally { await browser.close(); }
