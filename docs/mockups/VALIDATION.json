@@ -1,7 +1,7 @@
 {
   "scope": "Synthetic mockup atlas only",
-  "generatedAt": "2026-10-10T22:51:17.452Z",
-  "sourceSha256": "1e22eafa5b4fcacefa941301ce1ead4ec3f3074e8a55558096388d2bc12f68ad",
+  "generatedAt": "2026-10-10T23:02:14.701Z",
+  "sourceSha256": "c4e6eba878971ba8b6962e5368bee10fb25de7631d7d5dfdbbd59ccf80297c6f",
   "globalOnly": false,
   "pages": 29,
   "dialogs": 158,
@@ -12,7 +12,7 @@
     {
       "name": "Isolated self-contained output",
       "status": "PASS",
-      "detail": "279438 bytes; no network, app, storage or clipboard action."
+      "detail": "279367 bytes; no network, app, storage or clipboard action."
     },
     {
       "name": "Navigation and icon vocabulary",
