@@ -1156,6 +1156,10 @@ async function lifecycleLogsAndSessions(page, host, profiles) {
   await selectServer(page, profiles.valheim.name)
   await workspace.getByRole('button', { name: 'Stop server', exact: true }).click()
   await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(value => value.profileId === profiles.valheim.id && value.state === 'Offline'), 'exact synthetic Stop', 45_000)
+  // API completion can precede the shell's next three-second snapshot. Restore
+  // must keep its offline guard until the selected workspace observes that state.
+  await eventually(() => workspace.locator('.server-current-state .status').innerText(),
+    value => value === 'Offline', 'selected Host observes completed Stop before Restore review')
   await selectServer(page, profiles.valheim.name, 'Sessions')
   const weekly = page.locator('.weekly-summary')
   const completed = weekly.getByRole('button', { name: /^Completed sessions:/u })
@@ -1197,13 +1201,18 @@ async function backupCatalog(page, host, profiles) {
   const currentFwl = 'Current synthetic FWL after backups; cancel must preserve this.'
   await writeFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.db'), currentDb)
   await writeFile(path.join(profiles.valheim.worldDirectory, 'fixture-world.fwl'), currentFwl)
+  // The manual-backup API above can be observed as a temporary world-copy
+  // reservation by the shell. Wait for its current Offline evidence as well.
+  const workspace = page.getByRole('region', { name: `${profiles.valheim.name} workspace`, exact: true })
+  await eventually(() => workspace.locator('.server-current-state .status').innerText(),
+    value => value === 'Offline', 'selected Host observes completed backup before Restore review')
   await first.getByRole('button', { name: 'Review backup', exact: true }).click()
   await first.getByRole('button', { name: 'Review Restore', exact: true }).click()
   const review = catalog.getByRole('region', { name: 'Review Restore', exact: true })
   const restore = review.getByRole('button', { name: 'Restore reviewed backup', exact: true })
-  assert.equal(await restore.isDisabled(), true)
+  assert.equal(await restore.isDisabled(), true, 'An Offline server still requires explicit Restore review confirmation.')
   await review.getByRole('checkbox').check()
-  assert.equal(await restore.isEnabled(), true)
+  assert.equal(await restore.isEnabled(), true, 'Current Offline evidence and explicit confirmation enable the reviewed Restore.')
   await screenshot(page, 'backup-restore-review', { width: 1440, height: 900 })
   await review.getByRole('button', { name: 'Cancel Restore', exact: true }).click()
   // Cancelling review cannot change either synthetic world file.
