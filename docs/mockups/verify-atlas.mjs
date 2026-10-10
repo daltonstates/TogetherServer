@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -300,6 +301,13 @@ assert.equal(offlineRoot.querySelector('[data-current-dialog]').dataset.currentD
 assert.equal(offlineErrors.length,0,offlineErrors.map(error => error.message).join('\n'));
 offlineDom.window.close();
 passed('Offline boot, tooltips and dialog navigation');
-const report = {scope:'Synthetic mockup atlas only',generatedAt:new Date().toISOString(),globalOnly,pages:catalog.pages.length,dialogs:catalog.dialogs.length,sourceMappings:catalog.coverage.length,confirmationCallSites:confirmations.length,renderedStates,results,skipped:['Actual browser pixel/layout review on an approved separate session','Native application and game acceptance; application code has not changed']};
+const sourceSha256 = createHash('sha256').update(offline).digest('hex');
+let externalVisualReview = null;
+try {
+  const review = JSON.parse(await readFile(path.join(directory,'VISUAL-REVIEW.json'),'utf8'));
+  if (review.sourceSha256 === sourceSha256 && review.manualReview === 'complete') externalVisualReview = {report:'VISUAL-REVIEW.json',runId:review.runId,sourceSha256};
+} catch (error) { if (error.code !== 'ENOENT') throw error; }
+const skipped = [...(externalVisualReview ? [] : ['Actual browser pixel/layout review on an approved separate session']), 'Native application and game acceptance; application code has not changed'];
+const report = {scope:'Synthetic mockup atlas only',generatedAt:new Date().toISOString(),sourceSha256,globalOnly,pages:catalog.pages.length,dialogs:catalog.dialogs.length,sourceMappings:catalog.coverage.length,confirmationCallSites:confirmations.length,renderedStates,results,externalVisualReview,skipped};
 await writeFile(path.join(directory,'VALIDATION.json'),JSON.stringify(report,null,2)+'\n','utf8');
-console.log(`PASS ${results.length} atlas checks; ${renderedStates} rendered states. Browser/native checks unrun.`);
+console.log(`PASS ${results.length} atlas checks; ${renderedStates} rendered states. ${externalVisualReview ? 'Separate browser evidence matches this source.' : 'Browser review unrun for this source.'} Native acceptance unrun.`);

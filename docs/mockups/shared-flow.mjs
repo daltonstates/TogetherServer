@@ -121,7 +121,8 @@ export function createSharedFlow({icon,escape}) {
   };
   const landing = () => {
     const step = next();
-    return `${hostBanner()}<section class="ts-panel ts-flow-panel" data-shared-landing>${progress()}<div class="ts-next-action"><h3>${escape(step.title)}</h3><p>${escape(step.text)}</p>${step.html}</div><div class="ts-sharing-summary"><span>${state.copies[state.client] ? `This PC’s verified copy: version ${state.copies[state.client]}` : 'No verified copy on this PC'}</span>${link('Manage sharing','shared-manage','settings')}</div></section>`;
+    const hostingSteps = state.client === 'successor' && grants().eligible ? progress() : '';
+    return `${hostBanner()}<section class="ts-panel ts-flow-panel" data-shared-landing>${hostingSteps}<div class="ts-next-action"><h3>${escape(step.title)}</h3><p>${escape(step.text)}</p>${step.html}</div><div class="ts-sharing-summary"><span>${state.copies[state.client] ? `This PC’s verified copy: version ${state.copies[state.client]}` : 'No verified copy on this PC'}</span>${link('Manage sharing','shared-manage','settings')}</div></section>`;
   };
   const guide = () => {
     let content = '';

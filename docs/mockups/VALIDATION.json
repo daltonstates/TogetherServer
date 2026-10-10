@@ -1,6 +1,7 @@
 {
   "scope": "Synthetic mockup atlas only",
-  "generatedAt": "2026-10-10T22:43:18.114Z",
+  "generatedAt": "2026-10-10T22:51:17.452Z",
+  "sourceSha256": "1e22eafa5b4fcacefa941301ce1ead4ec3f3074e8a55558096388d2bc12f68ad",
   "globalOnly": false,
   "pages": 29,
   "dialogs": 158,
@@ -11,7 +12,7 @@
     {
       "name": "Isolated self-contained output",
       "status": "PASS",
-      "detail": "279342 bytes; no network, app, storage or clipboard action."
+      "detail": "279438 bytes; no network, app, storage or clipboard action."
     },
     {
       "name": "Navigation and icon vocabulary",
@@ -139,6 +140,7 @@
       "detail": ""
     }
   ],
+  "externalVisualReview": null,
   "skipped": [
     "Actual browser pixel/layout review on an approved separate session",
     "Native application and game acceptance; application code has not changed"
