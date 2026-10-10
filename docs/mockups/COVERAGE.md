@@ -1,6 +1,6 @@
 # UI review coverage
 
-29 pages, 149 dialogs and confirmations, 310 source mappings. All examples are synthetic. Application code has not been changed.
+29 pages, 158 dialogs and confirmations, 310 source mappings. All examples are synthetic. Application code has not been changed.
 
 ## Review views
 
@@ -32,7 +32,7 @@
 | join-play | Page | join | Play | normal, empty, loading, error, blocked, recovery, success, stale, expired, revoked, offline, starting, stopping, unknown, status-only, maintenance, port-conflict, listening, positive, update-required, staging |
 | join-chat | Page | join | Server chat | normal, empty, loading, error, blocked, recovery, success, offline, expired, revoked, unsupported, cached-notice, cleared-notice, queue-full, draft-save-failed |
 | join-logs | Page | join | Server logs | normal, empty, loading, error, blocked, recovery, success, paused, reading, ended, unsupported, expired, revoked, unassigned |
-| join-shared | Page | join | Shared saves | normal, empty, loading, error, blocked, recovery, success, consent-off, untrusted, low-space, stalled, verifying, receipt-pending, expired, revoked, fenced, conflicts |
+| join-shared | Page | join | Shared saves | normal, empty, loading, error, blocked, recovery, success, consent-off, untrusted, low-space, stalled, verifying, receipt-pending, expired, revoked, fenced, conflicts, received, handoff-needed, handoff-waiting, chosen, setup, route-needed, ready-to-start, starting, hosting, offline, unknown |
 | join-help | Page | join | Connection help | normal, empty, loading, error, blocked, recovery, success, closed-port, timeout, network-offline, expired, revoked, game-query |
 | join-settings | Page | join | Saved Host | normal, empty, loading, error, blocked, recovery, success, expired, revoked, credential-expired, pin-rotation, offline-forget |
 | notification-menu | Dialog | app | Notifications | normal, empty, loading, error |
@@ -51,8 +51,11 @@
 | native-startup-error | Dialog | app | TogetherServer could not open | normal, window-failed, data-unavailable, data-rejected, local-gui-failed, link-failed |
 | native-runtime-fallback | Dialog | app | The local interface is unavailable | normal, missing-runtime, navigation-failed, render-timeout |
 | native-close-warning | Dialog | app | TogetherServer is still open | normal, draft-save-failed, managed-server-active, close-failed |
+| join-host-picker | Dialog | join | Saved Hosts | normal, empty, loading, error |
 | server-picker | Dialog | host | Saved servers | normal, empty, loading, error |
 | server-actions | Dialog | host | More server actions | normal, blocked, loading |
+| shared-host-guide | Dialog | shared | Host this shared save | normal, empty, loading, error, blocked, recovery, success, consent-off, untrusted, low-space, stalled, verifying, receipt-pending, expired, revoked, fenced, conflicts, received, handoff-needed, handoff-waiting, chosen, setup, route-needed, ready-to-start, starting, hosting, offline, unknown |
+| shared-manage | Dialog | shared | Manage sharing | normal, loading, error |
 | tool-countdown | Dialog | host-pc | Empty-server countdown | normal, empty, loading, error, blocked, recovery, success |
 | tool-extensions | Dialog | host-pc | Friend timer extensions | normal, empty, loading, error, blocked, recovery, success |
 | tool-safety | Dialog | host-pc | Remote Stop safety | normal, empty, loading, error, blocked, recovery, success |
@@ -103,10 +106,14 @@
 | setup-review | Dialog | host | Add a server · Review | normal, empty, loading, error, blocked, recovery, success, valheim, java, bedrock, factorio, terraria, custom, fixture, issues, editing |
 | setup-import | Dialog | host | Review the world copy | normal, empty, loading, error, blocked, recovery, success, valheim, factorio, terraria, staging |
 | setup-resume | Dialog | host | Resume protected setup | normal, empty, loading, error, blocked, recovery, success, custom, changed |
+| host-overview-details | Dialog | host | Server details and checks | normal |
+| host-backup-tools | Dialog | host | Backup protection and tools | normal |
+| host-file-folders | Dialog | host | Server folders | normal |
+| host-maintenance-context | Dialog | host | Setup and checks after changes | normal |
 | join-pair-details | Dialog | join | Review an older invite | normal, empty, loading, error, blocked, recovery, success, expired, code-replaced |
 | join-requirements | Dialog | join | Game requirements | normal, empty, loading, error, blocked, recovery, success, mismatch, add-on-mismatch, stale, old-host, expired, revoked |
 | join-game-guide | Dialog | join | Join in the game | normal, empty, loading, error, blocked, recovery, success, java, bedrock, factorio, terraria, no-address |
-| join-tools | Dialog | join | Players and server tools | normal, empty, loading, error, blocked, recovery, success, unknown, time-limit, replacement-blocked, controls-paused, maintenance |
+| join-tools | Dialog | join | More | normal, empty, loading, error, blocked, recovery, success, unknown, time-limit, replacement-blocked, controls-paused, maintenance |
 | join-permissions | Dialog | join | Your access to this server | normal, empty, loading, error, blocked, recovery, success, expired, revoked, unassigned, temporary |
 | join-notice | Dialog | join | Pinned server notice | normal, empty, loading, error, blocked, recovery, success, cleared, unsupported |
 | join-chat-queue | Dialog | join | Queued chat messages | normal, empty, loading, error, blocked, recovery, success, full, expired, revoked |
@@ -135,6 +142,8 @@
 | shared-remote-rehearsal | Dialog | shared | Staging test with another owned PC | normal, empty, loading, error, blocked, recovery, success, host-prepared, consent-needed, loopback, expired, revoked |
 | shared-live-copy | Dialog | host | Interrupted live file copy | normal, empty, loading, error, blocked, recovery, success, full, friend-mode |
 | shared-live-save | Dialog | host | Live save capture availability | normal, empty, loading, error, blocked, recovery, success, fixture, publishing, withdrawn, resume-refused, orphan |
+| join-pairing-help | Dialog | join | Connect to a Host | normal |
+| join-chat-tools | Dialog | join | Chat tools | normal |
 | confirm-forget-session | Confirmation | host | Forget saved session | normal, loading, error, blocked, success |
 | confirm-remove-profile | Confirmation | host | Remove server profile | normal, loading, error, blocked, success |
 | confirm-discard-setup | Confirmation | host | Discard setup changes | normal, loading, error, blocked, success |
@@ -254,8 +263,8 @@ App preference dialogs explicitly merged into direct App Settings pages remain l
 | ui/src/WeeklySummary.tsx:69 | Seven-day runtime summary | host-sessions | merged | Daily runtime links and retained-run exploration remain with coverage explanations. |
 | ui/src/WeeklySummary.tsx:115 | Summary coverage and gaps | host-sessions | retained | Unfinished/legacy/clipped evidence is never upgraded into current authority. |
 | ui/src/main.tsx:2098 | Host completed-copy catalog | host-backups | reframed | One searchable catalog leads the protection workflow. |
-| ui/src/main.tsx:2166 | World Safety Center | host-backups | merged | Offline checkpoint, capacity, safe restart, settings, and distinct protection results remain on Backups. |
-| ui/src/BackupCatalog.tsx:257 | Backup search and filters | host-backups | retained | Name, pins, kind, and local dates remain exposed before the list. |
+| ui/src/main.tsx:2166 | World Safety Center | host-backup-tools | reframed | Protection evidence and supporting tools open from Backups; create/restore remain primary. |
+| ui/src/BackupCatalog.tsx:257 | Backup search and filters | host-backups | reframed | Name, pins, kind and local dates remain reachable in the collapsed backup filters. |
 | ui/src/BackupCatalog.tsx:61 | Review completed backup | tool-backup-actions | reframed | Integrity, vault, hash restore, game load, move kit, and world Restore each remain named. |
 | ui/src/BackupBookmarkEditor.tsx:84 | Backup name and pin editor | tool-backup-name | reframed | Metadata stays separate from immutable payload/setup hashes and retention caps. |
 | ui/src/BackupCatalog.tsx:84 | Compare two summaries | tool-backup-compare | reframed | Recorded metadata only; no fresh hash or file-content diff is implied. |
@@ -270,7 +279,7 @@ App preference dialogs explicitly merged into direct App Settings pages remain l
 | ui/src/main.tsx:2171 | Signed history and conflicts | shared-history | retained | Host can reach the Shared World history and conflict-review dialogs. |
 | ui/src/LiveSaveControls.tsx:1 | Real-game live capture acceptance | shared-live-copy | retained | Backups explicitly shows real-game live capture disabled until each game passes its own matrix. |
 | ui/src/main.tsx:2084 | Settings & files workspace | host-files | reframed | Simple reviewed settings lead; folders, raw files, add-ons, checkpoint and Undo remain named disclosures. |
-| ui/src/ServerFilesPanel.tsx:297 | Open actual saved folders | host-files | retained | Server, world, app run logs, backups, and reviewed add-on folders; missing locations stay unavailable. |
+| ui/src/ServerFilesPanel.tsx:297 | Open actual saved folders | host-file-folders | reframed | Saved folders remain available from the named Server folders dialog. |
 | ui/src/GameSettingsPanel.tsx:155 | Simple reviewed game controls | tool-game-settings | reframed | Java/Bedrock controls plus Valheim/Custom limitation variants; no arbitrary property or path in simple controls. |
 | ui/src/GameSettingsPanel.tsx:405 | Exact typed before/after review | tool-settings-review | reframed | Current file hash, review invalidation, complete checkpoint, and saved prior version remain required. |
 | ui/src/GameSettingsPanel.tsx:333 | Typed administration lists | tool-player-lists | reframed | Valheim administrator/ban/permit and Java/Bedrock allow-list variants preserve game-specific fields. |
@@ -287,7 +296,7 @@ App preference dialogs explicitly merged into direct App Settings pages remain l
 | ui/src/main.tsx:2195 | Provider game-update guide | host-maintenance | retained | Owner handles installation/terms; changed artifacts invalidate earlier acceptance. |
 | ui/src/main.tsx:2151 | Custom live certification | tool-custom-certification | reframed | Contract v2, exact fingerprint, zero/positive/zero, final check, wrapper exit, saved change and restart remain required. |
 | ui/src/main.tsx:2164 | Bounded crash recovery | tool-crash-recovery | reframed | Eligibility, 1/5/15-minute retries, suspension, Stop intent, and preview limitations are explicit. |
-| ui/src/main.tsx:2180 | More server actions | host-overview | retained | Restart, safe checkpoint restart, edit, health, Friend access, and exited-run review remain findable. |
+| ui/src/main.tsx:2180 | More server actions | server-actions | reframed | Supporting actions stay in More; detailed server evidence opens a separate view. |
 | ui/src/main.tsx:2184 | Owner health review | tool-health | reframed | Fixed reviewed health checks with game-specific sources and safety boundaries. |
 | ui/src/main.tsx:2259 | Host-wide settings navigation | host-pc-access | reframed | This Host PC separates shared controls from selected-server tools. App preferences remain coordinator-owned. |
 | ui/src/main.tsx:2280 | Friend access workspace | host-pc-access | reframed | Listener/controls switches, PC filters, approval, deadlines, and separate per-PC editor links remain. |
@@ -336,7 +345,7 @@ App preference dialogs explicitly merged into direct App Settings pages remain l
 | ui/src/features/setup/HostSetupDialog.tsx:376 | Finish later and resume | setup-resume | reframed | Names/choices persist as bounded non-secret draft; passwords/scripts and unsaved advanced settings do not. |
 | ui/src/setupFirstSessionGuide.tsx:11 | First session guide | tool-first-session | reframed | Ready, private invite, real saved change/restart, and backup trial stay as four direct next steps. |
 | ui/src/features/setup/HostSetupDialog.tsx:361 | Per-server backup and crash protection preferences | tool-protection | reframed | Rolling backup, retention count, free-space reserve, off-by-default crash recovery and preview/Custom restrictions stay separate from verified game-save acceptance. |
-| ui/src/main.tsx:1811 | Saved Hosts list, search, pin and selection | join-play | retained | Keeps independent saved connections and current selection. |
+| ui/src/main.tsx:1811 | Saved Hosts list, search, pin and selection | join-host-picker | reframed | Saved Host search and pins live in the searchable picker above the section sidebar. |
 | ui/src/main.tsx:1820 | Add another Host without stopping current capabilities | join-pairing | reframed | Dedicated pairing page with return to saved Host. |
 | ui/src/main.tsx:1836 | Password-style code entry and pinned Connect | join-pairing | retained | Uses invalid synthetic code and no network request. |
 | ui/src/main.tsx:1841 | TS1 separate Host IP and older invite expiry | join-pair-details | reframed | Older-format review separated from normal TS3 pairing. |
@@ -383,7 +392,7 @@ App preference dialogs explicitly merged into direct App Settings pages remain l
 | ui/src/ServerChat.tsx:537 | Queued message form and concurrent submission race | join-chat-queue | retained | Entry that left editable queue cannot be changed. |
 | ui/src/ServerChat.tsx:549 | Explicit recovered unfinished composer review | join-chat-draft | reframed | Exact Host/room scoped protected draft needs review before Send. |
 | ui/src/ServerChat.tsx:554 | Composer persistence failure and Retry | join-chat-draft | retained | Failed local save keeps text and prevents uncertain Send. |
-| ui/src/ServerChat.tsx:644 | Pinned notice preview and unread room summary | join-play | retained | Primary Play links to full room and notice. |
+| ui/src/ServerChat.tsx:644 | Pinned notice preview and unread room summary | join-chat | reframed | The selected room and full notice are available in Chat; Play keeps only notices requiring immediate action. |
 | ui/src/ServerLogViewer.tsx:348 | Permitted sanitized exact active-run viewer | join-logs | reframed | Friend never gains retained pre-assignment history. |
 | ui/src/ServerLogViewer.tsx:353 | Pause/resume, follow latest and manual Refresh | join-logs | retained | Diagnostic reads stay independent of server actions. |
 | ui/src/ServerLogViewer.tsx:364 | Severity, category, contains and likely-problem filters | join-logs | retained | Bounded filters, empty matches and clear remain available. |

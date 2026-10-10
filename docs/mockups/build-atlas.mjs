@@ -4,6 +4,7 @@ import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import globalCatalog from './catalog-global.mjs';
 import nativeCatalog from './catalog-native.mjs';
+import { sharedCatalog, sharedStates, createSharedFlow } from './shared-flow.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(directory, '../..');
@@ -11,6 +12,11 @@ const globalOnly = process.argv.includes('--global-only');
 const extras = {
   pages: [],
   dialogs: [
+    {
+      id:'join-host-picker',title:'Saved Hosts',area:'join',description:'Find a saved Host, choose its assigned server or manage this connection.',states:['normal','empty','loading','error'],emptyTitle:'No saved Hosts',emptyText:'Use a private server code to connect to a Host.',
+      html:`<label class="ts-field"><span>Find Host</span><input type="search" placeholder="Host name, server or game" data-filter="hosts"></label><div class="ts-stack"><section class="ts-panel" data-filter-item><div class="ts-row"><div><strong>Friend Host A</strong><small>Alderheim · Valheim</small></div><div class="ts-actions"><button type="button" class="ts-iconbutton" data-action="pin" data-icon="star" aria-label="Pin Friend Host A" data-tooltip="Pin Host"></button><button type="button" class="ts-button ts-primary" data-primary-action data-select-host="Friend Host A" data-assigned-server="Alderheim" data-icon="chevronRight">Select Host</button></div></div></section><section class="ts-panel" data-filter-item><div class="ts-row"><div><strong>Friend Host B</strong><small>MapleCraft · Minecraft Java</small></div><div class="ts-actions"><button type="button" class="ts-iconbutton" data-action="pin" data-icon="star" aria-label="Pin Friend Host B" data-tooltip="Pin Host"></button><button type="button" class="ts-button" data-primary-action data-select-host="Friend Host B" data-assigned-server="MapleCraft" data-icon="chevronRight">Select Host</button></div></div></section></div>`,
+      footer:'<button type="button" class="ts-button" data-page="join-pairing">Add Host</button><button type="button" class="ts-button" data-page="join-settings">Manage selected Host</button><button type="button" class="ts-button" data-close>Done</button>'
+    },
     {
       id:'server-picker', title:'Saved servers', area:'host', description:'Find, pin or reorder a saved server.', states:['normal','empty','loading','error'],
       html:`<label class="ts-field"><span>Find server</span><input type="search" placeholder="Name, game, or world" data-filter="servers"></label><div class="ts-stack"><section class="ts-panel" data-filter-item><div class="ts-row"><div><strong>Alderheim</strong><small>Valheim · Ready · 0 players</small></div><div class="ts-actions"><button type="button" class="ts-iconbutton" data-action="pin" data-icon="star" aria-label="Pin Alderheim" data-tooltip="Pin server"></button><button type="button" class="ts-iconbutton" data-select-server="Alderheim" data-icon="chevronRight" aria-label="Open Alderheim" data-tooltip="Open server"></button></div></div></section><section class="ts-panel" data-filter-item><div class="ts-row"><div><strong>MapleCraft</strong><small>Minecraft Java · Offline</small></div><div class="ts-actions"><button type="button" class="ts-iconbutton" data-action="pin" data-icon="star" aria-label="Pin MapleCraft" data-tooltip="Pin server"></button><button type="button" class="ts-iconbutton" data-select-server="MapleCraft" data-icon="chevronRight" aria-label="Open MapleCraft" data-tooltip="Open server"></button></div></div></section></div><details class="ts-details"><summary>Reorder saved servers</summary><div class="ts-stack"><label class="ts-field"><span>First server</span><select><option>Alderheim</option><option>MapleCraft</option></select></label><button type="button" class="ts-button" data-action="save">Save order</button></div></details>`,
@@ -29,13 +35,30 @@ const extras = {
   ]
 };
 
-const catalogs = [globalCatalog, nativeCatalog, extras];
+const catalogs = [globalCatalog, nativeCatalog, extras, sharedCatalog];
+extras.dialogs.find(dialog => dialog.id === 'server-actions').html += '<button type="button" class="ts-button" data-primary-action data-dialog="host-overview-details" data-icon="check">Server details and checks</button>';
 if (!globalOnly) {
   for (const name of ['catalog-host.json','catalog-join.json','catalog-access.json']) {
     catalogs.push(JSON.parse(await readFile(path.join(directory,name),'utf8')));
   }
 }
 const catalog = { schema:1, pages:catalogs.flatMap(part => part.pages || []), dialogs:catalogs.flatMap(part => part.dialogs || []), coverage:catalogs.flatMap(part => part.coverage || []) };
+const sharedPage = catalog.pages.find(page => page.id === 'join-shared');
+if (sharedPage) {
+  sharedPage.description = 'Get the save, prepare hosting, then choose Start.';
+  sharedPage.html = '<section data-shared-landing><h3>Get save → Prepare hosting → Start server</h3></section>';
+  sharedPage.states = [...new Set([...sharedPage.states.map(state => state === 'default' ? 'normal' : state),...sharedStates])];
+  sharedPage.variants = {};
+}
+const coverageMoves = {
+  'ui/src/main.tsx:1811':['join-host-picker','Saved Host search and pins live in the searchable picker above the section sidebar.'],
+  'ui/src/ServerChat.tsx:644':['join-chat','The selected room and full notice are available in Chat; Play keeps only notices requiring immediate action.'],
+  'ui/src/main.tsx:2166':['host-backup-tools','Protection evidence and supporting tools open from Backups; create/restore remain primary.'],
+  'ui/src/BackupCatalog.tsx:257':['host-backups','Name, pins, kind and local dates remain reachable in the collapsed backup filters.'],
+  'ui/src/ServerFilesPanel.tsx:297':['host-file-folders','Saved folders remain available from the named Server folders dialog.'],
+  'ui/src/main.tsx:2180':['server-actions','Supporting actions stay in More; detailed server evidence opens a separate view.']
+};
+for (const row of catalog.coverage) if (coverageMoves[row.source] && ['join-play','host-backups','host-files','host-overview'].includes(row.target)) { [row.target,row.note] = coverageMoves[row.source]; row.decision = 'reframed'; }
 const aliases = {
   'global-draft':'global-draft-recovery', 'join-server-actions':'join-tools',
   'confirm-archive-run':'confirm-archive-session', 'confirm-file-reload':'confirm-reload-file',
@@ -88,7 +111,7 @@ for (const entry of [...catalog.pages,...catalog.dialogs]) {
 if (globalOnly) catalog.coverage = catalog.coverage.filter(row => ids.has(row.target));
 for (const row of catalog.coverage) if (!ids.has(row.target)) throw new Error(`Coverage points to missing view: ${row.target}`);
 
-const template = await readFile(path.join(directory,'atlas-template.html'),'utf8');
+const template = (await readFile(path.join(directory,'atlas-template.html'),'utf8')).replace('@@SHARED_FLOW@@',createSharedFlow.toString());
 const inlineData = value => JSON.stringify(value).replaceAll('<','\\u003c').replaceAll('\u2028','\\u2028').replaceAll('\u2029','\\u2029');
 const packedData = offline => inlineData({format:'gzip-base64',data:gzipSync(JSON.stringify({...catalog,offline}),{level:9}).toString('base64')});
 const fragment = template.replace('@@ATLAS_DATA@@',packedData(false));

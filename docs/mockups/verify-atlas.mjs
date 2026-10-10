@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
 import { gunzipSync } from 'node:zlib';
+import { verifySharedModel, verifySharedInteractions, verifyTooltip } from './verify-shared-flow.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(directory,'../..');
@@ -103,6 +104,7 @@ for (const entry of entries) {
     assert.equal(root.querySelector('[data-review="state"]').value,state);
     assert(root.querySelector(marker)?.textContent.trim(),`Blank view ${entry.id}:${state}`);
     for (const element of root.querySelectorAll(`${marker} .ts-iconbutton`)) assert(element.getAttribute('aria-label'),`Unnamed runtime action ${entry.id}:${state}`);
+    for (const element of root.querySelectorAll(`${marker} [data-primary-action]`)) assert(element.textContent.trim(),`Hidden primary action label ${entry.id}:${state}`);
     if (marker.includes('dialog') && state === 'loading') assert([...root.querySelectorAll('.ts-overlay button,.ts-overlay input,.ts-overlay select,.ts-overlay textarea')].every(control => control.disabled),`Busy action escaped its guard in ${entry.id}`);
     renderedStates++;
   }
@@ -111,6 +113,7 @@ assert.equal(errors.length,0,errors.map(error => error.message).join('\n'));
 passed('Every view and state renders',`${renderedStates} states; zero JSDOM script/style errors.`);
 
 if (!globalOnly) {
+  choose('join-shared'); change('[data-review="state"]','normal'); change('[data-review="client"]','original');
   choose('host-overview'); click('[data-workspace="app"]');
   const fromHost = root.querySelector('.ts-main').innerHTML;
   choose('join-play'); click('[data-workspace="app"]');
@@ -198,6 +201,9 @@ if (!globalOnly) {
   assert(next,'World step has no next action.'); next.click();
   assert.equal(root.querySelector('[data-review="state"]').value,'java','World-to-app step lost the selected game.');
   passed('Game-specific setup navigation');
+  verifySharedModel(passed);
+  await verifySharedInteractions({root,document,dom,change,click,choose,passed});
+  choose('app-appearance'); verifyTooltip({root,dom,passed});
 }
 
 choose('app-appearance');
@@ -250,9 +256,9 @@ const offlineDom = new JSDOM(offline,{runScripts:'dangerously',pretendToBeVisual
 const offlineRoot = offlineDom.window.document.getElementById('ts-ui-atlas');
 for (let attempt = 0; !offlineRoot.dataset.ready && attempt < 300; attempt++) await new Promise(resolve => setTimeout(resolve,10));
 assert.equal(offlineRoot.dataset.ready,'true','Offline export did not initialize.');
-const hoverTarget = offlineRoot.querySelector('[data-tooltip]'); hoverTarget.dispatchEvent(new offlineDom.window.Event('pointerover',{bubbles:true}));
-assert.equal(offlineRoot.querySelector('.ts-tooltip-fallback').hidden,false,'Offline tooltip did not open.');
-assert.equal(offlineRoot.querySelector('.ts-tooltip-fallback').textContent,hoverTarget.dataset.tooltip);
+const hoverTarget = offlineRoot.querySelector('[data-ts-tooltip]'); hoverTarget.dispatchEvent(new offlineDom.window.Event('pointerover',{bubbles:true}));
+assert.equal(offlineRoot.querySelector('.ts-tooltip').hidden,false,'Offline tooltip did not open.');
+assert.equal(offlineRoot.querySelector('.ts-tooltip').textContent,hoverTarget.dataset.tsTooltip);
 const offlinePicker = offlineRoot.querySelector('[data-review="screen"]'); offlinePicker.value = 'command-palette'; offlinePicker.dispatchEvent(new offlineDom.window.Event('change',{bubbles:true}));
 assert.equal(offlineRoot.querySelector('[data-current-dialog]').dataset.currentDialog,'command-palette');
 assert.equal(offlineErrors.length,0,offlineErrors.map(error => error.message).join('\n'));

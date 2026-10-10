@@ -6,6 +6,7 @@
     #ts-ui-atlas[data-theme="light"] { color-scheme:light; }
     #ts-ui-atlas[data-contrast="true"] { --ts-line:var(--ts-muted); --ts-soft-line:var(--ts-muted); }
     #ts-ui-atlas *, #ts-ui-atlas *::before, #ts-ui-atlas *::after { box-sizing:border-box; }
+    #ts-ui-atlas { position:relative; }
     #ts-ui-atlas [hidden] { display:none !important; }
     #ts-ui-atlas button, #ts-ui-atlas input, #ts-ui-atlas select, #ts-ui-atlas textarea { font:inherit; }
     #ts-ui-atlas button { cursor:pointer; }
@@ -140,7 +141,26 @@
     #ts-ui-atlas .ts-empty { display:grid; justify-items:start; gap:10px; padding:26px 18px; }
     #ts-ui-atlas .ts-empty p { color:var(--ts-muted); }
     #ts-ui-atlas progress { inline-size:100%; accent-color:var(--ts-accent); }
-    #ts-ui-atlas .ts-tooltip-fallback { position:absolute; z-index:20; max-inline-size:min(260px,calc(100% - 16px)); padding:7px 10px; border:1px solid var(--ts-line); border-radius:5px; background:var(--ts-raised); color:var(--ts-text); font-size:12px; line-height:1.4; pointer-events:none; box-shadow:0 3px 12px #00000030; }
+    #ts-ui-atlas .ts-tooltip { position:absolute; z-index:20; max-inline-size:min(260px,calc(100% - 16px)); padding:7px 10px; border:1px solid var(--ts-line); border-radius:5px; background:var(--ts-raised); color:var(--ts-text); font-size:12px; line-height:1.4; pointer-events:none; box-shadow:0 3px 12px #00000030; }
+    #ts-ui-atlas .ts-tooltip::after { content:''; position:absolute; inline-size:9px; block-size:9px; background:var(--ts-raised); border:1px solid var(--ts-line); transform:rotate(45deg); }
+    #ts-ui-atlas .ts-tooltip[data-side="bottom"]::after { inset-block-start:-5px; inset-inline-start:var(--ts-tail); border-inline-end:0; border-block-end:0; }
+    #ts-ui-atlas .ts-tooltip[data-side="top"]::after { inset-block-end:-5px; inset-inline-start:var(--ts-tail); border-inline-start:0; border-block-start:0; }
+    #ts-ui-atlas .ts-world-host { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 14px; background:var(--ts-selected); border:1px solid var(--ts-line); border-radius:8px; min-inline-size:0; }
+    #ts-ui-atlas .ts-world-host > div { flex:1 1 200px; min-inline-size:0; overflow-wrap:anywhere; }
+    #ts-ui-atlas .ts-world-host small { margin-block-start:4px; }
+    #ts-ui-atlas .ts-main > .ts-world-host { margin-block-end:14px; }
+    #ts-ui-atlas .ts-flow-steps { list-style:none; padding:0; margin:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    #ts-ui-atlas .ts-flow-steps li { display:flex; gap:8px; align-items:center; color:var(--ts-muted); min-inline-size:0; overflow-wrap:anywhere; }
+    #ts-ui-atlas .ts-flow-steps li[aria-current], #ts-ui-atlas .ts-flow-steps li[data-complete="true"] { color:var(--ts-selected-text); }
+    #ts-ui-atlas .ts-step-number { display:grid; place-items:center; flex:none; inline-size:28px; block-size:28px; border:1px solid var(--ts-line); border-radius:50%; background:var(--ts-field); }
+    #ts-ui-atlas .ts-flow-steps li[aria-current] .ts-step-number { background:var(--ts-accent); color:var(--ts-accent-ink); border-color:var(--ts-accent); }
+    #ts-ui-atlas .ts-flow-panel { display:grid; gap:22px; }
+    #ts-ui-atlas .ts-next-action { max-inline-size:560px; }
+    #ts-ui-atlas .ts-next-action h3 { font-size:1.25em; }
+    #ts-ui-atlas .ts-next-action > .ts-button { margin-block-start:8px; }
+    #ts-ui-atlas .ts-sharing-summary { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding-block-start:12px; border-block-start:1px solid var(--ts-soft-line); color:var(--ts-muted); }
+    #ts-ui-atlas .ts-sharing-tabs { display:flex; gap:6px; flex-wrap:wrap; }
+    #ts-ui-atlas .ts-sharing-tabs [aria-pressed="true"] { background:var(--ts-selected); color:var(--ts-selected-text); border-color:var(--ts-accent); }
     #ts-ui-atlas[data-density="comfortable"] .ts-panel { padding:20px; }
     #ts-ui-atlas[data-density="comfortable"] .ts-sidebar-nav button { padding:11px 9px; }
     #ts-ui-atlas[data-density="comfortable"] .ts-content { gap:18px; }
@@ -178,6 +198,7 @@
       #ts-ui-atlas .ts-secret-row .ts-secret { flex:1 1 100%; order:1; }
       #ts-ui-atlas .ts-table { font-size:.91em; }
       #ts-ui-atlas .ts-table th, #ts-ui-atlas .ts-table td { padding:8px 3px; }
+      #ts-ui-atlas .ts-flow-steps { grid-template-columns:minmax(0,1fr); gap:8px; }
     }
     @media (pointer:coarse) {
       #ts-ui-atlas .ts-button, #ts-ui-atlas .ts-iconbutton, #ts-ui-atlas .ts-sidebar-nav button, #ts-ui-atlas .ts-table .ts-iconbutton { min-block-size:44px; }
@@ -192,6 +213,7 @@
     <label>Theme<select data-review="theme" aria-label="Preview theme"><option value="dark">Dark</option><option value="light">Light</option></select></label>
     <label>Width<select data-review="width" aria-label="Preview width"><option value="desktop">Desktop</option><option value="tablet">Tablet</option><option value="narrow">Narrow</option></select></label>
     <label>Text<select data-review="scale" aria-label="Preview text size"><option value="100">100%</option><option value="115">115%</option><option value="130">130%</option><option value="150">150%</option></select></label>
+    <label>Client<select data-review="client" aria-label="Simulated client"><option value="original">Original Host PC</option><option value="successor" selected>Next Host · Friend PC A</option><option value="friend">Friend PC B</option></select></label>
     <button type="button" data-review="catalog" aria-expanded="false">All screens</button>
     <span class="ts-review-note">Design preview · synthetic data · all actions are simulated</span>
   </div>
@@ -213,7 +235,7 @@
       const catalog = JSON.parse(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
       const pages = new Map(catalog.pages.map(page => [page.id, page]));
       const dialogs = new Map(catalog.dialogs.map(dialog => [dialog.id, dialog]));
-      const ui = { page:'host-overview', state:'normal', dialog:null, dialogState:'normal', server:'Alderheim', connection:'Friend Host A', roomServer:'Alderheim', hostState:'Ready', joinState:'Ready', players:0, theme:'dark', density:'compact', scale:100, width:'desktop', notice:'', modalNotice:'', dialogTrail:[], setupVariant:'valheim', fields:new Map(), lastHost:'host-overview', lastJoin:'join-play', lastAttention:'attention-current', catalogOpen:false };
+      const ui = { page:'join-shared', state:'normal', dialog:null, dialogState:'normal', server:'Alderheim', connection:'Friend Host A', roomServer:'Alderheim', hostState:'Ready', joinState:'Ready', players:0, theme:'dark', density:'compact', scale:100, width:'desktop', notice:'', modalNotice:'', dialogTrail:[], setupVariant:'valheim', fields:new Map(), lastHost:'host-overview', lastJoin:'join-shared', lastAttention:'attention-current', catalogOpen:false };
       if (!pages.has(ui.page)) ui.page = catalog.pages[0].id;
       const body = root.querySelector('[data-product-body]');
       const product = root.querySelector('.ts-product');
@@ -226,7 +248,16 @@
       let operationEpoch = 0;
       const escape = text => String(text ?? '').replace(/[&<>"']/g, value => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[value]));
       const icon = name => `<svg class="ts-icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${catalog.icons[name] || catalog.icons.settings}</svg>`;
-      const action = (name, label, attrs = '', tone = '') => `<button type="button" class="ts-iconbutton ${tone}" aria-label="${escape(label)}" data-tooltip="${escape(label)}" ${attrs}>${icon(name)}</button>`;
+      const action = (name, label, attrs = '', tone = '', labelled = false) => `<button type="button" class="${labelled ? 'ts-button' : 'ts-iconbutton'} ${tone}" aria-label="${escape(label)}" data-ts-tooltip="${escape(label)}" ${labelled ? 'data-primary-action' : ''} ${attrs}>${icon(name)}${labelled ? `<span>${escape(label)}</span>` : ''}</button>`;
+      const makeSharedFlow = @@SHARED_FLOW@@;
+      let sharedFlow = makeSharedFlow({icon,escape});
+      const sharedWorlds = new Map([['Alderheim',sharedFlow]]);
+      const selectSharedWorld = world => {
+        if (!['Alderheim','MapleCraft'].includes(world)) return;
+        const client = sharedFlow.state.client;
+        if (!sharedWorlds.has(world)) { const flow = makeSharedFlow({icon,escape}); flow.state.world = world; sharedWorlds.set(world,flow); }
+        sharedFlow = sharedWorlds.get(world); sharedFlow.state.client = client;
+      };
       const areas = { host:'Host', 'host-pc':'This Host PC', join:'Join', attention:'Attention', app:'App Settings', shared:'Shared saves' };
       const areaOf = page => page.area === 'host-pc' ? 'host' : page.area;
       const labelState = value => ({ normal:'Normal', empty:'Empty', loading:'Loading', error:'Error', blocked:'Blocked', recovery:'Recovery', success:'Success', unknown:'Unknown players', occupied:'Players online', offline:'Offline', starting:'Starting', stopping:'Stopping', valheim:'Valheim', java:'Minecraft Java', bedrock:'Minecraft Bedrock', factorio:'Factorio preview', terraria:'Terraria preview', custom:'Custom', expired:'Owner access expired', revoked:'Access removed', stale:'Stale connection', 'signature-rejected':'Signature rejected', available:'Update available', staging:'Development/staging' }[value] || value.replaceAll('-', ' '));
@@ -249,13 +280,15 @@
         root.querySelector('[data-review="theme"]').value = ui.theme;
         root.querySelector('[data-review="scale"]').value = String(ui.scale);
         root.querySelector('[data-review="width"]').value = ui.width;
+        root.querySelector('[data-review="client"]').value = sharedFlow.state.client;
       };
       const enhanceIcons = element => {
         const utilities = {refresh:'refresh',copy:'copy',reveal:'eye',pin:'pin',verify:'check',filter:'search',download:'download',upload:'upload','add-time':'clock',send:'chat',save:'check'};
         element.querySelectorAll('.ts-content .ts-button[data-action], .ts-dialog-body .ts-button[data-action]').forEach(control => {
           const name = utilities[control.dataset.action];
           const label = control.getAttribute('aria-label') || control.textContent.trim();
-          if (!name || control.dataset.compact || /\b(?:I loaded|I saved|I joined|I checked|I confirm|survived|recognizable|acknowledge|confirm|accept|approve|restore|resume)\b/i.test(label)) return;
+          if (!name || control.dataset.compact) return;
+          if (control.classList.contains('ts-primary') || control.hasAttribute('data-primary-action') || /\b(?:I loaded|I saved|I joined|I checked|I confirm|survived|recognizable|acknowledge|confirm|accept|approve|restore|resume)\b/i.test(label)) { if (!control.querySelector('.ts-icon') && !control.hasAttribute('data-icon')) control.insertAdjacentHTML('afterbegin',icon(name)); return; }
           control.setAttribute('aria-label',label); control.dataset.tooltip = label; control.dataset.compact = 'true';
           control.classList.remove('ts-button'); control.classList.add('ts-iconbutton'); control.innerHTML = icon(name);
         });
@@ -263,10 +296,11 @@
           const name = control.dataset.icon;
           if (!control.querySelector('.ts-icon')) control.insertAdjacentHTML('afterbegin', icon(name));
         });
+        element.querySelectorAll('[data-tooltip]').forEach(control => { control.dataset.tsTooltip = control.dataset.tooltip; control.removeAttribute('data-tooltip'); });
       };
       const restoreFields = (element, entry, state) => {
         const identity = ['app','host-pc','attention'].includes(entry.area) ? 'pc' : `${ui.server}:${ui.connection}:${ui.roomServer}`;
-        const scope = `${entry.id}:${state}:${identity}`;
+        const scope = `${entry.id}:${state}:${identity}:${entry.id === 'shared-host-guide' ? `${sharedFlow.state.client}:${sharedFlow.state.phase}` : ''}`;
         element.querySelectorAll('input,select,textarea').forEach((field,index) => {
           const token = `${scope}:${index}`; field.dataset.mockfield = token;
           if (!ui.fields.has(token)) return;
@@ -287,9 +321,12 @@
         if (!ui.dialog) return;
         const marked = overlay.querySelectorAll('input[type="checkbox"][data-ack]');
         const checks = marked.length ? Array.from(marked) : Array.from(overlay.querySelectorAll('input[type="checkbox"]'));
-        overlay.querySelectorAll('[data-requires-check]').forEach(control => { control.disabled = ['loading','blocked'].includes(ui.dialogState) || ui.dialogState === 'recovery' && !control.hasAttribute('data-recovery-safe') || !checks.length || !checks.every(check => check.checked); });
+        overlay.querySelectorAll('[data-requires-check]').forEach(control => { control.disabled = ui.modalBusy || control.dataset.lifecycleBlocked === 'true' || ['loading','blocked'].includes(ui.dialogState) || control.dataset.sharedAction && !sharedFlow.can(control.dataset.sharedAction) || ui.dialogState === 'recovery' && !control.hasAttribute('data-recovery-safe') && !control.dataset.sharedAction || !checks.length || !checks.every(check => check.checked); });
       };
       const variant = (entry, state) => {
+        if (entry.id === 'join-shared') return sharedFlow.landing();
+        if (entry.id === 'shared-host-guide') return sharedFlow.guide();
+        if (entry.id === 'shared-manage') return (state === 'loading' ? '<div class="ts-alert" role="status">Loading sharing details…</div>' : state === 'error' ? '<div class="ts-alert" role="alert">The last detail check failed. Existing copies are preserved.</div>' : '') + sharedFlow.management();
         if (entry.variants?.[state]) return entry.variants[state];
         if (state === 'empty') return `<section class="ts-panel ts-empty">${icon(entry.icon || 'server')}<h3>${escape(entry.emptyTitle || 'Nothing here yet')}</h3><p>${escape(entry.emptyText || 'This section will show its available items when they are present.')}</p><button type="button" class="ts-button" data-action="refresh">Refresh</button></section>`;
         let line = '';
@@ -308,38 +345,45 @@
         const mobile = `<label class="ts-section-picker">Section<select data-section-picker>${groups.map(([label, entries]) => `<optgroup label="${escape(label)}">${entries.map(item => `<option value="${escape(item.id)}" ${item.id === ui.page ? 'selected' : ''}>${escape(item.title)}</option>`).join('')}</optgroup>`).join('')}</select></label>`;
         let selector = `<div class="ts-sidebar-caption"><strong>${escape(areas[area])}</strong></div>`;
         if (area === 'host') selector += page.id === 'host-first-use' ? `<p class="ts-muted ts-small">No saved servers yet</p><div class="ts-selector-actions">${action('plus','Add server','data-dialog="setup-game"')}</div>` : `<label><span class="ts-small ts-muted">Selected server</span><select data-server-selector aria-label="Selected Host server"><option ${ui.server === 'Alderheim' ? 'selected' : ''}>Alderheim</option><option ${ui.server === 'MapleCraft' ? 'selected' : ''}>MapleCraft</option><option ${ui.server === 'Preview server' ? 'selected' : ''}>Preview server</option></select></label><div class="ts-selector-actions">${action('search','Find or reorder saved servers','data-dialog="server-picker"')}${action('plus','Add server','data-dialog="setup-game"')}${action('server','Compare all servers','data-page="host-all-servers"')}</div>`;
-        if (area === 'join') selector += page.id === 'join-pairing' ? `<p class="ts-muted ts-small">Add a Host with a private server code.</p>` : `<label><span class="ts-small ts-muted">Saved Host</span><select data-host-selector aria-label="Selected saved Host"><option ${ui.connection === 'Friend Host A' ? 'selected' : ''}>Friend Host A</option><option ${ui.connection === 'Friend Host B' ? 'selected' : ''}>Friend Host B</option></select></label><label><span class="ts-small ts-muted">Assigned server</span><select data-room-selector aria-label="Selected assigned server"><option ${ui.roomServer === 'Alderheim' ? 'selected' : ''}>Alderheim</option><option ${ui.roomServer === 'MapleCraft' ? 'selected' : ''}>MapleCraft</option></select></label><div class="ts-selector-actions">${action('plus','Add another Host','data-page="join-pairing"')}${action('star','Pin this Host','data-action="pin"')}</div>`;
+        if (area === 'join') selector += page.id === 'join-pairing' ? `<p class="ts-muted ts-small">Add a Host with a private server code.</p>` : `<label><span class="ts-small ts-muted">Saved Host</span><select data-host-selector aria-label="Selected saved Host"><option ${ui.connection === 'Friend Host A' ? 'selected' : ''}>Friend Host A</option><option ${ui.connection === 'Friend Host B' ? 'selected' : ''}>Friend Host B</option></select></label><label><span class="ts-small ts-muted">Assigned server</span><select data-room-selector aria-label="Selected assigned server"><option ${ui.roomServer === 'Alderheim' ? 'selected' : ''}>Alderheim</option><option ${ui.roomServer === 'MapleCraft' ? 'selected' : ''}>MapleCraft</option></select></label><div class="ts-selector-actions">${action('search','Find saved Hosts','data-dialog="join-host-picker"')}${action('plus','Add another Host','data-page="join-pairing"')}${action('star','Pin this Host','data-action="pin"')}</div>`;
         return `<aside class="ts-sidebar">${selector}${mobile}${nav}</aside>`;
       };
       const serverHeader = page => {
         if (!['host','join'].includes(page.area) || ['host-first-use','host-all-servers','join-pairing','join-settings','join-help'].includes(page.id)) return '';
         const host = page.area === 'host';
         const name = host ? ui.server : ui.roomServer;
+        const sharedContext = name === sharedFlow.state.world && ['host-overview','join-play','join-shared'].includes(page.id);
         const previewServer = host && ui.server === 'Preview server';
         const example = host && ((['host-backups','host-files'].includes(page.id) && ['normal','success'].includes(ui.state)) || (page.id === 'host-maintenance' && ui.state === 'active')) ? 'Offline' : host ? ui.hostState : ui.joinState;
-        const state = previewServer || ['listening','terraria'].includes(ui.state) ? 'Listening' : ui.state === 'identity' || (!host && ui.state === 'unknown') ? 'Unknown' : ['unknown','occupied','positive','offline','starting','stopping'].includes(ui.state) ? ['unknown','occupied','positive'].includes(ui.state) ? 'Ready' : labelState(ui.state) : example;
+        let state = previewServer || ['listening','terraria'].includes(ui.state) ? 'Listening' : ui.state === 'identity' || (!host && ui.state === 'unknown') ? 'Unknown' : ['unknown','occupied','positive','offline','starting','stopping'].includes(ui.state) ? ['unknown','occupied','positive'].includes(ui.state) ? 'Ready' : labelState(ui.state) : example;
+        if (sharedContext && ui.state === 'normal') state = host ? sharedFlow.localState() : sharedFlow.state.connected[sharedFlow.state.client] === sharedFlow.state.authority ? sharedFlow.currentStatus() : 'Unknown';
         const online = state !== 'Offline';
-        const uncertain = previewServer || ['unknown','loading','error','blocked','recovery','stale','expired','revoked','listening','terraria','identity'].includes(ui.state);
+        const uncertain = previewServer || state === 'Unknown' || ['unknown','loading','error','blocked','recovery','stale','expired','revoked','listening','terraria','identity'].includes(ui.state);
         const occupied = ['occupied','positive'].includes(ui.state);
         const count = uncertain ? 'Unknown players' : occupied ? '2 players' : state === 'Ready' ? `${ui.players} players` : 'Players unavailable';
         const countdown = state === 'Ready' && !uncertain && !occupied && ui.players === 0 ? 'Auto-stop in 08:42' : uncertain ? 'Auto-stop paused · current evidence unavailable' : state === 'Ready' ? 'Auto-stop waits for zero players' : 'Auto-stop inactive';
         const busy = ['Starting','Stopping'].includes(state);
         const friendDenied = ['blocked','expired','revoked','stale','error','loading','approval','no-assignment','status-only','maintenance','update-required'];
-        const stopBlocked = !host && ([...friendDenied,'unknown','occupied','positive','listening','terraria'].includes(ui.state) || ui.players > 0);
-        const startAttrs = busy ? 'disabled' : !host && friendDenied.includes(ui.state) ? 'disabled' : '';
-        const hostBlocked = host && ['loading','blocked','recovery','identity'].includes(ui.state);
+        const stopBlocked = !host && (state !== 'Ready' || [...friendDenied,'unknown','occupied','positive','listening','terraria'].includes(ui.state) || ui.players > 0 || sharedContext && !sharedFlow.state.grants[sharedFlow.state.client].remoteStop);
+        const startAttrs = busy ? 'disabled' : !host && (friendDenied.includes(ui.state) || sharedContext && ui.state === 'normal' && !sharedFlow.can('remote-start')) ? 'disabled' : '';
+        const hostBlocked = host && (['loading','blocked','recovery','identity'].includes(ui.state) || sharedContext && ui.state === 'normal' && (!sharedFlow.owner() || sharedFlow.state.authority === 'successor' && !sharedFlow.can('start') && !['Ready','Starting','Stopping'].includes(state)));
         const gameBlocked = !host && (!['Ready','Listening'].includes(state) || ['stale','expired','revoked','error','loading','blocked','no-assignment','unassigned','approval','unknown','identity','empty','update-required'].includes(ui.state));
-        const life = online ? action('stop','Stop server',host ? `data-dialog="confirm-stop" ${hostBlocked || busy ? 'disabled' : ''}` : `data-action="stop" ${stopBlocked || busy ? 'disabled' : ''}`,host ? 'ts-primary' : '') : action('play','Start server',`data-action="start" ${hostBlocked ? 'disabled' : startAttrs}`,'ts-primary');
-        const extra = host ? action('invite','Invite friends','data-dialog="invite-code"') + action('more','More server actions','data-dialog="server-actions"') : action('game','Open game',`data-action="open-game" ${gameBlocked ? 'disabled' : ''}`,online && !gameBlocked ? 'ts-primary' : '') + action('more','Server tools','data-dialog="join-tools"');
-        return `<section class="ts-server-command" aria-label="${host ? 'Host' : 'Join'} server actions"><div class="ts-server-identity"><h2>${escape(name)}</h2><p>${escape(name === 'MapleCraft' ? 'Minecraft Java' : name === 'Preview server' ? 'Terraria preview' : 'Valheim')} · ${host ? 'Hosted on this PC' : escape(ui.connection)}</p><div class="ts-server-facts"><span class="ts-badge" data-tone="active">${escape(state)}</span><span>${escape(count)}</span></div><p style="margin-block-start:7px">${escape(countdown)}</p>${stopBlocked ? '<p class="ts-danger-text">Stop requires current access and a fresh zero-player count.</p>' : ''}</div><div class="ts-lifecycle-actions">${life}${extra}</div></section>`;
+        const life = online ? action('stop','Stop server',host ? `data-dialog="confirm-stop" ${hostBlocked || busy ? 'disabled' : ''}` : `data-action="stop" ${stopBlocked || busy ? 'disabled' : ''}`,host ? 'ts-primary' : '',true) : action('play','Start server',`${host && sharedContext && ui.state === 'normal' && sharedFlow.state.authority === 'successor' ? 'data-shared-action="open-guide"' : 'data-action="start"'} ${hostBlocked ? 'disabled' : startAttrs}`,'ts-primary',true);
+        const extra = host ? action('invite','Invite friends','data-dialog="invite-code"','',true) + action('more','More server actions','data-dialog="server-actions"') : action('game','Open game',`data-action="open-game" ${gameBlocked ? 'disabled' : ''}`,online && !gameBlocked ? 'ts-primary' : '',true) + action('more','Server tools','data-dialog="join-tools"');
+        const identity = sharedContext ? host ? sharedFlow.owner() ? 'This PC is the designated Host' : `Current Host: ${sharedFlow.clients[sharedFlow.state.authority]}` : sharedFlow.state.connected[sharedFlow.state.client] === sharedFlow.state.authority ? `Connected to ${sharedFlow.clients[sharedFlow.state.authority]}` : 'Connect to the current Host before playing' : host ? 'Hosted on this PC' : ui.connection;
+        return `<section class="ts-server-command" aria-label="${host ? 'Host' : 'Join'} server actions"><div class="ts-server-identity"><h2>${escape(name)}</h2><p>${escape(name === 'MapleCraft' ? 'Minecraft Java' : name === 'Preview server' ? 'Terraria preview' : 'Valheim')} · ${escape(identity)}</p><div class="ts-server-facts"><span class="ts-badge" data-tone="active">${escape(state)}</span><span>${escape(count)}</span></div><p style="margin-block-start:7px">${escape(countdown)}</p>${hostBlocked && sharedContext ? '<p>This PC must complete the guided hosting steps before Start.</p>' : ''}${stopBlocked ? '<p class="ts-danger-text">Stop requires current access and a fresh zero-player count.</p>' : ''}</div><div class="ts-lifecycle-actions">${page.id === 'join-shared' ? '' : life + extra}</div></section>`;
       };
       const renderPage = () => {
+        hideTooltip();
         const page = pages.get(ui.page);
         const area = areaOf(page);
         if (page.area === 'host' && ui.server === 'Preview server' && page.states.includes('terraria')) ui.state = 'terraria';
         const staging = ui.state === 'staging';
         const rail = [ ['host','Host','server',ui.lastHost],['join','Join','link',ui.lastJoin],['attention','Attention','bell',ui.lastAttention],['app','App Settings','settings','app-appearance'] ];
-        body.innerHTML = `<header class="ts-titlebar"><span class="ts-brand-mark">${staging ? 'D' : 'T'}</span><span class="ts-brand-name">TogetherServer${staging ? ' DEVELOPMENT' : ''}</span><div class="ts-title-actions">${action('bell','Notifications','data-dialog="notification-menu"')}${action('settings','App preferences','data-dialog="quick-settings"')}${action('search','Commands (Ctrl K)','data-dialog="command-palette"')}</div></header>${staging ? '<aside class="ts-staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong>Isolated test data · local UI 5128 · Friend control 5132</aside>' : ''}${ui.notice ? `<p class="ts-toast" role="status">${escape(ui.notice)}</p>` : ''}<div class="ts-layout"><nav class="ts-rail" aria-label="TogetherServer workspaces">${rail.map(([id,label,name,target]) => `<button type="button" aria-label="${label}" data-tooltip="${label}" data-workspace="${id}" data-page="${target}" ${area === id ? 'aria-current="page"' : ''}>${icon(name)}</button>`).join('')}</nav>${sectionNavigation(page)}<main class="ts-main">${serverHeader(page)}<div class="ts-page-heading"><h2>${escape(page.title)}</h2><p>${escape(page.description || '')}</p></div><div class="ts-content" data-current-page="${escape(page.id)}">${variant(page,ui.state)}</div></main></div><footer class="ts-statusbar"><span>Host: ${escape(ui.hostState)} · Friend checks continue</span><span>v0.3.2</span></footer>`;
+        const sharedContext = ['host-overview','join-play'].includes(page.id) && (page.area === 'host' ? ui.server : ui.roomServer) === sharedFlow.state.world;
+        let content = variant(page,ui.state);
+        if (sharedContext && sharedFlow.state.authority === 'successor') content = content.replaceAll('192.0.2.10:2456','192.0.2.20:2456').replaceAll('192.0.2.40:2456','192.0.2.20:2456');
+        body.innerHTML = `<header class="ts-titlebar"><span class="ts-brand-mark">${staging ? 'D' : 'T'}</span><span class="ts-brand-name">TogetherServer${staging ? ' DEVELOPMENT' : ''}</span><div class="ts-title-actions">${action('bell','Notifications','data-dialog="notification-menu"')}${action('settings','App preferences','data-dialog="quick-settings"')}${action('search','Commands (Ctrl K)','data-dialog="command-palette"')}</div></header>${staging ? '<aside class="ts-staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong>Isolated test data · local UI 5128 · Friend control 5132</aside>' : ''}${ui.notice ? `<p class="ts-toast" role="status">${escape(ui.notice)}</p>` : ''}<div class="ts-layout"><nav class="ts-rail" aria-label="TogetherServer workspaces">${rail.map(([id,label,name,target]) => `<button type="button" aria-label="${label}" data-ts-tooltip="${label}" data-workspace="${id}" data-page="${target}" ${area === id ? 'aria-current="page"' : ''}>${icon(name)}</button>`).join('')}</nav>${sectionNavigation(page)}<main class="ts-main">${sharedContext ? sharedFlow.hostBanner() : ''}${page.id === 'join-shared' ? '' : serverHeader(page)}<div class="ts-page-heading"><h2>${escape(page.title)}</h2><p>${escape(page.description || '')}</p></div><div class="ts-content" data-current-page="${escape(page.id)}">${content}</div></main></div><footer class="ts-statusbar"><span>This PC: ${escape(sharedFlow.clients[sharedFlow.state.client])} · Friend checks continue</span><span>v0.3.2</span></footer>`;
         enhanceIcons(body);
         restoreFields(body.querySelector('.ts-content'),page,ui.state);
         syncAppearance(body);
@@ -347,6 +391,7 @@
         if (ui.state === 'blocked') body.querySelectorAll('.ts-content [data-action="save"], .ts-content [data-action="start"]').forEach(button => { button.disabled = true; });
         if (['unknown','stale','error','loading','blocked','recovery'].includes(ui.state)) body.querySelectorAll('.ts-content [data-action="add-time"]').forEach(button => { button.disabled = true; });
         if (page.id === 'join-play') body.querySelectorAll('.ts-content [data-action="open-game"]').forEach(control => { if (!control.closest('.ts-details')) control.remove(); });
+        if (page.id === 'host-overview') body.querySelectorAll('.ts-content [data-dialog="invite-code"], .ts-content [data-dialog="server-actions"]').forEach(control => control.remove());
         body.inert = Boolean(ui.dialog);
         syncControls();
       };
@@ -357,6 +402,7 @@
         (match || overlay.querySelector('[data-command-search]') || candidates[0])?.focus({preventScroll:true});
       };
       const renderDialog = () => {
+        hideTooltip();
         if (!ui.dialog) { overlay.hidden = true; overlay.innerHTML = ''; body.inert = false; product.style.minBlockSize = ''; return; }
         const previousFocus = overlay.contains(document.activeElement) ? focusToken(document.activeElement) : null;
         const previousId = overlay.querySelector('[data-current-dialog]')?.dataset.currentDialog;
@@ -364,11 +410,18 @@
         if (!dialog) { ui.dialog = null; toast('Preview: that view is not available.'); return; }
         const title = dialog.id === 'server-notifications' ? `Notifications for ${areaOf(pages.get(ui.page)) === 'join' ? ui.roomServer : ui.server}` : dialog.title;
         overlay.hidden = false;
-        overlay.innerHTML = `<dialog class="ts-dialog" open aria-modal="true" aria-labelledby="ts-dialog-title" aria-describedby="ts-dialog-description"><header class="ts-dialog-heading"><div><h2 id="ts-dialog-title">${escape(title)}</h2><p id="ts-dialog-description">${escape(dialog.description || '')}</p></div>${action('close',`Close ${title}`,'data-close')}</header><div class="ts-dialog-body" data-current-dialog="${escape(dialog.id)}">${ui.modalNotice ? `<div class="ts-alert" data-tone="success" role="status">${escape(ui.modalNotice)}</div>` : ''}${variant(dialog,ui.dialogState)}</div><footer class="ts-dialog-footer">${dialog.footer || '<button type="button" class="ts-button" data-close>Done</button>'}</footer></dialog>`;
+        let dialogContent = variant(dialog,ui.dialogState);
+        if (dialog.id === 'confirm-stop' && ui.page === 'host-overview') dialogContent = dialogContent.replace('2 reported players will be interrupted.',ui.state === 'unknown' ? 'The player count is Unknown. Review possible interruption before owner Stop.' : ['occupied','positive'].includes(ui.state) ? '2 reported players will be interrupted.' : 'The current synthetic run reports zero players. Review graceful Stop before proceeding.');
+        overlay.innerHTML = `<dialog class="ts-dialog" open aria-modal="true" aria-labelledby="ts-dialog-title" aria-describedby="ts-dialog-description"><header class="ts-dialog-heading"><div><h2 id="ts-dialog-title">${escape(title)}</h2><p id="ts-dialog-description">${escape(dialog.description || '')}</p></div>${action('close',`Close ${title}`,'data-close')}</header><div class="ts-dialog-body" data-current-dialog="${escape(dialog.id)}">${ui.modalNotice ? `<div class="ts-alert" data-tone="success" role="status">${escape(ui.modalNotice)}</div>` : ''}${dialogContent}</div><footer class="ts-dialog-footer">${dialog.footer || '<button type="button" class="ts-button" data-close>Done</button>'}</footer></dialog>`;
         enhanceIcons(overlay);
         restoreFields(overlay.querySelector('.ts-dialog-body'),dialog,ui.dialogState);
         syncAppearance(overlay);
-        if (ui.dialogState === 'loading') overlay.querySelectorAll('button,input,select,textarea').forEach(control => { control.disabled = true; });
+        if (['confirm-stop','confirm-restart','confirm-safe-restart'].includes(dialog.id) && ui.page === 'host-overview' && ui.server === sharedFlow.state.world) {
+          const unresolved = ['identity','blocked','recovery'].includes(ui.state) || ui.state === 'normal' && sharedFlow.localState() === 'Unknown';
+          const cannotRestart = dialog.id !== 'confirm-stop' && (!sharedFlow.owner() || !sharedFlow.state.restored || !sharedFlow.state.route || sharedFlow.state.copies[sharedFlow.state.client] !== sharedFlow.state.version);
+          if (unresolved || cannotRestart) { overlay.querySelectorAll('[data-confirm]').forEach(control => { control.dataset.lifecycleBlocked = 'true'; control.disabled = true; }); overlay.querySelector('.ts-dialog-body').insertAdjacentHTML('afterbegin','<div class="ts-alert" role="status">Current process identity, shared-world authority and hosting setup must be resolved before this action.</div>'); }
+        }
+        if (ui.dialogState === 'loading' || ui.modalBusy) overlay.querySelectorAll('button,input,select,textarea').forEach(control => { control.disabled = true; });
         if (ui.dialogState === 'blocked') overlay.querySelectorAll('[data-confirm], [data-action="save"]').forEach(control => { control.disabled = true; });
         if (ui.dialogState === 'recovery') overlay.querySelectorAll('[data-confirm]:not([data-recovery-safe])').forEach(control => { control.disabled = true; });
         acknowledgements();
@@ -379,11 +432,13 @@
         syncControls();
         if (previousId === ui.dialog && previousFocus) focusDialog(previousFocus);
       };
-      const clearPending = () => { operationEpoch++; if (pendingTimer) clearTimeout(pendingTimer); pendingTimer = null; ui.modalBusy = false; hideSecrets(); };
+      const clearPending = () => { operationEpoch++; if (pendingTimer) clearTimeout(pendingTimer); pendingTimer = null; ui.modalBusy = false; sharedFlow.cancel(); hideSecrets(); hideTooltip(); };
       const navigate = target => {
         if (!pages.has(target)) return toast('Preview: that page is not available.');
         clearPending(); ui.dialog = null; ui.dialogTrail = []; ui.page = target; ui.state = 'normal'; ui.notice = ''; ui.modalNotice = '';
         const area = areaOf(pages.get(target));
+        if (area === 'host') selectSharedWorld(ui.server);
+        if (area === 'join') selectSharedWorld(ui.roomServer);
         if (area === 'host') ui.lastHost = target;
         if (area === 'join') ui.lastJoin = target;
         if (area === 'attention') ui.lastAttention = target;
@@ -451,10 +506,10 @@
           if (!input?.value.trim()) return toast('Preview: enter a message before sending.');
           return pending(control,'message accepted in this preview.');
         }
-        if (name === 'start') return pending(control,'Start request received. Readiness still needs observation.',() => { if (areaOf(pages.get(ui.page)) === 'join') ui.joinState = 'Starting'; else ui.hostState = 'Starting'; if (pages.get(ui.page).states.includes('starting')) ui.state = 'starting'; });
+        if (name === 'start') return pending(control,'Start request received. Readiness still needs observation.',() => { if (['host-overview','join-play'].includes(ui.page) && (areaOf(pages.get(ui.page)) === 'host' ? ui.server : ui.roomServer) === sharedFlow.state.world) { const request = areaOf(pages.get(ui.page)) === 'join' ? 'remote-start' : 'start'; if (sharedFlow.can(request)) sharedFlow.run(request,true); else { ui.notice = 'Preview: current hosting authority and preparation are required.'; return; } } if (areaOf(pages.get(ui.page)) === 'join') ui.joinState = 'Starting'; else ui.hostState = 'Starting'; if (pages.get(ui.page).states.includes('starting')) ui.state = 'starting'; });
         if (name === 'stop') {
           if (areaOf(pages.get(ui.page)) === 'join' && (['unknown','occupied','blocked','expired','revoked','stale'].includes(ui.state) || ui.players > 0)) return toast('Preview: Stop is blocked until access and a fresh zero-player count are available.');
-          return pending(control,'Stop request received. Waiting for graceful exit.',() => { if (areaOf(pages.get(ui.page)) === 'join') ui.joinState = 'Stopping'; else ui.hostState = 'Stopping'; if (pages.get(ui.page).states.includes('stopping')) ui.state = 'stopping'; });
+          return pending(control,'Stop request received. Waiting for graceful exit.',() => { if (['host-overview','join-play'].includes(ui.page) && (areaOf(pages.get(ui.page)) === 'host' ? ui.server : ui.roomServer) === sharedFlow.state.world) { if (!sharedFlow.run('remote-stop',true)) return; } if (areaOf(pages.get(ui.page)) === 'join') ui.joinState = 'Stopping'; else ui.hostState = 'Stopping'; if (pages.get(ui.page).states.includes('stopping')) ui.state = 'stopping'; });
         }
         if (name === 'add-time' && ['unknown','stale','error','loading','blocked','recovery'].includes(ui.state)) return toast('Preview: added time requires a current trusted player count.');
         if (/\b(?:I loaded|I saved|I joined|I checked|survived|recognizable)\b/i.test(control.textContent)) return pending(control,'the example owner-reported check was recorded.');
@@ -470,16 +525,26 @@
       root.addEventListener('click',event => {
         const control = event.target.closest('button'); if (!control || !root.contains(control) || control.disabled) return;
         if (control.dataset.review === 'catalog') { ui.catalogOpen = !ui.catalogOpen; renderCatalog(); return; }
+        if (control.dataset.sharingTab) { sharedFlow.state.tab = control.dataset.sharingTab; renderDialog(); return; }
+        if (control.dataset.sharedAction) {
+          const name = control.dataset.sharedAction;
+          if (name === 'open-guide' || name === 'join-current') { sharedFlow.state.joinMode = name === 'join-current'; return openDialog('shared-host-guide',control); }
+          if (!sharedFlow.can(name)) return toast('Preview: the displayed hosting requirements must be resolved first.');
+          if (control.hasAttribute('data-requires-check')) { const checks = Array.from(overlay.querySelectorAll('[data-ack]')); if (!checks.length || !checks.every(check => check.checked)) return toast('Preview: acknowledge the displayed decision first.'); }
+          pending(control,'the shared-world step completed in this synthetic preview.',() => { sharedFlow.state.busy = false; sharedFlow.run(name,true); });
+          sharedFlow.state.busy = true; renderPage(); renderDialog(); return;
+        }
         if (control.dataset.page) return navigate(control.dataset.workspace === 'app' ? 'app-appearance' : control.dataset.page);
         if (control.dataset.dialog) return openDialog(control.dataset.dialog,control,control.dataset.variant);
         if (control.dataset.selectServer) { ui.server = control.dataset.selectServer; return navigate('host-overview'); }
+        if (control.dataset.selectHost) { ui.connection = control.dataset.selectHost; ui.roomServer = control.dataset.assignedServer || ui.roomServer; return navigate('join-play'); }
         if (control.hasAttribute('data-close') || control.hasAttribute('data-close-dialog')) return closeDialog();
         if (control.hasAttribute('data-confirm')) {
           const label = control.textContent.trim(); const target = ui.dialog;
           if (['loading','blocked'].includes(ui.dialogState) || ui.dialogState === 'recovery' && !control.hasAttribute('data-recovery-safe')) return;
           if (control.hasAttribute('data-requires-check')) { const marked = overlay.querySelectorAll('input[type="checkbox"][data-ack]'); const checks = marked.length ? Array.from(marked) : Array.from(overlay.querySelectorAll('input[type="checkbox"]')); if (!checks.length || !checks.every(check => check.checked)) return toast('Preview: review and acknowledge the displayed consequences first.'); }
-          if (['confirm-stop','confirm-restart','confirm-safe-restart'].includes(target)) { ui.hostState = target === 'confirm-stop' ? 'Stopping' : 'Starting'; const phase = target === 'confirm-stop' ? 'stopping' : 'starting'; if (pages.get(ui.page).states.includes(phase)) ui.state = phase; }
-          ui.dialog = null; ui.dialogTrail = []; renderDialog(); toast(`Preview: ${label.toLowerCase()} confirmed. No app or game action was performed.`); return;
+          if (['confirm-stop','confirm-restart','confirm-safe-restart'].includes(target)) { ui.hostState = target === 'confirm-stop' ? 'Stopping' : 'Starting'; const phase = target === 'confirm-stop' ? 'stopping' : 'starting'; if (['host-overview','join-play'].includes(ui.page) && ui.server === sharedFlow.state.world) { sharedFlow.state.processes[sharedFlow.state.client] = ui.hostState; if (sharedFlow.owner()) { sharedFlow.state.status = ui.hostState; sharedFlow.state.phase = phase; } } if (pages.get(ui.page).states.includes(phase)) ui.state = phase; }
+          ui.dialog = null; ui.dialogTrail = []; renderPage(); renderDialog(); toast(`Preview: ${label.toLowerCase()} confirmed. No app or game action was performed.`); return;
         }
         if (control.dataset.action) return demoAction(control);
         // Catalog-only controls without a workflow marker still have a visible local response.
@@ -497,7 +562,8 @@
           else { const dialog = dialogs.get(selected); const area = dialog.area; const target = area === 'host' || area === 'host-pc' ? ui.lastHost : area === 'app' ? 'app-appearance' : area === 'attention' ? 'attention-current' : 'join-shared'; navigate(pages.has(target) ? target : catalog.pages[0].id); openDialog(selected); }
           return;
         }
-        if (review === 'state') { clearPending(); if (ui.dialog) ui.dialogState = control.value; else ui.state = control.value; renderPage(); renderDialog(); return; }
+        if (review === 'state') { clearPending(); if ((ui.dialog === 'shared-host-guide' || !ui.dialog && ui.page === 'join-shared')) sharedFlow.setScene(control.value); if (ui.dialog) ui.dialogState = control.value; else ui.state = control.value; renderPage(); renderDialog(); return; }
+        if (review === 'client') { clearPending(); sharedFlow.state.client = control.value; ui.modalNotice = ''; renderPage(); renderDialog(); syncControls(); return; }
         const appearance = control.dataset.appearance;
         if (review === 'theme' || appearance === 'theme') { ui.theme = control.value === 'system' ? (window.matchMedia?.('(prefers-color-scheme:dark)').matches ? 'dark' : 'light') : control.value; root.dataset.theme = ui.theme; }
         if (review === 'scale' || appearance === 'scale') { ui.scale = Number(control.value); root.style.setProperty('--ts-scale',String(ui.scale / 100)); }
@@ -505,9 +571,9 @@
         if (appearance === 'contrast') root.dataset.contrast = String(control.checked);
         if (review === 'width') { ui.width = control.value; root.querySelector('.ts-preview-stage').dataset.width = ui.width; renderDialog(); }
         if (control.hasAttribute('data-section-picker')) return navigate(control.value);
-        if (control.hasAttribute('data-server-selector')) { clearPending(); ui.server = control.value; ui.state = 'normal'; renderPage(); }
+        if (control.hasAttribute('data-server-selector')) { clearPending(); ui.server = control.value; selectSharedWorld(ui.server); ui.state = 'normal'; renderPage(); }
         if (control.hasAttribute('data-host-selector')) { clearPending(); ui.connection = control.value; renderPage(); }
-        if (control.hasAttribute('data-room-selector')) { clearPending(); ui.roomServer = control.value; renderPage(); }
+        if (control.hasAttribute('data-room-selector')) { clearPending(); ui.roomServer = control.value; selectSharedWorld(ui.roomServer); ui.state = 'normal'; renderPage(); }
         if (review || appearance) { syncControls(); syncAppearance(body); syncAppearance(overlay); }
         if (control.dataset.action === 'preference') toast('Preview: preference changed on this PC.');
       });
@@ -522,7 +588,7 @@
         }
       });
       root.addEventListener('keydown',event => {
-        if (event.key === 'Escape') { if (ui.dialog) { event.preventDefault(); closeDialog(); } return; }
+        if (event.key === 'Escape') { if (!tooltip.hidden) { event.preventDefault(); hideTooltip(); return; } if (ui.dialog) { event.preventDefault(); closeDialog(); } return; }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openDialog('command-palette'); return; }
         if (event.altKey && ['1','2','3','4'].includes(event.key)) { event.preventDefault(); navigate([ui.lastHost,ui.lastJoin,ui.lastAttention,'app-appearance'][Number(event.key) - 1]); return; }
         if (event.key === 'Tab' && ui.dialog) {
@@ -532,22 +598,41 @@
           if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
         }
       });
-      // Inline host tooltips own hover/focus/touch. The offline export needs a local fallback.
-      if (catalog.offline) {
-        const tooltip = document.createElement('div'); tooltip.className = 'ts-tooltip-fallback'; tooltip.setAttribute('role','tooltip'); tooltip.hidden = true; root.append(tooltip);
-        const showTip = target => {
-          const trigger = target.closest('[data-tooltip]'); if (!trigger || !root.contains(trigger)) { tooltip.hidden = true; return; }
-          tooltip.textContent = trigger.dataset.tooltip; tooltip.hidden = false;
-          const bounds = trigger.getBoundingClientRect(), base = root.getBoundingClientRect();
-          const left = Math.max(8,Math.min(bounds.left - base.left,base.width - tooltip.getBoundingClientRect().width - 8));
-          tooltip.style.left = `${left}px`; tooltip.style.top = `${bounds.bottom - base.top + 6}px`;
-        };
-        root.style.position = 'relative';
-        root.addEventListener('pointerover',event => showTip(event.target)); root.addEventListener('focusin',event => showTip(event.target));
-        root.addEventListener('pointerout',() => { tooltip.hidden = true; }); root.addEventListener('focusout',() => { tooltip.hidden = true; });
-      }
+      // One product-owned tooltip layer in inline and offline previews; no host tooltip duplicates.
+      const tooltip = document.createElement('div'); tooltip.className = 'ts-tooltip'; tooltip.id = 'ts-atlas-tooltip'; tooltip.setAttribute('role','tooltip'); tooltip.hidden = true; root.append(tooltip);
+      let tooltipTrigger = null;
+      const hideTooltip = () => {
+        tooltip.hidden = true;
+        if (tooltipTrigger) { const ids = (tooltipTrigger.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== tooltip.id); if (ids.length) tooltipTrigger.setAttribute('aria-describedby',ids.join(' ')); else tooltipTrigger.removeAttribute('aria-describedby'); }
+        tooltipTrigger = null;
+      };
+      const positionTooltip = () => {
+        if (!tooltipTrigger?.isConnected) return hideTooltip();
+        const trigger = tooltipTrigger.getBoundingClientRect(), base = root.getBoundingClientRect(), tip = tooltip.getBoundingClientRect();
+        const width = base.width || 736, height = base.height || 1000, tipWidth = tip.width || 180, tipHeight = tip.height || 32;
+        const center = trigger.left - base.left + trigger.width / 2;
+        const left = Math.max(8,Math.min(center - tipWidth / 2,width - tipWidth - 8));
+        const below = trigger.bottom - base.top + 9, above = trigger.top - base.top - tipHeight - 9;
+        const side = below + tipHeight > height - 8 && above >= 8 ? 'top' : 'bottom';
+        tooltip.dataset.side = side; tooltip.style.left = `${left}px`; tooltip.style.top = `${side === 'top' ? above : below}px`;
+        tooltip.style.setProperty('--ts-tail',`${Math.max(9,Math.min(center - left - 4,tipWidth - 18))}px`);
+      };
+      const showTooltip = target => {
+        const trigger = target instanceof Element ? target.closest('[data-ts-tooltip]') : null;
+        if (!trigger || !root.contains(trigger) || body.inert && body.contains(trigger)) return hideTooltip();
+        hideTooltip(); tooltipTrigger = trigger; tooltip.textContent = trigger.dataset.tsTooltip; tooltip.hidden = false;
+        const ids = new Set((trigger.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean)); ids.add(tooltip.id); trigger.setAttribute('aria-describedby',[...ids].join(' ')); positionTooltip();
+      };
+      root.addEventListener('pointerover',event => showTooltip(event.target));
+      root.addEventListener('focusin',event => showTooltip(event.target));
+      root.addEventListener('pointerdown',event => { if (event.pointerType === 'touch') showTooltip(event.target); });
+      root.addEventListener('pointerout',event => { if (tooltipTrigger && !tooltipTrigger.contains(event.relatedTarget)) hideTooltip(); });
+      root.addEventListener('focusout',hideTooltip);
+      window.addEventListener('resize',() => { if (!tooltip.hidden) positionTooltip(); });
+      window.addEventListener('scroll',hideTooltip,true);
+      window.addEventListener('blur',hideTooltip);
       window.addEventListener('blur',hideSecrets);
-      const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (ui.dialog) { const height = overlay.querySelector('.ts-dialog')?.getBoundingClientRect().height; if (height) product.style.minBlockSize = `${height + (ui.width === 'narrow' ? 40 : 90)}px`; } }) : null;
+      const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (!tooltip.hidden) positionTooltip(); if (ui.dialog) { const height = overlay.querySelector('.ts-dialog')?.getBoundingClientRect().height; if (height) product.style.minBlockSize = `${height + (ui.width === 'narrow' ? 40 : 90)}px`; } }) : null;
       observer?.observe(product);
       controls(); renderPage(); renderCatalog(); root.dataset.ready = 'true';
     })().catch(() => {

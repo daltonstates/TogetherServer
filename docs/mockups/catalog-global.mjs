@@ -1,4 +1,4 @@
-const button = (label, attrs = '', tone = '') => `<button type="button" class="ts-button ${tone}" ${attrs}>${label}</button>`;
+const button = (label, attrs = '', tone = '') => `<button type="button" class="ts-button ${tone}" ${/data-action=['"](?:save|filter)/.test(attrs) || tone.includes('ts-primary') ? 'data-primary-action' : ''} ${attrs}>${label}</button>`;
 const notificationEvents = [
   ['Lifecycle','Server state changes'], ['Backup','Backups'], ['Access','PC access'],
   ['Connections','Friend app connections'], ['Network','Connection checks'], ['Recovery','Recovery'],
