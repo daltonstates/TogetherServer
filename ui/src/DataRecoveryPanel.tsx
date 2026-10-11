@@ -1,4 +1,6 @@
+import { useRef } from 'react'
 import { Button, Input } from './Controls'
+import { useConfirmation } from './Confirmation'
 import type { DataRecoveryView, Run, Snapshot } from './contracts'
 import { safeFileName } from './setupDraft'
 
@@ -19,14 +21,33 @@ type DataRecoveryPanelProps = {
 export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, pending, confirmed,
   onConfirmedChange, onAcknowledge, onSwitchToHost, onStopRecordedRun, onForgetRecordedRun }:
   DataRecoveryPanelProps) {
-  if (recovery.notices.length === 0) return null
+  const { confirm, confirmationDialog } = useConfirmation()
+  const inFlight = useRef(false)
+  const guard = JSON.stringify({ recovery, mode, pending, configuredProfileIds,
+    runs: runs.map(run => ({ profileId: run.profileId, state: run.state,
+      runOperationId: run.runOperationId, processId: run.processId })) })
+  const current = useRef({ guard, revision: 0 })
+  if (current.current.guard !== guard) current.current = { guard, revision: current.current.revision + 1 }
+
+  const forget = async (profileId: string) => {
+    if (inFlight.current || pending || mode !== 'Host' || configuredProfileIds.includes(profileId) ||
+      !runs.some(run => run.profileId === profileId && run.state === 'Failed')) return
+    const revision = current.current.revision
+    inFlight.current = true
+    try {
+      if (await confirm({ title: 'Forget exited record',
+        description: 'Forget this saved session only if TogetherServer confirms that its server process is no longer running?',
+        confirmLabel: 'Forget exited record', destructive: true }) && current.current.revision === revision)
+        onForgetRecordedRun(profileId)
+    } finally { inFlight.current = false }
+  }
 
   const configured = new Set(configuredProfileIds)
   const orphanedRuns = mode === 'Host' ? runs.filter(run => !configured.has(run.profileId)) : []
   const managedRunBlocksAcknowledgement = recovery.lifecycleBlocked && mode === 'Host' &&
     runs.some(run => run.state !== 'Offline')
 
-  return <section className={`panel data-recovery ${recovery.lifecycleBlocked ? 'blocking' : ''}`}
+  return <>{recovery.notices.length > 0 && <section className={`panel data-recovery ${recovery.lifecycleBlocked ? 'blocking' : ''}`}
     role={recovery.lifecycleBlocked ? 'alert' : 'status'} aria-labelledby="data-recovery-title">
     <div className="section-heading"><div><h2 id="data-recovery-title">Local data needs review</h2>
       <p>{recovery.lifecycleBlocked
@@ -46,10 +67,8 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
             onClick={() => onStopRecordedRun(run.profileId)}>
             {pending === `recovery-stop-${run.profileId}` ? 'Stopping...' : 'Stop recorded server'}
           </Button>}
-          {run.state === 'Failed' && <Button className="secondary" disabled={!!pending} onClick={() => {
-            if (window.confirm('Forget this saved session only if TogetherServer confirms that its server process is no longer running?'))
-              onForgetRecordedRun(run.profileId)
-          }}>Forget exited record</Button>}
+          {run.state === 'Failed' && <Button className="secondary" disabled={!!pending}
+            onClick={() => void forget(run.profileId)}>Forget exited record</Button>}
           {run.state === 'Unknown' && <small>Process identity is uncertain. TogetherServer will not Stop or forget this record until it can prove what happened.</small>}
         </div>
       </div>)}</div>}
@@ -66,5 +85,7 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
       </Button>
     </div> : <div className="next-action"><span>Only My server can verify and acknowledge local recovery.</span>
       <Button disabled={!!pending} onClick={onSwitchToHost}>Switch to My server</Button></div>}
-  </section>
+  </section>}
+    {confirmationDialog}
+  </>
 }

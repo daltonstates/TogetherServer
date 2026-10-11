@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { Device } from './contracts'
 import { permissionPresetRequest } from './permissionState'
@@ -86,8 +86,49 @@ describe('Friend access summary and review', () => {
     expect(review.rows[1].afterPermissions).toEqual({ canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false })
     expect(device).toEqual(before)
     render(<FriendAccessReview before={device} after={after} servers={servers} clearsExceptions />)
-    expect(screen.getByRole('table', { name: 'Server access before and after' })).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Server access before and after' })).toBeInTheDocument()
+    const removed = screen.getByRole('group', { name: 'Valheim evening access change' })
+    expect(within(removed).getByText('Removed')).toBeInTheDocument()
+    expect(within(removed).getByRole('group', { name: 'After permissions' })).toHaveTextContent('Not assigned')
+    const changed = screen.getByRole('group', { name: 'Minecraft weekend access change' })
+    const logs = within(changed).getByRole('listitem', { name: 'View logs permission change' })
+    expect(within(logs).getByLabelText('Before: Allowed')).toBeInTheDocument()
+    expect(within(logs).getByLabelText('After: Off')).toBeInTheDocument()
+    const added = screen.getByRole('group', { name: 'New world access change' })
+    expect(within(added).getByText('Added')).toBeInTheDocument()
+    expect(within(added).getByRole('group', { name: 'Before permissions' })).toHaveTextContent('Not assigned')
+    expect(within(added).getByRole('group', { name: 'After permissions' })).toHaveTextContent('Start')
     expect(screen.getByText(/clears per-server exceptions/)).toBeInTheDocument()
+  })
+
+  it('shows identical defaults once and groups unchanged servers away from the changes', () => {
+    const before = { ...device, serverPermissions: [] }
+    const after = { ...before, assignedProfileIds: ['one', 'two', 'three'] }
+    render(<FriendAccessReview before={before} after={after} servers={servers} />)
+    const defaults = screen.getByRole('group', { name: 'Device defaults' })
+    expect(within(defaults).getByText('Unchanged')).toBeInTheDocument()
+    expect(within(defaults).getAllByText('Start')).toHaveLength(1)
+    expect(within(defaults).queryByText('Before')).not.toBeInTheDocument()
+    expect(within(defaults).queryByText('After')).not.toBeInTheDocument()
+    expect(screen.getByText('2 unchanged servers')).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Server access before and after' }).children).toHaveLength(1)
+    expect(screen.queryByRole('group', { name: 'Valheim evening access change' })).not.toBeInTheDocument()
+  })
+
+  it('derives Restart changes from Start and Stop while keeping log and timer permissions independent', () => {
+    const before = { ...device, serverPermissions: [] }
+    const after = { ...before, canStop: true, canViewLogs: true }
+    render(<FriendAccessReview before={before} after={after} servers={servers} />)
+    const changes = within(screen.getByRole('group', { name: 'Device defaults' })).getByRole('list', { name: 'Device default permission changes' })
+    expect(within(changes).getAllByRole('listitem').map(row => row.getAttribute('aria-label'))).toEqual([
+      'Guarded Stop permission change', 'Restart permission change', 'View logs permission change'
+    ])
+    const restart = within(changes).getByRole('listitem', { name: 'Restart permission change' })
+    expect(within(restart).getByLabelText('Before: Off')).toBeInTheDocument()
+    expect(within(restart).getByLabelText('After: Allowed')).toBeInTheDocument()
+    expect(within(changes).queryByText('Add time')).not.toBeInTheDocument()
+    expect(screen.getByText(/owner access deadlines stay unchanged/)).toBeInTheDocument()
   })
 
   it('refuses to call projected helper permissions saved defaults in a change review', () => {
@@ -95,11 +136,21 @@ describe('Friend access summary and review', () => {
     expect(review.helperProjection).toBe(true)
     expect(review.beforeDefaults).toBeNull()
     expect(review.rows.every(row => row.beforePermissions === null && row.change === 'ReviewNeeded')).toBe(true)
+    render(<FriendAccessReview before={{ ...device, temporaryHelperActive: true }} after={device} servers={servers} />)
+    const defaults = screen.getByRole('group', { name: 'Device defaults' })
+    const before = within(defaults).getByRole('group', { name: 'Before permissions' })
+    expect(before).toHaveTextContent('Saved defaults unavailable')
+    expect(within(before).queryByRole('list', { name: 'Allowed permissions' })).not.toBeInTheDocument()
+    expect(screen.getByText(/End temporary helper access and refresh/)).toBeInTheDocument()
+    expect(screen.getAllByText('Refresh needed')).toHaveLength(2)
   })
 
   it('does not grant unassigned servers through device defaults', () => {
     expect(effectiveDeviceAccess({ ...device, assignedProfileIds: [] }, servers, nowMs).rows).toEqual([])
     expect(reviewFriendAccess({ ...device, assignedProfileIds: [] }, { ...device, assignedProfileIds: [] }, servers).rows).toEqual([])
+    render(<FriendAccessReview before={{ ...device, assignedProfileIds: [] }} after={{ ...device, assignedProfileIds: [] }} servers={servers} />)
+    expect(screen.getByText(/Defaults alone give no server access/)).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Server access before and after' })).not.toBeInTheDocument()
   })
 
   it('filters PCs by name, assigned server and actual expiry/connection state without reordering them', () => {

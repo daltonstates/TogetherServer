@@ -18,7 +18,7 @@ const navigation: Array<{ id: WorkspacePage; label: string; icon: IconName; shor
   { id: 'host', label: 'Host', icon: 'server', shortcut: 'Alt+1' },
   { id: 'join', label: 'Join', icon: 'link', shortcut: 'Alt+2' },
   { id: 'attention', label: 'Attention', icon: 'bell', shortcut: 'Alt+3' },
-  { id: 'settings', label: 'Settings', icon: 'settings', shortcut: 'Alt+4' }
+  { id: 'settings', label: 'App Settings', icon: 'settings', shortcut: 'Alt+4' }
 ]
 
 /** Header disclosures share dismissal, focus recovery and the available viewport height. */
@@ -153,7 +153,7 @@ export function CommandPalette({ open, commands, onClose }: {
           if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex(index => Math.max(index - 1, 0)) }
           if (event.key === 'Enter') { event.preventDefault(); run(visible[activeIndex]) }
         }} />
-      <Button className="secondary command-close" aria-label="Close commands" onClick={onClose}>Close</Button>
+      <Button className="secondary icon-button command-close" aria-label="Close commands" title="Close commands" onClick={onClose}><Icon name="close" /></Button>
     </div>
     <h2 id="command-palette-title" className="sr-only">Command palette</h2>
     <div ref={listRef} className="command-list" id="workspace-command-options" role="listbox" aria-label="Commands">

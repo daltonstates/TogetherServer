@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, Select, TextArea } from './Controls'
+import { useConfirmation, type ConfirmationOptions } from './Confirmation'
 import { editorBulkPlayers } from './editorChanges'
 import { EditorDraftRecovery, useEditorDirtyGuard, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftStateChange, type EditorDraftGuard, type EditorDraftGuardChange } from './editorProtectedDraft'
 import { accessListIssue, gameModes, maximumAccessEntries, parseGameAccessList, parseGameSettings,
@@ -38,7 +39,11 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
   const [listRevision, setListRevision] = useState(0)
   const [search, setSearch] = useState('')
   const listGuards = useRef(new Map<string, EditorDraftGuard>())
+  const listGuardsRevision = useRef(0)
+  const updateListConfirmationTarget = useCallback(() => { listGuardsRevision.current += 1 }, [])
   const updateListGuard = useCallback<EditorDraftGuardChange>((source, guard) => {
+    const previous = listGuards.current.get(source)
+    if (previous?.dirty !== guard?.dirty || previous?.flush !== guard?.flush) listGuardsRevision.current += 1
     if (guard) listGuards.current.set(source, guard)
     else listGuards.current.delete(source)
     onDraftGuardChange?.(source, guard)
@@ -49,6 +54,22 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
   const changed = next !== null && view?.settings !== null && JSON.stringify(next) !== JSON.stringify(view?.settings)
   const protectedDraft = useEditorProtectedDraft(view?.settings ? { purpose: 'settings', profileId, key: 'settings:properties' } : null,
     changed && draft && view ? JSON.stringify({ version: 1, kind: view.kind, sha256: view.sha256, settings: draft, maximumPlayers }) : null)
+  const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
+  const confirmationInFlight = useRef(false)
+  const currentConfirmationTarget = useRef({ signature: '', revision: 0 })
+  const confirmationSignature = JSON.stringify({ profileId, state, maintenance, busy, recoveryBlocked, pending,
+    view, draft, maximumPlayers, recovered: protectedDraft.recovered })
+  if (currentConfirmationTarget.current.signature !== confirmationSignature) {
+    currentConfirmationTarget.current = { signature: confirmationSignature, revision: currentConfirmationTarget.current.revision + 1 }
+  }
+  const confirmCurrent = async (options: ConfirmationOptions) => {
+    if (confirmationInFlight.current) return false
+    confirmationInFlight.current = true
+    const revision = currentConfirmationTarget.current.revision
+    const listsRevision = listGuardsRevision.current
+    try { return await requestConfirmation(options) && revision === currentConfirmationTarget.current.revision && listsRevision === listGuardsRevision.current }
+    finally { confirmationInFlight.current = false }
+  }
   useEditorDirtyGuard(`settings:${profileId}`, changed, onDraftStateChange)
   useEditorDraftGuard(`settings:${profileId}`, changed, protectedDraft, onDraftGuardChange)
   const matches = (label: string) => label.toLowerCase().includes(search.trim().toLowerCase())
@@ -92,7 +113,8 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
   const reload = async () => {
     if (pending || busy) return
     const dirtyLists = [...listGuards.current.values()].filter(guard => guard.dirty)
-    if ((changed || dirtyLists.length > 0) && !window.confirm('Reloading replaces unsaved settings and player lists. Keep their protected drafts and reload?')) return
+    if ((changed || dirtyLists.length > 0) && !(await confirmCurrent({ title: 'Reload game settings?',
+      description: 'Reloading replaces unsaved settings and player lists. Keep their protected drafts and reload?', confirmLabel: 'Keep drafts and reload' }))) return
     setPending('reload')
     setNotice(null)
     try {
@@ -150,6 +172,12 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
     } catch (error) { setNotice({ bad: true, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const discard = async () => {
+    if (!view || !changed || pending) return
+    if (!(await confirmCurrent({ title: 'Discard unsaved settings?',
+      description: 'Discard these unsaved settings? The current saved settings stay unchanged.', confirmLabel: 'Discard settings', destructive: true }))) return
+    accept(view); await protectedDraft.clear()
+  }
 
   return <section className="game-settings-panel" aria-label="Simple game settings">
     <div className="section-heading"><div><h3>Game settings</h3>
@@ -187,16 +215,14 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
         {pending === 'preview' ? 'Reviewing…' : 'Review settings changes'}</Button>
         <Button className="secondary" disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
           {pending === 'undo' ? 'Undoing…' : 'Undo last settings change'}</Button></div>
-      {changed && <Button className="text-button" disabled={!!pending} onClick={() => {
-        if (!window.confirm('Discard these unsaved settings? The current saved settings stay unchanged.')) return
-        accept(view); void protectedDraft.clear()
-      }}>Discard unsaved settings</Button>}
+      {changed && <Button className="text-button" disabled={!!pending} onClick={() => void discard()}>Discard unsaved settings</Button>}
       {changed && <small>Unsaved settings. Review them before saving.</small>}
       {review && <PreviewChanges review={review.result} disabled={!allowed || review.result.changes.length === 0}
         pending={pending === 'save'} onSave={() => void save()} />}
     </>}
     {view?.lists.map(list => <GameAccessListEditor key={`${listRevision}-${list.key}`} base={`${base}/lists/${list.key}`}
-      profileId={profileId} onDraftStateChange={onDraftStateChange} onDraftGuardChange={updateListGuard} summary={list} kind={view.kind} editAllowed={allowed} blocked={busy || !!pending || recoveryBlocked} />)}
+      profileId={profileId} onDraftStateChange={onDraftStateChange} onDraftGuardChange={updateListGuard}
+      onConfirmationTargetChange={updateListConfirmationTarget} summary={list} kind={view.kind} editAllowed={allowed} blocked={busy || !!pending || recoveryBlocked} />)}
     {view && (view.settings !== null || view.lists.length > 0) && <>
       <p className="helper-text">Each save and Undo makes an offline setup checkpoint first. Undo restores the previous version of that file.</p>
       {recoveryBlocked ? <p className="helper-text">Resolve local recovery before changing game settings.</p> :
@@ -204,13 +230,15 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
           'Prepare maintenance before editing settings or access lists.' : 'Stop or resolve this server before editing settings or access lists.'}</span>
           <Button className="secondary" disabled={busy || !!pending} onClick={onPrepareMaintenance}>Open maintenance guide</Button></div>}
     </>}
+    {confirmationDialog}
   </section>
 }
 
-function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profileId, onDraftStateChange, onDraftGuardChange }: {
+function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profileId, onDraftStateChange, onDraftGuardChange, onConfirmationTargetChange }: {
   base: string; summary: GameAccessListSummary; kind: string; editAllowed: boolean; blocked: boolean;
   profileId: string; onDraftStateChange?: EditorDraftStateChange
   onDraftGuardChange?: EditorDraftGuardChange
+  onConfirmationTargetChange: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<GameAccessListView | null>(null)
@@ -230,6 +258,22 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
   const dirty = changed || !!identity || !!name || !!bulkText
   const protectedDraft = useEditorProtectedDraft(view ? { purpose: 'list', profileId, key: `list:${summary.key}` } : null,
     dirty && view ? JSON.stringify({ version: 1, kind, key: summary.key, sha256: view.sha256, entries, identity, name, ignoresPlayerLimit, bulkText }) : null)
+  const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
+  const confirmationInFlight = useRef(false)
+  const currentConfirmationTarget = useRef({ signature: '', revision: 0 })
+  const confirmationSignature = JSON.stringify({ base, profileId, summary, kind, open, editAllowed, blocked, pending,
+    view, entries, identity, name, ignoresPlayerLimit, bulkText, recovered: protectedDraft.recovered })
+  useEffect(() => { onConfirmationTargetChange() }, [confirmationSignature, onConfirmationTargetChange])
+  if (currentConfirmationTarget.current.signature !== confirmationSignature) {
+    currentConfirmationTarget.current = { signature: confirmationSignature, revision: currentConfirmationTarget.current.revision + 1 }
+  }
+  const confirmCurrent = async (options: ConfirmationOptions) => {
+    if (confirmationInFlight.current) return false
+    confirmationInFlight.current = true
+    const revision = currentConfirmationTarget.current.revision
+    try { return await requestConfirmation(options) && revision === currentConfirmationTarget.current.revision }
+    finally { confirmationInFlight.current = false }
+  }
   useEditorDirtyGuard(`list:${profileId}:${summary.key}`, dirty, onDraftStateChange)
   useEditorDraftGuard(`list:${profileId}:${summary.key}`, dirty, protectedDraft, onDraftGuardChange)
   const recoverDraft = () => {
@@ -268,7 +312,8 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
   }, [base, kind, open, summary.available, summary.key, view])
   const reload = async () => {
     if (pending || blocked) return
-    if (dirty && !window.confirm('Reloading replaces this unsaved player list. Keep the protected draft and reload?')) return
+    if (dirty && !(await confirmCurrent({ title: 'Reload player list?',
+      description: 'Reloading replaces this unsaved player list. Keep the protected draft and reload?', confirmLabel: 'Keep draft and reload' }))) return
     setPending('reload')
     setNotice(null)
     try {
@@ -329,6 +374,12 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
     } catch (error) { setNotice({ bad: true, text: errorMessage(error) }) }
     finally { setPending('') }
   }
+  const discard = async () => {
+    if (!view || !dirty || pending) return
+    if (!(await confirmCurrent({ title: 'Discard player list edits?',
+      description: 'Discard this unsaved player list and unfinished entries? The saved list stays unchanged.', confirmLabel: 'Discard list edits', destructive: true }))) return
+    accept(view); setIdentity(''); setName(''); setBulkText(''); setIgnoresPlayerLimit(false); setBulkReview(null); await protectedDraft.clear()
+  }
   return <section className="game-settings-list" aria-label={summary.label}>
     <div className="section-heading"><h4>{summary.label}</h4>
       <Button className="secondary" aria-expanded={open} disabled={blocked || !!pending}
@@ -383,10 +434,7 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
         </details>
         <small>{entries.length} of {maximumAccessEntries} player entries</small>
         {changed && <p className="helper-text">Unsaved list changes.</p>}
-        {dirty && <Button className="text-button" disabled={!!pending} onClick={() => {
-          if (!window.confirm('Discard this unsaved player list and unfinished entries? The saved list stays unchanged.')) return
-          accept(view); setIdentity(''); setName(''); setBulkText(''); setIgnoresPlayerLimit(false); setBulkReview(null); void protectedDraft.clear()
-        }}>Discard unsaved list edits</Button>}
+        {dirty && <Button className="text-button" disabled={!!pending} onClick={() => void discard()}>Discard unsaved list edits</Button>}
         <div className="actions"><Button disabled={!allowed || !changed || !!issue} onClick={() => void preview()}>
           {pending === 'preview' ? 'Reviewing…' : 'Review list changes'}</Button>
           <Button className="secondary" disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
@@ -395,6 +443,7 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
           pending={pending === 'save'} onSave={() => void save()} />}
       </>}
     </>}
+    {confirmationDialog}
   </section>
 }
 

@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button, Input } from './Controls'
 import {
@@ -123,6 +123,7 @@ type OwnerAccessDeadlineEditorProps = {
   timeZone?: string
   onSave: (request: DeviceAccessExpiryRequest) => Promise<DeviceAccessExpiryResult>
   onRefresh: () => Promise<void>
+  onDraftStateChange?: (state: { dirty: boolean; saving: boolean }) => void
 }
 
 export function OwnerAccessDeadlineEditor(props: OwnerAccessDeadlineEditorProps) {
@@ -136,13 +137,16 @@ function AccessDeadlineEditor({
   formatLocal = defaultLocalDateTime,
   timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
   onSave,
-  onRefresh
+  onRefresh,
+  onDraftStateChange
 }: OwnerAccessDeadlineEditorProps) {
   const id = useId()
   const [choice, setChoice] = useState<AccessChoice | null>(null)
   const [customLocal, setCustomLocal] = useState('')
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+  useEffect(() => { onDraftStateChange?.({ dirty: choice !== null, saving }) }, [choice, saving, onDraftStateChange])
+  useEffect(() => () => { onDraftStateChange?.({ dirty: false, saving: false }) }, [onDraftStateChange])
   const nowMs = now().getTime()
   const deadlineMs = device.accessExpiresUtc ? Date.parse(device.accessExpiresUtc) : null
   const expired = device.accessExpired || (deadlineMs !== null && deadlineMs <= nowMs)

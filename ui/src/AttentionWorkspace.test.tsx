@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render as testingRender, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ActivityEvent } from './contracts'
 import {
@@ -28,7 +28,31 @@ function memoryStorage(saved?: string): AttentionStorage & { values: Map<string,
 }
 const input = { mode: 'Host' as const, activitySource: 'host', activity: [event()], currentProblems: [problem], servers, nowMs }
 
+function openHistory() {
+  const summary = screen.getByText(/^Activity history.*\d+ notices$/)
+  if (!summary.closest('details')!.open) fireEvent.click(summary)
+}
+function render(ui: Parameters<typeof testingRender>[0]) {
+  const view = testingRender(ui)
+  openHistory()
+  return { ...view, rerender: (next: Parameters<typeof view.rerender>[0]) => { view.rerender(next); openHistory() } }
+}
+
 describe('Attention current problems and history', () => {
+  it('leads with current issues and keeps history filters and clear actions in closed disclosure', () => {
+    testingRender(<AttentionWorkspace {...input} storage={null} />)
+    const summary = screen.getByText(/^Activity history · \d+ notices$/)
+    const history = summary.closest('details')!
+    expect(history).not.toHaveAttribute('open')
+    const current = screen.getByRole('region', { name: 'Current problems' })
+    expect(within(current).getByText(problem.warning)).toBeInTheDocument()
+    expect(current.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Clear history' })).not.toBeVisible()
+    fireEvent.click(summary)
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search attention' }), { target: { value: 'no matches' } })
+    expect(within(current).getByText(problem.warning)).toBeInTheDocument()
+    expect(screen.getByText('No history notices match these filters.')).toBeInTheDocument()
+  })
   it('filters history by server/category/severity/time/search while time and read state do not hide current problems', () => {
     const events = [event(), event(2, { profileId: 'server-2' }), event(3, { occurredUtc: '2026-10-08T09:00:00Z' }),
       event(4, { category: 'Backup' }), event(5, { severity: 'Info' })]

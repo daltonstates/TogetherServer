@@ -25,6 +25,19 @@ function exposeDialog(props: ComponentProps<typeof HostSetupDialog>) {
   act(() => props.dialogRef.current!.setAttribute('open', ''))
 }
 describe('Host setup review', () => {
+  it('focuses the current world fields and keeps technical locations and support behind disclosure', () => {
+    const input = { ...propsFor({ ...profile, gamePort: 2456 }), setupStep: 'world' as const }
+    render(<HostSetupDialog {...input} />)
+    exposeDialog(input)
+    expect(screen.getByText('Step 2 of 4 · Choose your world')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: /^World name/ })).toBeVisible()
+    expect(screen.getByLabelText(/^Game password/, { selector: 'input[type="password"]' })).toBeVisible()
+    expect(screen.getByText('World locations and copy rules').closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Valheim · support and action limits').closest('details')).not.toHaveAttribute('open')
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Finish later' })).toHaveClass('text-button')
+    expect(input.onSave).not.toHaveBeenCalled()
+  })
   it('offers distinct Cancel setup and Finish later actions for the first server', () => {
     const props = propsFor(profile)
     const rendered = render(<HostSetupDialog {...props} />)

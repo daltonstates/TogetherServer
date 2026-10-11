@@ -2,17 +2,25 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ApiError, changeJson, errorMessage, getJson, getLocalJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
+import { AppSettings } from './AppSettings'
+import { SectionSidebar } from './SectionSidebar'
+import { SearchablePicker } from './SearchablePicker'
+import { appSections, hostPcSections, joinSections, workspaceDestination, type AppSection, type HostPcSection, type JoinSection } from './workspaceSections'
+import { useConfirmation } from './Confirmation'
+import { Tooltip } from './Tooltip'
+import { HostSettingsTools, type HostSettingsPatch } from './HostSettingsTools'
+import { FriendPcCard } from './FriendPcCard'
+import { SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
-import { ConnectionDoctor } from './ConnectionDoctor'
 import { FriendConnectionDoctor, FriendGameCheckResult, friendGameCheckIdentity } from './FriendConnectionDoctor'
-import { FriendPlayFlow, friendConnectionExplanation } from './FriendPlayFlow'
-import { FriendRemoteRehearsal, HostRemoteRehearsal } from './RemoteRehearsal'
+import { FriendPlayFlow, effectiveFriendPermissions, friendConnectionExplanation } from './FriendPlayFlow'
+import { FriendRemoteRehearsal } from './RemoteRehearsal'
 import { ConnectionDetails } from './ConnectionDetails'
 import { GameCompatibilityPanel } from './GameCompatibilityPanel'
 import { GameSettingsPanel } from './GameSettingsPanel'
 import { BackupCatalog } from './BackupCatalog'
-import { DesktopPreferencesPanel, UpdateDetailsPanel } from './DesktopPreferencesPanel'
+import { ServerNotificationSettings, UpdateDetailsPanel } from './DesktopPreferencesPanel'
 import { parseDesktopUpdateDetails, type DesktopUpdateDetails } from './desktopPreferencesWire'
 import { parseNotificationPreferences } from './desktopPreferencesWire'
 import { subscribeToDesktopNotifications, subscribeToDesktopDraftFlush, type DesktopNotificationTarget } from './desktopNotificationBridge'
@@ -36,7 +44,7 @@ import {
 } from './features/setup/HostSetupDialog'
 import { useHostSetup } from './features/setup/useHostSetup'
 import { defaultUiPreferences, readUiPreferences, writeUiPreferences, type UiPreferences } from './qolPreferences'
-import { ActionFeedback, AppearancePreferences, pendingDescription, TimerPresets } from './QolWidgets'
+import { ActionFeedback, pendingDescription, TimerPresets } from './QolWidgets'
 import { currentActionNotice, currentRemoteOperation, serverActionNotice, type ActionNotice } from './actionFeedback'
 import {
   parseActionResult, parseAppInstance, parseBackupSafetyResult, parseBasicResult, parseCompanionInfo, parseCustomCertificationResult,
@@ -57,6 +65,7 @@ import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
 import { ServerChat, ServerChatCardSummary, type ChatDraftState } from './ServerChat'
 import { ServerFilesPanel } from './ServerFilesPanel'
 import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
+import { SharedHostingIdentity } from './SharedHostingIdentity'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import {
@@ -81,6 +90,10 @@ import './style.css'
 import './companion.css'
 import './qol.css'
 import './core.css'
+import './settings.css'
+import './settings-integration.css'
+import './friend-access.css'
+import './redesign.css'
 
 type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
 type HostServerTab = 'overview' | 'chat' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
@@ -94,6 +107,15 @@ const hostServerTabIcons: Record<HostServerTab, IconName> = {
 }
 type ConnectionActivity = Record<string, 'copy' | 'reveal'>
 type PermissionDraft = Record<string, { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }>
+type DeviceAccessTab = 'permissions' | 'servers' | 'time' | 'details'
+const permissionLabels: Record<PermissionAction, { label: string; icon: IconName }> = {
+  canStart: { label: 'Start servers', icon: 'play' }, canStop: { label: 'Request Stop', icon: 'stop' },
+  canExtendTimer: { label: 'Add shutdown time', icon: 'clock' }, canViewLogs: { label: 'View logs', icon: 'logs' }
+}
+function serverAccessKey(ids: readonly string[], permissions: PermissionDraft) {
+  return JSON.stringify([...new Set(ids)].sort().map(id => [id, permissions[id]?.canStart ?? false,
+    permissions[id]?.canStop ?? false, permissions[id]?.canExtendTimer ?? false, permissions[id]?.canViewLogs ?? false]))
+}
 
 function MixedCheckbox({ mixed, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mixed: boolean }) {
   const ref = useRef<HTMLInputElement | null>(null)
@@ -260,6 +282,7 @@ function useModalDialog(open: boolean) {
 }
 
 export function App() {
+  const { confirm, confirmationDialog } = useConfirmation()
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(() => {
     try { return readUiPreferences(window.localStorage) }
     catch { return { ...defaultUiPreferences } }
@@ -282,16 +305,24 @@ export function App() {
   const [updateBusy, setUpdateBusy] = useState(false)
   const [notificationUnread, setNotificationUnread] = useState(false)
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>('host')
+  const [appSection, setAppSection] = useState<AppSection>('appearance')
+  const [hostScope, setHostScope] = useState<'server' | 'pc'>('server')
+  const [joinSection, setJoinSection] = useState<JoinSection>('play')
+  const [selectedFriendProfileId, setSelectedFriendProfileId] = useState('')
+  const [serverToolsProfileId, setServerToolsProfileId] = useState('')
+  const [showAllServers, setShowAllServers] = useState(false)
+  const [appSettingsBusy, setAppSettingsBusy] = useState(false)
+  const [serverNotification, setServerNotification] = useState<{ id: string; name: string; connectionId?: string } | null>(null)
+  const [serverNotificationBusy, setServerNotificationBusy] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [selectedHostProfileId, setSelectedHostProfileId] = useState(uiPreferences.selectedServer)
   const [hostServerTab, setHostServerTab] = useState<HostServerTab>(() =>
     (uiPreferences.serverTabs[uiPreferences.selectedServer] as HostServerTab | undefined) ?? 'overview')
   const [friendLogProfileId, setFriendLogProfileId] = useState('')
   const [friendChatProfileId, setFriendChatProfileId] = useState('')
+  const friendDoctorFocusRequested = useRef(false)
   const [hostMobileDetail, setHostMobileDetail] = useState(false)
-  const [serverSearch, setServerSearch] = useState('')
   const [reorderServers, setReorderServers] = useState(false)
-  const [hostSearch, setHostSearch] = useState('')
   const [deviceFilters, setDeviceFilters] = useState(defaultFriendPcFilters)
   const [actionNotices, setActionNoticeState] = useState<Record<string, ActionNotice>>({})
   const setActionNotices = useCallback<React.Dispatch<React.SetStateAction<Record<string, ActionNotice>>>>(next => {
@@ -319,13 +350,24 @@ export function App() {
     if (guard.dirty || guard.saving) draftGuards.current.set('chat', guard)
     else draftGuards.current.delete('chat')
   }, [])
-  const beforeChangingScope = async (): Promise<boolean> => {
+  const beforeChangingScope = async (reviewSettings = true): Promise<boolean> => {
+    if (appSettingsBusy || serverNotificationBusy || workspacePage === 'settings' && (desktopBusy || updateBusy)) {
+      setNotice({ good: false, text: 'Wait for the preference change to finish before leaving this page.' })
+      return false
+    }
+    if (pending === 'save-settings' || pending === 'host-flags') {
+      setNotice({ good: false, text: 'Wait for the Host preference change to finish before leaving this page.' })
+      return false
+    }
     for (const guard of draftGuards.current.values()) {
       if ((guard.dirty || guard.saving) && !await guard.flush()) {
-        setNotice({ good: false, text: 'This edit could not be saved as a protected draft. Keep editing, retry its draft save, or deliberately discard it before leaving.' })
+        setNotice({ good: false, text: 'This edit is still open. Keep editing, retry its protected draft save, or deliberately discard it before leaving.' })
         return false
       }
     }
+    if (reviewSettings && hostSettingsDraftDirty && !await confirm({ title: 'Discard unsaved Host settings?',
+      description: 'The saved Host settings remain in place. Continue editing to keep these unsaved changes.',
+      confirmLabel: 'Discard changes', cancelLabel: 'Continue editing', destructive: true })) return false
     return true
   }
   const changeScope = async (action: () => void): Promise<boolean> => {
@@ -380,6 +422,12 @@ export function App() {
   const [serverAccessDraft, setServerAccessDraft] = useState<string[]>([])
   const [serverPermissionDraft, setServerPermissionDraft] = useState<PermissionDraft>({})
   const [serverAccessSearch, setServerAccessSearch] = useState('')
+  const [serverAccessOriginal, setServerAccessOriginal] = useState('')
+  const [deviceAccessTab, setDeviceAccessTab] = useState<DeviceAccessTab>('permissions')
+  const [discardDeviceEdits, setDiscardDeviceEdits] = useState(false)
+  const [removeDeviceConfirm, setRemoveDeviceConfirm] = useState(false)
+  const [deadlineDraftState, setDeadlineDraftState] = useState({ dirty: false, saving: false })
+  const [hostSettingsDraftDirty, setHostSettingsDraftDirty] = useState(false)
   const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('app')
   const [revealedConnections, setRevealedConnections] = useState<Record<string, boolean>>({})
   const [revealedGamePasswords, setRevealedGamePasswords] = useState<Record<string, string>>({})
@@ -391,7 +439,6 @@ export function App() {
   const connectionRevealRequestRef = useRef<Record<string, number>>({})
   const addressRecoveryRef = useRef<HTMLDetailsElement>(null)
   const recoveryAddressInputRef = useRef<HTMLInputElement>(null)
-  const serverAccessRef = useModalDialog(!!serverAccessDeviceId)
   const updatePromptRef = useModalDialog(showUpdatePrompt)
   const workspaceNavigationRef = useRef<(page: WorkspacePage) => void>(() => {})
   const notificationNavigationRef = useRef<(target: DesktopNotificationTarget) => void>(() => {})
@@ -415,7 +462,22 @@ export function App() {
   }, [uiPreferences])
 
   useEffect(() => {
-    const key = `${workspacePage}:${selectedHostProfileId}:${hostServerTab}`
+    if (workspacePage !== 'join' || joinSection !== 'network') return
+    const doctor = document.querySelector<HTMLDetailsElement>('.friend-connection-doctor')
+    if (!doctor) return
+    doctor.open = true
+    if (friendDoctorFocusRequested.current) {
+      friendDoctorFocusRequested.current = false
+      doctor.querySelector('summary')?.focus()
+    }
+  }, [workspacePage, joinSection, snapshot?.mode])
+
+  const scrollConnectionId = snapshot?.mode === 'Friend' ? snapshot.connectionId : ''
+  useEffect(() => {
+    const key = workspacePage === 'settings' ? `app:${appSection}` : workspacePage === 'join'
+      ? `join:${scrollConnectionId}:${selectedFriendProfileId}:${joinSection}` : workspacePage === 'host'
+        ? hostScope === 'pc' ? `host:pc:${selectedHostProfileId}:${hostSettingsSection}` : `host:${selectedHostProfileId}:${hostServerTab}`
+        : workspacePage
     currentScrollKey.current = key
     restoringScroll.current = true
     const savedPosition = scrollPositions.current[key] ?? 0
@@ -424,7 +486,7 @@ export function App() {
       restoringScroll.current = false
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [workspacePage, selectedHostProfileId, hostServerTab])
+  }, [workspacePage, appSection, scrollConnectionId, selectedFriendProfileId, joinSection, hostScope, selectedHostProfileId, hostSettingsSection, hostServerTab])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -455,13 +517,13 @@ export function App() {
     snapshotEpochRef.current += 1
     setSnapshot(next)
   }, [])
-  const setup = useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot, onDraftGuardChange: keepEditorGuard,
+  const setup = useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot, confirm, onDraftGuardChange: keepEditorGuard,
     dataRecoveryBlocked: !!dataRecovery?.lifecycleBlocked, instance: appInstance })
   const {
     draft, dirty, passwords, customScripts, customScriptsSaved, customScriptsLoading, discovery,
     minecraftDiscovery, minecraftTerms, sourceRoots, showSetup, setupStep, minecraftSetupMode,
     showPasswords, editedProfile, setupIssues, stepIssues, customScriptsChanged, setupRef,
-    sensitiveDraft, edit, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
+    sensitiveDraft, acceptSavedSettings, setDraftIfClean, syncControlPolicy, syncDetectedPublicIp,
     synchronizeHostSnapshot, resetForMode, saveSetup, updateProfile, editCustomScripts, updateCustomPort,
     addCustomPort, removeCustomPort, browseCustomDirectory, browseFactorio, browseTerraria, applyMinecraftInstallation, scanMinecraft,
     installMinecraft, changeGameKind, addProfile, removeProfile, cancelSetup, finishSetupLater, openSetup,
@@ -471,9 +533,13 @@ export function App() {
     importReview, confirmImport, cancelImport, firstSessionProfileId, dismissFirstSessionGuide, pausedSetupProfileId
   } = setup
   const beforeLeavingApp = async () => {
-    if (!await beforeChangingScope()) return false
-    if ((sensitiveDraft || dirty && workspacePage === 'settings') && !window.confirm(
-      'Continue closing or restarting TogetherServer? Protected nonsecret setup and editor drafts are kept on this PC. Unsaved passwords, custom scripts and advanced app settings are discarded.')) return false
+    if (!await beforeChangingScope(false)) return false
+    const pcEdits = serverAccessDevice && (serverAccessDirty || deadlineDraftState.dirty ||
+      (deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() !== serverAccessDevice.name ||
+      (permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)) !== matchingPermissionPreset(serverAccessDevice))
+    if ((sensitiveDraft || dirty && hostScope === 'pc' || hostSettingsDraftDirty || pcEdits) && !await confirm({
+      title: 'Close or restart TogetherServer?', confirmLabel: 'Continue',
+      description: 'Protected nonsecret setup and editor drafts are kept on this PC. Unsaved passwords, custom scripts, settings and PC access edits are discarded.' })) return false
     return true
   }
   beforeLeavingAppRef.current = beforeLeavingApp
@@ -575,13 +641,14 @@ export function App() {
     catch { /* An update check must not interrupt hosting or joining. */ }
   }, 30 * 60 * 1000)
 
-  const checkUpdate = async () => {
+  const checkUpdate = async (review = true) => {
     setUpdateBusy(true)
     try {
       const result = await changeJson('/api/local/update/check', 'POST', parseDesktopUpdateDetails)
       setUpdate(result)
-      if (result.state === 'Available') setShowUpdatePrompt(true)
+      if (result.state === 'Available' && review) setShowUpdatePrompt(true)
       if (result.state !== 'Available') setNotice({ good: result.state === 'Current' || result.state === 'NoRelease', text: result.message })
+      return result
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setUpdateBusy(false) }
   }
@@ -606,6 +673,7 @@ export function App() {
   const selectHostServer = (id: string, tab?: HostServerTab) => {
     void changeScope(() => {
       setWorkspacePage('host')
+      setHostScope('server')
       setSelectedHostProfileId(id)
       setHostServerTab(tab ?? (uiPreferences.serverTabs[id] as HostServerTab | undefined) ?? 'overview')
       setHostMobileDetail(true)
@@ -615,6 +683,8 @@ export function App() {
   }
   const selectHostTab = (tab: HostServerTab) => {
     void changeScope(() => {
+      setHostScope('server')
+      setWorkspacePage('host')
       setHostServerTab(tab)
       if (selectedHostProfileId) setUiPreferences(current => ({ ...current,
         serverTabs: { ...current.serverTabs, [selectedHostProfileId]: tab } }))
@@ -633,13 +703,14 @@ export function App() {
     ;[order[index], order[target]] = [order[target], order[index]]
     setUiPreferences(current => ({ ...current, serverOrder: order.slice(0, 100) }))
   }
-  const confirmOwnerLifecycle = (profileId: string, action: 'Stop' | 'Restart'): boolean => {
+  const confirmOwnerLifecycle = async (profileId: string, action: 'Stop' | 'Restart'): Promise<boolean> => {
     if (snapshot?.mode !== 'Host') return false
     const profile = snapshot.settings.profiles.find(item => item.id === profileId)
     const run = snapshot.runs.find(item => item.profileId === profileId)
     const count = run ? playerCountAvailability(run, Date.now()).count : null
     const players = count !== null ? `${count} reported player${count === 1 ? '' : 's'}` : 'Player count Unknown'
-    return window.confirm(`${action} ${profile?.name ?? 'this server'}?\n\n${players}. Connected players will be interrupted. The app requests a graceful stop; final game-save integrity is not established by an exit alone.${action === 'Restart' ? '\nChoose Safe restart instead if you want a verified offline checkpoint before Start.' : ''}`)
+    return confirm({ title: `${action} ${profile?.name ?? 'this server'}?`, confirmLabel: `${action} server`, destructive: true,
+      description: `${players}. Connected players will be interrupted. The app requests a graceful stop; final game-save integrity is not established by an exit alone.${action === 'Restart' ? '\nChoose Safe restart instead if you want a verified offline checkpoint before Start.' : ''}` })
   }
 
   const clearNotificationActivity = () => {
@@ -835,7 +906,8 @@ export function App() {
   const issueInvite = async (profileId: string, refresh = false, useSavedApproval = false): Promise<string | null> => {
     currentOperationProfile.current.invite = profileId
     const serverName = snapshot?.mode === 'Host' ? snapshot.settings.profiles.find(profile => profile.id === profileId)?.name ?? 'this server' : 'this server'
-    if (refresh && !window.confirm(`Replace the code for ${serverName}?\n\nPCs originally paired through this old code lose their entire device access, including other assigned servers, and must pair again. PCs paired through other server codes keep access. To remove one PC, use Friend access instead.`)) return null
+    if (refresh && !await confirm({ title: `Replace the code for ${serverName}?`, confirmLabel: 'Replace code', destructive: true,
+      description: 'PCs originally paired through this old code lose their entire device access, including other assigned servers, and must pair again. PCs paired through other server codes keep access. To remove one PC, use Friend access instead.' })) return null
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), 20_000)
     setPending('invite')
@@ -880,7 +952,6 @@ export function App() {
     } finally { window.clearTimeout(timeout); setPending('') }
   }
   const revokeDevice = async (id: string) => {
-    if (!window.confirm('Revoke this Friend device now? Its next request will be denied.')) return
     setPending(id)
     try {
       const result = await change(`/api/local/devices/${id}/revoke`, 'POST')
@@ -919,18 +990,13 @@ export function App() {
         globalPermissionRequest(device, action, value))
       setNotice({ good: result.ok, text: result.message })
       setActionNotices(current => ({ ...current, [device.id]: { good: result.ok, text: result.message } }))
+      if (result.ok) setPermissionPresetDraft(current => { const next = { ...current }; delete next[device.id]; return next })
       await refreshCompanion()
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }); setActionNotices(current => ({ ...current, [device.id]: { good: false, text: errorMessage(error) } })) }
     finally { setPending('') }
   }
   const applyDevicePermissionPreset = async (device: Device, preset: PermissionPreset) => {
-    if (preset === 'custom') return
-    const requested = permissionPresetRequest(preset)
-    const rows = (['canStart', 'canStop', 'canExtendTimer', 'canViewLogs'] as PermissionAction[]).map(action => {
-      const before = permissionMix(device, action)
-      return `${({ canStart: 'Start', canStop: 'Request Stop', canExtendTimer: 'Add time', canViewLogs: 'View logs' })[action]}: ${before.mixed ? 'server exceptions' : before.all ? 'allowed' : 'off'} → ${requested[action] ? 'allowed' : 'off'}`
-    })
-    if (!window.confirm(`Apply ${permissionPresets[preset].label} to ${device.name}?\n\n${rows.join('\n')}\n\nApplies to ${device.assignedProfileIds.length} assigned servers and clears per-server exceptions. Current access expiry and server safety checks still apply.`)) return
+    if (preset === 'custom' || device.temporaryHelperActive || device.revoked || !device.paired || device.approvalPending) return
     setPending(device.id)
     try {
       const result = await change(`/api/local/devices/${device.id}/permissions`, 'PUT',
@@ -993,6 +1059,7 @@ export function App() {
       if (result.ok) {
         setFriendInvite('')
         setShowPairing(false)
+        setJoinSection('play')
         await changeJson('/api/local/friend/poll', 'POST', parseFriendSnapshot)
         applySnapshot(await readSnapshot())
       }
@@ -1019,6 +1086,7 @@ export function App() {
       if (!result.ok) { setNotice({ good: false, text: result.message }); return false }
       else {
         setShowPairing(false)
+        setJoinSection('play')
         applySnapshot(await readSnapshot())
         return true
       }
@@ -1041,11 +1109,14 @@ export function App() {
     finally { setPending('') }
   }
   const openFriendAddressRecovery = () => {
-    if (addressRecoveryRef.current) {
-      addressRecoveryRef.current.open = true
-      addressRecoveryRef.current.scrollIntoView({ block: 'center' })
-    }
-    recoveryAddressInputRef.current?.focus()
+    void changeScope(() => {
+      setJoinSection('connection')
+      setShowPairing(false)
+      window.requestAnimationFrame(() => {
+        if (addressRecoveryRef.current) addressRecoveryRef.current.open = true
+        recoveryAddressInputRef.current?.focus()
+      })
+    })
   }
   const renameFriendConnection = async () => {
     if (snapshot?.mode !== 'Friend' || !snapshot.connectionId) return
@@ -1060,7 +1131,8 @@ export function App() {
   }
   const forgetFriendConnection = async () => {
     if (snapshot?.mode !== 'Friend' || !snapshot.connectionId ||
-        !window.confirm('Forget this saved Host? TogetherServer will first try to revoke this PC on the Host.')) return
+        !await confirm({ title: 'Forget this saved Host?', confirmLabel: 'Forget Host', destructive: true,
+          description: 'TogetherServer will first try to revoke this PC on the Host.' })) return
     if (!await beforeChangingScope()) return
     setPending('forget-connection')
     try {
@@ -1088,6 +1160,20 @@ export function App() {
     } finally { setPending('') }
   }
   const friendAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'replace' | 'extend' | 'refresh') => {
+    if (snapshot?.mode !== 'Friend') return
+    const selected = snapshot.profiles.find(profile => profile.id === id)
+    if (!selected) return
+    const permissions = effectiveFriendPermissions(snapshot, selected, Date.now())
+    if (action === 'start' || action === 'stop' || action === 'restart' || action === 'extend') {
+      if (!permissions.actions[action].available) {
+        setNotice({ good: false, text: permissions.actions[action].reason })
+        return
+      }
+    }
+    if (action === 'replace' && (!permissions.currentAccess || !permissions.grants.start || !snapshot.remoteControlsEnabled || selected.maintenanceEnabled)) {
+      setNotice({ good: false, text: 'A fresh Host connection and Start permission are required to switch servers.' })
+      return
+    }
     const key = `friend-${action}-${id}`
     setPending(key)
     if (action === 'stop' || action === 'restart') hideConnectionDetails(`friend-${snapshot?.mode === 'Friend' ? snapshot.connectionId : ''}-${id}-address`)
@@ -1107,7 +1193,8 @@ export function App() {
   }
   const switchMode = async (mode: 'host' | 'friend') => {
     const epoch = ++navigationEpoch.current
-    if ((dirty || sensitiveDraft) && !window.confirm('Keep a protected nonsecret setup draft and change pages? Unsaved passwords, custom scripts and advanced app settings are discarded.')) return false
+    if ((dirty || sensitiveDraft) && !await confirm({ title: 'Keep a draft and change pages?', confirmLabel: 'Keep draft and continue',
+      description: 'A protected nonsecret setup draft stays on this PC. Unsaved passwords, custom scripts and advanced app settings are discarded.' })) return false
     if (!await beforeChangingScope() || epoch !== navigationEpoch.current) return false
     modeSwitchesInFlight.current += 1
     setPending('mode')
@@ -1124,6 +1211,8 @@ export function App() {
         setRevealedGamePasswords({})
         applySnapshot(next)
         resetForMode(next)
+        if (mode === 'host') setHostScope('server')
+        else setJoinSection('play')
         setWorkspacePage(mode === 'host' ? 'host' : 'join')
         return true
       }
@@ -1211,7 +1300,8 @@ export function App() {
     const run = snapshot?.mode === 'Host' ? snapshot.runs.find(item => item.profileId === profileId) : undefined
     const count = run ? playerCountAvailability(run, Date.now()).count : null
     const impact = count !== null ? `${count} reported players` : 'Player count Unknown'
-    if (!window.confirm(`${impact}. Safe restart interrupts connected players, gracefully stops the server, creates an offline checkpoint, then starts it again. A checkpoint failure leaves it offline. Continue?`)) return
+    if (!await confirm({ title: 'Restart with a checkpoint?', confirmLabel: 'Safe restart', destructive: true,
+      description: `${impact}. Safe restart interrupts connected players, gracefully stops the server, creates an offline checkpoint, then starts it again. A checkpoint failure leaves it offline.` })) return
     setPending(`safe-restart-${profileId}`)
     setNotice(null)
     try {
@@ -1306,28 +1396,52 @@ export function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const openDeviceServerAccess = (device: Device) => {
+  const prepareDeviceServerAccess = (device: Device) => {
     const savedIds = new Set(snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : [])
-    setNotice(null)
-    setServerAccessSearch('')
-    setServerAccessDraft(device.assignedProfileIds.filter(id => savedIds.has(id)))
-    setServerPermissionDraft(Object.fromEntries([...savedIds].map(profileId => {
+    const ids = device.assignedProfileIds.filter(id => savedIds.has(id))
+    const permissions = Object.fromEntries([...savedIds].map(profileId => {
       const permission = devicePermission(device, profileId)
       return [profileId, { canStart: permission.canStart, canStop: permission.canStop,
         canExtendTimer: permission.canExtendTimer, canViewLogs: permission.canViewLogs }]
-    })))
+    }))
+    setServerAccessSearch('')
+    setServerAccessDraft(ids)
+    setServerPermissionDraft(permissions)
+    setServerAccessOriginal(serverAccessKey(ids, permissions))
+  }
+  const openDeviceServerAccess = (device: Device) => {
+    setNotice(null)
+    prepareDeviceServerAccess(device)
+    setDeviceNames(current => ({ ...current, [device.id]: device.name }))
+    setPermissionPresetDraft(current => ({ ...current, [device.id]: matchingPermissionPreset(device) }))
+    setDeviceAccessTab('permissions')
+    setDiscardDeviceEdits(false)
+    setRemoveDeviceConfirm(false)
+    setDeadlineDraftState({ dirty: false, saving: false })
     setServerAccessDeviceId(device.id)
   }
-  const closeDeviceServerAccess = () => {
-    if (pending) return
+  const finishDeviceServerAccess = () => {
+    if (pending || deadlineDraftState.saving) return
     setServerAccessDeviceId('')
     setServerAccessDraft([])
     setServerPermissionDraft({})
     setServerAccessSearch('')
+    setDiscardDeviceEdits(false)
+    setRemoveDeviceConfirm(false)
     setNotice(null)
   }
+  const closeDeviceServerAccess = () => {
+    if (pending || deadlineDraftState.saving) return
+    if (serverAccessDirty || deadlineDraftState.dirty || serverAccessDevice && ((deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() !== serverAccessDevice.name ||
+      (permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)) !== matchingPermissionPreset(serverAccessDevice))) {
+      setDiscardDeviceEdits(true)
+      return
+    }
+    finishDeviceServerAccess()
+  }
   const saveDeviceServerAccess = async () => {
-    if (!serverAccessDeviceId || !serverAccessDevice || serverAccessDevice.temporaryHelperActive || serverAccessDevice.revoked) return
+    if (!serverAccessDeviceId || !serverAccessDevice || serverAccessDevice.temporaryHelperActive || serverAccessDevice.revoked ||
+      !serverAccessDevice.paired || serverAccessDevice.approvalPending || !serverAccessDirty) return
     setPending(serverAccessDeviceId)
     try {
       const result = await change(`/api/local/devices/${serverAccessDeviceId}/servers`, 'PUT',
@@ -1339,12 +1453,11 @@ export function App() {
           canViewLogs: serverPermissionDraft[profileId]?.canViewLogs ?? serverAccessDevice?.canViewLogs ?? false
         })) })
       setNotice({ good: result.ok, text: result.message })
+      setActionNotices(current => ({ ...current, [serverAccessDeviceId]: { good: result.ok, text: result.message } }))
       await refreshCompanion()
       if (result.ok) {
-        setServerAccessDeviceId('')
-        setServerAccessDraft([])
-        setServerPermissionDraft({})
-        setServerAccessSearch('')
+        setServerAccessOriginal(serverAccessKey(serverAccessDraft, serverPermissionDraft))
+        setDiscardDeviceEdits(false)
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
@@ -1375,13 +1488,22 @@ export function App() {
     finally { setPending('') }
   }
 
-  const changeRoute = (mode: Settings['connectionRoute']['mode'], address = '') => {
-    if (!draft) return
-    const selected = address.trim()
-    const endpoint = selected ? `https://${selected}:${draft.companionPort}` :
-      mode === 'DirectInternet' && draft.publicGameIp ? `https://${draft.publicGameIp}:${draft.companionPort}` : draft.companionEndpoint
-    edit({ ...draft, connectionRoute: { mode, address: selected }, companionEndpoint: endpoint,
-      companionBindAddress: mode === 'DirectInternet' ? '0.0.0.0' : selected || draft.companionBindAddress })
+  const saveSettingsPatch = async (patch: HostSettingsPatch): Promise<boolean> => {
+    if (snapshot?.mode !== 'Host' || pending || dirty) return false
+    setPending('save-settings')
+    setNotice(null)
+    try {
+      const result = await changeAction('/api/local/settings', 'PUT', { ...snapshot.settings, ...patch })
+      applySnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) {
+        acceptSavedSettings(result.snapshot.settings)
+        void checkPorts()
+        return true
+      }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+    finally { setPending('') }
+    return false
   }
   const certificateAction = async (action: 'stage' | 'activate' | 'retire-previous') => {
     setPending(`certificate-${action}`)
@@ -1396,18 +1518,21 @@ export function App() {
     void changeScope(() => {
       setNotice(null)
       setHostSettingsSection(section)
-      setWorkspacePage('settings')
+      if (section === 'app') { setAppSection('appearance'); setWorkspacePage('settings') }
+      else { setHostScope('pc'); setWorkspacePage('host') }
     })
     if (!routeDiscovery) void getJson('/api/local/network/routes', parseRouteDiscovery)
       .then(setRouteDiscovery)
       .catch(() => { /* Manual route entry remains available. */ })
   }
-  const closeHostSettings = () => {
+  const closeHostSettings = async () => {
     if (!snapshot) return
-    if (snapshot.mode === 'Host' && dirty && !window.confirm('Discard unsaved advanced settings?')) return
+    if (snapshot.mode === 'Host' && dirty && !await confirm({ title: 'Discard unsaved advanced settings?',
+      description: 'The saved settings remain in place.', confirmLabel: 'Discard changes', destructive: true })) return
     void changeScope(() => {
       if (snapshot.mode === 'Host') acceptSavedSettings(snapshot.settings)
       setNotice(null)
+      setHostScope('server')
       setWorkspacePage(snapshot.mode === 'Host' ? 'host' : 'join')
     })
   }
@@ -1429,13 +1554,24 @@ export function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
 
+  const selectJoinSection = (section: JoinSection) => {
+    void changeScope(() => {
+      setJoinSection(section)
+      setShowPairing(section === 'pairing')
+      const profileId = selectedFriendProfile?.id ?? ''
+      if (section === 'chat') setFriendChatProfileId(profileId)
+      if (section === 'logs') setFriendLogProfileId(profileId)
+    })
+  }
+
   const navigateWorkspace = (page: WorkspacePage) => {
     if (page === 'attention' || page === 'settings' ||
       (page === 'host' && snapshot?.mode === 'Host' && modeSwitchesInFlight.current === 0) ||
       (page === 'join' && snapshot?.mode === 'Friend' && modeSwitchesInFlight.current === 0)) {
       void changeScope(() => {
         if (page === 'attention') setNotificationUnread(false)
-        if (page === 'settings') setHostSettingsSection('app')
+        if (page === 'settings') setAppSection('appearance')
+        if (page === 'host') setHostScope('server')
         setWorkspacePage(page)
       })
       return
@@ -1455,10 +1591,12 @@ export function App() {
       }
       if (destination.workspace === 'settings') {
         setHostSettingsSection(destination.section)
-        setWorkspacePage('settings')
+        setHostScope('pc')
+        setWorkspacePage('host')
         return
       }
       setHostServerTab(destination.section)
+      setHostScope('server')
       setHostMobileDetail(true)
       setWorkspacePage('host')
     })
@@ -1468,24 +1606,24 @@ export function App() {
     if (destination) openActivityDestination(destination)
   }
   const openFriendConnectionDoctor = () => {
-    const doctor = document.querySelector<HTMLDetailsElement>('.friend-connection-doctor')
-    if (!doctor) return
-    doctor.open = true
-    doctor.scrollIntoView({ block: 'start' })
-    doctor.querySelector('summary')?.focus()
+    friendDoctorFocusRequested.current = true
+    void changeScope(() => { setJoinSection('network'); setWorkspacePage('join') })
   }
   const openFriendServer = (profileId: string) => {
     if (snapshot?.mode !== 'Friend' || !snapshot.profiles.some(profile => profile.id === profileId)) return
     void changeScope(() => {
       setWorkspacePage('join')
+      setSelectedFriendProfileId(profileId)
+      setJoinSection('play')
+      setShowPairing(false)
       window.requestAnimationFrame(() => document.getElementById(`friend-server-${profileId}`)?.scrollIntoView({ block: 'start' }))
     })
   }
   notificationNavigationRef.current = target => {
     void (async () => {
       if (!await beforeChangingScope()) return
-      const expectedMode = target.workspace === 'host' || target.workspace === 'settings' &&
-        (target.section !== 'app' || target.profileId !== null) ? 'Host' : target.workspace === 'join' ? 'Friend' : null
+      const destination = workspaceDestination(target)
+      const expectedMode = destination.workspace === 'host' ? 'Host' : destination.workspace === 'join' ? 'Friend' : null
       if (expectedMode && snapshot?.mode !== expectedMode && !await switchMode(expectedMode === 'Host' ? 'host' : 'friend')) return
       let current = await readSnapshot()
       if (target.workspace === 'join') {
@@ -1501,6 +1639,9 @@ export function App() {
         applySnapshot(current)
         await changeScope(() => {
           setWorkspacePage('join')
+          setShowPairing(false)
+          if (destination.workspace === 'join') setJoinSection(destination.section)
+          if (target.profileId) setSelectedFriendProfileId(target.profileId)
           if (target.section === 'chat' && target.profileId) setFriendChatProfileId(target.profileId)
           if (target.section === 'logs' && target.profileId) setFriendLogProfileId(target.profileId)
           window.requestAnimationFrame(() => {
@@ -1514,19 +1655,21 @@ export function App() {
           })
         })
       } else {
-        if (target.profileId && (current.mode !== 'Host' || !current.settings.profiles.some(profile => profile.id === target.profileId))) return
+        if (destination.workspace === 'host' && target.profileId && (current.mode !== 'Host' || !current.settings.profiles.some(profile => profile.id === target.profileId))) return
         applySnapshot(current)
         await changeScope(() => {
-          if (target.workspace === 'host') {
+          if (destination.workspace === 'host') {
             if (current.mode !== 'Host') return
             if (target.profileId) setSelectedHostProfileId(target.profileId)
-            setHostServerTab(target.section as HostServerTab)
-            if (target.profileId) setUiPreferences(current => ({ ...current, selectedServer: target.profileId!,
+            setHostScope(destination.scope)
+            if (destination.scope === 'pc') setHostSettingsSection(destination.section as HostPcSection)
+            else setHostServerTab(destination.section as HostServerTab)
+            if (target.profileId && destination.scope === 'server') setUiPreferences(current => ({ ...current, selectedServer: target.profileId!,
               serverTabs: { ...current.serverTabs, [target.profileId!]: target.section } }))
             setHostMobileDetail(true)
             setWorkspacePage('host')
           } else {
-            setHostSettingsSection(target.section as HostSettingsSection)
+            if (destination.workspace === 'settings') setAppSection(destination.section)
             setWorkspacePage('settings')
           }
         })
@@ -1568,6 +1711,7 @@ export function App() {
     })
   }, [liveConnectionKeySignature])
   const serverAccessDevice = companion?.devices.find(device => device.id === serverAccessDeviceId && !device.revoked)
+  const serverAccessDirty = !!serverAccessDeviceId && serverAccessKey(serverAccessDraft, serverPermissionDraft) !== serverAccessOriginal
   const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
     `${profile.name} ${profileGameLabel(profile)}`.toLocaleLowerCase().includes(normalizedServerSearch))
@@ -1590,14 +1734,13 @@ export function App() {
   const updateBlockedReason = dirty ? 'Save setup changes before updating.' :
     activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined
   const selectedHostProfile = savedProfiles.find(profile => profile.id === selectedHostProfileId) ?? savedProfiles[0]
+  const selectedFriendProfile = snapshot?.mode === 'Friend' ? snapshot.profiles.find(profile => profile.id === selectedFriendProfileId) ?? snapshot.profiles[0] : undefined
   const selectedHostRun = snapshot?.mode === 'Host' && selectedHostProfile
     ? snapshot.runs.find(run => run.profileId === selectedHostProfile.id) : undefined
   const storageWarnings = snapshot?.mode === 'Host' ? snapshot.storageHealth?.warnings ?? [] : []
   const hostOverviewRows = snapshot?.mode === 'Host' ? allServerRows(snapshot, nowMs) : []
   const currentProblems = hostOverviewRows.filter(row => row.priority > 20)
-  const serversNeedingAttention = hostOverviewRows.filter(row => row.priority > 0).length
-  const visibleHostProfiles = [...savedProfiles].filter(profile =>
-    `${profile.name} ${profile.kind} ${profile.worldId}`.toLocaleLowerCase().includes(serverSearch.trim().toLocaleLowerCase()))
+  const visibleHostProfiles = [...savedProfiles]
     .sort((a, b) => Number(uiPreferences.favoriteServers.includes(b.id)) - Number(uiPreferences.favoriteServers.includes(a.id)) ||
       (uiPreferences.serverOrder.includes(a.id) ? uiPreferences.serverOrder.indexOf(a.id) : savedProfiles.indexOf(a) + 100) -
       (uiPreferences.serverOrder.includes(b.id) ? uiPreferences.serverOrder.indexOf(b.id) : savedProfiles.indexOf(b) + 100))
@@ -1608,7 +1751,7 @@ export function App() {
     { id: 'nav-host', label: 'Open Host', detail: 'Manage servers on this PC', icon: 'server', keywords: 'Alt+1', run: () => navigateWorkspace('host') },
     { id: 'nav-join', label: 'Open Join', detail: 'Connect to a friend without interrupting hosting', icon: 'link', keywords: 'Alt+2', run: () => navigateWorkspace('join') },
     { id: 'nav-attention', label: 'Open Attention Center', detail: `${attentionCount} current item${attentionCount === 1 ? '' : 's'}`, icon: 'bell', keywords: 'notifications activity Alt+3', run: () => navigateWorkspace('attention') },
-    { id: 'nav-settings', label: 'Open Settings', detail: 'App, access, timer, and connection settings', icon: 'settings', keywords: 'Alt+4 preferences', run: () => navigateWorkspace('settings') },
+    { id: 'nav-settings', label: 'Open App Settings', detail: 'Appearance and PC-wide preferences', icon: 'settings', keywords: 'Alt+4 preferences', run: () => navigateWorkspace('settings') },
     { id: 'add-server', label: 'Add a server', detail: 'Open the guided Host setup', icon: 'server', disabled: snapshot?.mode !== 'Host' || !!pending || dirty,
       run: () => void changeScope(() => { setWorkspacePage('host'); addProfile() }) },
     { id: 'refresh-connections', label: 'Refresh connection details', detail: 'Run the existing read-only Host checks', icon: 'refresh', disabled: snapshot?.mode !== 'Host' || !!pending,
@@ -1646,26 +1789,44 @@ export function App() {
     }, { profileId, kind: game })
     return result
   }
-  const pageTitle = workspacePage === 'host' ? 'Host' : workspacePage === 'join' ? 'Join' : workspacePage === 'attention' ? 'Attention Center' : 'Settings'
+  const openSharedHost = async (profileId: string, setup: boolean) => {
+    try {
+      if (snapshot?.mode !== 'Host' && !await switchMode('host')) return
+      const current = await readSnapshot()
+      applySnapshot(current)
+      if (current.mode !== 'Host') return
+      if (current.settings.profiles.some(profile => profile.id === profileId)) {
+        await changeScope(() => {
+          setSelectedHostProfileId(profileId)
+          setHostServerTab('overview')
+          setUiPreferences(preferences => ({ ...preferences, selectedServer: profileId,
+            serverTabs: { ...preferences.serverTabs, [profileId]: 'overview' } }))
+          setHostScope(setup ? 'pc' : 'server')
+          if (setup) setHostSettingsSection('network')
+          setWorkspacePage('host')
+        })
+      } else {
+        setNotice({ good: false, text: 'This PC has not prepared this world as a local Host server yet. Complete the shared-save preparation steps first.' })
+        if (setup) openHostSettings('network')
+      }
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
+  }
+  const pageTitle = workspacePage === 'host' ? 'Host' : workspacePage === 'join' ? 'Join' : workspacePage === 'attention' ? 'Attention' : 'App Settings'
   const pageDescription = workspacePage === 'host'
     ? savedProfiles.length === 0 ? 'Create a server to play with friends.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server to start hosting.'
     : workspacePage === 'join' ? 'Connect to a friend’s server and get ready to play.'
       : workspacePage === 'attention' ? 'Updates, notices, and recent Host or Friend activity in one place.'
-        : 'Application preferences and Host controls stay in one full-window workspace.'
+        : 'Appearance and preferences for this PC.'
 
-  return <div className={appInstance?.isStaging ? 'shell staging-shell' : 'shell'}>
+  return <div className={appInstance?.isStaging ? 'shell app-shell staging-shell' : 'shell app-shell'}>
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><span><strong>{appInstance?.displayName ?? 'TogetherServer'}</strong><small>Game server workspace</small></span></div>
-      <nav className="mode-switch legacy-mode-switch" aria-label="App pages">
-        <Button aria-current={snapshot?.mode === 'Host' ? 'page' : undefined} className={snapshot?.mode === 'Host' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Host'} onClick={() => void switchMode('host')}><span className={activeRuns ? 'mode-dot active' : 'mode-dot'} />Host{activeRuns ? ` · ${activeRuns}` : ''}</Button>
-        <Button aria-current={snapshot?.mode === 'Friend' ? 'page' : undefined} className={snapshot?.mode === 'Friend' ? 'selected' : ''} disabled={!!pending || snapshot?.mode === 'Friend'} onClick={() => void switchMode('friend')}>Join</Button>
-      </nav>
       <HeaderTools>
         <details className="notification-menu" onToggle={event => { if (event.currentTarget.open) setNotificationUnread(false) }}>
-          <summary aria-label={notificationUnread ? 'Notifications, new activity' : 'Notifications'} title={notificationUnread ? 'New activity' : 'Notifications'}>
+          <Tooltip content={notificationUnread ? 'Notifications, new activity' : 'Notifications'}><summary aria-label={notificationUnread ? 'Notifications, new activity' : 'Notifications'}>
             <Icon name="bell" size={19} />
             {notificationUnread && <span className="notification-badge"><span className="sr-only">New activity</span></span>}
-          </summary>
+          </summary></Tooltip>
           <div className="notification-panel">
             <div className="notification-panel-heading"><div><strong>Notifications</strong><small>Recent app and connection activity</small></div>{visibleActivity.length > 0 && <Button className="text-button" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
             {update?.state === 'Available' && <div className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></div>}
@@ -1674,12 +1835,7 @@ export function App() {
             {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && <p className="notification-empty">No recent activity.</p>}
           </div>
         </details>
-        <details className="app-menu"><summary aria-label="App settings" title="App settings"><Icon name="settings" size={19} /></summary><div className="app-menu-panel"><strong>App settings</strong>
-          <div className="app-version"><span>Version {update?.currentVersion ?? 'checking…'}</span><Button className="text-button" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking…' : 'Check for updates'}</Button></div>
-          <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} />Open at Windows sign-in</label><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small>
-          <label className="check-row"><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} />Close to tray</label><small>Hosting and Friend checks keep running.</small>
-          <Button className="app-menu-quit" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button>
-        </div></details>
+        <Button className="secondary icon-button app-settings-trigger" aria-label="App settings" title="App Settings" onClick={() => navigateWorkspace('settings')}><Icon name="settings" size={19} /></Button>
         <Button className="command-trigger" aria-label="Commands" title="Commands (Ctrl K)" onClick={() => setCommandPaletteOpen(true)}><Icon name="search" size={16} /><span>Commands</span><kbd>Ctrl K</kbd></Button>
       </HeaderTools>
     </header>
@@ -1700,9 +1856,7 @@ export function App() {
       <WorkspaceNavigation page={workspacePage} activeRuns={activeRuns} unread={notificationUnread} onNavigate={navigateWorkspace} />
       <main className="workspace-main"><div className="workspace-scroll" ref={scrollContainer}
         onScroll={event => { if (!restoringScroll.current) scrollPositions.current[currentScrollKey.current] = event.currentTarget.scrollTop }}>
-      <div className="page-heading"><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
-        {workspacePage === 'host' && savedProfiles.length > 0 && <div className="page-heading-actions"><Button className="secondary" disabled={!!pending || dirty} onClick={addProfile}><Icon name="plus" />Add server</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => navigateWorkspace('join')}><Icon name="link" />Join a server</Button></div>}
-        {workspacePage === 'join' && <div className="page-heading-actions"><Button className="secondary" disabled={!!pending} onClick={() => navigateWorkspace('host')}><Icon name="server" />Host a server</Button></div>}
+      <div className={workspacePage === 'host' || workspacePage === 'join' ? 'page-heading sr-only' : 'page-heading'}><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
       </div>
 
       {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
@@ -1721,8 +1875,8 @@ export function App() {
           <div className="choices">{snapshot.startupRecovery.items.map(item => {
             const profile = snapshot.settings.profiles.find(candidate => candidate.id === item.profileId)
             return <div className="choice" key={item.profileId}><span><strong>{profile?.name ?? 'Saved server'} · {item.state}</strong><small>{item.detail}</small></span>
-              {item.canResume && <Button disabled={!!pending || dirty} onClick={() => {
-                if (window.confirm('Resume hosting through the normal Start checks? TogetherServer will never start a second copy of a process it reattached to.'))
+              {item.canResume && <Button disabled={!!pending || dirty} onClick={async () => {
+                if (await confirm({ title: 'Resume hosting?', confirmLabel: 'Resume hosting', description: 'TogetherServer uses the normal Start checks and will never start a second copy of a process it reattached to.' }))
                   void run(`resume-${item.profileId}`, `/api/local/profiles/${item.profileId}/resume-hosting`, 'POST')
               }}>{pending === `resume-${item.profileId}` ? 'Resuming…' : 'Resume hosting'}</Button>}</div>
           })}</div>
@@ -1747,42 +1901,48 @@ export function App() {
         </details>}
       </AttentionWorkspace></PaneErrorBoundary>}
 
-      {workspacePage === 'settings' && snapshot?.mode === 'Friend' && <section className="settings-workspace" aria-labelledby="friend-app-settings-title">
-        <div className="modal-heading"><div><h2 id="friend-app-settings-title">App settings</h2><p>Windows behavior and update preferences for this app.</p></div><Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>Back to Join</Button></div>
-        <div className="settings-content"><section className="settings-section app-settings-page"><h3>Application</h3><AppearancePreferences value={uiPreferences} onChange={setUiPreferences} />
-          <DesktopPreferencesPanel servers={snapshot.profiles.map(profile => ({ id: profile.id, name: profile.name, connectionId: snapshot.connectionId }))}
-            quietMode={uiPreferences.quietMode} onQuietModeChange={quietMode => setUiPreferences(current => ({ ...current, quietMode }))} />
-          {update && <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={reloadUpdate} />}
-          <div className="app-settings-grid">
-            <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} /></label>
-            <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
-          </div>
-          <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : `Updates install only when you choose · ${update?.publisherTrust ?? 'checking trust'}. A verified local-state checkpoint is required before replacement.`}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
-          <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Hosted servers on this PC still keep the existing Quit guard.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
-          <div className="shortcut-reference"><strong>Keyboard shortcuts</strong><span><kbd>Ctrl K</kbd> Command palette</span><span><kbd>Alt 1</kbd> Host</span><span><kbd>Alt 2</kbd> Join</span><span><kbd>Alt 3</kbd> Attention</span><span><kbd>Alt 4</kbd> Settings</span><span><kbd>Esc</kbd> Close or go back</span></div>
-        </section></div>
+      {workspacePage === 'settings' && snapshot && <section className="context-workspace app-settings-workspace" aria-label="App Settings">
+        <aside className="context-sidebar"><SectionSidebar title="App Settings" label="App settings sections"
+          sections={appSections} section={appSection} onSelect={section => void changeScope(() => setAppSection(section))} /></aside>
+        <div className="context-content settings-content"><AppSettings preferences={uiPreferences} onPreferencesChange={setUiPreferences}
+          section={appSection} onSectionChange={section => void changeScope(() => setAppSection(section))} onBusyChange={setAppSettingsBusy}
+          servers={[]} desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
+          onDesktopChange={patch => void saveDesktopPreference(patch)} notice={notice} onClearNotice={() => setNotice(null)}
+          onCheckUpdate={async () => (await checkUpdate(false))?.state === 'Available'} onReviewUpdate={() => setShowUpdatePrompt(true)} onReloadUpdate={reloadUpdate} onQuit={() => void quitApp()} /></div>
       </section>}
 
-      {workspacePage === 'join' && snapshot?.mode === 'Friend' && <>
-        {(snapshot.connections?.length ?? 0) > 0 && <section className="panel saved-connections"><div className="section-heading"><div><h2>Saved Hosts</h2><p>Choose a Host to see its assigned servers.</p></div></div>
-          <label className="host-filters">Find Host<Input value={hostSearch} onChange={event => setHostSearch(event.target.value)} placeholder="Host name, server, or game" /></label>
-          <div className="choices">{[...snapshot.connections!].filter(connection => `${connection.connectionName ?? ''} ${connection.profiles.map(profile => `${profile.name} ${profile.kind}`).join(' ')}`.toLocaleLowerCase().includes(hostSearch.trim().toLocaleLowerCase()))
-            .sort((a, b) => Number(uiPreferences.favoriteHosts.includes(b.connectionId)) - Number(uiPreferences.favoriteHosts.includes(a.connectionId))).map(connection => <div className="choice" key={connection.connectionId}>
-            <span><strong>{connection.connectionName ?? connection.profiles[0]?.name ?? hostAddress(connection.endpoint)}</strong><small>{gameLabel(connection.profiles[0]?.kind ?? 'Server')} · {connection.state}</small></span>
-            <Button className="secondary" disabled={!!pending || connection.connectionId === snapshot.connectionId} onClick={() => void selectFriendConnection(connection.connectionId)}>{connection.connectionId === snapshot.connectionId ? 'Showing' : 'Show'}</Button>
-            <Button className="favorite-toggle" aria-pressed={uiPreferences.favoriteHosts.includes(connection.connectionId)} aria-label={`${uiPreferences.favoriteHosts.includes(connection.connectionId) ? 'Unpin' : 'Pin'} saved Host`} onClick={() => toggleFavorite('favoriteHosts', connection.connectionId)}>{uiPreferences.favoriteHosts.includes(connection.connectionId) ? '★' : '☆'}</Button>
-          </div>)}</div>
-        </section>}
+      {workspacePage === 'join' && snapshot?.mode === 'Friend' && <section className="context-workspace join-context-workspace">
+        <aside className="context-sidebar" aria-label="Join navigation">
+          {(snapshot.connections?.length ?? 0) > 0 && <SearchablePicker label="Selected Host" selectedId={snapshot.connectionId}
+            items={[...(snapshot.connections ?? [])].sort((a,b) => Number(uiPreferences.favoriteHosts.includes(b.connectionId)) - Number(uiPreferences.favoriteHosts.includes(a.connectionId)))
+              .map(connection => ({ id: connection.connectionId, name: connection.connectionName ?? connection.profiles[0]?.name ?? 'Saved Host',
+                detail: connection.profiles.map(profile => profile.name).join(', '), state: connection.state }))}
+            onSelect={id => void selectFriendConnection(id)}
+            actions={item => <Button className="secondary icon-button" aria-pressed={uiPreferences.favoriteHosts.includes(item.id)}
+              aria-label={`${uiPreferences.favoriteHosts.includes(item.id) ? 'Unpin' : 'Pin'} saved Host`} title={`${uiPreferences.favoriteHosts.includes(item.id) ? 'Unpin' : 'Pin'} saved Host`}
+              onClick={() => toggleFavorite('favoriteHosts', item.id)}>{uiPreferences.favoriteHosts.includes(item.id) ? '★' : '☆'}</Button>} />}
+          {snapshot.profiles.length > 0 && <label className="context-server-select">Selected server
+            <Select value={selectedFriendProfile?.id ?? ''} onChange={event => {
+              const profileId = event.target.value
+              void changeScope(() => { setSelectedFriendProfileId(profileId); setFriendChatProfileId(profileId); setFriendLogProfileId(profileId) })
+            }}>
+              {snapshot.profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+            </Select></label>}
+          <SectionSidebar title="Join" label="Join sections" sections={joinSections.filter(section => section.id !== 'logs' ||
+            !!selectedFriendProfile && friendLogAvailability(selectedFriendProfile.canViewLogs, snapshot.hostCapabilities).visible)}
+            section={showPairing || !snapshot.endpoint ? 'pairing' : joinSection} onSelect={selectJoinSection} />
+        </aside><div className="context-content">
         <section className="panel friend-panel friend-primary">
-          <div className="section-heading"><div><h2>{snapshot.endpoint && !showPairing ? snapshot.connectionName || 'Your Host' : snapshot.endpoint ? 'Add another Host' : 'Paste your server code'}</h2><p>{snapshot.endpoint && !showPairing ? 'Choose an assigned server below to start or join.' : "Ask the Host to copy this server's current code."}</p></div></div>
+          {(showPairing || !snapshot.endpoint) && <div className="section-heading"><div><h2>{snapshot.endpoint ? 'Add another Host' : 'Join a server'}</h2><p>Ask the Host for the current server code.</p></div></div>}
           {snapshot.endpoint && !showPairing ? <>
+            <div className="join-host-caption"><Icon name="monitor" /><span>Host: <strong>{snapshot.connectionName || 'Saved Host'}</strong></span></div>
             <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state === 'Disabled' ? 'Connected · controls paused' : snapshot.state}</span>
-              <span>{snapshot.lastConnectedUtc ? `Last reached ${Math.max(0, Math.floor((nowMs - Date.parse(snapshot.lastConnectedUtc)) / 60000))} min ago · ${new Date(snapshot.lastConnectedUtc).toLocaleString()}` : 'Waiting for a reply from the Host'}</span></div>
+              {(joinSection === 'network' || joinSection === 'connection') && <span>{snapshot.lastConnectedUtc ? `Last reached ${Math.max(0, Math.floor((nowMs - Date.parse(snapshot.lastConnectedUtc)) / 60000))} min ago · ${new Date(snapshot.lastConnectedUtc).toLocaleString()}` : 'Waiting for a reply from the Host'}</span>}</div>
             {snapshot.expiryWarning && <div className="notice bad" role="status">{snapshot.expiryWarning}</div>}
             <FriendAccessExpiredNotice connectionCode={snapshot.connectionCode} />
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>This PC is saved. Ask the Host to approve it under Friend access; you do not need a new code.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
-            <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
-              <Button className="text-button" onClick={() => void changeScope(() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null) })}>Add another Host</Button></div>
+            {(joinSection === 'network' || joinSection === 'connection') && <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
+              <Button className="text-button" onClick={() => void changeScope(() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null); setJoinSection('pairing') })}>Add another Host</Button></div>}
 
           </> : <>
             <form className="join-row" onSubmit={event => { event.preventDefault(); void pairFriend() }}>
@@ -1792,21 +1952,22 @@ export function App() {
             {pairIssue && <div className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></div>}
             <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<Input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
-          {snapshot.endpoint && showPairing && <Button className="secondary" disabled={pending === 'pair'} onClick={() => { setShowPairing(false); setPairIssue(null); setFriendInvite('') }}>Cancel and return to saved Host</Button>}
+          {snapshot.endpoint && showPairing && <Button className="secondary" disabled={pending === 'pair'} onClick={() => { setShowPairing(false); setJoinSection('play'); setPairIssue(null); setFriendInvite('') }}>Cancel and return to saved Host</Button>}
 
 
           {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
-          {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list"><h3>{snapshot.profiles.length === 1 ? 'Server' : 'Servers'}</h3>
-          {snapshot.profiles.map(profile => {
+          {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list">
+          {snapshot.profiles.filter(profile => profile.id === selectedFriendProfile?.id).map(profile => {
             const connectionKey = `friend-${snapshot.connectionId}-${profile.id}`
             const logAvailability = friendLogAvailability(profile.canViewLogs, snapshot.hostCapabilities)
             const addressKey = `${connectionKey}-address`
             const addressActivity = connectionActivity[addressKey] ?? null
             const operationBusy = profile.operation?.state === 'Pending' || profile.operation?.state === 'Running'
+            const permissions = effectiveFriendPermissions(snapshot, profile, nowMs)
             const operationConflict = profile.operation?.code === 'PortConflict' && profile.operation.portConflicts?.length
               ? { message: profile.operation.message, conflicts: profile.operation.portConflicts } : null
             return <article className="profile-card" id={`friend-server-${profile.id}`} key={connectionKey} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
-              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p></div><div className="server-current-state"><span className={`status ${statusTone(profile.state)}`}>{pending === 'poll' && <Icon name="loader" />}{profile.state === 'Ready' ? 'Ready to join' : profile.state}</span>
+              <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p></div><div className="server-current-state"><span className={`status ${statusTone(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.state : 'Unknown')}`}>{pending === 'poll' && <Icon name="loader" />}{!friendConnectionExplanation(snapshot, nowMs).currentAccess ? 'Last known / Unknown' : profile.state === 'Ready' ? 'Ready to join' : profile.state}</span>
                 {profile.state === 'Ready' && <span className="server-player-count"><Icon name="users" size={14} />{playerCount(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.onlinePlayers : null, profile.maxPlayers)}</span>}
                 {profile.state === 'Ready' && profile.onlinePlayers === 0 && friendConnectionExplanation(snapshot, nowMs).currentAccess && <ServerCountdown deadline={profile.autoShutdownAtUtc} nowMs={nowMs} />}
               </div></div>
@@ -1815,7 +1976,11 @@ export function App() {
 
 
               {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
-              <FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs} busy={!!pending || operationBusy}
+              {joinSection === 'play' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host={false}
+                available={snapshot.hostCapabilities.includes('shared-worlds-v2')} worldName={profile.name} serverState={profile.state}
+                serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint} />}
+              {joinSection === 'play' && <FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs} busy={!!pending || operationBusy}
+                showServerNotifications={false}
                 pendingAction={pending === `friend-start-${profile.id}` || operationBusy && profile.operation?.action === 'start' ? 'start' : pending === `friend-stop-${profile.id}` || operationBusy && profile.operation?.action === 'stop' ? 'stop' : pending === `friend-refresh-${profile.id}` ? 'refresh' : null}
                 identityKey={friendGameCheckIdentity(snapshot, profile)}
                 onStart={() => void friendAction(profile.id, 'start')}
@@ -1838,59 +2003,51 @@ export function App() {
                 requirements={['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.gameKind ?? profile.kind) &&
                 ['Connected', 'Disabled'].includes(snapshot.state) && <PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
                   <GameCompatibilityPanel key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} host={false} />
-                </PaneErrorBoundary>} />
-              <details className="friend-server-support"><summary>Players & server tools</summary>
-                <ServerActivity state={profile.state} online={profile.onlinePlayers} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
+                </PaneErrorBoundary>} />}
+              {joinSection === 'connection' && <details className="friend-server-support" open><summary>Players & server tools</summary>
+                <ServerActivity state={permissions.currentAccess ? profile.state : 'Unknown'} online={permissions.currentAccess ? profile.onlinePlayers : null} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
                   refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
                   onRefresh={() => void friendAction(profile.id, 'refresh')} />
                 <div className="actions server-actions">
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
-                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || profile.maintenanceEnabled || profile.timerExtensionRemainingMinutes < profile.timerExtensionMinutes} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canRestartNow && <Button className="secondary" disabled={!!pending || operationBusy || !permissions.actions.restart.available} title={!permissions.actions.restart.available ? permissions.actions.restart.reason : undefined} onClick={() => void friendAction(profile.id, 'restart')}>{pending === `friend-restart-${profile.id}` ? <><Icon name="loader" />Restarting…</> : <><Icon name="refresh" />Restart server</>}</Button>}
+                {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || !permissions.actions.extend.available} title={!permissions.actions.extend.available ? permissions.actions.extend.reason : undefined} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {['Ready', 'Listening'].includes(profile.state) && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
-              </details>
-                {logAvailability.visible && <div className="friend-log-surface">
-                  <Button className="secondary" aria-expanded={friendLogProfileId === profile.id}
-                  onClick={() => setFriendLogProfileId(current => current === profile.id ? '' : profile.id)}>
-                  <Icon name="server" />{friendLogProfileId === profile.id ? 'Hide logs' : 'View logs'}
-                </Button>
-                {friendLogProfileId === profile.id && <PaneErrorBoundary title="Shared server logs" resetKey={profile.id}><ServerLogViewer
+                {!permissions.actions.restart.available && profile.canRestartNow && <p className="inline-blocker">{permissions.actions.restart.reason}</p>}
+                {!permissions.actions.extend.available && profile.canExtendTimer && <p className="inline-blocker">{permissions.actions.extend.reason}</p>}
+              </details>}
+                {joinSection === 'logs' && logAvailability.visible && <div className="friend-log-surface">
+                {<PaneErrorBoundary title="Shared server logs" resetKey={profile.id}><ServerLogViewer
                   endpoint={`/api/local/friend/${profile.id}/logs`}
                   visible={workspacePage === 'join' && friendLogProfileId === profile.id}
                   unsupported={logAvailability.unsupported} /></PaneErrorBoundary>}
               </div>}
-              <FriendGameCheckResult snapshot={snapshot} profile={profile} gameResults={gameEndpointResults}
-                gameResultIdentities={gameResultIdentities} nowMs={nowMs} />
+              {joinSection === 'network' && <FriendGameCheckResult snapshot={snapshot} profile={profile} gameResults={gameEndpointResults}
+                gameResultIdentities={gameResultIdentities} nowMs={nowMs} />}
               {operationConflict && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{operationConflict.message}</p>
                 {operationConflict.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending || operationBusy} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
                   : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
-              <FriendStopBlockers snapshot={snapshot} profile={profile} />
-              {profile.state === 'Ready' && !profile.canRestartNow && <p className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</p>}
-              {profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
-              {profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind}
-                onBrowseServerFile={game => browseSharedServerFile(profile.id, game)} onOpenHostSetup={() => void switchMode('host').then(changed => { if (changed) openHostSettings('network') })}
+              {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
+              {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <p className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</p>}
+              {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
+              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind} worldName={profile.name}
+                serverState={profile.state} serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint}
+                connectedHostName={snapshot.connectionName || 'Saved Host'} onOpenPlay={() => selectJoinSection('play')} onPairHost={() => selectJoinSection('pairing')}
+                onOpenHostControls={() => void openSharedHost(profile.id, false)}
+                onBrowseServerFile={game => browseSharedServerFile(profile.id, game)} onOpenHostSetup={() => void openSharedHost(profile.id, true)}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')}
                 onAddressChange={openFriendAddressRecovery} />}
-              <div className="friend-chat-surface"><Button className="secondary"
-                aria-expanded={friendChatProfileId === profile.id}
-                onClick={() => void changeScope(() => setFriendChatProfileId(current => current === profile.id ? '' : profile.id))}>
-                {friendChatProfileId === profile.id ? 'Hide chat' : 'Open chat'}</Button>
-                {friendChatProfileId === profile.id && <PaneErrorBoundary title="Server chat" resetKey={profile.id}>
+              {joinSection === 'chat' && <div className="friend-chat-surface">
+                {<PaneErrorBoundary title="Server chat" resetKey={profile.id}>
                   <ServerChat profileId={profile.id} host={false} connectionId={snapshot.connectionId} hostId={snapshot.hostId}
                     onDraftStateChange={keepChatGuard}
                     visible={workspacePage === 'join' && friendChatProfileId === profile.id}
                     supported={snapshot.hostCapabilities.includes('server-chat-v1')} />
-                </PaneErrorBoundary>}</div>
-              <ServerChatCardSummary profileId={profile.id} host={false} connectionId={snapshot.connectionId} hostId={snapshot.hostId}
-                authorized={['Connected', 'Disabled'].includes(snapshot.state)} supported={snapshot.hostCapabilities.includes('server-chat-v1')}
-                visible={workspacePage === 'join'} roomOpen={friendChatProfileId === profile.id} pollWhenClosed
-                onOpenChat={() => void changeScope(() => setFriendChatProfileId(profile.id))} />
-
-
+                </PaneErrorBoundary>}</div>}
             </article>
           })}
           </div>}
-          {snapshot.endpoint && !showPairing && snapshot.state === 'Disconnected/Unknown' &&
+          {joinSection === 'chat' && snapshot.endpoint && !showPairing && snapshot.state === 'Disconnected/Unknown' &&
             !!snapshot.chatProfiles?.some(profile => profile.supported) &&
             <div className="friend-server-list"><h3>Chats saved on this PC</h3>
               <p className="helper-text">The Host connection is unavailable. You can write a message now; it will wait on this PC until the Host reconnects.</p>
@@ -1904,49 +2061,50 @@ export function App() {
                       onDraftStateChange={keepChatGuard}
                       visible={workspacePage === 'join' && friendChatProfileId === profile.id} />
                   </PaneErrorBoundary>}</article>)}</div>}
-          {snapshot.endpoint && !showPairing && <section className="friend-connection-tools" aria-labelledby="friend-tools-title">
-            <h3 id="friend-tools-title">Connection help & saved Host</h3>
-            <details className="advanced-block" ref={addressRecoveryRef}><summary>Connection identity and recovery</summary>
+          {(joinSection === 'network' || joinSection === 'connection') && snapshot.endpoint && !showPairing && <section className="friend-connection-tools" aria-labelledby="friend-tools-title">
+            <h3 id="friend-tools-title">{joinSection === 'network' ? 'Connection help' : 'Connection settings'}</h3>
+            {joinSection === 'connection' && selectedFriendProfile && <Button className="secondary" onClick={() => setServerNotification({ id: selectedFriendProfile.id, name: selectedFriendProfile.name, connectionId: snapshot.connectionId })}><Icon name="bell" />Server notifications</Button>}
+            {joinSection === 'connection' && <details className="advanced-block" ref={addressRecoveryRef} open><summary>Connection identity and recovery</summary>
               <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}>Rename</Button></div></label>
               <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
               <p className="helper-text">Saved access expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Secure Host identity expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
               <label>New Host address<Input ref={recoveryAddressInputRef} value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
               <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Checking...' : 'Check and update address'}</Button>
               <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
-            </details>
-          {snapshot.endpoint && !showPairing && <FriendConnectionDoctor snapshot={snapshot}
+            </details>}
+          {joinSection === 'network' && snapshot.endpoint && !showPairing && <FriendConnectionDoctor snapshot={snapshot}
             gameResults={gameEndpointResults} gameResultIdentities={gameResultIdentities} nowMs={nowMs} busy={!!pending}
             onRefresh={() => void checkFriendConnection()} onProbe={profileId => void probeGameEndpoint(profileId)} />}
-          {appInstance?.isStaging && snapshot.endpoint && !showPairing && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
+          {joinSection === 'network' && appInstance?.isStaging && snapshot.endpoint && !showPairing && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
           </section>}
         </section>
-      </>}
+        </div></section>}
 
-      {(workspacePage === 'host' || workspacePage === 'settings') && snapshot?.mode === 'Host' && draft && <>
-        {workspacePage === 'host' && <>
-        {savedProfiles.length > 1 && <details className="all-servers-comparison">
-          <summary>Compare all {savedProfiles.length} servers{serversNeedingAttention > 0 && <span className="comparison-attention">{serversNeedingAttention} need attention</span>}</summary>
-        <PaneErrorBoundary title="All servers" resetKey={snapshot.settings.profiles.length}>
-          <AllServerOverview snapshot={snapshot} selectedProfileId={selectedHostProfileId} nowMs={nowMs}
-            error={loadError} onOpen={openActivityDestination} />
-        </PaneErrorBoundary></details>}
+      {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <section className="context-workspace host-context-workspace">
+        <aside className="context-sidebar" aria-label="Host navigation">
+          {savedProfiles.length > 0 && <SearchablePicker label="Selected server" selectedId={selectedHostProfile?.id ?? ''}
+            items={visibleHostProfiles.map(profile => ({ id: profile.id, name: profile.name, detail: profileGameLabel(profile), keywords: profile.worldId,
+              state: snapshot.runs.find(run => run.profileId === profile.id)?.state ?? 'Unknown' }))}
+            onSelect={id => selectHostServer(id)}
+            actions={item => <><Button className="secondary icon-button" title={`${uiPreferences.favoriteServers.includes(item.id) ? 'Unpin' : 'Pin'} ${item.name}`}
+              aria-label={`${uiPreferences.favoriteServers.includes(item.id) ? 'Unpin' : 'Pin'} ${item.name}`} aria-pressed={uiPreferences.favoriteServers.includes(item.id)}
+              onClick={() => toggleFavorite('favoriteServers', item.id)}>{uiPreferences.favoriteServers.includes(item.id) ? '★' : '☆'}</Button>
+              {reorderServers && <span className="server-reorder"><Button className="secondary icon-button" aria-label={`Move ${item.name} up`} onClick={() => moveServer(item.id, -1)}>↑</Button>
+                <Button className="secondary icon-button" aria-label={`Move ${item.name} down`} onClick={() => moveServer(item.id, 1)}>↓</Button></span>}</>}
+            tools={<Button className="secondary" aria-pressed={reorderServers} onClick={() => setReorderServers(current => !current)}>{reorderServers ? 'Finish ordering' : 'Reorder servers'}</Button>} />}
+          <div className="context-sidebar-actions"><Button className="secondary icon-button" aria-label="Add server" title="Add server" disabled={!!pending || dirty} onClick={addProfile}><Icon name="plus" /></Button>
+            {savedProfiles.length > 1 && <Button className="secondary icon-button" aria-label="Compare all servers" title="Compare all servers" onClick={() => setShowAllServers(true)}><Icon name="server" /></Button>}</div>
+          {savedProfiles.length > 0 && <SectionSidebar title="Server" label="Selected server sections"
+            sections={(Object.keys(hostServerTabLabels) as HostServerTab[]).map(id => ({ id, label: hostServerTabLabels[id], icon: hostServerTabIcons[id] }))}
+            section={hostScope === 'server' ? hostServerTab : undefined} onSelect={selectHostTab} />}
+          <SectionSidebar title="This Host PC" label="This Host PC sections" sections={hostPcSections}
+            section={hostScope === 'pc' ? hostSettingsSection as HostPcSection : undefined} onSelect={openHostSettings} />
+        </aside><div className="context-content">
+        {hostScope === 'server' && <>
         {savedProfiles.length > 0 && <>
         <section className="host-workspace-shell">
-          <div className={hostMobileDetail ? 'host-master-detail detail-open' : 'host-master-detail'}>
-            <aside className="server-master" aria-label="Saved servers"><div className="server-master-heading"><strong>Saved servers</strong><span>{savedProfiles.length}</span></div>
-              <label className="server-search">Find server<Input value={serverSearch} placeholder="Name, game, or world" onChange={event => setServerSearch(event.target.value)} /></label>
-              {savedProfiles.length > 1 && <Button className="text-button" aria-pressed={reorderServers} onClick={() => setReorderServers(current => !current)}>{reorderServers ? 'Finish ordering' : 'Reorder servers'}</Button>}
-              <div className="server-master-list">{visibleHostProfiles.map(profile => {
-                const run = snapshot.runs.find(item => item.profileId === profile.id)
-                return <div className="server-master-entry" key={profile.id}><Button className={selectedHostProfile?.id === profile.id ? 'server-master-item selected' : 'server-master-item'}
-                  aria-current={selectedHostProfile?.id === profile.id ? 'true' : undefined} onClick={() => selectHostServer(profile.id)}>
-                  <span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small>{hostOverviewRows.find(row => row.id === profile.id)?.warning && <small className="warning-text">{hostOverviewRows.find(row => row.id === profile.id)?.warning}</small>}</span><span className={`status ${statusTone(run?.state ?? 'Unknown')}`}>{run?.state === 'Process running' ? 'Starting' : run?.state ?? 'Unknown'}</span>
-                </Button><Button className="favorite-toggle" aria-label={`${uiPreferences.favoriteServers.includes(profile.id) ? 'Unpin' : 'Pin'} ${profile.name}`} aria-pressed={uiPreferences.favoriteServers.includes(profile.id)} onClick={() => toggleFavorite('favoriteServers', profile.id)}>{uiPreferences.favoriteServers.includes(profile.id) ? '★' : '☆'}</Button>{reorderServers && <span className="server-reorder"><Button className="text-button" aria-label={`Move ${profile.name} up`} onClick={() => moveServer(profile.id, -1)}>↑</Button><Button className="text-button" aria-label={`Move ${profile.name} down`} onClick={() => moveServer(profile.id, 1)}>↓</Button></span>}</div>
-              })}{visibleHostProfiles.length === 0 && <p className="helper-text">No servers match. Clear the search to show all saved servers.</p>}</div>
-
-            </aside>
+          <div className="host-focused-detail">
             <section className="server-detail" data-server-tab={hostServerTab} aria-label={selectedHostProfile ? `${selectedHostProfile.name} workspace` : 'Server workspace'}>
-              <Button className="mobile-back secondary" onClick={() => setHostMobileDetail(false)}>Back to all servers</Button>
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
@@ -1987,21 +2145,22 @@ export function App() {
                       if ([...draftGuards.current].some(([key, guard]) => key !== 'chat' && (guard.dirty || guard.saving))) return
                       void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')
                     }}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
-                    {pending !== `start-${profile.id}` && (['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(status?.state ?? '') || pending === `stop-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || status?.state === 'Stopping'} onClick={() => { if (!confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` || status?.state === 'Stopping' ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
+                    {pending !== `start-${profile.id}` && (['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(status?.state ?? '') || pending === `stop-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || status?.state === 'Stopping'} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` || status?.state === 'Stopping' ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
                     {['Unknown', 'Failed'].includes(status?.state ?? 'Unknown') && <Button className="secondary" onClick={() => selectHostTab('logs')}><Icon name="warning" />Review server</Button>}
                     <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void changeScope(() => { setHostServerTab('overview'); setUiPreferences(current => ({ ...current, serverTabs: { ...current.serverTabs, [profile.id]: 'overview' } })); void inviteFriend(profile.id) })}><Icon name="invite" /><span>Invite friends</span></Button>
+                    <Button className="secondary icon-button" aria-label="More server actions" title="More server actions" onClick={() => setServerToolsProfileId(profile.id)}><Icon name="more" /></Button>
                   </div>
                   {status && !['Offline', 'Ready'].includes(status.state) && <p className="server-progress" role="status">{status.detail}</p>}
                   {dirty && <p className="inline-blocker">Save or cancel setup changes before server actions.</p>}
+                  {!friendAppAddress && <p className="inline-blocker">Set the Host connection address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Connection help</Button></p>}
                   {!dirty && hasUnsavedServerEdits && <p className="inline-blocker">Save or discard file changes before starting.</p>}
                   {dataRecovery?.lifecycleBlocked && <p className="inline-blocker">Start and Restart need local data recovery. <Button className="text-button" onClick={() => openHostSettings('diagnostics')}>Review recovery</Button></p>}
                   {profile.maintenance?.enabled && <p className="inline-blocker">Maintenance is on; Friend controls are paused. <Button className="text-button" onClick={() => selectHostTab('setup')}>Continue maintenance</Button></p>}
                   <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
                 </div>
-                <nav className="server-tabs" aria-label="Selected server sections">
-                  {(['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'] as HostServerTab[]).map(tab => <Button key={tab} className={hostServerTab === tab ? 'selected' : ''} aria-current={hostServerTab === tab ? 'page' : undefined} onClick={() => selectHostTab(tab)}><Icon name={hostServerTabIcons[tab]} /><span>{hostServerTabLabels[tab]}</span></Button>)}
-                </nav>
                 <div className="server-tab-content">
+                {hostServerTab === 'overview' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host
+                  worldName={profile.worldId} serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} observedHostAddress={snapshot.settings.companionEndpoint} />}
                 {hostServerTab === 'overview' && inviteProfileId === profile.id && <div className="inline-invite">
                   {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Server code ready, connection needs attention' : 'Server code ready'}</strong><p>{activeInviteWarning ? 'Fix the connection below before sending the code.' : 'Send it privately. The same code keeps working until you replace it.'}</p></div></div>
                     {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
@@ -2024,6 +2183,7 @@ export function App() {
                 {hostServerTab === 'overview' && status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && <Button className="text-button" onClick={() => selectHostTab('players')}>Add shutdown time</Button>}
                 {hostServerTab === 'overview' && <>
                   {status?.state === 'Offline' && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
+                  {['Ready', 'Listening'].includes(status?.state ?? '') && !gameAddress && <div className="connection-empty"><h2>Connection details</h2><p>The joining address is unavailable. Confirm the Host route before sharing it.</p><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Set connection address</Button></div>}
                   {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <p className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></p>}
                   {status?.state === 'Ready' && count === null && <p className="inline-blocker"><Icon name="warning" />Players are unknown; Friend and automatic Stop are blocked. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></p>}
                 </>}
@@ -2033,10 +2193,10 @@ export function App() {
                 {hostServerTab === 'chat' && <PaneErrorBoundary title="Server chat" resetKey={profile.id}>
                   <ServerChat profileId={profile.id} host onDraftStateChange={keepChatGuard} visible={workspacePage === 'host' && hostServerTab === 'chat'} />
                 </PaneErrorBoundary>}
-                {hostServerTab === 'overview' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) &&
+                {hostServerTab === 'setup' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) &&
                   <details className="server-support-disclosure"><summary><Icon name="game" />Game version & add-ons</summary><PaneErrorBoundary title="Pre-join requirements" resetKey={profile.id}><GameCompatibilityPanel key={profile.id} profileId={profile.id} host /></PaneErrorBoundary></details>}
-                {hostServerTab === 'overview' && <ServerChatCardSummary profileId={profile.id} host authorized
-                  visible={workspacePage === 'host'} pollWhenClosed onOpenChat={() => selectHostTab('chat')} />}
+                {hostServerTab === 'chat' && <details className="server-support-disclosure"><summary>Chat notices</summary><ServerChatCardSummary profileId={profile.id} host authorized
+                  visible={workspacePage === 'host'} pollWhenClosed onOpenChat={() => selectHostTab('chat')} /></details>}
                 {hostServerTab === 'files' && <PaneErrorBoundary title="Game settings" resetKey={profile.id}><GameSettingsPanel
                   key={profile.id} profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
                   busy={profileWorkBusy || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}
@@ -2051,6 +2211,9 @@ export function App() {
                   visible={workspacePage === 'host' && hostServerTab === 'sessions'} /></PaneErrorBoundary>
                 {hostServerTab === 'sessions' && <PaneErrorBoundary title="Seven-day summary" resetKey={profile.id}><WeeklySummary
                   key={profile.id} profileId={profile.id} visible={workspacePage === 'host'} /></PaneErrorBoundary>}
+                {hostServerTab === 'backups' && <div className="backups-primary-task"><div className="section-heading"><div><h2>Backups</h2><p>Create a save copy or review a backup to restore.</p></div>
+                  <Button disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void createManualBackup(profile.id)}><Icon name={pending === `manual-backup-${profile.id}` ? 'loader' : 'archive'} />{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button></div>
+                  {status?.state !== 'Offline' && <p className="inline-blocker">Stop the server and confirm it is Offline before creating or restoring a backup.</p>}</div>}
                 {hostServerTab === 'backups' && <PaneErrorBoundary title="Backups" resetKey={profile.id}><BackupCatalog
                   key={profile.id} profileId={profile.id} visible={workspacePage === 'host'}
                   refreshKey={backupCatalogRevisions[profile.id] ?? 0} currentWorld={profile.worldId} currentGame={profile.kind}
@@ -2067,15 +2230,6 @@ export function App() {
                   } : undefined}
                   renderActions={backup => <Button className="secondary" disabled={!!pending || dirty || status?.state !== 'Offline'}
                     onClick={() => void prepareMoveKit(profile.id, backup.backupId)}>Prepare move kit</Button>} /></PaneErrorBoundary>}
-                {(hostServerTab === 'overview' || hostServerTab === 'files') && <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
-                  {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}
-                  {status?.state === 'Ready' && <small>{profile.kind === 'Fixture' ? 'Synthetic fixture evidence.' : 'Readiness was observed locally; confirm a real game join separately.'}</small>}
-                  {status?.state === 'Offline' && <HostStartConnectionNotice profile={profile} ports={portDiagnostics} routeCheck={internetRouteCheck}
-                    onOpenConnection={() => openHostSettings('network')}
-                    onTestControl={() => void checkInternetRoute()} testingControl={checkingInternetRoute} />}
-                  <PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
-                    busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary>
-                </details>}
                 {hostServerTab === 'players' && status && <PaneErrorBoundary title="Players workspace" resetKey={profile.id}><PlayersPanel run={status} activity={snapshot.activity} nowMs={nowMs}
                   profile={profile} onOpenLogs={() => selectHostTab('logs')} onOpenHelp={() => openHostSettings('network')}
                   onCheckHealth={() => void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST')}
@@ -2113,39 +2267,51 @@ export function App() {
                     {certification?.inProgress && <Button className="secondary" disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'status')}>{pending === `certification-status-${profile.id}` ? 'Checking…' : 'Check certification step'}</Button>}
                     {certification?.inProgress && ['ConfirmFirstChange', 'ConfirmSecondChange'].includes(certification.stage) && <Button disabled={!!pending || dirty} onClick={() => void customCertificationAction(profile.id, 'confirm')}>{certification.stage === 'ConfirmFirstChange' ? 'Confirm change was made' : 'Confirm change survived'}</Button>}
                     {(certification?.inProgress || certification?.stage === 'Failed') && <Button className="text-button" disabled={!!pending} onClick={() => void customCertificationAction(profile.id, 'cancel')}>Cancel certification</Button>}
-                    {certification?.certified && <Button className="danger-outline" disabled={!!pending} onClick={() => { if (window.confirm('Turn off remote Stop, Restart, replacement, and automatic shutdown for this Custom server? Local controls will remain available.')) void customCertificationAction(profile.id, 'revoke') }}>Revoke certification</Button>}
+                    {certification?.certified && <Button className="danger-outline" disabled={!!pending} onClick={async () => { if (await confirm({ title: 'Revoke Custom control certification?', confirmLabel: 'Revoke certification', destructive: true, description: 'Remote Stop, Restart, replacement and automatic shutdown turn off for this Custom server. Local controls remain available.' })) void customCertificationAction(profile.id, 'revoke') }}>Revoke certification</Button>}
                   </div>
                   {!certification?.certified && status?.state !== 'Offline' && !certification?.inProgress && certification?.stage !== 'Failed' && <small>Stop the server locally before beginning certification.</small>}
                 </div>}
                 {(hostServerTab === 'overview' || hostServerTab === 'setup') && recovery && <div className={`safety-status ${recovery.state === 'Suspended' ? 'warning-text' : ''}`}><strong>Crash recovery: {recovery.state}</strong><p>{recovery.state === 'Pending' && recovery.nextAttemptUtc ? `Attempt ${recovery.attempts + 1} of 3 after ${new Date(recovery.nextAttemptUtc).toLocaleString()}.` : recovery.state === 'Starting' ? `Recovery attempt ${recovery.attempts} of 3 is starting.` : recovery.state === 'Recovered' ? `Ready again after ${recovery.attempts} attempt${recovery.attempts === 1 ? '' : 's'}.` : `Suspended after ${recovery.attempts} failed attempts.`}</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}</div>}
-                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <div hidden={hostServerTab !== 'backups'}><PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' || profile.kind === 'Terraria' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
+                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <details hidden={hostServerTab !== 'backups'} className="backups-support server-support-disclosure"><summary><Icon name="shield" />Protection & sharing</summary><PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' || profile.kind === 'Terraria' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
                     {shownBackupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(shownBackupStatus.lastSuccessfulUtc).toLocaleString()} · {shownBackupStatus.completedCount} retained · {formatBytes(shownBackupStatus.retainedSizeBytes)} used.</small>}
                     {shownBackupStatus?.availableSpaceBytes != null && <small>{formatBytes(shownBackupStatus.availableSpaceBytes)} available on the backup drive.</small>}
                     {shownBackupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</p>}
-                    <div className="actions"><Button className="secondary" disabled={pending === `backups-${profile.id}`} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button><Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} title={status?.state !== 'Offline' ? 'Stop the server before copying its world.' : undefined} onClick={() => void createManualBackup(profile.id)}>{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
+                    <div className="actions"><Button className="secondary" disabled={pending === `backups-${profile.id}`} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
                     <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds. “Copy to vault” uses a Windows folder picker, verifies every hash after transfer, and keeps the local backup. Choose an external or network location when you want another-device protection. “Test restore” uses disposable scratch storage and never swaps the live world.</small>
-                    <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []}
+                    <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []} worldName={profile.worldId}
+                      serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} onOpenHostControls={() => selectHostServer(profile.id, 'overview')}
                       rollingBackupEnabled={profile.backups?.enabled === true}
                       currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
                         ? snapshot.settings.companionEndpoint : ''}
                       onGrantChanged={refreshCompanion} />
                     {!profile.worldLoadRehearsalId && <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} />}
 
-                  </div></PaneErrorBoundary></div>}
-                <details hidden={hostServerTab !== 'overview' && hostServerTab !== 'setup'} className="advanced-block card-manage"><summary>More server actions</summary>
+                  </div></PaneErrorBoundary></details>}
+                {serverToolsProfileId === profile.id && <SettingsDialog title="Server tools" description={`Actions for ${profile.name}.`} busy={!!pending}
+                  onClose={() => setServerToolsProfileId('')} footer={<Button className="secondary" disabled={!!pending} onClick={() => setServerToolsProfileId('')}>Done</Button>}>
 
-                  <div className="actions">
-                    {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={() => { if (!confirmOwnerLifecycle(profile.id, 'Restart')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}><Icon name={pending === `restart-${profile.id}` ? 'loader' : 'refresh'} />{pending === `restart-${profile.id}` ? 'Restarting…' : 'Restart server'}</Button>}
+                  <div className="server-tools-menu actions">
+                    {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Restart')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}><Icon name={pending === `restart-${profile.id}` ? 'loader' : 'refresh'} />{pending === `restart-${profile.id}` ? 'Restarting…' : 'Restart server'}</Button>}
                     {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}><Icon name={pending === `safe-restart-${profile.id}` ? 'loader' : 'archive'} />{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart with checkpoint'}</Button>}
                     <Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}><Icon name="settings" />Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}><Icon name="refresh" />Check server health</Button>
                     <Button className="secondary" onClick={() => openHostSettings('access')}><Icon name="users" />Friend access</Button>
                     {profile.kind === 'Custom' && <Button className="text-button" onClick={() => selectHostTab('setup')}>Review Custom control certification</Button>}
-                    {status?.state === 'Failed' && <Button className="text-button" disabled={!!pending || dirty} onClick={() => {
-                      if (window.confirm('Archive this session only if TogetherServer confirms that its saved server process is no longer running?'))
+                    <Button className="secondary" onClick={() => setServerNotification({ id: profile.id, name: profile.name })}><Icon name="bell" />Server notifications</Button>
+                    {status?.state === 'Failed' && <Button className="text-button" disabled={!!pending || dirty} onClick={async () => {
+                      if (await confirm({ title: 'Archive this session?', confirmLabel: 'Archive session', description: 'TogetherServer must first confirm that its saved server process is no longer running.' }))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
+                <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
+                  {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}
+                  {status?.state === 'Ready' && <small>{profile.kind === 'Fixture' ? 'Synthetic fixture evidence.' : 'Readiness was observed locally; confirm a real game join separately.'}</small>}
+                  {status?.state === 'Offline' && <HostStartConnectionNotice profile={profile} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                    onOpenConnection={() => openHostSettings('network')}
+                    onTestControl={() => void checkInternetRoute()} testingControl={checkingInternetRoute} />}
+                  <PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                    busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary>
                 </details>
+                </SettingsDialog>}
                   {hostServerTab === 'setup' && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <details className="advanced-block"><summary>Update the game server safely</summary><ol className="update-game-steps"><li>Stop this server, then choose Back up now while it is Offline.</li><li>Verify the backup. Copy it to another location or test restore if needed.</li><li>Use the game provider's installer or update action yourself.</li><li>Start the updated server. Test a real Friend join and a saved change, then record those checks again in Connection Doctor. Changed game files make earlier confirmations stale.</li></ol><Button className="text-button" onClick={() => openHostSettings('network')}>Open Connection Doctor</Button></details>}
 
                 </div>
@@ -2212,195 +2378,130 @@ export function App() {
           onAddCustomPort={addCustomPort} onRemoveCustomPort={removeCustomPort}
           onRemoveProfile={profile => void removeProfile(profile)} onSave={startAfterSave => void saveSetup(startAfterSave)} />}
         </>}
-        {workspacePage === 'settings' && <section className="settings-workspace host-settings-dialog" aria-labelledby="host-settings-title">
-          <div className="modal-heading"><div><h2 id="host-settings-title">Settings</h2><p>App preferences, Friend access, timers, and advanced Host controls.</p></div>
-            <Button className="secondary" disabled={!!pending} onClick={closeHostSettings}>{dirty ? 'Cancel changes' : 'Back to Host'}</Button></div>
-          {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-          <nav className="settings-tabs" aria-label="Host settings sections">
-            <Button aria-current={hostSettingsSection === 'app' ? 'page' : undefined} className={hostSettingsSection === 'app' ? 'selected' : ''} onClick={() => setHostSettingsSection('app')}>App</Button>
-            <Button aria-current={hostSettingsSection === 'access' ? 'page' : undefined} className={hostSettingsSection === 'access' ? 'selected' : ''} onClick={() => setHostSettingsSection('access')}>Friend access</Button>
-            <Button aria-current={hostSettingsSection === 'stop' ? 'page' : undefined} className={hostSettingsSection === 'stop' ? 'selected' : ''} onClick={() => setHostSettingsSection('stop')}>Stop & timer</Button>
-            <Button aria-current={hostSettingsSection === 'network' ? 'page' : undefined} className={hostSettingsSection === 'network' ? 'selected' : ''} onClick={() => setHostSettingsSection('network')}>Connection help</Button>
-            <Button aria-current={hostSettingsSection === 'diagnostics' ? 'page' : undefined} className={hostSettingsSection === 'diagnostics' ? 'selected' : ''} onClick={() => setHostSettingsSection('diagnostics')}>Diagnostics</Button>
-            <Button aria-current={hostSettingsSection === 'advanced' ? 'page' : undefined} className={hostSettingsSection === 'advanced' ? 'selected' : ''} onClick={() => setHostSettingsSection('advanced')}>Advanced</Button>
-          </nav>
-            <div className="settings-content">
-              {hostSettingsSection === 'app' && <section className="settings-section app-settings-page"><h3>Application</h3><AppearancePreferences value={uiPreferences} onChange={setUiPreferences} />
-                <DesktopPreferencesPanel servers={savedProfiles} quietMode={uiPreferences.quietMode}
-                  onQuietModeChange={quietMode => setUiPreferences(current => ({ ...current, quietMode }))} />
-                {update && <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={reloadUpdate} />}
-                <p>These preferences affect this Windows app. Hosting and Friend checks continue when the window is hidden.</p>
-                <div className="app-settings-grid">
-                  <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{appInstance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span><Input type="checkbox" checked={desktopPreferences?.launchAtLogin ?? false} disabled={!desktopPreferences?.available || !desktopPreferences.startupAvailable || desktopBusy} onChange={event => void saveDesktopPreference({ launchAtLogin: event.target.checked })} /></label>
-                  <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span><Input type="checkbox" checked={desktopPreferences?.closeToTray ?? false} disabled={!desktopPreferences?.available || desktopBusy} onChange={event => void saveDesktopPreference({ closeToTray: event.target.checked })} /></label>
-                  <label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong><small>Uses a scoped idle-sleep request only while an exact managed server process is running. Manual sleep can still interrupt hosting.</small>{snapshot.hostingPower && <small>Current state: {snapshot.hostingPower.state}. {snapshot.hostingPower.message}</small>}</span><Input type="checkbox" checked={draft.keepAwakeWhileHosting} disabled={!!pending} onChange={event => void saveHostFlags({ keepAwakeWhileHosting: event.target.checked })} /></label>
-                </div>
-                <div className="settings-version-row"><span><strong>Version {update?.currentVersion ?? 'checking...'}</strong><small>{appInstance?.updatesAvailable === false ? 'Stable updates are disabled in staging.' : `Updates are checked automatically, installed only when you choose, and require a verified local-state recovery checkpoint · ${update?.publisherTrust ?? 'checking trust'}.`}</small></span><Button className="secondary" disabled={updateBusy || !!pending || appInstance?.updatesAvailable === false} onClick={() => void checkUpdate()}>{appInstance?.updatesAvailable === false ? 'Updates off in staging' : updateBusy ? 'Checking...' : 'Check for updates'}</Button></div>
-                <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Active or unresolved managed servers still block Quit.</small></span><Button className="secondary" disabled={!desktopPreferences?.available} onClick={() => void quitApp()}>Quit {appInstance?.displayName ?? 'TogetherServer'}</Button></div>
-                <div className="shortcut-reference"><strong>Keyboard shortcuts</strong><span><kbd>Ctrl K</kbd> Command palette</span><span><kbd>Alt 1</kbd> Host</span><span><kbd>Alt 2</kbd> Join</span><span><kbd>Alt 3</kbd> Attention</span><span><kbd>Alt 4</kbd> Settings</span><span><kbd>Esc</kbd> Close or go back</span></div>
-              </section>}
-              {hostSettingsSection === 'access' && <section className="settings-section"><h3>Friend access</h3>
-                <p>Friend PCs can keep seeing status while controls are paused. Start and Stop requests are always checked again on this Host.</p>
-                <div className="access-toggles"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Once a server code exists, Friend connections stay available while the Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
-                  <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Individual PC permissions below still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
-                <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length} totalCount={companion?.devices.length ?? 0} onChange={setDeviceFilters} />
-                {visibleDevices.length ? <div className="device-list"><h3>Friend PCs</h3><p className="helper-text">A new PC starts with only the server whose code it used. You can give that PC access to any of your saved servers.</p>{visibleDevices.map(device => <div className="device access-device" key={device.id}>
-                  <FriendAccessSummary device={device} servers={savedProfiles} nowMs={nowMs} />
-                  <ActionFeedback notice={currentActionNotice(actionNotices[device.id], snapshot, feedbackNowMs)} />
-                  <div className="device-header"><div className="device-main"><label>PC name<Input value={deviceNames[device.id] ?? device.name} maxLength={48} onChange={event => setDeviceNames(current => ({ ...current, [device.id]: event.target.value }))} /></label><small>{device.approvalPending ? 'Waiting for local approval' : device.lastHeartbeatUtc ? `Last report ${new Date(device.lastHeartbeatUtc).toLocaleTimeString()}` : device.paired ? 'No fresh report' : 'Waiting for this PC to connect'} · {device.profileId === '00000000-0000-0000-0000-000000000000' ? 'Connected with an older code' : `Connected with the code for ${savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'a removed server'}`}</small></div>
-                    <div className="actions device-card-actions">{device.credentialExpiresUtc && <small>Saved access expires {new Date(device.credentialExpiresUtc).toLocaleDateString()}</small>}{device.approvalPending && <Button disabled={!!pending} onClick={() => void approveDevice(device.id)}>Approve this PC</Button>}<Button className="secondary" disabled={!!pending || !(deviceNames[device.id] ?? device.name).trim() || (deviceNames[device.id] ?? device.name).trim() === device.name} onClick={() => void saveDeviceName(device.id)}>Save name</Button><Button className="text-button danger" disabled={!!pending} onClick={() => void revokeDevice(device.id)}>Remove access</Button></div></div>
-                  <OwnerAccessDeadlineEditor device={device} disabled={!!pending || !device.paired}
-                    onSave={request => saveDeviceAccessExpiry(device.id, request)} onRefresh={refreshCompanion} />
-                  <TemporaryHelperAccess device={device} nowMs={nowMs} busy={!!pending}
-                    onGrant={duration => void saveTemporaryHelper(device.id, duration)}
-                    onEnd={() => void saveTemporaryHelper(device.id)} />
-                  <fieldset className="usual-permissions" disabled={device.temporaryHelperActive || device.revoked}><legend>Usual permissions</legend>
-                  {(() => {
-                    const selectedPreset = permissionPresetDraft[device.id] ?? matchingPermissionPreset(device)
-                    const preset = selectedPreset === 'custom' ? null : permissionPresets[selectedPreset]
-                    return <div className="permission-preset"><label>Permission preset<Select value={selectedPreset}
-                      disabled={!!pending || !device.paired || device.approvalPending}
-                      onChange={event => setPermissionPresetDraft(current => ({ ...current, [device.id]: event.target.value as PermissionPreset }))}>
-                      <option value="status">Status only</option><option value="start">Can start</option>
-                      <option value="helper">Trusted helper</option><option value="custom">Custom</option>
-                    </Select></label><div><p>{preset?.detail ?? 'This PC has individual or per-server choices. Use the controls below to keep editing them.'}</p>
-                      <small>Applying a preset updates every assigned server and clears its per-server exceptions.</small>
-                      {selectedPreset !== 'custom' && <FriendAccessReview before={{ ...device, serverPermissions: device.serverPermissions ?? [] }}
-                        after={{ ...device, ...permissionPresetRequest(selectedPreset), serverPermissions: [] }} servers={savedProfiles} clearsExceptions />}</div>
-                      <Button className="secondary" disabled={!!pending || !preset || selectedPreset === matchingPermissionPreset(device)}
-                        onClick={() => void applyDevicePermissionPreset(device, selectedPreset)}>Apply preset</Button></div>
-                  })()}
-                  <div className="device-access-grid"><div className="device-server-summary"><div className="device-summary-copy"><span>Server access</span><strong>{device.assignedProfileIds.length} {device.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small title={serverAssignmentPreview(device, savedProfiles)}>{serverAssignmentPreview(device, savedProfiles)}</small></div><Button className="secondary" disabled={!!pending || !device.paired || device.approvalPending} onClick={() => openDeviceServerAccess(device)}><Icon name="server" />Choose servers</Button></div>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStart').mixed} checked={permissionMix(device, 'canStart').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStart', permissionMix(device, 'canStart').mixed ? true : event.target.checked)} /><span><strong>Start servers</strong><small>{permissionMix(device, 'canStart').mixed ? device.canStart ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStart').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canStop').mixed} checked={permissionMix(device, 'canStop').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canStop', permissionMix(device, 'canStop').mixed ? true : event.target.checked)} /><span><strong>Request Stop</strong><small>{permissionMix(device, 'canStop').mixed ? device.canStop ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canStop').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
-                    <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canExtendTimer').mixed} checked={permissionMix(device, 'canExtendTimer').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canExtendTimer', permissionMix(device, 'canExtendTimer').mixed ? true : event.target.checked)} /><span><strong>Add shutdown time</strong><small>Off by default. Friends can add only the fixed increment, including while players are online.</small></span></label>
-                     <label className="device-permission-toggle"><MixedCheckbox type="checkbox" mixed={permissionMix(device, 'canViewLogs').mixed} checked={permissionMix(device, 'canViewLogs').all} disabled={!!pending || !device.paired || device.approvalPending} onChange={event => void setDevicePermissions(device, 'canViewLogs', permissionMix(device, 'canViewLogs').mixed ? true : event.target.checked)} /><span><strong>View logs</strong><small>{permissionMix(device, 'canViewLogs').mixed ? device.canViewLogs ? 'On with server exceptions' : 'Off with server exceptions' : permissionMix(device, 'canViewLogs').all ? 'Allowed on every assigned server' : 'Off on every assigned server'}. Read-only and independent of remote controls.</small></span></label></div>
-                  </fieldset>
-                </div>)}</div> : <div className="empty compact-empty"><p>No Friend PCs have connected yet. Choose Invite friends on a server card to copy a private server code.</p></div>}
-              </section>}
-              {hostSettingsSection === 'network' && <section className="settings-section">
-              {appInstance?.isStaging && <HostRemoteRehearsal />}
-              <h3>Connection checks</h3>
-              <PaneErrorBoundary title="Connection Doctor" resetKey={selectedHostProfileId}><ConnectionDoctor
-                profile={selectedHostProfile} run={selectedHostRun} ports={portDiagnostics}
-                routeCheck={internetRouteCheck} devices={companion?.devices ?? []}
-                busy={checkingPorts || checkingInternetRoute || !!pending} routeMode={draft.connectionRoute?.mode ?? 'DirectInternet'}
-                onRefresh={() => { void checkPorts(true); void refreshCompanion() }}
-                onTestRoute={() => void checkInternetRoute()} onOpenAccess={() => setHostSettingsSection('access')}
-                onOpenDiagnostics={() => setHostSettingsSection('diagnostics')} /></PaneErrorBoundary>
-              <div className="settings-grid companion-fields">
-                <label>Friend route<Select value={draft.connectionRoute?.mode ?? 'DirectInternet'} onChange={event => changeRoute(event.target.value as Settings['connectionRoute']['mode'], event.target.value === 'DirectInternet' ? '' : draft.connectionRoute?.address ?? '')}>
-                  <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option>
-                </Select><small>Mesh and advanced routes use networking you install and manage. TogetherServer still verifies the Host, each Friend PC, and which servers it can use.</small></label>
-                {(draft.connectionRoute?.mode ?? 'DirectInternet') !== 'DirectInternet' && <label>Selected route IPv4<Input value={draft.connectionRoute?.address ?? ''} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /><small>TogetherServer only reads adapters; it does not install clients or change network policy.</small></label>}
-                {draft.connectionRoute?.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>{routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select><small>{routeDiscovery?.privateMeshCandidates.length ? 'Selecting an address does not configure that network.' : 'No known Tailscale or ZeroTier adapter is currently up; enter an address manually if appropriate.'}</small></label>}
-              </div>
-              <p>Game address: {detectedGameIp ? `${detectedGameIp} detected, friend join untested` : 'unavailable'}. Friend app: {friendAppStatus}.</p>
-              {companion?.listenerWarning && <p className="warning-text">{companion.listenerWarning}</p>}
-              {publicIpDetection && !publicIpDetection.ok && <p className="warning-text">{publicIpDetection.message}</p>}
-              <div className="actions"><Button className="secondary" disabled={detectingPublicIp} onClick={() => void detectPublicIp()}>{detectingPublicIp ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Refresh public address</>}</Button></div>
-              <div className={checkingInternetRoute ? 'internet-route-test refreshing' : 'internet-route-test'} aria-busy={checkingInternetRoute}><Button className="secondary" disabled={checkingInternetRoute || !!pending || dirty} onClick={() => void checkInternetRoute()}>{checkingInternetRoute ? <><Icon name="loader" />Testing TCP port…</> : 'Test Friend app port from internet'}</Button>
-                <small>This checks the Friend app TCP port through portchecker.io. That service sees this PC's public IP and port; no server code or saved access is sent.</small>
-                {internetRouteCheck && <p className={`internet-route-result ${previousRouteVerdict ? 'neutral' : internetRouteCheck.state === 'Reachable' ? 'good' : internetRouteCheck.state === 'Not reachable' ? 'bad' : 'neutral'}`} role="status">
-                  <strong>{previousRouteVerdict ? `Previous TCP ${internetRouteCheck.port} result` : internetRouteCheck.state === 'Reachable' ? `Reachable outside network · TCP ${internetRouteCheck.port}` : internetRouteCheck.state === 'Not reachable' ? `TCP ${internetRouteCheck.port} not reachable` : `${internetRouteCheck.state} · TCP ${internetRouteCheck.port}`}</strong>
-                  <span>{internetRouteCheck.detail}</span><small>Checked {new Date(internetRouteCheck.checkedUtc).toLocaleString()}. {previousRouteVerdict && 'This result is no longer current for the saved connection, server code address, or time; test again after checking them. '}This tests TCP access only; your Friend still needs to connect with the code, and the game join needs its own test.</small>
-                </p>}
-              </div>
-              {portDiagnostics?.control.lanForwardDetail && <div className="lan-target-hint"><strong>Router forwarding target on this PC</strong>
-                <p>{portDiagnostics.control.lanForwardDetail}</p>
-                {portDiagnostics.control.lanAddresses?.map(item => <p key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code> · {item.interfaceName} · gateway {item.gateway}</p>)}
-              </div>}
-              <p className="helper-text">A Friend on another network must test the app connection and game join separately. Router and firewall changes remain yours to approve.</p>
-              <div className="next-action"><span>Friend app connections are <strong>{draft.companionListeningEnabled ? 'on' : 'off'}</strong>.</span><Button className="text-button" onClick={() => setHostSettingsSection('access')}>Manage access</Button></div>
-              <details className="advanced-block"><summary>Technical connection details</summary><p className="helper-text">Friend app HTTPS uses TCP {draft.companionPort}. Game ports are separate. Friend PCs connect outbound.</p>{companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}</details>
-              </section>}
-
-              {hostSettingsSection === 'stop' && <section className="settings-section"><h3>Empty-server countdown</h3>
-                <p>When a Ready server reports 0 players, TogetherServer counts down and stops it gracefully. Friend apps do not gate the timer. A player or unavailable count pauses the countdown, while added time stays saved and is applied to the next zero-player countdown. A fresh zero-player server check is still required at the end.</p>
-                <div className="idle-settings"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong><small>Off by default. Host and Friend cards share the countdown or explain why it is paused.</small></span><Input type="checkbox" checked={draft.autoShutdownEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ autoShutdownEnabled: event.target.checked })} /></label>
-                  <label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" value={draft.idleMinutes} disabled={!!pending} onChange={event => edit({ ...draft, idleMinutes: Number(event.target.value) })} /><small>Minutes, from 1 to 1440.</small></label>
-                  <label>Friend extension increment<Input type="number" min="1" max="120" value={draft.friendTimerExtensionMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMinutes: Number(event.target.value) })} /><small>Fixed minutes added per approved Friend request.</small></label>
-                  <label>Friend extension maximum<Input type="number" min="1" max="1440" value={draft.friendTimerExtensionMaximumMinutes} disabled={!!pending} onChange={event => edit({ ...draft, friendTimerExtensionMaximumMinutes: Number(event.target.value) })} /><small>Total Friend-added minutes allowed during one server run.</small></label>
-                  <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save-idle', '/api/local/settings', 'PUT', draft)}>Save timer</Button></div></div>
-                <h3>Remote Stop safety</h3>
-                <p>There are no player IDs to enter. Each game server reports its current online-player count. A Friend Stop request is allowed only at 0, then TogetherServer checks the count again immediately before sending the graceful stop command.</p>
-                <div className="stop-checklist"><strong>How it works</strong><ul>
-                  <li className="done"><Icon name="check" />The server must be running and Ready</li>
-                  <li className="done"><Icon name="check" />Unknown player counts block Friend Stop</li>
-                  <li className="done"><Icon name="check" />One or more online players block Friend Stop</li>
-                  <li className={draft.remoteControlsEnabled ? 'done' : ''}><Icon name={draft.remoteControlsEnabled ? 'check' : 'warning'} />Friend controls are {draft.remoteControlsEnabled ? 'on' : 'paused'}</li>
-                </ul></div>
-                {savedProfiles.map(profile => {
-                  const run = snapshot.runs.find(item => item.profileId === profile.id)
-                  const safety = companion?.stopSafety?.[profile.id]
-                  return <div className="safety-status" key={profile.id}>
-                    <strong>{profile.name}: {run?.state === 'Ready' ? playerCount(run.onlinePlayers, run.maxPlayers) : run?.state ?? 'Unknown'}</strong>
-                    <p>{safety?.reason ?? 'Checking the server player count…'}</p>
-                    <small>The local Stop button on the Host page remains available for the owner's decision.</small>
-                  </div>
-                })}
-              </section>}
-
-              {hostSettingsSection === 'diagnostics' && <PaneErrorBoundary title="Preflight & diagnostics" resetKey={selectedHostProfileId}><OwnerDiagnostics
-                selectedProfileId={selectedHostProfileId}
-                onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
-
-              {hostSettingsSection === 'advanced' && <section className="settings-section">
-        <details className="advanced-block host-move-guide"><summary>Move hosting to another PC</summary>
-          <p>On the old Host, stop the server, make a new backup, then choose Prepare move kit beside that backup. Take the verified .backup folder to the new PC.</p>
-          <Button className="secondary" disabled={!!pending} onClick={() => void inspectMoveKit()}>{pending === 'inspect-move-kit' ? 'Checking…' : 'Inspect move kit on this PC'}</Button>
-          {moveKit?.kit && <div className="device"><strong>{moveKit.kit.name} · {gameLabel(moveKit.kit.kind)}</strong><small>World {moveKit.kit.worldId} · port {moveKit.kit.gamePort} · {moveKit.fileCount} verified files</small>
-            <ol><li>Install the same game server version and create a fresh server on this PC.</li><li>While it is offline, copy the kit’s payload into that server’s save location. Keep any existing save separate; do not overwrite it. Use the world name shown above.</li><li>Set up TogetherServer for that server and select its locally installed executable. Recreate game settings and passwords, then test a real join and saved change.</li><li>Give Friends a new server code and pair each PC again. Retire the old Host only after the new one passes your checks.</li></ol>
-            <small>The move kit contains world files and basic setup details. It does not contain game binaries, saved Friend access, private keys, or game passwords.</small>
-            <Button className="secondary" onClick={addProfile}>Set up new Host</Button></div>}
-        </details>
-                <h3>Advanced network and game paths</h3>
-              <div className="settings-grid companion-fields">
-                <label>Maximum servers running at once<Input type="number" min="1" max="16" value={draft.maxConcurrentServers} onChange={event => edit({ ...draft, maxConcurrentServers: Number(event.target.value) })} /><small>Most homes should leave this at 1.</small></label>
-                <label>Friend app TCP port<Input type="number" min="1024" max="65535" value={draft.companionPort} onChange={event => {
-                  const port = Number(event.target.value)
-                  let endpoint = draft.companionEndpoint
-                  if (endpoint) try { const url = new URL(endpoint); url.port = String(port); endpoint = url.origin } catch { /* Validation explains a custom endpoint. */ }
-                  edit({ ...draft, companionPort: port, companionEndpoint: endpoint })
-                }} /></label>
-                <label>Custom secure address<Input value={draft.companionEndpoint} onChange={event => edit({ ...draft, companionEndpoint: event.target.value.trim() })} placeholder={`https://127.0.0.1:${appInstance?.companionPort ?? 5131}`} /></label>
-                <label>Bind IP<Input value={draft.companionBindAddress} onChange={event => edit({ ...draft, companionBindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
-              </div>
-              {companion?.fingerprint && <p className="footnote">Pinned Host identity: <code>{companion.fingerprint}</code></p>}
-              {companion?.certificates && <div className="safety-status"><strong>Secure Host identity</strong><p>Current identity is valid until {new Date(companion.certificates.activeExpiresUtc).toLocaleString()}.</p>
-                {companion.certificates.nextFingerprint ? <p>The next identity is ready and connected Friends are receiving it.</p> : <p>TogetherServer prepares the next identity automatically within 30 days of expiry.</p>}
-                {companion.certificates.previousAcceptedUntilUtc && <p>The old identity will be accepted until {new Date(companion.certificates.previousAcceptedUntilUtc).toLocaleString()}.</p>}
-                <div className="actions"><Button className="secondary" disabled={!!pending || !!companion.certificates.nextFingerprint} onClick={() => void certificateAction('stage')}>Prepare next identity</Button>
-                  <Button className="secondary" disabled={!!pending || !companion.certificates.nextFingerprint} onClick={() => void certificateAction('activate')}>Use prepared identity</Button>
-                  {companion.certificates.previousFingerprint && <Button className="text-button danger" disabled={!!pending} onClick={() => void certificateAction('retire-previous')}>Stop accepting old identity</Button>}</div>
-              </div>}
-              <div className="actions"><Button disabled={!dirty || !!pending} onClick={() => void run('save', '/api/local/settings', 'PUT', draft)}>Save settings</Button></div>
-              {companion?.devices.some(device => device.revoked) ? <details className="advanced-block"><summary>Revoked Friend PCs</summary><div className="profile-list device-list">{companion.devices.filter(device => device.revoked).map(device => <div className="device" key={device.id}>
-                <div><strong>{device.name} · {savedProfiles.find(profile => profile.id === device.profileId)?.name ?? 'Legacy access'}</strong><small>Revoked</small></div>
-              </div>)}</div></details> : null}
-              </section>}
-            </div>
+        {hostScope === 'pc' && <section className="settings-workspace host-pc-workspace" aria-label="This Host PC">
+          <div className="context-heading-utility"><Button className="secondary icon-button" disabled={!!pending} title="Return to selected server" aria-label="Return to selected server" onClick={() => void closeHostSettings()}><Icon name="server" /></Button></div>
+          <div className="settings-content">
+            {dirty && <p className="warning-text" role="status">Finish or cancel your server setup changes before editing Host settings.</p>}
+            {hostSettingsSection === 'access' && <section className="settings-section">
+              <SettingsSectionHeading icon="users" title="Friend access" description="Choose a PC to manage its servers, permissions, and access time." />
+              <div className="access-toggles settings-controls"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Connections stay available while this Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
+                <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Each PC's permissions and server safety checks still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
+              <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length} totalCount={companion?.devices.length ?? 0} onChange={setDeviceFilters} />
+              {!companion ? <p role="status">Loading Friend access...</p> : visibleDevices.length ? <div className="friend-pc-grid" aria-label="Friend PCs">
+                {visibleDevices.map(device => <FriendPcCard key={device.id} device={device} servers={savedProfiles} nowMs={nowMs} busy={!!pending}
+                  onManage={() => openDeviceServerAccess(device)} onApprove={() => void approveDevice(device.id)}
+                  feedback={<ActionFeedback notice={currentActionNotice(actionNotices[device.id], snapshot, feedbackNowMs)} />} />)}
+              </div> : <div className="empty compact-empty">{companion.devices.length ? <><p>No Friend PCs match these filters.</p><Button className="secondary" onClick={() => setDeviceFilters(defaultFriendPcFilters)}>Clear filters</Button></> :
+                <p>No Friend PCs have connected yet. Choose Invite friends on a server to copy its private code.</p>}</div>}
+            </section>}
+            {(hostSettingsSection === 'stop' || hostSettingsSection === 'network' || hostSettingsSection === 'advanced') && <HostSettingsTools key={hostSettingsSection}
+              section={hostSettingsSection} snapshot={snapshot} companion={companion} ports={portDiagnostics} routeCheck={internetRouteCheck}
+              previousRouteVerdict={previousRouteVerdict} routeDiscovery={routeDiscovery} selectedProfileId={selectedHostProfileId} busy={!!pending} dirty={dirty}
+              checkingPorts={checkingPorts} checkingRoute={checkingInternetRoute} detectingAddress={detectingPublicIp} friendAppStatus={friendAppStatus}
+              addressError={publicIpDetection && !publicIpDetection.ok ? publicIpDetection.message : null}
+              isStaging={appInstance?.isStaging ?? false} notice={notice} moveKit={moveKit} onClearNotice={() => setNotice(null)} onDraftStateChange={setHostSettingsDraftDirty} onSave={saveSettingsPatch}
+              onAutoShutdown={enabled => void saveHostFlags({ autoShutdownEnabled: enabled })}
+              keepAwake={{ enabled: draft.keepAwakeWhileHosting, detail: snapshot.hostingPower ? `${snapshot.hostingPower.state}. ${snapshot.hostingPower.message}` : undefined,
+                onChange: enabled => void saveHostFlags({ keepAwakeWhileHosting: enabled }) }}
+              onRefresh={() => { void checkPorts(true); void refreshCompanion() }} onTestRoute={() => void checkInternetRoute()} onDetectAddress={() => void detectPublicIp()}
+              onOpenAccess={() => openHostSettings('access')} onOpenDiagnostics={() => openHostSettings('diagnostics')}
+              onCertificate={action => void certificateAction(action)} onInspectMoveKit={() => void inspectMoveKit()} onNewHost={addProfile} />}
+            {hostSettingsSection === 'diagnostics' && <PaneErrorBoundary title="Preflight & diagnostics" resetKey={selectedHostProfileId}><OwnerDiagnostics
+              selectedProfileId={selectedHostProfileId} onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
+          </div>
         </section>}
-        {savedProfiles.length > 0 && serverAccessDevice && <dialog ref={serverAccessRef} className="panel modal-dialog server-access-dialog" aria-labelledby="server-access-title" onCancel={event => { event.preventDefault(); closeDeviceServerAccess() }}>
-          <div className="modal-heading"><div><h2 id="server-access-title">Choose servers for {serverAccessDevice.name}</h2><p>Selected servers expose their connection details. Start, Stop, Add shutdown time, and View logs stay independent.</p></div><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button></div>
-          {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-          <label className="server-picker-search">Search servers<Input value={serverAccessSearch} autoFocus placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
-          <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!!pending || visibleServerAccessProfiles.length === 0} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!!pending || serverAccessDraft.length === 0} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
-          <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
-            const assigned = serverAccessDraft.includes(profile.id)
-            const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer, canViewLogs: serverAccessDevice.canViewLogs }
-            return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} disabled={!!pending} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
-              <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}><label><Input type="checkbox" checked={permission.canStart} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStart: event.target.checked } }))} /> Start</label><label><Input type="checkbox" checked={permission.canStop} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canStop: event.target.checked } }))} /> Stop</label><label><Input type="checkbox" checked={permission.canExtendTimer} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canExtendTimer: event.target.checked } }))} /> Add time</label><label><Input type="checkbox" checked={permission.canViewLogs} disabled={!!pending || !assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, canViewLogs: event.target.checked } }))} /> View logs</label></div></div>
-          })}
-            {visibleServerAccessProfiles.length === 0 && <div className="server-picker-empty">No servers match “{serverAccessSearch.trim()}”.</div>}</div>
-          <div className="server-picker-footer"><span>Changes apply when you save.</span><div className="actions"><Button className="secondary" disabled={!!pending} onClick={closeDeviceServerAccess}>Cancel</Button><Button disabled={!!pending} onClick={() => void saveDeviceServerAccess()}>{pending === serverAccessDevice.id ? 'Saving…' : 'Save access'}</Button></div></div>
-          <FriendAccessReview before={{ ...serverAccessDevice, serverPermissions: serverAccessDevice.serverPermissions ?? [] }}
-            after={{ ...serverAccessDevice, assignedProfileIds: serverAccessDraft, serverPermissions: serverAccessDraft.map(profileId => ({
-              ...devicePermission(serverAccessDevice, profileId), ...serverPermissionDraft[profileId] })) }} servers={savedProfiles} />
-        </dialog>}
-      </>}
+        {workspacePage === 'host' && hostScope === 'pc' && serverAccessDevice && <SettingsDialog title={`Manage access for ${serverAccessDevice.name}`} wide busy={!!pending || deadlineDraftState.saving}
+          description="Permissions, servers, access time, and PC details." onClose={closeDeviceServerAccess}
+          footer={<><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={closeDeviceServerAccess}>{deviceAccessTab === 'servers' ? 'Cancel' : 'Done'}</Button>
+            {deviceAccessTab === 'servers' && <Button disabled={!!pending || !serverAccessDirty || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending}
+              onClick={() => void saveDeviceServerAccess()}><Icon name={pending === serverAccessDevice.id ? 'loader' : 'check'} />{pending === serverAccessDevice.id ? 'Saving...' : 'Save access'}</Button>}</>}>
+          <nav className="settings-dialog-tabs" aria-label="PC access sections">
+            {([['permissions', 'shield', 'Permissions'], ['servers', 'server', 'Servers'], ['time', 'clock', 'Access time'], ['details', 'monitor', 'PC details']] as const).map(([tab, icon, label]) =>
+              <Button key={tab} aria-current={deviceAccessTab === tab ? 'page' : undefined} className={deviceAccessTab === tab ? 'selected' : ''} disabled={!!pending || deadlineDraftState.saving}
+                onClick={() => { if (tab === 'servers' && !serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab(tab); setRemoveDeviceConfirm(false) }}><Icon name={icon} />{label}</Button>)}
+          </nav>
+          <ActionFeedback notice={currentActionNotice(actionNotices[serverAccessDevice.id], snapshot, feedbackNowMs)} />
+          {notice && !notice.good && <p className="warning-text" role="status">{notice.text}</p>}
+          {discardDeviceEdits && <div className="settings-inline-confirm" role="alert"><strong>Discard unsaved PC changes?</strong><p>Changes you have already saved remain in place.</p><div className="actions"><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={() => setDiscardDeviceEdits(false)}>Continue editing</Button><Button className="danger-outline" disabled={!!pending || deadlineDraftState.saving} onClick={finishDeviceServerAccess}>Discard changes</Button></div></div>}
+          {deviceAccessTab === 'permissions' && <div className="settings-dialog-stack">
+            {serverAccessDevice.temporaryHelperActive && <p className="warning-text" role="status">The last Host view includes temporary helper permissions. End helper access under Access time and refresh before editing usual permissions.</p>}
+            {serverAccessDirty && <p className="warning-text" role="status">Save or discard your server edits before changing usual permissions. <Button className="text-button" onClick={() => setDeviceAccessTab('servers')}>Review server edits</Button></p>}
+            <fieldset className="device-permissions-editor" disabled={!!pending || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending || serverAccessDirty}>
+              <legend>Usual permissions</legend>
+              {(() => {
+                const selectedPreset = permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)
+                const preset = selectedPreset === 'custom' ? null : permissionPresets[selectedPreset]
+                const changed = selectedPreset !== matchingPermissionPreset(serverAccessDevice)
+                return <div className="device-preset-editor"><label>Permission preset<Select value={selectedPreset} onChange={event => setPermissionPresetDraft(current => ({ ...current, [serverAccessDevice.id]: event.target.value as PermissionPreset }))}>
+                  <option value="status">Status only</option><option value="start">Can start</option><option value="helper">Trusted helper</option><option value="custom">Custom</option></Select></label>
+                  <p className="helper-text">{preset?.detail ?? 'Individual permissions or per-server exceptions.'}</p>
+                  {preset && changed && <><FriendAccessReview before={{ ...serverAccessDevice, serverPermissions: serverAccessDevice.serverPermissions ?? [] }}
+                    after={{ ...serverAccessDevice, ...permissionPresetRequest(selectedPreset as Exclude<PermissionPreset, 'custom'>), serverPermissions: [] }} servers={savedProfiles} clearsExceptions />
+                    <div className="actions"><Button onClick={() => void applyDevicePermissionPreset(serverAccessDevice, selectedPreset)}><Icon name="check" />Apply preset</Button></div></>}
+                </div>
+              })()}
+              <details className="settings-disclosure"><summary><Icon name="settings" />Individual permissions</summary><p className="helper-text">These switches save immediately and keep exceptions for the other permissions.</p>
+                <div className="device-permissions-grid">{(Object.keys(permissionLabels) as PermissionAction[]).map(action => {
+                  const mix = permissionMix(serverAccessDevice, action)
+                  return <label className="device-permission-toggle" key={action}><MixedCheckbox type="checkbox" mixed={mix.mixed} checked={mix.all} onChange={event => void setDevicePermissions(serverAccessDevice, action, mix.mixed ? true : event.target.checked)} />
+                    <span><strong><Icon name={permissionLabels[action].icon} />{permissionLabels[action].label}</strong><small>{mix.mixed ? `${mix.all ? 'On' : 'Off'} with server exceptions` : mix.all ? 'Allowed on every assigned server' : 'Off on every assigned server'}</small></span></label>
+                })}</div><p className="helper-text">Stop needs a fresh zero-player check. Restart needs Start and Stop. Logs and Add shutdown time are separate grants.</p>
+              </details>
+            </fieldset>
+            <div className="settings-detail-row device-assignment-row"><div><strong>{serverAccessDevice.assignedProfileIds.length} assigned {serverAccessDevice.assignedProfileIds.length === 1 ? 'server' : 'servers'}</strong><small>{serverAssignmentPreview(serverAccessDevice, savedProfiles)}</small></div>
+              <Button className="secondary" disabled={!!pending} onClick={() => { if (!serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab('servers') }}><Icon name="server" />Choose servers</Button></div>
+            <details className="settings-disclosure"><summary><Icon name="eye" />Current effective access</summary><FriendAccessSummary device={serverAccessDevice} servers={savedProfiles} nowMs={nowMs} /></details>
+          </div>}
+          {deviceAccessTab === 'servers' && <div className="settings-dialog-stack">
+            <p className="helper-text">Assignment gives status and connection details. Each server's Start, Stop, Add time, and View logs choices stay independent.</p>
+            {serverAccessDevice.temporaryHelperActive && <p className="warning-text" role="status">End temporary helper access and refresh before editing saved server permissions.</p>}
+            <fieldset className="server-picker-fieldset" disabled={!!pending || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending}>
+              <legend className="sr-only">Server access</legend>
+              <label className="server-picker-search">Search servers<Input value={serverAccessSearch} placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>
+              <div className="server-picker-toolbar"><strong>{serverAccessDraft.length} of {savedProfiles.length} selected</strong><div className="actions"><Button className="text-button" disabled={!visibleServerAccessProfiles.length} onClick={() => setServerAccessDraft(current => [...new Set([...current, ...visibleServerAccessProfiles.map(profile => profile.id)])])}>{normalizedServerSearch ? 'Select all results' : 'Select all'}</Button><Button className="text-button" disabled={!serverAccessDraft.length} onClick={() => setServerAccessDraft([])}>Clear all</Button></div></div>
+              <div className="server-picker-list" role="group" aria-label="Saved servers">{visibleServerAccessProfiles.map(profile => {
+                const assigned = serverAccessDraft.includes(profile.id)
+                const permission = serverPermissionDraft[profile.id] ?? { canStart: serverAccessDevice.canStart, canStop: serverAccessDevice.canStop, canExtendTimer: serverAccessDevice.canExtendTimer, canViewLogs: serverAccessDevice.canViewLogs }
+                return <div className="server-picker-option" key={profile.id}><label className="server-picker-access"><Input type="checkbox" checked={assigned} onChange={event => setServerAccessDraft(current => event.target.checked ? [...new Set([...current, profile.id])] : current.filter(id => id !== profile.id))} /><span><strong>{profile.name}</strong><small>{profileGameLabel(profile)}</small></span></label>
+                  <div className="server-picker-permissions" aria-label={`${profile.name} permissions`}>{(['canStart', 'canStop', 'canExtendTimer', 'canViewLogs'] as PermissionAction[]).map(action => <label key={action}><Input type="checkbox" checked={permission[action]} disabled={!assigned} onChange={event => setServerPermissionDraft(current => ({ ...current, [profile.id]: { ...permission, [action]: event.target.checked } }))} /><Icon name={permissionLabels[action].icon} />{action === 'canStart' ? 'Start' : action === 'canStop' ? 'Stop' : action === 'canExtendTimer' ? 'Add time' : 'View logs'}</label>)}</div></div>
+              })}{!visibleServerAccessProfiles.length && <p className="server-picker-empty">{savedProfiles.length ? `No servers match “${serverAccessSearch.trim()}”.` : 'No saved servers are available.'}</p>}</div>
+            </fieldset>
+            {serverAccessDirty && <><FriendAccessReview before={{ ...serverAccessDevice, serverPermissions: serverAccessDevice.serverPermissions ?? [] }}
+              after={{ ...serverAccessDevice, assignedProfileIds: serverAccessDraft, serverPermissions: serverAccessDraft.map(profileId => ({ ...devicePermission(serverAccessDevice, profileId), ...serverPermissionDraft[profileId] })) }} servers={savedProfiles} />
+              <div className="actions"><Button className="text-button" disabled={!!pending} onClick={() => prepareDeviceServerAccess(serverAccessDevice)}>Discard server edits</Button></div></>}
+          </div>}
+          <div className="settings-dialog-stack" hidden={deviceAccessTab !== 'time'}>
+            <OwnerAccessDeadlineEditor device={serverAccessDevice} disabled={!!pending || !serverAccessDevice.paired} onSave={request => saveDeviceAccessExpiry(serverAccessDevice.id, request)} onRefresh={refreshCompanion} onDraftStateChange={setDeadlineDraftState} />
+            <TemporaryHelperAccess device={serverAccessDevice} nowMs={nowMs} busy={!!pending || serverAccessDirty || deadlineDraftState.saving}
+              onGrant={duration => void saveTemporaryHelper(serverAccessDevice.id, duration)} onEnd={() => void saveTemporaryHelper(serverAccessDevice.id)} />
+            {serverAccessDirty && <p className="helper-text">Save or discard server edits before changing temporary helper access.</p>}
+          </div>
+          {deviceAccessTab === 'details' && <div className="settings-dialog-stack">
+            <div className="device-name-editor"><label>PC name<Input value={deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name} maxLength={48} disabled={!!pending} onChange={event => setDeviceNames(current => ({ ...current, [serverAccessDevice.id]: event.target.value }))} /></label>
+              <Button className="secondary" disabled={!!pending || !(deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() || (deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() === serverAccessDevice.name} onClick={() => void saveDeviceName(serverAccessDevice.id)}>Save name</Button></div>
+            <div className="settings-detail-row"><strong>Paired with</strong><span>{serverAccessDevice.profileId === '00000000-0000-0000-0000-000000000000' ? 'An older code' : `Code for ${savedProfiles.find(profile => profile.id === serverAccessDevice.profileId)?.name ?? 'a removed server'}`}</span></div>
+            <div className="settings-detail-row"><strong>Last authenticated report</strong><span>{serverAccessDevice.lastHeartbeatUtc ? new Date(serverAccessDevice.lastHeartbeatUtc).toLocaleString() : 'No fresh report'}</span></div>
+            <div className="settings-detail-row"><strong>Renewable credential</strong><span>{serverAccessDevice.credentialExpiresUtc ? `Expires ${new Date(serverAccessDevice.credentialExpiresUtc).toLocaleString()}` : 'Expiry unavailable'}</span><small>Independent of the owner access deadline under Access time.</small></div>
+            {serverAccessDevice.approvalPending && <div className="actions"><Button disabled={!!pending} onClick={() => void approveDevice(serverAccessDevice.id)}>Approve this PC</Button></div>}
+            <div className="settings-danger-row"><span><strong>Remove this PC's access</strong><small>Its next request will be denied.</small></span><Button className="danger-outline" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(true)}>Remove access</Button></div>
+            {removeDeviceConfirm && <div className="settings-inline-confirm" role="alert"><strong>Remove access for {serverAccessDevice.name}?</strong><p>This PC will need a new code to connect again.</p><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(false)}>Keep access</Button><Button className="danger-outline" disabled={!!pending} onClick={() => void revokeDevice(serverAccessDevice.id)}>Confirm remove access</Button></div></div>}
+          </div>}
+        </SettingsDialog>}
+        </div></section>}
       </div></main>
     </div>
+    {showAllServers && snapshot?.mode === 'Host' && <SettingsDialog title="All servers" wide onClose={() => setShowAllServers(false)}
+      footer={<Button className="secondary" onClick={() => setShowAllServers(false)}>Done</Button>}>
+      <AllServerOverview snapshot={snapshot} selectedProfileId={selectedHostProfileId} nowMs={nowMs} error={loadError}
+        onOpen={destination => { setShowAllServers(false); openActivityDestination(destination) }} />
+    </SettingsDialog>}
+    {serverNotification && <SettingsDialog title={`Notifications for ${serverNotification.name}`} busy={serverNotificationBusy}
+      description="Overrides for this server on this PC." onClose={() => setServerNotification(null)}
+      footer={<Button className="secondary" disabled={serverNotificationBusy} onClick={() => setServerNotification(null)}>Done</Button>}>
+      <ServerNotificationSettings serverId={serverNotification.id} serverName={serverNotification.name}
+        connectionId={serverNotification.connectionId} onBusyChange={setServerNotificationBusy} />
+    </SettingsDialog>}
+    {confirmationDialog}
     <StatusStrip hostText={snapshot?.mode === 'Host' ? activeRuns ? `${activeRuns} server${activeRuns === 1 ? '' : 's'} running` : 'Host idle' : 'Host capability available'}
       friendText={snapshot?.mode === 'Friend' ? snapshot.state : friendAppStatus} pending={pendingDescription(pending, snapshot?.mode === 'Friend' ? snapshot.profiles : savedProfiles, currentOperationProfile.current[pending])}
       version={update?.currentVersion ?? '...'} />

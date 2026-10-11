@@ -9,6 +9,22 @@ const field = (value = 'game.example:19132'): ConnectionField => ({
 afterEach(() => vi.useRealTimers())
 
 describe('separate game address and port', () => {
+  it('keeps combined address and password controls independent and disables them during refresh', () => {
+    const address = field('192.0.2.10:2456')
+    const password = { ...field('private-password'), id: 'password', label: 'Game password' }
+    const view = render(<ConnectionDetails kind="Valheim" fields={[address, password]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Game password' }))
+    expect(password.onCopy).toHaveBeenCalledOnce()
+    expect(address.onCopy).not.toHaveBeenCalled()
+    expect(view.container.innerHTML).not.toContain('private-password')
+    expect(view.container.innerHTML).not.toContain('192.0.2.10')
+    fireEvent.click(screen.getByRole('button', { name: 'Show Server IP' }))
+    expect(address.onReveal).toHaveBeenCalledOnce()
+    expect(password.onReveal).not.toHaveBeenCalled()
+    view.rerender(<ConnectionDetails kind="Valheim" fields={[address, password]} refreshing />)
+    expect(screen.getByRole('button', { name: 'Show Server IP' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Copy Game password' })).toBeDisabled()
+  })
   it.each([
     ['192.0.2.10:19132', '192.0.2.10', '19132'],
     ['game.example:7777', 'game.example', '7777'],

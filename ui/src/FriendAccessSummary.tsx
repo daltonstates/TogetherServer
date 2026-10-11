@@ -1,7 +1,9 @@
 import { useId } from 'react'
 import { Input, Select } from './Controls'
+import { Icon, type IconName } from './Icon'
 import type { Device, ServerPermission } from './contracts'
 import { devicePermission, type PermissionValues } from './permissionState'
+import './friend-access.css'
 
 export type FriendAccessServer = { id: string; name: string; kind?: string }
 export type FriendAccessState = 'Available' | 'Revoked' | 'Unpaired' | 'ApprovalPending' |
@@ -172,25 +174,102 @@ export type FriendAccessReviewProps = {
   clearsExceptions?: boolean
 }
 
-function reviewCell(assigned: boolean, permissions: PermissionValues | null) {
-  return !assigned ? 'Not assigned' : permissions ? permissionSummary(permissions) : 'Saved permissions unavailable during helper overlay'
+const reviewActions: { label: string; icon: IconName; allowed: (permissions: PermissionValues) => boolean }[] = [
+  { label: 'Start', icon: 'play', allowed: permissions => permissions.canStart },
+  { label: 'Guarded Stop', icon: 'stop', allowed: permissions => permissions.canStop },
+  { label: 'Restart', icon: 'refresh', allowed: permissions => permissions.canStart && permissions.canStop },
+  { label: 'Add time', icon: 'clock', allowed: permissions => permissions.canExtendTimer },
+  { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs }
+]
+
+function ReviewPermissionChips({ permissions }: { permissions: PermissionValues }) {
+  const allowed = reviewActions.filter(action => action.allowed(permissions))
+  return allowed.length ? <ul className="friend-grant-chips" aria-label="Allowed permissions">
+    {allowed.map(action => <li key={action.label}><Icon name={action.icon} size={14} />{action.label}</li>)}
+  </ul> : <p className="friend-review-status-only"><Icon name="eye" size={15} />Status and connection details only</p>
+}
+
+function PermissionChanges({ before, after, label }: {
+  before: PermissionValues; after: PermissionValues; label: string
+}) {
+  const changed = reviewActions.filter(action => action.allowed(before) !== action.allowed(after))
+  if (changed.length === 0) return <div className="friend-review-same">
+    <span className="friend-access-badge">Unchanged</span><ReviewPermissionChips permissions={after} />
+  </div>
+  return <div className="friend-permission-changes">
+    <div className="friend-permission-column-labels" aria-hidden="true"><span>Permission</span><span>Before</span><span /><span>After</span></div>
+    <ul className="friend-permission-change-list" aria-label={label}>
+      {changed.map(action => <li key={action.label} aria-label={`${action.label} permission change`}>
+        <span className="friend-permission-label"><Icon name={action.icon} size={15} />{action.label}</span>
+        <span className={action.allowed(before) ? 'friend-permission-on' : 'friend-permission-off'} aria-label={`Before: ${action.allowed(before) ? 'Allowed' : 'Off'}`}>
+          {action.allowed(before) ? 'Allowed' : 'Off'}</span>
+        <Icon name="chevronRight" size={14} />
+        <span className={action.allowed(after) ? 'friend-permission-on' : 'friend-permission-off'} aria-label={`After: ${action.allowed(after) ? 'Allowed' : 'Off'}`}>
+          {action.allowed(after) ? 'Allowed' : 'Off'}</span>
+      </li>)}
+    </ul>
+    {changed.length < reviewActions.length && <p className="friend-review-quiet">Other permissions unchanged.</p>}
+  </div>
+}
+
+function ReviewPermissionSide({ assigned, permissions, label, defaults = false }: {
+  assigned: boolean; permissions: PermissionValues | null; label: string; defaults?: boolean
+}) {
+  return <div className="friend-review-side" role="group" aria-label={`${label} permissions`}>
+    <strong>{label}</strong>
+    {!assigned ? <p>Not assigned</p> : permissions ? <ReviewPermissionChips permissions={permissions} /> :
+      <p className="friend-review-unavailable">{defaults ? 'Saved defaults unavailable' : 'Saved permissions unavailable during helper overlay'}</p>}
+  </div>
+}
+
+function ReviewServerChange({ row }: { row: FriendAccessReviewRow }) {
+  return <li className="friend-access-review-row" data-change={row.change}>
+    <div role="group" aria-label={`${row.name} access change`}>
+      <div className="friend-review-row-heading"><strong><Icon name="server" size={16} />{row.name}</strong>
+        <span className="friend-access-badge">{row.change === 'ReviewNeeded' ? 'Refresh needed' : row.change}</span></div>
+      {row.beforeAssigned && row.afterAssigned && row.beforePermissions && row.afterPermissions ?
+        <PermissionChanges before={row.beforePermissions} after={row.afterPermissions} label={`${row.name} permission changes`} /> :
+        <div className="friend-permission-comparison">
+          <ReviewPermissionSide assigned={row.beforeAssigned} permissions={row.beforePermissions} label="Before" />
+          <ReviewPermissionSide assigned={row.afterAssigned} permissions={row.afterPermissions} label="After" />
+        </div>}
+    </div>
+  </li>
 }
 
 export function FriendAccessReview({ before, after, servers, clearsExceptions = false }: FriendAccessReviewProps) {
   const headingId = useId()
   const review = reviewFriendAccess(before, after, servers)
+  const changed = review.rows.filter(row => row.change !== 'Unchanged')
+  const unchanged = review.rows.filter(row => row.change === 'Unchanged')
   return <section className="players-workspace friend-access-review" aria-labelledby={headingId}>
-    <h3 id={headingId}>Review access changes</h3>
-    <p className="helper-text">{review.changedCount} assigned-server {review.changedCount === 1 ? 'change' : 'changes'}. Changes apply only when you save.</p>
-    <p><strong>Device defaults:</strong> {review.beforeDefaults ? permissionSummary(review.beforeDefaults) : 'Saved defaults unavailable'} → {review.afterDefaults ? permissionSummary(review.afterDefaults) : 'Saved defaults unavailable'}</p>
-    {review.helperProjection && <p className="warning-text">End temporary helper access and refresh before editing saved permissions. The current Host view includes the helper overlay.</p>}
-    {clearsExceptions && <p className="helper-text">This preset replaces all four device defaults and clears per-server exceptions on every assigned server.</p>}
-    {review.rows.length > 0 ? <div style={{ overflowX: 'auto' }}><table aria-label="Server access before and after"><thead><tr><th scope="col">Server</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead>
-      <tbody>{review.rows.map(row => <tr key={row.profileId}><th scope="row">{row.name}</th>
-        <td>{reviewCell(row.beforeAssigned, row.beforePermissions)}</td><td>{reviewCell(row.afterAssigned, row.afterPermissions)}</td>
-        <td>{row.change === 'ReviewNeeded' ? 'Refresh needed' : row.change}</td></tr>)}</tbody></table></div> :
-      <p className="helper-text">No servers are assigned before or after. Defaults alone give no server access.</p>}
-    <small>Restart requires both Start and Stop. Log and timer grants remain separate; owner access deadlines stay unchanged.</small>
+    <h3 id={headingId}><Icon name="shield" />Review access changes</h3>
+    <p className="friend-review-intro">{review.changedCount} assigned-server {review.changedCount === 1 ? 'change' : 'changes'}. Changes apply only when you save.</p>
+    <div className="friend-default-review" role="group" aria-label="Device defaults">
+      <strong>Device defaults</strong>
+      {review.beforeDefaults && review.afterDefaults ?
+        <PermissionChanges before={review.beforeDefaults} after={review.afterDefaults} label="Device default permission changes" /> :
+        <div className="friend-permission-comparison">
+          <ReviewPermissionSide assigned permissions={review.beforeDefaults} label="Before" defaults />
+          <ReviewPermissionSide assigned permissions={review.afterDefaults} label="After" defaults />
+        </div>}
+    </div>
+    {review.helperProjection && <p className="warning-text friend-review-note"><Icon name="warning" />
+      <span>End temporary helper access and refresh before editing saved permissions. The current Host view includes the helper overlay.</span></p>}
+    {clearsExceptions && <p className="friend-review-note"><Icon name="refresh" />
+      <span>This preset replaces all four device defaults and clears per-server exceptions on every assigned server.</span></p>}
+    {changed.length > 0 && <ul className="friend-access-change-list" aria-label="Server access before and after">
+      {changed.map(row => <ReviewServerChange key={row.profileId} row={row} />)}
+    </ul>}
+    {unchanged.length > 0 && <details className="friend-access-unchanged">
+      <summary>{unchanged.length} unchanged {unchanged.length === 1 ? 'server' : 'servers'}</summary>
+      <ul aria-label="Unchanged server access">{unchanged.map(row => <li key={row.profileId}>
+        <strong><Icon name="server" size={15} />{row.name}</strong>
+        {row.afterPermissions && <ReviewPermissionChips permissions={row.afterPermissions} />}
+      </li>)}</ul>
+    </details>}
+    {review.rows.length === 0 && <p className="friend-review-quiet">No servers are assigned before or after. Defaults alone give no server access.</p>}
+    <small className="friend-review-boundary">Restart requires both Start and Stop. Log and timer grants remain separate; owner access deadlines stay unchanged.</small>
   </section>
 }
 
@@ -230,16 +309,16 @@ export type FriendPcFiltersProps = {
 }
 
 export function FriendPcFilters({ value, servers, resultCount, totalCount, onChange }: FriendPcFiltersProps) {
-  return <div className="settings-grid friend-pc-filters">
-    <label>Search Friend PCs<Input type="search" maxLength={200} value={value.search} placeholder="PC or assigned server name" onChange={event => onChange({ ...value, search: event.target.value })} /></label>
-    <label>PC status<Select value={value.status} onChange={event => onChange({ ...value, status: event.target.value as FriendPcFiltersValue['status'] })}>
+  return <div className="friend-pc-filters" role="group" aria-label="Filter Friend PCs">
+    <label><span className="friend-filter-label"><Icon name="search" size={15} />Search Friend PCs</span><Input type="search" maxLength={200} value={value.search} placeholder="PC or assigned server name" onChange={event => onChange({ ...value, search: event.target.value })} /></label>
+    <label><span className="friend-filter-label"><Icon name="monitor" size={15} />PC status</span><Select value={value.status} onChange={event => onChange({ ...value, status: event.target.value as FriendPcFiltersValue['status'] })}>
       <option value="all">All PCs</option><option value="connected">Connected</option><option value="unknown">Connection Unknown or refresh needed</option>
       <option value="approval">Waiting for approval</option><option value="expired">Access expired</option><option value="helper">Temporary helper</option>
       <option value="revoked">Access removed</option><option value="unassigned">No assigned servers</option>
     </Select></label>
-    <label>Assigned server<Select value={value.serverId} onChange={event => onChange({ ...value, serverId: event.target.value })}>
+    <label><span className="friend-filter-label"><Icon name="server" size={15} />Assigned server</span><Select value={value.serverId} onChange={event => onChange({ ...value, serverId: event.target.value })}>
       <option value="all">All servers</option>{servers.map(server => <option key={server.id} value={server.id}>{server.name}</option>)}
     </Select></label>
-    <span role="status" aria-live="polite" aria-atomic="true">{resultCount} of {totalCount} Friend PCs shown.</span>
+    <span className="friend-filter-count" role="status" aria-live="polite" aria-atomic="true">{resultCount} of {totalCount} Friend PCs shown.</span>
   </div>
 }

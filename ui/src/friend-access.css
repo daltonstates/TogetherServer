@@ -1,0 +1,208 @@
+.friend-pc-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 12px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 3px 12px var(--color-shadow-soft);
+  font-size: calc(13px * var(--qol-text-scale, 1));
+}
+.friend-pc-card-heading, .friend-pc-identity, .friend-pc-heartbeat > span,
+.friend-pc-field-label, .friend-pc-permission-heading, .friend-pc-card-actions,
+.friend-review-row-heading, .friend-review-row-heading > strong, .friend-access-review h3,
+.friend-filter-label, .friend-access-unchanged li > strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.friend-pc-card-heading { justify-content: space-between; align-items: flex-start; gap: 12px; }
+.friend-pc-identity { align-items: center; gap: 10px; min-width: 0; }
+.friend-pc-identity > div { min-width: 0; }
+.friend-pc-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+.friend-pc-card .friend-pc-identity h3 {
+  margin: 0 0 3px;
+  font-size: calc(15px * var(--qol-text-scale, 1));
+  overflow-wrap: anywhere;
+}
+.friend-pc-kind, .friend-pc-field-label, .friend-pc-quiet,
+.friend-review-quiet, .friend-permission-off { color: var(--color-text-muted); }
+.friend-pc-kind, .friend-pc-field-label, .friend-pc-card small { font-size: calc(12px * var(--qol-text-scale, 1)); }
+.friend-access-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-soft);
+  color: var(--color-text-secondary);
+  font-size: calc(11px * var(--qol-text-scale, 1));
+  line-height: 1.4;
+  font-weight: 650;
+}
+.friend-pc-access-state { max-width: 50%; }
+.friend-pc-card[data-access-state="Available"] .friend-pc-access-state,
+.friend-access-review-row[data-change="Added"] > div > .friend-review-row-heading > .friend-access-badge {
+  border-color: var(--color-accent-border);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+.friend-pc-card:not([data-access-state="Available"]) .friend-pc-access-state,
+.friend-access-review-row[data-change="Removed"] > div > .friend-review-row-heading > .friend-access-badge,
+.friend-access-review-row[data-change="ReviewNeeded"] > div > .friend-review-row-heading > .friend-access-badge {
+  color: var(--color-warning);
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-bg);
+}
+.friend-pc-heartbeat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin: 12px 0 14px;
+  color: var(--color-text-muted);
+  font-size: calc(12px * var(--qol-text-scale, 1));
+}
+.friend-pc-heartbeat > span { min-width: 0; }
+.friend-pc-heartbeat > small { color: var(--color-text-subtle); }
+.friend-pc-servers { margin-bottom: 12px; }
+.friend-server-tags, .friend-grant-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.friend-server-tags > li, .friend-grant-chips > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface-soft);
+  color: var(--color-text-secondary);
+  font-size: calc(12px * var(--qol-text-scale, 1));
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.friend-server-tags > li { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friend-server-tags > .friend-more-servers { color: var(--color-text-muted); }
+.friend-grant-chips > li > .icon { flex: none; }
+.friend-grant-count { color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.friend-pc-permission-heading { justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.friend-pc-permission-heading > strong { font-size: calc(12px * var(--qol-text-scale, 1)); font-weight: 650; }
+.friend-pc-quiet { margin: 7px 0 0; line-height: 1.5; }
+.friend-pc-permissions > small.friend-pc-quiet { display: block; }
+.friend-pc-helper, .friend-pc-deadline, .friend-pc-refresh-note, .friend-review-note,
+.friend-review-status-only {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 10px 0 0;
+  color: var(--color-text-muted);
+  font-size: calc(12px * var(--qol-text-scale, 1));
+  line-height: 1.5;
+}
+.friend-pc-helper > .icon, .friend-pc-deadline > .icon, .friend-pc-refresh-note > .icon,
+.friend-review-note > .icon, .friend-review-status-only > .icon { flex: none; margin-top: 2px; }
+.friend-pc-deadline > span, .friend-pc-helper > span, .friend-pc-refresh-note > span { min-width: 0; overflow-wrap: anywhere; }
+.friend-pc-refresh-note, .friend-pc-card[data-access-state="AccessExpired"] .friend-pc-deadline { color: var(--color-warning); }
+.friend-pc-card-actions { flex-wrap: wrap; margin-top: 14px; }
+.friend-pc-card-actions > .ui-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.friend-pc-feedback { margin-top: 10px; }
+.friend-pc-feedback > :first-child { margin-top: 0; }
+.friend-pc-feedback > :last-child { margin-bottom: 0; }
+
+section.friend-access-review {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-soft);
+}
+.friend-access-review h3 { margin: 0; font-size: calc(14px * var(--qol-text-scale, 1)); }
+.friend-access-review .friend-review-intro { margin: 7px 0 12px; color: var(--color-text-muted); font-size: calc(12px * var(--qol-text-scale, 1)); line-height: 1.5; }
+.friend-default-review, .friend-access-review-row {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface);
+  font-size: calc(12px * var(--qol-text-scale, 1));
+}
+.friend-default-review > strong { display: block; margin-bottom: 7px; }
+.friend-permission-column-labels, .friend-permission-change-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(4em, .42fr) 14px minmax(4em, .42fr);
+  align-items: center;
+  gap: 7px;
+}
+.friend-permission-column-labels { margin: 8px 0 4px; color: var(--color-text-subtle); font-size: calc(11px * var(--qol-text-scale, 1)); }
+.friend-permission-change-list { list-style: none; margin: 0; padding: 0; }
+.friend-permission-change-list > li { padding: 6px 0; border-top: 1px solid var(--color-border-subtle); }
+.friend-permission-label { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.friend-permission-label > .icon { flex: none; }
+.friend-permission-on { color: var(--color-accent-text); font-weight: 650; }
+.friend-permission-changes > .friend-review-quiet { margin: 6px 0 0; font-size: calc(11px * var(--qol-text-scale, 1)); }
+.friend-review-same { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.friend-review-same > .friend-grant-chips, .friend-review-same > .friend-review-status-only { margin: 0; }
+.friend-permission-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 9px; }
+.friend-review-side { min-width: 0; padding: 8px; border-radius: 6px; background: var(--color-surface-soft); }
+.friend-review-side > strong { color: var(--color-text-muted); font-size: calc(11px * var(--qol-text-scale, 1)); }
+.friend-review-side > p { margin: 6px 0 0; line-height: 1.5; }
+.friend-review-unavailable { color: var(--color-warning); }
+.friend-access-review .friend-review-note { margin: 10px 0; }
+.friend-access-change-list { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
+.friend-review-row-heading { justify-content: space-between; align-items: flex-start; gap: 8px; }
+.friend-review-row-heading > strong { min-width: 0; align-items: flex-start; overflow-wrap: anywhere; }
+.friend-review-row-heading > strong > .icon { flex: none; margin-top: 1px; }
+.friend-review-row-heading > .friend-access-badge { flex: none; }
+.friend-access-unchanged { margin-top: 12px; }
+.friend-access-unchanged > summary { min-height: 44px; padding: 10px 0; color: var(--color-text-muted); cursor: pointer; font-size: calc(12px * var(--qol-text-scale, 1)); }
+.friend-access-unchanged > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 4px; }
+.friend-access-unchanged > ul { display: grid; gap: 10px; list-style: none; margin: 0; padding: 4px 0 8px; }
+.friend-access-unchanged > ul > li { min-width: 0; font-size: calc(12px * var(--qol-text-scale, 1)); }
+.friend-access-unchanged li > strong { overflow-wrap: anywhere; }
+.friend-review-boundary { display: block; margin-top: 12px; color: var(--color-text-muted); line-height: 1.5; font-size: calc(11px * var(--qol-text-scale, 1)); }
+.friend-pc-filters { display: grid; grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.friend-pc-filters > label { min-width: 0; color: var(--color-text-secondary); font-size: calc(12px * var(--qol-text-scale, 1)); font-weight: 650; }
+.friend-filter-label { margin-bottom: 6px; }
+.friend-pc-filters .ui-input, .friend-pc-filters .ui-select { width: 100%; min-width: 0; min-height: 44px; margin: 0; }
+.friend-filter-count { grid-column: 1 / -1; color: var(--color-text-muted); font-size: calc(12px * var(--qol-text-scale, 1)); }
+
+@media (max-width: 680px) {
+  .friend-pc-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .friend-pc-filters > label:first-child { grid-column: 1 / -1; }
+  .friend-pc-card-heading { flex-wrap: wrap; }
+  .friend-pc-access-state { max-width: 100%; }
+}
+@media (max-width: 480px) {
+  .friend-pc-card { padding: 13px; }
+  .friend-pc-card-actions { flex-direction: column; align-items: stretch; }
+  .friend-pc-card-actions > .ui-button { width: 100%; min-height: 56px; }
+  .friend-pc-filters { grid-template-columns: minmax(0, 1fr); }
+  .friend-pc-filters .ui-input, .friend-pc-filters .ui-select { min-height: 56px; }
+  section.friend-access-review { padding: 11px; }
+  .friend-default-review, .friend-access-review-row { padding: 9px; }
+  .friend-permission-comparison { grid-template-columns: minmax(0, 1fr); }
+  .friend-permission-column-labels, .friend-permission-change-list > li { gap: 5px; }
+  .friend-access-unchanged > summary { min-height: 56px; }
+}
+@media (forced-colors: active) {
+  .friend-pc-card, .friend-access-badge, .friend-default-review, .friend-access-review-row,
+  .friend-server-tags > li, .friend-grant-chips > li { border-color: CanvasText; }
+}

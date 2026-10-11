@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ComponentProps } from 'react'
 import { changeJson, getLocalJson } from './api'
 import { parseBasicResult } from './contracts'
 import { Button, Input, Select } from './Controls'
@@ -16,32 +16,34 @@ export type DesktopNotificationLoader = (signal?: AbortSignal) => Promise<Notifi
 export type DesktopNotificationSaver = (change: NotificationPreferenceChange, signal?: AbortSignal) => Promise<NotificationPreferences>
 const defaultLoader: DesktopNotificationLoader = signal => getLocalJson('/api/local/desktop/notifications', parseNotificationPreferences, signal)
 
-export function DesktopPreferencesPanel({ servers = [], quietMode, onQuietModeChange, loader = defaultLoader,
-  saver = saveNotificationPreferences }: { servers?: DesktopNotificationServer[]; quietMode?: boolean;
-  onQuietModeChange?: (quiet: boolean) => void; loader?: DesktopNotificationLoader; saver?: DesktopNotificationSaver }) {
+export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, loader = defaultLoader,
+  saver = saveNotificationPreferences, onBusyChange }: { servers?: DesktopNotificationServer[]; server?: DesktopNotificationServer; quietMode?: boolean;
+  onQuietModeChange?: (quiet: boolean) => void; loader?: DesktopNotificationLoader; saver?: DesktopNotificationSaver;
+  onBusyChange?: (busy: boolean) => void }) {
   const titleId = useId()
   const [preferences, setPreferences] = useState<NotificationPreferences | null>(null)
-  const [scope, setScope] = useState('all')
   const [busy, setBusy] = useState(false)
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   const [error, setError] = useState(false)
   const [message, setMessage] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const pending = useRef<AbortController | null>(null)
   const quietModeChanged = useRef(onQuietModeChange)
   quietModeChanged.current = onQuietModeChange
+  const isServerScope = !!server
   useEffect(() => {
     const controller = new AbortController()
     void loader(controller.signal).then(next => { if (!controller.signal.aborted) {
       setPreferences(next); setError(false)
-      quietModeChanged.current?.(next.quietMode)
+      if (!isServerScope) quietModeChanged.current?.(next.quietMode)
     } })
       .catch(() => { if (!controller.signal.aborted) setError(true) })
     return () => { controller.abort() }
-  }, [loader, quietMode, reloadKey])
+  }, [loader, quietMode, reloadKey, isServerScope])
   useEffect(() => () => pending.current?.abort(), [])
 
-  const serverKey = (server: DesktopNotificationServer) => `${server.connectionId ?? ''}:${server.id}`
-  const selectedServer = servers.find(server => serverKey(server) === scope)
+  const selectedServer = server
   const override = selectedServer && preferences?.servers.find(server => server.profileId === selectedServer.id &&
     server.connectionId === (selectedServer.connectionId ?? null))
   const allowed = override?.allowedEvents ?? preferences?.allowedEvents ?? []
@@ -59,25 +61,29 @@ export function DesktopPreferencesPanel({ servers = [], quietMode, onQuietModeCh
     finally { if (!controller.signal.aborted) setBusy(false) }
   }
   const changeEvent = (event: NotificationEventKind, checked: boolean) => {
-    const allowedEvents = notificationEventKinds.filter(kind => kind === event ? checked : allowed.includes(kind))
+    const allowedEvents = notificationEventKinds.filter(kind => (!selectedServer || kind !== 'Update') &&
+      (kind === event ? checked : allowed.includes(kind)))
     void save(selectedServer ? { profileId: selectedServer.id, connectionId: selectedServer.connectionId ?? null, allowedEvents } :
       { allowedEvents })
   }
 
   return <section className="desktop-preferences" aria-labelledby={titleId} aria-busy={busy}>
-    <h3 id={titleId}>Notifications on this PC</h3>
-    <p>Choose which important events can appear in Windows. Hosting and Friend checks keep running.</p>
+    <h3 id={titleId}>{selectedServer ? `Notifications for ${selectedServer.name}` : 'Notifications on this PC'}</h3>
+    <p>{selectedServer ? 'Choices for this server on this PC. App updates use the PC default.' : 'Choose which important events can appear in Windows. Hosting and Friend checks keep running.'}</p>
     {!preferences && !error && <p role="status">Loading notification preferences…</p>}
     {error && <div className="error" role="alert"><p>Could not save or read notification preferences. Try again.</p>
       <Button className="secondary" disabled={busy} onClick={() => setReloadKey(value => value + 1)}>Try again</Button></div>}
     {preferences && <>
-      <label className="setting-toggle"><span><strong>Quiet mode</strong><small>Keep events in Attention and pause Windows popups.</small></span>
-        <Input type="checkbox" checked={preferences.quietMode} disabled={busy} onChange={event => void save({ quietMode: event.target.checked })} /></label>
+      {!selectedServer && <label className="setting-toggle"><span><strong>Quiet mode</strong><small>Keep events in Attention and pause Windows popups.</small></span>
+        <Input type="checkbox" checked={preferences.quietMode} disabled={busy} onChange={event => void save({ quietMode: event.target.checked })} /></label>}
       {!preferences.systemAllowsNotifications && <p className="helper-text">Windows is currently keeping notifications quiet. Events remain in Attention.</p>}
+      {selectedServer && <label>Server alerts<Select value={!override ? 'default' : override.allowedEvents.length ? 'custom' : 'off'} disabled={busy}
+        onChange={event => void save({ profileId: selectedServer.id, connectionId: selectedServer.connectionId ?? null,
+          allowedEvents: event.target.value === 'default' ? null : event.target.value === 'off' ? [] : preferences.allowedEvents.filter(kind => kind !== 'Update') })}>
+        <option value="default">Use PC defaults</option><option value="custom">Custom choices</option><option value="off">Off for this server</option>
+      </Select></label>}
       <details className="advanced-block"><summary>Choose notification events</summary>
-        <label>Apply to<Select value={selectedServer ? scope : 'all'} disabled={busy} onChange={event => setScope(event.target.value)}>
-          <option value="all">All servers on this PC</option>{servers.map(server => <option key={serverKey(server)} value={serverKey(server)}>{server.name}</option>)}
-        </Select></label>
+        {!selectedServer && <p className="helper-text">Default choices for all servers on this PC.</p>}
         {selectedServer && <p className="helper-text">{override ? 'These choices apply only to this server.' : 'This server currently follows the default choices.'}</p>}
         <div className="notification-event-choices">{notificationEventKinds.filter(kind => !selectedServer || kind !== 'Update').map(kind => <label className="check-row" key={kind}>
           <Input type="checkbox" checked={allowed.includes(kind)} disabled={busy} onChange={event => changeEvent(kind, event.target.checked)} />{eventLabels[kind]}</label>)}</div>
@@ -89,16 +95,38 @@ export function DesktopPreferencesPanel({ servers = [], quietMode, onQuietModeCh
   </section>
 }
 
+export type ServerNotificationPreferencesProps = Omit<ComponentProps<typeof DesktopPreferencesPanel>,
+  'servers' | 'server' | 'quietMode' | 'onQuietModeChange'> & { server: DesktopNotificationServer }
+
+// Remount on scope changes so an unfinished save cannot appear in another server's editor.
+export function ServerNotificationPreferences({ server, ...props }: ServerNotificationPreferencesProps) {
+  return <DesktopPreferencesPanel key={`${server.connectionId ?? 'host'}:${server.id}`} server={server} {...props} />
+}
+
+export type ServerNotificationSettingsProps = Omit<ServerNotificationPreferencesProps, 'server'> & {
+  serverId: string
+  serverName?: string
+  connectionId?: string | null
+}
+
+export function ServerNotificationSettings({ serverId, serverName = 'this server', connectionId,
+  ...props }: ServerNotificationSettingsProps) {
+  return <ServerNotificationPreferences server={{ id: serverId, name: serverName, connectionId }} {...props} />
+}
+
 const stageLabels: Record<UpdatePreparation['stage'], string> = { Idle: 'Update preparation', Checking: 'Checking release',
   Downloading: 'Downloading update', Verifying: 'Verifying update', Ready: 'Download verified', Checkpoint: 'Protecting local settings',
   Restarting: 'Restarting TogetherServer', Blocked: 'Update needs attention', Failed: 'Update preparation failed' }
 
 export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparationLoader,
-  snoozeSaver }: { update: DesktopUpdateDetails; busy?: boolean; onSnoozed?: () => void | Promise<void>;
+  snoozeSaver, onBusyChange }: { update: DesktopUpdateDetails; busy?: boolean; onSnoozed?: () => void | Promise<void>;
     preparationLoader?: (signal?: AbortSignal) => Promise<UpdatePreparation>;
-    snoozeSaver?: (version: string, duration: UpdateReminderDuration) => Promise<{ ok: boolean; message: string }> }) {
+    snoozeSaver?: (version: string, duration: UpdateReminderDuration) => Promise<{ ok: boolean; message: string }>;
+    onBusyChange?: (busy: boolean) => void }) {
   const [polledPreparation, setPolledPreparation] = useState<{ version: string | null; value: UpdatePreparation } | null>(null)
   const [snoozeBusy, setSnoozeBusy] = useState(false)
+  useEffect(() => { onBusyChange?.(snoozeBusy) }, [snoozeBusy, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   const [message, setMessage] = useState('')
   useSingleFlightPolling(async signal => {
     const next = await (preparationLoader ? preparationLoader(signal) :

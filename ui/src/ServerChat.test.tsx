@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseChatRoomSummary, parseManagedChatRoom, PinnedNoticePreview, ServerChat,
@@ -33,6 +33,33 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+const connectionId = '11111111-1111-1111-1111-111111111111'
+const queuedId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+const editKinds = ['notice', 'queued message'] as const
+type EditKind = typeof editKinds[number]
+function editRoom(kind: EditKind) {
+  return kind === 'notice' ? noticeRoom() : { ...room(), code: 'ChatSynced',
+    pending: [{ id: queuedId, text: 'Original queued message', submitted: false }] }
+}
+function editProps(kind: EditKind, states: ChatDraftState[]) {
+  return { profileId, host: kind === 'notice', visible: true, hostId,
+    connectionId: kind === 'notice' ? undefined : connectionId,
+    onDraftStateChange: (state: ChatDraftState) => { states.push(state) } }
+}
+async function openEdit(kind: EditKind, text?: string) {
+  await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: kind === 'notice' ? 'Edit notice' : 'Edit queued message 1' }))
+  const editor = screen.getByLabelText(kind === 'notice' ? 'Notice text' : 'Queued message')
+  if (text !== undefined) fireEvent.change(editor, { target: { value: text } })
+  return editor
+}
+function expectNoChatMutation(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>) {
+  // Friend sync is the fixed read exchange; navigation must issue no other
+  // POST, and no notice or queue PUT/DELETE.
+  expect(fetch.mock.calls.filter(([path, init]) => init?.method &&
+    !(String(path).endsWith('/sync') && init.method === 'POST'))).toHaveLength(0)
+}
+
 beforeEach(() => {
   localStorage.clear()
   protectedDrafts.readProtectedDraft.mockReset().mockResolvedValue({ ok: true, text: null, revision: 0, message: '' })
@@ -44,6 +71,249 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('ServerChat', () => {
+  it.each(editKinds)('denies navigation before %s discard review if the composer save fails', async kind => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind, 'Keep this unsaved edit')
+    protectedDrafts.saveProtectedDraft.mockRejectedValue(new Error('Protected storage unavailable'))
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Keep this composer too' } })
+    await act(async () => { expect(await states.at(-1)!.flush()).toBe(false) })
+    expect(protectedDrafts.saveProtectedDraft).toHaveBeenCalledWith(expect.anything(),
+      'Keep this composer too', 0, expect.any(AbortSignal))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(editor).toHaveValue('Keep this unsaved edit')
+    expect(screen.getByLabelText('Message')).toHaveValue('Keep this composer too')
+    expect(states.at(-1)?.dirty).toBe(true)
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('reviews %s discard after composer persistence; Cancel keeps all edits and confirm sends nothing', async kind => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind, 'Discard only this transient edit')
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Protected composer remains' } })
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    expect(protectedDrafts.saveProtectedDraft).toHaveBeenCalledWith(expect.anything(),
+      'Protected composer remains', 0, expect.any(AbortSignal))
+    expect(dialog).not.toHaveTextContent('Discard only this transient edit')
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      expect(await navigation).toBe(false)
+    })
+    expect(editor).toHaveValue('Discard only this transient edit')
+    expect(screen.getByLabelText('Message')).toHaveValue('Protected composer remains')
+    expect(states.at(-1)?.dirty).toBe(true)
+    expectNoChatMutation(fetch)
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const review = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    await act(async () => {
+      fireEvent.click(within(review).getByRole('button', { name: `Discard ${kind} edits` }))
+      expect(await navigation).toBe(true)
+      // Root can recheck the same registered guard before the clean effect.
+      expect(await states.at(-1)!.flush()).toBe(true)
+    })
+    expect(editor).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Message')).toHaveValue('Protected composer remains')
+    expect(states.at(-1)?.dirty).toBe(false)
+    expect(protectedDrafts.clearProtectedDraft).not.toHaveBeenCalled()
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('does not block or close an unchanged %s editor', async kind => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind)
+    expect(states.at(-1)?.dirty).toBe(false)
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Composer with unchanged editor' } })
+    await act(async () => { expect(await states.at(-1)!.flush()).toBe(true) })
+    expect(editor).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('preserves a newer %s edit when text changes and returns to the reviewed value', async kind => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind, 'First revision')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    fireEvent.change(editor, { target: { value: 'Newer revision' } })
+    fireEvent.change(editor, { target: { value: 'First revision' } })
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: `Discard ${kind} edits` }))
+      expect(await navigation).toBe(false)
+    })
+    expect(editor).toHaveValue('First revision')
+    expect(states.at(-1)?.dirty).toBe(true)
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('preserves a %s edit if Host identity changes and returns while review is open', async kind => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    const props = editProps(kind, states)
+    const view = render(<ServerChat {...props} />)
+    const editor = await openEdit(kind, 'Keep with its Host identity')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    view.rerender(<ServerChat {...props} hostId="ffffffff-ffff-ffff-ffff-ffffffffffff" />)
+    view.rerender(<ServerChat {...props} />)
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: `Discard ${kind} edits` }))
+      expect(await navigation).toBe(false)
+    })
+    expect(editor).toHaveValue('Keep with its Host identity')
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('keeps %s discard review reachable and rejects its stale decision when chat support changes', async kind => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    const props = editProps(kind, states)
+    const view = render(<ServerChat {...props} />)
+    await openEdit(kind, 'Keep this edit across the support change')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    view.rerender(<ServerChat {...props} supported={false} />)
+    const review = screen.getByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    expect(review).toBeVisible()
+    expect(review).not.toHaveTextContent('Keep this edit across the support change')
+    await act(async () => {
+      fireEvent.click(within(review).getByRole('button', { name: `Discard ${kind} edits` }))
+      expect(await navigation).toBe(false)
+    })
+    view.rerender(<ServerChat {...props} supported />)
+    expect(await screen.findByLabelText(kind === 'notice' ? 'Notice text' : 'Queued message'))
+      .toHaveValue('Keep this edit across the support change')
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('denies %s discard if a sync is still pending at confirmation', async kind => {
+    const states: ChatDraftState[] = []
+    const syncing = deferred<Response>()
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind, 'Keep during pending sync')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    fetch.mockImplementationOnce(() => syncing.promise)
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    expect(states.at(-1)?.saving).toBe(true)
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: `Discard ${kind} edits` }))
+      expect(await navigation).toBe(false)
+    })
+    expect(editor).toHaveValue('Keep during pending sync')
+    await act(async () => { syncing.resolve(Response.json(editRoom(kind))) })
+    expect(states.at(-1)?.saving).toBe(false)
+    expect(states.at(-1)?.dirty).toBe(true)
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('keeps the new keyed room guard and %s edit when the old review unmounts', async kind => {
+    const states: ChatDraftState[] = []
+    const otherProfile = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(String(path).includes(otherProfile)
+      ? { ...editRoom(kind), profileId: otherProfile, notice: kind === 'notice' ? { ...notice, profileId: otherProfile } : null }
+      : editRoom(kind))))
+    const props = editProps(kind, states)
+    const view = render(<ServerChat {...props} />)
+    await openEdit(kind, 'Original room edit')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    view.rerender(<ServerChat {...props} profileId={otherProfile} />)
+    const editor = await openEdit(kind, 'New room edit')
+    await act(async () => { expect(await navigation).toBe(false) })
+    expect(editor).toHaveValue('New room edit')
+    expect(states.at(-1)?.dirty).toBe(true)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(states.some(state => !state.dirty && !state.saving && !state.recovering)).toBe(true)
+  })
+
+  it.each(editKinds)('denies %s discard while its explicit save action is pending', async kind => {
+    const states: ChatDraftState[] = []
+    const saving = deferred<Response>()
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom(kind)))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind, 'Keep if explicit save fails')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    fetch.mockImplementationOnce(() => saving.promise)
+    fireEvent.click(screen.getByRole('button', { name: kind === 'notice' ? 'Save notice' : 'Save queued message' }))
+    expect(states.at(-1)?.saving).toBe(true)
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: `Discard ${kind} edits` }))
+      expect(await navigation).toBe(false)
+    })
+    expect(editor).toHaveValue('Keep if explicit save fails')
+    await act(async () => { saving.reject(new Error('Explicit save unavailable')) })
+    expect(states.at(-1)?.saving).toBe(false)
+    expect(editor).toHaveValue('Keep if explicit save fails')
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1)
+  })
+
+  it('retains a queued edit if sync changes its delivery state during discard review', async () => {
+    const states: ChatDraftState[] = []
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(editRoom('queued message')))
+    vi.stubGlobal('fetch', fetch)
+    render(<ServerChat {...editProps('queued message', states)} />)
+    const editor = await openEdit('queued message', 'Unpublished queue edit')
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved chat edits?' })
+    fetch.mockResolvedValueOnce(Response.json({ ...editRoom('queued message'),
+      pending: [{ id: queuedId, text: 'Original queued message', submitted: true }] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(editor).toBeDisabled())
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Discard queued message edits' }))
+      expect(await navigation).toBe(false)
+    })
+    expect(editor).toHaveValue('Unpublished queue edit')
+    expect(states.at(-1)?.dirty).toBe(true)
+    expectNoChatMutation(fetch)
+  })
+
+  it.each(editKinds)('keeps a newer %s edit while the protected composer flush is pending', async kind => {
+    const states: ChatDraftState[] = []
+    const saving = deferred<{ ok: boolean; text: string; revision: number; message: string }>()
+    protectedDrafts.saveProtectedDraft.mockImplementationOnce(() => saving.promise)
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(editRoom(kind))))
+    render(<ServerChat {...editProps(kind, states)} />)
+    const editor = await openEdit(kind, 'Before protected flush')
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Composer to protect' } })
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = states.at(-1)!.flush() })
+    fireEvent.change(editor, { target: { value: 'Typed during protected flush' } })
+    await act(async () => {
+      saving.resolve({ ok: true, text: 'Composer to protect', revision: 1, message: '' })
+      expect(await navigation).toBe(false)
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(editor).toHaveValue('Typed during protected flush')
+    expect(states.at(-1)?.dirty).toBe(true)
+  })
+
   it('shows copied messages and lets the Host remove a room member and send an issue update', async () => {
     const requests: Array<{ path: string; method: string; body: string }> = []
     vi.stubGlobal('fetch', vi.fn(async (path: string, init: RequestInit) => {

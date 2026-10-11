@@ -16,6 +16,7 @@ import { customPortKey } from '../../setupDraft'
 import { setupPlannedPorts as plannedPorts, setupPortSuggestion, setupProfileChanges, setupSupport } from '../../setupImprovements'
 import { EditorDraftRecovery } from '../../editorProtectedDraft'
 import type { SetupImportReview } from '../../setupImportPreview'
+import '../../TaskFirstPages.css'
 
 export type SetupStep = 'game' | 'world' | 'server' | 'review'
 
@@ -238,9 +239,17 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
     }
   }
 
-  return <dialog ref={dialogRef} className="panel settings-panel modal-dialog" aria-labelledby="setup-title"
+  const stepTitle = { game: 'Choose a game', world: 'Choose your world', server: 'Choose the server app', review: 'Review and start' }[setupStep]
+  const currentIssues = setupStep === 'review' || !editedProfile ? setupIssues : [...new Set([
+    ...stepIssues, ...setupIssues.filter(message => setupIssueTarget(message, editedProfile).step === setupStep)
+  ])]
+  const laterIssues = setupIssues.filter(message => !currentIssues.includes(message))
+  const issueList = (messages: string[]) => <ul>{messages.map((message, index) => <li key={`${message}-${index}`}>
+    <Button className="text-button" disabled={!!pending} onClick={() => { if (editedProfile) openBlocker(setupIssueTarget(message, editedProfile)) }}>{message}</Button>
+  </li>)}</ul>
+  return <dialog ref={dialogRef} className="panel settings-panel modal-dialog task-first-setup" aria-labelledby="setup-title"
     onCancel={event => { event.preventDefault(); onCancel() }}>
-    <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p>Choose the game, world, and server files.</p></div></div>
+    <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p className="setup-current-step">Step {setupStepIndex + 1} of {setupSteps.length} · {stepTitle}</p></div></div>
     {freshWorldsOnly && <div className="staging-setup-notice"><strong>Development worlds persist in separate storage.</strong><span>Create and reuse them here. Existing production worlds cannot be selected, scanned, or copied, and every development save stays in the development data folder.</span></div>}
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
     {setupDraftRecovery && onRecoverSetupDraft && onDiscardSetupDraft && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup"
@@ -250,8 +259,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
     <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-      <details className="advanced-block" open={setupStep === 'game'} aria-label="Game support and limits"><summary>{setupSupport(profile.kind).label} · support and action limits</summary>
-        <p>{setupSupport(profile.kind).actions}</p><p>{setupSupport(profile.kind).limits}</p></details>
+      {profile.kind !== 'Valheim' && <p className="warning-text" role="status">{setupSupport(profile.kind).label}. {setupSupport(profile.kind).actions}</p>}
       {setupStep === 'game' && onReuseProfile && savedProfiles.length > 0 && <details className="advanced-block"><summary>Reuse a saved server's nonsecret setup</summary>
         <p>Creates a new server with separate world selection and ports. Worlds, passwords, Friend access, and custom scripts are never copied.</p>
         <div className="choices">{savedProfiles.filter(saved => !freshWorldsOnly || !['Custom', 'Factorio', 'Terraria'].includes(saved.kind)).map(saved =>
@@ -268,7 +276,8 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         {profile.kind === 'Fixture' && <Button disabled={!!pending} aria-pressed="true" className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
       </div></div>}
       {setupStep === 'world' && <div className="setup-step world-step" id={`setup-${profile.id}-world-source`} tabIndex={-1}><h3><Icon name="game" /> {profile.kind === 'Valheim' ? 'Choose a world' : 'Name this server'}</h3>
-        <SetupWorldLocations profile={profile} sourceRoot={sourceRoots[profile.id]} minecraftMode={minecraftSetupMode[profile.id]} />
+        <details className="advanced-block"><summary>World locations and copy rules</summary>
+          <SetupWorldLocations profile={profile} sourceRoot={sourceRoots[profile.id]} minecraftMode={minecraftSetupMode[profile.id]} /></details>
         {profile.kind === 'Valheim' && <div className="choice-pills">
           <Button disabled={!!pending} aria-pressed={profile.worldSource === 'New'} className={profile.worldSource === 'New' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'New', worldId: '', name: '', serverName: '', worldDirectory: `${snapshot.managedWorldsRoot}\\${profile.id.replaceAll('-', '')}` })}>{freshWorldsOnly ? 'Create development world' : 'Create new'}</Button>
           {!freshWorldsOnly && <Button disabled={!!pending} aria-pressed={profile.worldSource === 'Existing'} className={profile.worldSource === 'Existing' ? 'selected' : 'secondary'} onClick={() => onUpdateProfile(profile.id, { worldSource: 'Existing', worldId: '', name: '', serverName: '', worldDirectory: '' })}>Use existing</Button>}
@@ -368,11 +377,14 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         </div>}
         {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
       </details></div>}
+      <details className="advanced-block" aria-label="Game support and limits"><summary>{setupSupport(profile.kind).label} · support and action limits</summary>
+        <p>{setupSupport(profile.kind).actions}</p><p>{setupSupport(profile.kind).limits}</p></details>
     </div>)}
     {editedProfile && <>{setupStep === 'review' && savedProfiles.some(saved => saved.id === editedProfile.id) && <details className="advanced-block danger-zone"><summary>Danger zone</summary><p className="helper-text">Removing this server forgets its setup and Friend access. TogetherServer leaves its world files in place.</p><Button className="text-button danger" disabled={!!pending} onClick={() => onRemoveProfile(editedProfile)}>Remove from TogetherServer</Button></details>}
-    {setupIssues.length > 0 && <section aria-label="Setup blockers" className="field-error"><strong role="status">{setupIssues.length} setup {setupIssues.length === 1 ? 'item needs' : 'items need'} attention</strong>
-      <ul>{setupIssues.map((message, index) => <li key={`${message}-${index}`}><Button className="text-button" disabled={!!pending} onClick={() => openBlocker(setupIssueTarget(message, editedProfile))}>{message}</Button></li>)}</ul>
+    {currentIssues.length > 0 && <section aria-label="Setup blockers" className="field-error"><strong role="status">{currentIssues.length} setup {currentIssues.length === 1 ? 'item needs' : 'items need'} attention</strong>
+      {issueList(currentIssues)}
     </section>}
+    {laterIssues.length > 0 && <details className="advanced-block"><summary>Other setup items · {laterIssues.length}</summary>{issueList(laterIssues)}</details>}
     <div className="wizard-footer"><div className="actions"><Button className="text-button" disabled={!!pending} onClick={onFinishLater}>Finish later</Button>
       <Button className="text-button" disabled={!!pending} onClick={onCancel}>{savedProfiles.length > 0 ? 'Cancel' : 'Cancel setup'}</Button></div><div className="actions">
       {setupStepIndex > 0 && <Button className="secondary" disabled={!!pending} onClick={() => onStepChange(setupSteps[setupStepIndex - 1])}>Back</Button>}

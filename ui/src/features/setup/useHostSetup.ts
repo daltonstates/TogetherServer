@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { changeJson, errorMessage, getJson } from '../../api'
+import type { ConfirmationOptions } from '../../Confirmation'
 import {
   parseActionResult,
   parseBrowseResult,
@@ -39,6 +40,7 @@ import { getSetupIssues, getStepIssues, isValidGamePassword, type SetupStep } fr
 export type SetupNotice = { good: boolean; text: string }
 
 type UseHostSetupOptions = {
+  confirm: (options: ConfirmationOptions) => Promise<boolean>
   snapshot: Snapshot | null
   pending: string
   setPending: Dispatch<SetStateAction<string>>
@@ -75,16 +77,40 @@ function useModalDialog(open: boolean) {
     if (!open || !ref.current) return
     const dialog = ref.current
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    dialog.showModal()
+    const visible = (element: HTMLElement) => {
+      if (element.closest('[hidden], [inert], [aria-hidden="true"]')) return false
+      for (let ancestor: HTMLElement | null = element; ancestor && ancestor !== dialog; ancestor = ancestor.parentElement) {
+        if (ancestor instanceof HTMLDetailsElement && !ancestor.open && !ancestor.querySelector(':scope > summary')?.contains(element)) return false
+        const style = getComputedStyle(ancestor)
+        if (style.display === 'none' || style.visibility === 'hidden') return false
+      }
+      return true
+    }
+    const first = (selector: string) => Array.from(dialog.querySelectorAll<HTMLElement>(selector)).find(visible)
+    const initialFocus = first('input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled)')
+      ?? first('.setup-stage button[aria-pressed="true"]:not(:disabled)')
+      ?? first('.setup-stage button:not(:disabled), .setup-step button:not(:disabled)')
+      ?? first('.wizard-footer > .actions:last-child button:not(:disabled):not(.secondary)')
+      ?? first('.wizard-footer > .actions:last-child button:not(:disabled)')
+    const hadAutofocus = initialFocus?.hasAttribute('autofocus')
+    initialFocus?.setAttribute('autofocus', '')
+    if (typeof dialog.showModal === 'function') dialog.showModal()
+    else dialog.setAttribute('open', '')
+    if (initialFocus && !hadAutofocus) initialFocus.removeAttribute('autofocus')
+    if (initialFocus) initialFocus.focus({ preventScroll: true })
+    else { dialog.tabIndex = -1; dialog.focus({ preventScroll: true }) }
     return () => {
-      if (dialog.open) dialog.close()
-      previousFocus?.focus()
+      if (dialog.open) {
+        if (typeof dialog.close === 'function') dialog.close()
+        else dialog.removeAttribute('open')
+      }
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
     }
   }, [open])
   return ref
 }
 
-export function useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot,
+export function useHostSetup({ snapshot, pending, setPending, setNotice, applySnapshot, confirm,
   dataRecoveryBlocked, instance, onDraftStateChange, onDraftGuardChange, onSetupCompleted }: UseHostSetupOptions) {
   const [draft, setDraft] = useState<Settings | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -113,6 +139,30 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
 
   const currentMode = snapshot?.mode
   const freshWorldsOnly = instance?.freshWorldsOnly ?? false
+  // A decision belongs to the editor and process evidence that opened it.
+  const confirmationRevision = useRef(0)
+  const confirmationPending = useRef(false)
+  const mounted = useRef(true)
+  const runIdentity = snapshot?.mode === 'Host' ? JSON.stringify(snapshot.runs?.map(run =>
+    [run.profileId, run.runOperationId, run.processId, run.state, run.onlinePlayers, run.playerCountTrusted])) : ''
+  const savedProfileIdentity = snapshot?.mode === 'Host' ? JSON.stringify(snapshot.settings.profiles) : ''
+  useEffect(() => {
+    confirmationRevision.current += 1
+  }, [draft, dirty, activeProfileId, pausedSetupProfileId, showSetup, setupStep, importReview, passwords, customScripts, customScriptsSaved,
+    sourceRoots, minecraftTerms, pending, currentMode, dataRecoveryBlocked, freshWorldsOnly, runIdentity, savedProfileIdentity])
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; confirmationRevision.current += 1 }
+  }, [])
+  const confirmCurrent = async (options: ConfirmationOptions) => {
+    if (confirmationPending.current) return false
+    const revision = confirmationRevision.current
+    confirmationPending.current = true
+    try {
+      const accepted = await confirm(options)
+      return accepted && mounted.current && revision === confirmationRevision.current
+    } finally { confirmationPending.current = false }
+  }
   const hasMinecraftDraft = draft?.profiles.some(profile =>
     profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') ?? false
   const hostProfileCount = snapshot?.mode === 'Host' ? snapshot.settings.profiles.length : -1
@@ -537,7 +587,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   }
 
   const removeProfile = async (profile: Profile) => {
-    if (!draft || !window.confirm(`Remove ${profile.name || profile.serverName || 'this server'} from TogetherServer? Its world files are left in place.`)) return
+    if (!draft || !(await confirmCurrent({ title: 'Remove server?',
+      description: `Remove ${profile.name || profile.serverName || 'this server'} from TogetherServer? Its world files are left in place.`,
+      confirmLabel: 'Remove server', destructive: true }))) return
     setPending('remove-profile')
     try {
       const profiles = draft.profiles.filter(item => item.id !== profile.id)
@@ -562,7 +614,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const cancelSetup = async () => {
     if (snapshot?.mode !== 'Host' || pending) return
     if ((dirty || hasSensitiveSetupDraft(passwords, customScripts, customScriptsSaved)) &&
-        !window.confirm('Discard these setup changes, including any entered password or unsaved custom scripts?')) return
+        !(await confirmCurrent({ title: 'Discard setup changes?',
+          description: 'Discard these setup changes, including any entered password or unsaved custom scripts?',
+          confirmLabel: 'Discard changes', destructive: true }))) return
     const cleared = await discardSetupDraft()
     acceptSavedSettings(snapshot.settings)
     setActiveProfileId(snapshot.settings.profiles[0]?.id ?? '')
@@ -578,7 +632,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   const finishSetupLater = async () => {
     if (pending) return
     if (hasSensitiveSetupDraft(passwords, customScripts, customScriptsSaved) &&
-        !window.confirm('Finish later clears the entered game password and unsaved custom scripts from this window. Continue?')) return
+        !(await confirmCurrent({ title: 'Finish setup later?',
+          description: 'Finish later clears the entered game password and unsaved custom scripts from this window. Continue?',
+          confirmLabel: 'Finish later' }))) return
     if (dirty && !(await protectedSetup.persistNow())) { setNotice({ good: false, text: 'The draft could not be kept. Keep setup open or review the recovered draft before finishing later.' }); return }
     clearSetupSecrets()
     setPausedSetupProfileId(dirty ? activeProfileId : null)
@@ -614,7 +670,9 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
   }
 
   const copyValheimWorld = async (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local') => {
-    if (sourceFolder === 'worlds' && !window.confirm('Close Valheim and wait for Steam Cloud to finish syncing before copying this cached world folder. Continue?')) return
+    if (sourceFolder === 'worlds' && !(await confirmCurrent({ title: 'Copy cached world?',
+      description: 'Close Valheim and wait for Steam Cloud to finish syncing before copying this cached world folder. Continue?',
+      confirmLabel: 'Copy world' }))) return false
     setPending(profile.id)
     try {
       const result = await changeJson('/api/local/valheim/import', 'POST', parseImportResult, {
@@ -627,6 +685,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
+    return true
   }
 
   const importWorld = (profile: Profile, sourceSaveRoot: string, worldId: string, sourceFolder = 'worlds_local',
@@ -645,7 +704,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     if (!profile || profile.kind !== importReview.kind) { setImportReview(null); return }
     if (importReview.kind === 'Valheim') {
       if (!importReview.sourceSaveRoot) return
-      await copyValheimWorld(profile, importReview.sourceSaveRoot, importReview.worldId, importReview.sourceFolder)
+      if (!(await copyValheimWorld(profile, importReview.sourceSaveRoot, importReview.worldId, importReview.sourceFolder))) return
       setImportReview(null)
       setSourceRoots(current => ({ ...current, [profile.id]: importReview.sourceSaveRoot! }))
       return

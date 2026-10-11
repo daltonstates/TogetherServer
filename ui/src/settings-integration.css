@@ -1,0 +1,69 @@
+.settings-workspace > .modal-heading { position: static; margin-block-end: 1.25rem; }
+.friend-pc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 1rem;
+  margin-block-start: 1rem;
+}
+.settings-layout .access-toggles.settings-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.settings-layout .access-toggles .setting-toggle { min-width: 0; margin: 0; }
+.settings-dialog .device-permissions-editor,
+.settings-dialog .server-picker-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-dialog .device-permissions-editor > legend { padding: 0; margin-block-end: .75rem; font-weight: 700; }
+.device-preset-editor > label, .device-name-editor > label { display: grid; gap: .4rem; min-width: 0; font-weight: 650; }
+.device-preset-editor .ui-select, .device-name-editor .ui-input { width: 100%; min-width: 0; }
+.device-permissions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.settings-dialog .device-permission-toggle { display: flex; align-items: flex-start; gap: .7rem; margin: 0; padding: .9rem; min-height: 0; cursor: pointer; }
+.settings-dialog .device-permission-toggle strong { display: flex; align-items: center; gap: .4rem; font-size: .8125rem; }
+.settings-dialog .device-permission-toggle small { display: block; margin-block-start: .4rem; color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
+.settings-disclosure { border: 1px solid var(--color-border); border-radius: .7rem; padding: .875rem; min-width: 0; }
+.settings-disclosure > summary { display: flex; align-items: center; gap: .5rem; min-height: 2rem; font-weight: 650; cursor: pointer; }
+.settings-disclosure[open] > summary { margin-block-end: .875rem; }
+.settings-disclosure > .friend-access-summary { margin: 0; }
+.settings-dialog .settings-detail-row.device-assignment-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.device-assignment-row > div { min-width: 0; }
+.device-assignment-row small { display: block; margin-block-start: .4rem; color: var(--color-text-muted); }
+.device-assignment-row .ui-button { flex: none; }
+.settings-dialog .server-picker-search { margin: 0; }
+.settings-dialog .server-picker-list { max-height: none; overflow: visible; }
+.settings-dialog .server-picker-option { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: .7rem; padding: .95rem; }
+.settings-dialog .server-picker-access strong { white-space: normal; overflow-wrap: anywhere; }
+.settings-dialog .server-picker-permissions { flex-wrap: wrap; padding-inline-start: 1.8rem; }
+.settings-dialog .server-picker-permissions label { min-height: 2.25rem; font-size: .75rem; }
+.settings-inline-confirm { border: 1px solid var(--color-warning-border); background: var(--color-warning-bg); border-radius: .7rem; padding: 1rem; margin-block: .75rem; }
+.settings-inline-confirm p { color: var(--color-text-muted); margin-block: .5rem .75rem; }
+.device-name-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: end; }
+.settings-dialog .access-deadline { margin: 0; }
+.settings-dialog .temporary-helper { margin: 0; }
+.settings-dialog .access-deadline-choices label {
+  display: flex; align-items: center; gap: .5rem; margin: 0; padding: .7rem .85rem;
+  border: 1px solid var(--color-border); border-radius: .55rem; cursor: pointer;
+  background: var(--color-surface-raised); color: var(--color-text-secondary); font-size: .8125rem;
+}
+.settings-dialog .access-deadline-choices label.selected { border-color: var(--color-accent-border); background: var(--color-accent-soft); color: var(--color-accent-text); }
+.settings-dialog .access-custom-choice { display: flex; align-items: center; gap: .5rem; margin-block: .75rem; cursor: pointer; }
+.settings-dialog .access-custom-field > label { display: block; margin-block-end: .4rem; font-weight: 650; }
+.settings-dialog .update-release-notes { max-block-size: none; overflow: visible; overflow-wrap: anywhere; }
+.settings-dialog .ui-button:not(.text-button) { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+@container settings-content (max-width: 40rem) {
+  .friend-pc-grid, .settings-layout .access-toggles.settings-controls { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .friend-pc-grid, .settings-layout .access-toggles.settings-controls { grid-template-columns: minmax(0, 1fr); }
+  .settings-dialog .settings-detail-row.device-assignment-row { align-items: stretch; flex-direction: column; }
+}
+@media (max-width: 480px) {
+  .device-permissions-grid, .device-name-editor { grid-template-columns: minmax(0, 1fr); }
+  .settings-dialog .server-picker-permissions { padding: 0; }
+  .settings-dialog .server-picker-permissions label { min-height: 3rem; flex: 1 1 7rem; }
+}

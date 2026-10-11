@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, Select } from './Controls'
 import { ContractError, type Decoder, type WorldBackupRecord } from './contracts'
+import { useConfirmation } from './Confirmation'
 
 type Outcome = 'Unobserved' | 'OwnerConfirmed' | 'OwnerFailed'
 export type WorldLoadView = {
@@ -70,6 +71,14 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
   const [message, setMessage] = useState('')
   const [gameVersion, setGameVersion] = useState('')
   const selected = records.find(item => item.id === selectedId) ?? records[0]
+  const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
+  const confirmationRevision = useRef(0)
+  const confirmationPending = useRef(false)
+  useEffect(() => {
+    confirmationRevision.current += 1
+  }, [profileId, received, selected?.id, selected?.copyIdentity, selected?.state, selected?.cleaned,
+    selected?.rehearsalProfileId, selected?.managedStarts, selected?.gracefulStops,
+    selected?.loadOutcome, selected?.changeOutcome, selected?.restartOutcome, busy])
   const chosenBackup = backups.some(item => item.id === backupId) ? backupId : backups[0]?.id
   const adopt = (result: Result) => {
     setMessage(`${result.code}: ${result.message}`)
@@ -100,14 +109,23 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
   }
   const action = async (name: string, body?: unknown) => {
     if (!selected) return
-    if (name === 'cleanup' && !window.confirm('Confirm the disposable game is stopped. Remove only this rehearsal’s working copy and retain its result and original source?')) return
+    if (name === 'cleanup') {
+      if (confirmationPending.current) return
+      const revision = confirmationRevision.current
+      confirmationPending.current = true
+      try {
+        if (!(await requestConfirmation({ title: 'Clean up disposable copy?',
+          description: 'Confirm the disposable game is stopped. Remove only this rehearsal’s working copy and retain its result and original source?',
+          confirmLabel: 'Clean up copy', destructive: true })) || revision !== confirmationRevision.current) return
+      } finally { confirmationPending.current = false }
+    }
     setBusy(true)
     try { adopt(await changeJson(`/api/local/world-load/${selected.id}/${name}`, 'POST', parseWorldLoadResult, body)) }
     catch (error) { setMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  const confirm = (step: string, passed: boolean) => void action('confirm', { step, passed, gameVersion: gameVersion.trim() || null })
-  return <details className="connection-doctor" onToggle={event => { if (event.currentTarget.open) void refresh() }}>
+  const confirmOutcome = (step: string, passed: boolean) => void action('confirm', { step, passed, gameVersion: gameVersion.trim() || null })
+  return <><details className="connection-doctor" onToggle={event => { if (event.currentTarget.open) void refresh() }}>
     <summary>Test a copy in the game</summary>
     <p>Prepare a fresh disposable copy, load it in the game, make a recognizable change, then save, stop and restart. The source stays intact. Your confirmations are recorded separately from process checks.</p>
     {!received && <label>Completed backup <Select aria-label="Load rehearsal backup" value={chosenBackup ?? ''}
@@ -131,11 +149,11 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
           {selected.rehearsalProfileId != null && <Button className="secondary" disabled={busy} onClick={() => void action('stop')}>Stop disposable copy</Button>}
         </div>}
         <label>Game version you observed (optional)<Input value={gameVersion} maxLength={40} onChange={event => setGameVersion(event.target.value)} /></label>
-        <ol><li>Load: {outcomeLabel[selected.loadOutcome]} <Button className="secondary" disabled={busy} onClick={() => confirm('Load', true)}>I loaded this copy</Button>
-          <Button className="text-button" disabled={busy} onClick={() => confirm('Load', false)}>Load failed</Button></li>
-          <li>Recognizable saved change: {outcomeLabel[selected.changeOutcome]} <Button className="secondary" disabled={busy || selected.loadOutcome !== 'OwnerConfirmed'} onClick={() => confirm('Change', true)}>I saved a recognizable change</Button></li>
-          <li>Restart: {outcomeLabel[selected.restartOutcome]} <Button className="secondary" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirm('Restart', true)}>The change survived restart</Button>
-            <Button className="text-button" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirm('Restart', false)}>Restart failed</Button></li></ol>
+        <ol><li>Load: {outcomeLabel[selected.loadOutcome]} <Button className="secondary" disabled={busy} onClick={() => confirmOutcome('Load', true)}>I loaded this copy</Button>
+          <Button className="text-button" disabled={busy} onClick={() => confirmOutcome('Load', false)}>Load failed</Button></li>
+          <li>Recognizable saved change: {outcomeLabel[selected.changeOutcome]} <Button className="secondary" disabled={busy || selected.loadOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Change', true)}>I saved a recognizable change</Button></li>
+          <li>Restart: {outcomeLabel[selected.restartOutcome]} <Button className="secondary" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Restart', true)}>The change survived restart</Button>
+            <Button className="text-button" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Restart', false)}>Restart failed</Button></li></ol>
         <Button className="text-button" disabled={busy} onClick={() => void action('cleanup', { confirmStopped: true })}>Clean up this disposable copy</Button>
       </>}
       <details><summary>Exact copy and setup</summary><p>Copy: {selected.copyIdentity}</p><p>App at preparation: {selected.appVersion} · Installed game: {selected.gameVersion}</p>
@@ -143,5 +161,5 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
         <p className="helper-text">Working folder: {selected.worldDirectory}</p><p>Recorded Starts: {selected.managedStarts} · graceful Stops: {selected.gracefulStops}</p></details>
     </section>}
     {message && <p role="status">{message}</p>}
-  </details>
+  </details>{confirmationDialog}</>
 }

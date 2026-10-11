@@ -1,10 +1,12 @@
-import { useId, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { Button } from './Controls'
 import { Icon } from './Icon'
 import type { FriendSnapshot, PublicProfile } from './contracts'
 import { friendCheckFreshness } from './FriendConnectionDoctor'
 import { JoinGuide } from './JoinGuide'
 import { OpenGameButton } from './OpenGameButton'
+import { ServerNotificationPreferences } from './DesktopPreferencesPanel'
+import './TaskFirstPages.css'
 
 export type FriendConnectionExplanation = {
   state: 'connected' | 'paused' | 'disconnected' | 'stale' | 'identity' | 'approval' | 'access-ended' | 'removed' | 'credential' | 'update' | 'unknown'
@@ -151,13 +153,15 @@ export type FriendPlayFlowProps = {
   startNotice?: ReactNode
   connectionDetails?: ReactNode
   requirements?: ReactNode
+  showServerNotifications?: boolean
   children?: ReactNode
 }
 
 // Compose the existing actions. No polling, implicit Start, query or game launch is added.
 export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction = null, nowMs, identityKey, onStart, onStop, onRefresh,
-  onOpenConnectionDoctor, startNotice, connectionDetails, requirements, children }: FriendPlayFlowProps) {
+  onOpenConnectionDoctor, startNotice, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
   const headingId = useId()
+  const [notificationsOpened, setNotificationsOpened] = useState(false)
   const connection = friendConnectionExplanation(snapshot, nowMs)
   const permissions = effectiveFriendPermissions(snapshot, profile, nowMs)
   const currentProfile = snapshot.profiles.find(item => item.id === profile.id)
@@ -168,8 +172,8 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
       : !onStart ? 'The game server is stopped. Ask the Host to start this server.' : 'The game server is stopped.'
     : friendServerStateExplanation(currentProfile?.state ?? 'Unknown')
   return <section className="friend-play-flow" aria-labelledby={headingId} aria-busy={busy}>
-    <div className="panel-heading"><h4 id={headingId} className="sr-only">Play</h4>
-      {onRefresh && <Button className="text-button" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} />{pendingAction === 'refresh' ? 'Refreshing…' : 'Refresh server status'}</Button>}</div>
+    <div className="panel-heading"><h4 id={headingId}>Play</h4>
+      {onRefresh && <Button className="icon-button" aria-label="Refresh server status" title="Refresh server status" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} /></Button>}</div>
     <p role="status">{playExplanation}</p>
     <div className="friend-primary-actions">
       {(currentProfile?.state === 'Offline' || pendingAction === 'start' && currentProfile?.state === 'Starting') && permissions.currentAccess && onStart && <Button className="server-primary-action" disabled={busy || !permissions.actions.start.available}
@@ -182,14 +186,22 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
+    {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && !permissions.actions.stop.available &&
+      <p className="warning-text" role="status">{permissions.actions.stop.reason}</p>}
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}
     {canJoin && currentProfile && <details className="server-support-disclosure"><summary><Icon name="game" />How to join in the game</summary><JoinGuide kind={currentProfile.gameKind ?? currentProfile.kind} /></details>}
     {requirements}
     {currentProfile?.state === 'Offline' && permissions.currentAccess && permissions.actions.start.available && startNotice && <details className="server-support-disclosure"><summary><Icon name="plug" />Connection checks before Start</summary>{startNotice}</details>}
-    {onOpenConnectionDoctor && <Button className="text-button" onClick={onOpenConnectionDoctor}>Open Connection Doctor</Button>}
-    <FriendPermissionExplanation snapshot={snapshot} profile={profile} nowMs={nowMs} />
+    <details className="server-support-disclosure"><summary><Icon name="plug" />Server tools and connection help</summary>
+      {onOpenConnectionDoctor && <Button className="text-button" onClick={onOpenConnectionDoctor}>Open Connection Doctor</Button>}
+      <FriendPermissionExplanation snapshot={snapshot} profile={profile} nowMs={nowMs} />
+    </details>
+    {showServerNotifications && snapshot.connectionId && <details className="server-support-disclosure"
+      onToggle={event => { if (event.currentTarget.open) setNotificationsOpened(true) }}><summary><Icon name="bell" />Server notifications</summary>
+      {notificationsOpened && <ServerNotificationPreferences server={{ id: profile.id, name: profile.name, connectionId: snapshot.connectionId }} />}
+    </details>}
     {children}
   </section>
 }
