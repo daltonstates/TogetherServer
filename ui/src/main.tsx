@@ -2301,6 +2301,10 @@ export function App() {
                       if (await confirm({ title: 'Archive this session?', confirmLabel: 'Archive session', description: 'TogetherServer must first confirm that its saved server process is no longer running.' }))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
+                  {pending && <p className="helper-text" role="status">Completing the current action…</p>}
+                  {dirty && <p className="warning-text">Save or cancel setup changes before using server tools.</p>}
+                  {dataRecovery?.lifecycleBlocked && <p className="warning-text">Resolve local data recovery before restarting.</p>}
+                  {status?.state !== 'Offline' && <p className="helper-text">Edit setup is available when this server is Offline.</p>}
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
                 <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
                   {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}
