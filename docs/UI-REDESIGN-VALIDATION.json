@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "date": "2026-10-10",
+  "scope": "Integrated React UI redesign; synthetic hosted visual evidence",
+  "workerModel": "gpt-6.1-sol",
+  "source": {
+    "reviewRevision": "22b45117b3d04ca98ef157f743a5e17b590d891d",
+    "uiSourceTree": "86a4431998fa78757046d515d37780f80dd449f3",
+    "bundledIndexSha256": "7de9356454722000b4520af553e773e77df8468ae7eb31cdfb69f860e4bf8e69",
+    "localAndHostedSourceMatch": true,
+    "localAndHostedBundleMatch": true
+  },
+  "checks": {
+    "ui": { "files": 77, "passed": 923, "failed": 0 },
+    "pureRenderFixtures": { "passed": 17, "failed": 0 },
+    "typecheck": "passed",
+    "lint": "passed",
+    "uiBuild": "passed; existing bundle-size advisory",
+    "codeOnlyGate": "passed; exit 0",
+    "dotnetBuild": { "warnings": 0, "errors": 0 },
+    "whitespace": "passed",
+    "symbolicLinkCases": "skipped; test account cannot create symbolic links"
+  },
+  "visual": {
+    "runId": 38101027935,
+    "url": "https://github.com/daltonstates/TogetherServer/actions/runs/38101027935",
+    "artifactId": 11687991325,
+    "artifactSha256": "2c768f6711f0494615b524e648c73d3c973cb190cf0e65828c07872a2a8a630c",
+    "runner": "Explicitly approved GitHub-hosted Windows runner",
+    "cases": 122,
+    "screenshots": 132,
+    "failed": 0,
+    "layoutFindings": 0,
+    "skipped": 0,
+    "deliberateErrorCases": 36,
+    "manualReview": "complete for primary pages, narrow dialog/setup sheets, selected enlarged previews and all changed final images",
+    "reviewReuse": { "precedingRun": 38100538755, "identicalPngs": 107, "changedPngsInspected": 25 },
+    "limitations": "Full-page PNGs do not expose all nested-scroll content; no claim that every historical dialog or every below-fold control received rendered acceptance"
+  },
+  "inventory": { "historicalMappings": 310, "atlasViews": 187, "browserConfirmationsMigrated": 28 },
+  "unchanged": ["backend source", "public contracts", "dependency manifests and lockfiles", "production data and processes"],
+  "pendingAcceptance": ["Native WebView/application", "Real game, Friend-PC, network and save journeys"],
+  "interfaceLimit": "Existing Friend GET contracts cannot identify another PC's planned successor; identity stays Unknown until explicit trust/pairing",
+  "ownerDesktopAutomation": "none"
+}

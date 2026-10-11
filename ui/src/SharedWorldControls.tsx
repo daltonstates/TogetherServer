@@ -15,34 +15,35 @@ import { formatSharedBytes, normalizedDirectIpHttpsEndpoint, plannedHandoffCheck
   sharedSaveAge, sharedTransferPhase, sharedHostObservation, type SharedSignedHost, type SharedGame, type TransferPhase } from './sharedWorldUx'
 export { normalizedDirectIpHttpsEndpoint } from './sharedWorldUx'
 
-type SharedWorkspaceProps = { worldName?: string; currentSignedHost?: SharedSignedHost;
+type SharedWorkspaceProps = { worldName?: string; showWorldHeading?: boolean; currentSignedHost?: SharedSignedHost;
   onOpenHostControls?: () => void; serverState?: string; serverStatusFresh?: boolean;
   observedHostAddress?: string | null; onOpenPlay?: () => void; connectedHostName?: string;
   onPairHost?: () => void }
 
-function SharedWorldHeading({ worldName, currentSignedHost, identitySource, successorIdentity, host, serverState,
-  serverStatusFresh, observedHostAddress, onOpenPlay, connectedHostName, onPairHost }: SharedWorkspaceProps & { identitySource?: unknown; host: boolean;
-    successorIdentity?: ReturnType<typeof parseSharedSuccessorIdentity> }) {
+function sharedHeadingIdentity(identitySource: unknown, host: boolean,
+  successorIdentity?: ReturnType<typeof parseSharedSuccessorIdentity>) {
   let identity: ReturnType<typeof parseSharedHostingIdentity> | null = null
   try { if (identitySource) identity = parseSharedHostingIdentity(identitySource, host) } catch { /* Unknown is explicit. */ }
   if (!host && successorIdentity && identity?.label === 'Signed Host not checked' &&
     identity.recordHash === successorIdentity.recordHash) identity = successorIdentity
-  const needsPairing = !host && identity?.address != null && !identity.local &&
-    identity.address !== normalizedDirectIpHttpsEndpoint(observedHostAddress ?? '') &&
-    identity !== successorIdentity
+  return identity
+}
+
+function SharedWorldHeading({ worldName, showWorldHeading = true, currentSignedHost, identitySource, successorIdentity, host, serverState,
+  serverStatusFresh, observedHostAddress, connectedHostName, onOpenPlay }: SharedWorkspaceProps & { identitySource?: unknown; host: boolean;
+    successorIdentity?: ReturnType<typeof parseSharedSuccessorIdentity> }) {
+  const identity = sharedHeadingIdentity(identitySource, host, successorIdentity)
   return <header className="shared-world-heading">
-    <div><h3>{worldName || 'Selected world'}</h3><p>Shared saves</p></div>
-    <div aria-label="Current signed Host">{currentSignedHost ? <><strong>
+    <div className="shared-world-title">{showWorldHeading ? <><h3>{worldName || 'Selected world'}</h3><p>Shared saves</p></> :
+      <h3>Shared saves</h3>}</div>
+    <div className="shared-world-identity" aria-label="Current signed Host">{currentSignedHost ? <><strong>
       Signed Host: {currentSignedHost.pcName}</strong><p>{sharedHostObservation(currentSignedHost)}</p></> :
       <SharedHostingIdentityView identity={identity} host={host} serverState={serverState}
         serverStatusFresh={serverStatusFresh} observedHostAddress={observedHostAddress} />}
-      {!host && !needsPairing && !successorIdentity && onOpenPlay && serverStatusFresh && serverState === 'Ready' && <div className="actions">
-        <span>Connected Host{connectedHostName ? `: ${connectedHostName}` : ''}</span>
-        <Button onClick={onOpenPlay}><Icon name="play" />Join connected Host</Button>
+      {!host && connectedHostName && <p className="shared-connected-host">{serverStatusFresh ? 'Connected Host' : 'Saved Host'}: {connectedHostName}</p>}
+      {!host && onOpenPlay && serverStatusFresh && serverState === 'Ready' && <div className="actions">
+        <Button className="secondary" onClick={onOpenPlay}><Icon name="play" />Join connected Host</Button>
       </div>}
-      {needsPairing && <div className="actions">{onPairHost ?
-        <Button onClick={onPairHost}><Icon name="link" />Pair with the new Host</Button> :
-        <p>Pair with the new Host using its invite before joining.</p>}</div>}
     </div>
   </header>
 }
@@ -400,7 +401,7 @@ function parseHistoryReviewResult(value: unknown): HistoryReviewResult {
     ownerPublicKey: source.ownerPublicKey == null ? null : shortText(source.ownerPublicKey, 'Owner identity', 256) }
 }
 
-export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged, worldName, currentSignedHost, onOpenHostControls, serverState, serverStatusFresh, observedHostAddress }:
+export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged, worldName, showWorldHeading, currentSignedHost, onOpenHostControls, serverState, serverStatusFresh, observedHostAddress }:
   { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; currentAddress?: string;
     onGrantChanged: () => Promise<void> } & SharedWorkspaceProps) {
   const [status, setStatus] = useState<HostStatus | null>(null)
@@ -592,7 +593,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const latestCopyLabel = status?.latest?.captureKind === 'PostStopBackup' ? 'post-Stop file copy' :
     status?.latest?.captureKind === 'LiveSave' ? 'live save copy' : 'verified save copy'
   return <section className="shared-world-workspace" aria-label="Shared saves">
-    <SharedWorldHeading worldName={worldName} currentSignedHost={review ? undefined : currentSignedHost}
+    <SharedWorldHeading worldName={worldName} showWorldHeading={showWorldHeading} currentSignedHost={review ? undefined : currentSignedHost}
       identitySource={status} host serverState={serverState} serverStatusFresh={serverStatusFresh}
       observedHostAddress={observedHostAddress} />
     {(fenced || review) && <section role="alert" aria-label="Hosting authority">
@@ -736,7 +737,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   </section>
 }
 
-export function FriendSharedWorlds({ profileId, available, onAddressChange, game, onBrowseServerFile, onOpenHostSetup, worldName, currentSignedHost, onOpenHostControls, serverState, serverStatusFresh, observedHostAddress, onOpenPlay, connectedHostName, onPairHost }:
+export function FriendSharedWorlds({ profileId, available, onAddressChange, game, onBrowseServerFile, onOpenHostSetup, worldName, showWorldHeading, currentSignedHost, onOpenHostControls, serverState, serverStatusFresh, observedHostAddress, onOpenPlay, connectedHostName, onPairHost }:
   { profileId: string; available: boolean; onAddressChange?: () => void; game?: SharedGame;
     onBrowseServerFile?: (game: SharedGame) => Promise<string | null>; onOpenHostSetup?: () => void } & SharedWorkspaceProps) {
   const [status, setStatus] = useState<FriendStatus | null>(null)
@@ -1074,27 +1075,71 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
   const hasVerifiedLocalCopy = status?.consented === true && status.thisPcVersion != null &&
     !statusProblem && status.error == null
   const verifiedCopy = hasVerifiedLocalCopy && transferPhase === null
+  const identity = sharedHeadingIdentity(recovery, false, successorIdentity)
+  const needsPairing = identity?.address != null && !identity.local &&
+    identity.address !== normalizedDirectIpHttpsEndpoint(observedHostAddress ?? '') && identity !== successorIdentity
+  const canJoin = !needsPairing && !successorIdentity && !!onOpenPlay && serverStatusFresh === true && serverState === 'Ready'
+  const manualStart = observationFresh && hostingSetupReady && verifiedCopy && !!onOpenHostControls
+  const canCheck = available && status?.consented === true && !busy
+  const canReceive = canCheck && transferPhase === null
+  const currentCopy = observationFresh && verifiedCopy && !behind
+  const nextTask = manualStart ? 'start' : transferPhase ? 'transfer' : needsPairing ? 'pair' : status && !status.consented ? 'consent' :
+    canReceive && observationFresh && !statusProblem && status?.error == null &&
+      transferPhase === null && (status?.thisPcVersion == null || behind) ? 'receive' :
+      currentCopy ? 'prepare' : 'check'
   return <section className="shared-world-workspace" aria-label="Shared worlds">
-    <SharedWorldHeading worldName={worldName} currentSignedHost={currentSignedHost} identitySource={recovery}
+    <SharedWorldHeading worldName={worldName} showWorldHeading={showWorldHeading} currentSignedHost={currentSignedHost} identitySource={recovery}
       successorIdentity={successorIdentity} host={false} serverState={serverState} serverStatusFresh={serverStatusFresh} observedHostAddress={observedHostAddress}
-      onOpenPlay={onOpenPlay} connectedHostName={connectedHostName} onPairHost={onPairHost} />
+      connectedHostName={connectedHostName} onOpenPlay={canJoin ? onOpenPlay : undefined} />
     <p className={transferAlert ? 'warning-text' : undefined} role={transferAlert ? 'alert' : 'status'}>{headline}</p>
     {observationFailure && <p role="alert">{observationFailure} Your last verified local copy and consent are retained; the current Host version and transfer progress are unavailable.</p>}
     {capacityAlert && <p className="warning-text" role="alert">{capacityAlert}</p>}
     {status?.thisPcVersion != null && <p>Verified save copy {status.thisPcVersion} on this PC. Copy possession does not grant hosting authority or prove readiness.</p>}
-    <section aria-label="Receive save copies"><h4>Get a private save on this PC</h4>
-    <p>Saves are copied here after the Host stops its game server. Keep this app open to receive them. Receiving keeps a private verified copy and does not make this PC a Host.</p>
+    {currentSignedHost && recovery?.state === 'HistoryReviewRequired' && <p role="alert">Signed history conflict: review with the group. No recovery offer is active.</p>}
+    {recovery?.state === 'HistoricalRecovery' && <p role="status">Earlier recovery is historical, not a current hosting decision.</p>}
     <p className="helper-text">Changes since the Host's last completed copy may be missing. Automatic takeover is unavailable.</p>
+    <section className="shared-next-action" aria-label="Next shared-save action">
+      <h4>{nextTask === 'start' ? 'Local preparation complete; Start is your next manual choice' :
+        nextTask === 'transfer' ? transferPhase === 'Receiving' ? 'Receiving the save copy' :
+          transferPhase === 'Verifying' ? 'Verifying the save copy' : 'Confirming the signed receipt' :
+        nextTask === 'pair' ? 'Connect to the new signed Host' :
+        nextTask === 'receive' ? 'Get the save before preparing hosting' : nextTask === 'prepare' ? 'Prepare hosting on this PC' :
+        nextTask === 'consent' ? 'Allow receiving before preparing hosting' : 'Check the latest save status'}</h4>
+      <p>{nextTask === 'start' ? 'Review Start in Host. Starting still requires definite Offline and the current signed decision.' :
+        nextTask === 'transfer' ? 'Keep this app open. Wait for verification and the signed receipt before requesting another copy or preparing this save.' :
+        nextTask === 'pair' ? 'Use the new Host’s invite to pair before joining. Your saved connection stays preserved.' :
+        nextTask === 'receive' ? 'Receive the latest completed copy with your consent, then review hosting requirements.' :
+        nextTask === 'prepare' ? 'Review the signed transfer, local setup and route checks. Start remains a separate manual choice.' :
+        nextTask === 'consent' ? 'Turn on Allow saves on this PC to receive a copy. Host this save opens the guided steps.' :
+        'Current save and hosting checks are incomplete. Review the status before preparing hosting.'}</p>
+      <div className="actions">
+        {manualStart && <Button onClick={onOpenHostControls}><Icon name="play" />Review Start server</Button>}
+        {needsPairing && (onPairHost ? <Button className={nextTask === 'pair' ? undefined : 'secondary'}
+          onClick={onPairHost}><Icon name="link" />Pair with the new Host</Button> :
+          <p>Pair with the new Host using its invite before joining.</p>)}
+        {nextTask === 'receive' && <Button disabled={!canReceive}
+          onClick={() => void run('pull')}><Icon name="archive" />Get latest save</Button>}
+        {nextTask === 'check' && <Button className={canCheck ? undefined : 'secondary'} disabled={!canCheck}
+          onClick={() => void run('check')}><Icon name="refresh" />Check latest</Button>}
+        <Button className={nextTask === 'prepare' || nextTask === 'consent' ? undefined : 'secondary'}
+          onClick={() => setShowHosting(true)}><Icon name="server" />Host this save</Button>
+        <Button className="secondary" onClick={() => setManageOpen(true)}><Icon name="settings" />Manage sharing</Button>
+      </div>
+    </section>
+    <section className="shared-receive-save" aria-label="Receive save copies"><h4>Receive a private copy</h4>
+    <p>Keep this app open to receive completed saves. Receiving does not make this PC a Host.</p>
     {onAddressChange && <div className="actions"><Button className="text-button" onClick={onAddressChange}>Host address changed?</Button></div>}
     {!available && <p>{status?.thisPcVersion != null ?
       'Shared-save support has not been confirmed for the current Host connection. Your verified copy remains available for guarded recovery below.' :
       'Connect to a Host with shared-save support before receiving saves.'}</p>}
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
-    <div className="actions"><Button className="secondary" disabled={busy || !available || !status?.consented}
-      onClick={() => void run('check')}>Check latest</Button>
-    <Button disabled={busy || !available || !status?.consented}
-      onClick={() => void run('pull')}><Icon name="archive" />{busy ? 'Working…' : 'Get latest save'}</Button></div>
+    {status && !status.consented && <p role="note">Receiving consent is required before Get latest save.</p>}
+    {transferPhase && <p role="note">Get latest save is unavailable while this copy is being received, verified or acknowledged.</p>}
+    <div className="actions">{nextTask !== 'check' && <Button className="secondary" disabled={!canCheck}
+      onClick={() => void run('check')}>Check latest</Button>}
+      {nextTask !== 'receive' && <Button className="secondary" disabled={!canReceive}
+        onClick={() => void run('pull')}><Icon name="archive" />{busy ? 'Working…' : 'Get latest save'}</Button>}</div>
     {status && transferPhase && <section aria-label="Save transfer progress" aria-live="polite">
       <p>{transferPhase === 'Receiving' ? 'Receiving copy' : transferPhase === 'Verifying' ?
         'Verifying every file' : 'Confirming signed receipt'} · {formatSharedBytes(status.receivedBytes)} of {formatSharedBytes(status.totalBytes)}</p>
@@ -1111,15 +1156,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     {message && <p role="status">{message}</p>}
     </section>
     <p className="helper-text">Hash verification does not prove game load or playability.</p>
-    <section className="shared-next-action" aria-label="Next shared-save action">
-      <h4>{observationFresh && hostingSetupReady && verifiedCopy ? 'Local preparation complete; Start is your next manual choice' :
-        verifiedCopy && !behind ? 'Prepare hosting on this PC' : 'Get the save before preparing hosting'}</h4>
-      <p>For a reachable Host, ask the current Host PC for a planned transfer. If the Host is unreachable, review guarded recovery with the group. A stopped server alone does not prove Host loss.</p>
-      <div className="actions">{observationFresh && hostingSetupReady && verifiedCopy && onOpenHostControls &&
-        <Button onClick={onOpenHostControls}><Icon name="play" />Review Start server</Button>}
-        <Button className={hostingSetupReady ? 'secondary' : undefined} onClick={() => setShowHosting(true)}><Icon name="server" />Host this save</Button>
-        <Button className="secondary" onClick={() => setManageOpen(true)}><Icon name="settings" />Manage sharing</Button></div>
-    </section>
+    <p className="helper-text">A stopped server alone does not prove Host loss. Use a planned transfer or review guarded recovery with the group.</p>
     {showHosting && <SettingsDialog title="Host this save" description="Get save, prepare hosting, then Start server. Each step uses current signed checks."
       busy={busy} onClose={() => setShowHosting(false)} wide>
       <div aria-label="Host on this PC">
@@ -1129,7 +1166,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
         <p>Receiving files does not transfer hosting. The current Host PC must Stop, publish the final backup, verify the signed receipt from this PC, and complete the transfer.</p>
         <label><Input type="checkbox" checked={status?.consented ?? false}
           disabled={!available || busy} onChange={event => void run('consent', event.target.checked)} />Allow this PC to receive the hosting save</label>
-        <Button disabled={busy || !available || !status?.consented} onClick={() => void run('pull')}>
+        <Button className={canReceive ? undefined : 'secondary'} disabled={!canReceive} onClick={() => void run('pull')}>
           <Icon name="archive" />Get hosting save</Button>
       </section>
       <h4>2. This PC: prepare hosting</h4>
@@ -1154,6 +1191,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     </SettingsDialog>}
     {manageOpen && <SettingsDialog title="Manage sharing" description="Permissions, receipts, signed history, recovery and checks for this world."
       busy={busy} onClose={() => setManageOpen(false)} wide>
+      {recovery?.state === 'HistoryReviewRequired' && <p role="alert">Competing authority histories need review. No recovery offer is active.</p>}
       <details><summary>Save receipts and copy dates</summary>
     {status?.thisPcVersion != null && <dl aria-label="Shared save age">
       <dt>Completed by the Host</dt><dd>{sharedSaveAge(status.completedUtc)}
@@ -1209,7 +1247,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
         recovery.state === 'ObservedMajority' ?
           'Another PC’s current majority decision is recorded here. Game setup and route checks remain.' :
           'Majority decision pending.'}</p> :
-        recovery?.state === 'HistoryReviewRequired' ? <p role="alert">Competing authority histories need review. No recovery offer is active.</p> :
+        recovery?.state === 'HistoryReviewRequired' ? null :
           recovery?.state === 'HistoricalRecovery' ? <p role="status">Earlier recovery history is preserved. It is no longer current.</p> :
             recovery?.state === 'OfferClosed' ? <p role="status">The earlier offer is closed. No recovery offer is active.</p> :
               <p className="helper-text">No candidate offer is armed on this PC.</p>}

@@ -1842,7 +1842,7 @@ export function App() {
 
     {update?.state === 'Available' && !update.promptSnoozed && !uiPreferences.quietMode && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
 
-    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Development servers, saved access, settings, and worlds stay in this separate instance. Production data is not loaded or copied.</span></aside>}
+    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>App <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Separate development servers and data. Production data is not loaded or copied.</span></aside>}
 
     {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
       <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
@@ -2001,9 +2001,9 @@ export function App() {
                    : profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                  />}
                 requirements={['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.gameKind ?? profile.kind) &&
-                ['Connected', 'Disabled'].includes(snapshot.state) && <PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
+                ['Connected', 'Disabled'].includes(snapshot.state) && <details className="server-support-disclosure"><summary><Icon name="game" />Game requirements</summary><PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
                   <GameCompatibilityPanel key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} host={false} />
-                </PaneErrorBoundary>} />}
+                </PaneErrorBoundary></details>} />}
               {joinSection === 'connection' && <details className="friend-server-support" open><summary>Players & server tools</summary>
                 <ServerActivity state={permissions.currentAccess ? profile.state : 'Unknown'} online={permissions.currentAccess ? profile.onlinePlayers : null} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
                   refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
@@ -2030,7 +2030,7 @@ export function App() {
               {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
               {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <p className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</p>}
               {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
-              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind} worldName={profile.name}
+              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
                 serverState={profile.state} serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint}
                 connectedHostName={snapshot.connectionName || 'Saved Host'} onOpenPlay={() => selectJoinSection('play')} onPairHost={() => selectJoinSection('pairing')}
                 onOpenHostControls={() => void openSharedHost(profile.id, false)}
@@ -2301,6 +2301,10 @@ export function App() {
                       if (await confirm({ title: 'Archive this session?', confirmLabel: 'Archive session', description: 'TogetherServer must first confirm that its saved server process is no longer running.' }))
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
+                  {pending && <p className="helper-text" role="status">Completing the current action…</p>}
+                  {dirty && <p className="warning-text">Save or cancel setup changes before using server tools.</p>}
+                  {dataRecovery?.lifecycleBlocked && <p className="warning-text">Resolve local data recovery before restarting.</p>}
+                  {status?.state !== 'Offline' && <p className="helper-text">Edit setup is available when this server is Offline.</p>}
                   {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
                 <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
                   {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}

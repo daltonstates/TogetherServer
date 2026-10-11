@@ -46,7 +46,8 @@ export const fixtureScenarios = Object.freeze([
   'host-ready', 'host-offline', 'host-starting', 'host-unknown', 'host-countdown', 'host-maintenance',
   'host-multi', 'host-first-use', 'host-attention', 'host-shared', 'host-managed-sharing',
   'friend-connected', 'friend-permitted', 'friend-pairing', 'friend-unpaired', 'friend-disabled', 'friend-offline', 'friend-disconnected', 'friend-expired',
-  'friend-consent', 'friend-shared', 'friend-managed-sharing', 'settings', 'setup-valheim',
+  'friend-consent', 'friend-shared', 'friend-shared-verified-offline', 'friend-shared-receiving-offline',
+  'friend-managed-sharing', 'settings', 'setup-valheim',
   'setup-java', 'setup-bedrock', 'setup-factorio', 'setup-terraria', 'setup-custom'
 ]);
 
@@ -95,6 +96,8 @@ export function createFixtureState(scenario = 'host-ready') {
   const options = typeof scenario === 'string' ? { id: scenario } : scenario;
   const name = options.id ?? options.name ?? 'host-ready';
   const preset = String(name).toLowerCase();
+  const receivedSaveState = preset === 'friend-shared-verified-offline' ? 'verified' :
+    preset === 'friend-shared-receiving-offline' ? 'receiving' : null;
   const firstUse = /first-use|firstuse|setup/.test(preset);
   const host = clone(contract);
   host.settings.profiles = firstUse ? [] : [profile(ids.primary, 'Valheim', 'Weekend Valheim', 2456)];
@@ -137,7 +140,8 @@ export function createFixtureState(scenario = 'host-ready') {
     activity: clone(host.activity), chatProfiles: unpaired ? [] : [{ id: p.id, name: p.name, supported: true }] };
   const state = { scenario: name, now: fixtureNow, mode: /^friend|^join/.test(preset) ? 'Friend' : 'Host', host, friend,
     devices: [device(ids.device, 'Friend PC'), device(ids.otherDevice, 'Second Friend PC')],
-    consented: !/consent|friend-shared/.test(preset), sharingEnabled: /shared|sharing/.test(preset), manageSharing: /managed-sharing|friend-shared/.test(preset),
+    consented: receivedSaveState !== null || !/consent|friend-shared/.test(preset), receivedSaveState,
+    sharingEnabled: /shared|sharing/.test(preset), manageSharing: /managed-sharing|friend-shared/.test(preset),
     drafts: {}, chatEntries: {}, desktopPreferences: { available: true, launchAtLogin: false, closeToTray: false, startupAvailable: true },
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
@@ -225,9 +229,12 @@ export function routeFixture(state, request) {
   const match = /^\/api\/local\/(profiles|friend)\/([^/]+)\/(.+)$/.exec(path);
   const chatMatch = /^\/api\/local\/friend\/connections\/[^/]+\/servers\/([^/]+)\/(chat.*)$/.exec(path);
   if (match || chatMatch) {
-    const host = match?.[1] === 'profiles'; const id = match?.[2] ?? chatMatch[1]; const suffix = match?.[3] ?? chatMatch[2];
+    // Saved-connection routes also match the legacy Friend prefix. Prefer the
+    // specific room route so "connections" cannot become a profile identity.
+    const host = !chatMatch && match?.[1] === 'profiles'; const id = chatMatch?.[1] ?? match[2]; const suffix = chatMatch?.[2] ?? match[3];
     const p = state.host.settings.profiles.find(p => p.id === id) ?? profile(id, 'Valheim', 'Weekend Valheim', 2456);
     if (suffix === 'chat' && method === 'GET') return reply(chat(state, id, host));
+    if (suffix === 'chat/sync' && !host && method === 'POST') return reply({ ...chat(state, id, false), code: 'ChatSynced' });
     if (suffix.startsWith('chat')) return unavailable('Chat writes');
     if (suffix === 'logs' && method === 'GET') return reply(result({ sourceState: 'Active', runId, cursor: 'synthetic-cursor', hasMore: false,
       records: [{ timestampUtc: fixtureNow, severity: 'Info', category: 'Server', stream: 'stdout', message: 'Synthetic log: server observation requested.' },
@@ -270,7 +277,13 @@ export function routeFixture(state, request) {
     if (suffix === 'shared-world/live-orphan' && method === 'GET') return reply({ code: 'None', message: boundary, versionHash: null });
     const friendShared = () => ({ consented: state.consented, hostVersion: null, thisPcVersion: null, state: state.consented ? 'No published copy' : 'Consent needed',
       error: null, completedUtc: null, receivedUtc: null, receiptConfirmed: null, receivedBytes: 0, totalBytes: 0, transferPhase: null,
-      capacityNotice: null, capacityState: null, rosterRevision: 1, trust: 'Roster not verified' });
+      capacityNotice: null, capacityState: null, rosterRevision: state.sharingEnabled ? 1 : null,
+      trust: state.sharingEnabled ? 'VerifiedSignedRoster' : 'Unverified',
+      ...(state.consented && state.receivedSaveState === 'verified' ? { hostVersion: 5, thisPcVersion: 5, state: 'Ready',
+        completedUtc: fixtureNow, receivedUtc: fixtureNow, receiptConfirmed: true,
+        receivedBytes: 4194304, totalBytes: 4194304 } : {}),
+      ...(state.consented && state.receivedSaveState === 'receiving' ? { hostVersion: 5, state: 'Receiving',
+        completedUtc: fixtureNow, receivedBytes: 1048576, totalBytes: 4194304, transferPhase: 'Receiving' } : {}) });
     if (suffix === 'shared-world' && !host && method === 'GET') return reply(friendShared());
     if (suffix === 'shared-world/consent' && !host && method === 'PUT') { state.consented = body.enabled === true || body.consented === true;
       return reply(result({ status: friendShared() })); }
@@ -284,6 +297,11 @@ export function routeFixture(state, request) {
     if (suffix === 'shared-world/recovery' && method === 'GET') return reply({ state: 'NoOffer', votes: 0, required: 0,
       version: null, versionHash: null, candidateAddress: null, candidateDeviceId: null, majorityReached: false,
       separateCopies: 0, proposalHash: null, authorityHeadHash: null });
+    // Copy possession and transfer progress never manufacture a signed successor or Start readiness.
+    if (suffix === 'shared-world/handoff/restore' && !host && method === 'GET' && state.receivedSaveState !== null)
+      return reply({ staged: false, restored: false, recordHash: null, message: boundary, pendingChecks: [],
+        preparedServerRoot: null, readyForManualStart: false, requiredAddOns: [],
+        controlRouteFingerprint: null, controlRouteAddress: null });
     if (method === 'GET' && unsupportedSharedGets.has(suffix) || method === 'POST' && unsupportedSharedPosts.has(suffix) ||
       method === 'POST' && /^shared-world\/resolution\/(approve|vote|offer|override)\/[a-f\d]{64}$/i.test(suffix))
       return unavailable('Shared-save signed transfer, hosting or recovery');

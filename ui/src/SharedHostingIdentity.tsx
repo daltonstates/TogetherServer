@@ -11,6 +11,21 @@ function record(value: unknown): Record<string, unknown> {
 function validHash(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value) }
 function validDevice(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value) }
 
+function hasSharedSaveEvidence(value: unknown): boolean {
+  const source = record(value)
+  for (const key of ['hostVersion', 'thisPcVersion', 'rosterRevision']) {
+    if (source[key] != null && (typeof source[key] !== 'number' || !Number.isSafeInteger(source[key]) ||
+      (source[key] as number) < 0)) throw new Error('Shared save evidence is invalid.')
+  }
+  if (typeof source.consented !== 'boolean' || typeof source.state !== 'string' ||
+    source.error != null && typeof source.error !== 'string') throw new Error('Shared save evidence is invalid.')
+  // Consent and app capability alone do not establish a shared world. A copy,
+  // published version, verified roster or signed-history problem makes it relevant.
+  return source.hostVersion != null || source.thisPcVersion != null || source.rosterRevision != null ||
+    source.error != null || source.state.startsWith('Host save source changed') ||
+    source.state.startsWith('Competing save histories')
+}
+
 export function parseSharedHostingIdentity(value: unknown, host: boolean): HostingIdentity {
   const source = record(value)
   if (host) {
@@ -76,15 +91,20 @@ export function SharedHostingIdentity({ profileId, host, available = true, world
     let active = true
     const controller = new AbortController()
     let timer: number | undefined
-    setIdentity(null); setFailed(false)
+    setIdentity(current => current?.scope === identityScope ? current : null); setFailed(false)
     const check = async () => {
       try {
         let next = await getLocalJson(host ? `/api/local/profiles/${profileId}/shared-world` :
           `/api/local/friend/${profileId}/shared-world/recovery`, value => parseSharedHostingIdentity(value, host), controller.signal)
-        if (!host && next.label === 'Signed Host not checked') {
+        if (!host && next.label === 'Signed Host not checked' && next.recordHash) {
           const successor = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
             parseSharedSuccessorIdentity, controller.signal).catch(() => null)
           if (successor && successor.recordHash === next.recordHash) next = successor
+        }
+        if (!host && next.label === 'Signed Host not checked' && !next.recordHash) {
+          const relevant = await getLocalJson(`/api/local/friend/${profileId}/shared-world`,
+            hasSharedSaveEvidence, controller.signal)
+          next = { ...next, hidden: !relevant }
         }
         if (active) { setIdentity({ scope: `${host ? 'host' : 'friend'}/${profileId}`, value: next }); setFailed(false) }
       } catch { if (active) setFailed(true) }
@@ -92,7 +112,8 @@ export function SharedHostingIdentity({ profileId, host, available = true, world
     }
     void check()
     return () => { active = false; controller.abort(); window.clearTimeout(timer) }
-  }, [profileId, host, available])
+  }, [profileId, host, available, identityScope])
+  if (!host && identity === null) return null
   return <SharedHostingIdentityView identity={identity} failed={failed} host={host} worldName={worldName}
     serverState={serverState} serverStatusFresh={serverStatusFresh} observedHostAddress={observedHostAddress} />
 }

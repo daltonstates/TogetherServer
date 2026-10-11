@@ -33,6 +33,7 @@ const { parseGameSettings } = await import(new URL('gameSettings.ts', sourceRoot
 const { parseChatRoomWithNotice } = await import(new URL('pinnedNoticeContracts.ts', sourceRoot).href);
 const { parseNotificationPreferences, parseDesktopUpdateDetails, parseUpdatePreparation } = await import(new URL('desktopPreferencesWire.ts', sourceRoot).href);
 const { parseProtectedDraftResult } = await import(new URL('protectedUiDrafts.ts', sourceRoot).href);
+const { normalizedDirectIpHttpsEndpoint } = await import(new URL('sharedWorldUx.ts', sourceRoot).href);
 const ts = createRequire(new URL('../package.json', sourceRoot))('typescript');
 
 // Extract actual pure decoders into memory, excluding components and all imports.
@@ -50,18 +51,23 @@ function pureDecoders(file, names, globals = {}) {
   const js = ts.transpileModule(pureSource, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
   return runInNewContext(js, { ...globals });
 }
+const chat = pureDecoders('ServerChat.tsx', ['parseManagedChatRoom'], {
+  parseChatRoomWithNotice, ContractError: contracts.ContractError
+});
 const live = pureDecoders('LiveSaveControls.tsx', ['record', 'text', 'parseAttempt', 'parseLiveSaveStatus'], {
   ContractError: contracts.ContractError, stageLabels: Object.fromEntries(['completion', 'snapshot', 'transfer', 'load', 'change', 'restart'].map(id => [id, id]))
 });
 const shared = pureDecoders('SharedWorldControls.tsx', ['record', 'boolean', 'numberOrNull', 'textOrNull', 'timestampOrNull',
   'shortText', 'guid', 'hash', 'captureKind', 'parseRecoveryStatus', 'parseHandoffStatus', 'parseGrants', 'parseRosterMember',
-  'parseHostSharedWorldStatus', 'parseAuthorityHead', 'parseAuthorityStatus', 'parseFriendSharedWorldStatus', 'parseRoster', 'parseSharingView'], {
+  'parseHostSharedWorldStatus', 'parseAuthorityHead', 'parseAuthorityStatus', 'parseFriendSharedWorldStatus', 'parseFriendResult', 'parseRoster', 'parseSharingView'], {
   deviceIdPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-  parseLiveSaveStatus: live.parseLiveSaveStatus
+  parseLiveSaveStatus: live.parseLiveSaveStatus, parseBasicResult: contracts.parseBasicResult
 });
 const files = pureDecoders('ServerFilesPanel.tsx', ['entry', 'field', 'flag', 'parseFilesView', 'parseFileContent', 'parseSetupBackups'],
   { ContractError: contracts.ContractError });
 const addons = pureDecoders('ServerAddOnsPanel.tsx', ['object', 'string', 'boolean', 'parseAddOns'], { ContractError: contracts.ContractError });
+const readiness = pureDecoders('SharedWorldReadinessPanel.tsx', ['parseRestoreStatus'], { normalizedDirectIpHttpsEndpoint });
+const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
 const get = (state, path) => {
   const response = routeFixture(state, { method: 'GET', path });
   assert.equal(response?.status, 200, path);
@@ -114,6 +120,30 @@ test('primary Friend tabs decode with current contracts', () => {
   contracts.parseFriendSnapshot(routeFixture(state, { method: 'POST', path: '/api/local/friend/poll' }).body);
 });
 
+test('saved-connection Friend chat sync preserves room identity and passes the actual managed-room decoder', () => {
+  const state = createFixtureState('friend-connected');
+  for (const profileId of [fixtureIds.primary, fixtureIds.secondary]) {
+    const base = `/api/local/friend/connections/${fixtureIds.connection}/servers/${profileId}/chat`;
+    const response = routeFixture(state, { method: 'POST', path: `${base}/sync` });
+    assert.equal(response.status, 200);
+    assert.equal(response.deliberateFailure, undefined);
+    const room = chat.parseManagedChatRoom(response.body);
+    assert.equal(room.ok, true); assert.equal(room.code, 'ChatSynced');
+    assert.equal(room.hostId, fixtureIds.host); assert.equal(room.profileId, profileId);
+    assert.equal(room.entries[0].profileId, profileId); assert.equal(room.members, null);
+    assert.equal(chat.parseManagedChatRoom(get(state, base)).profileId, profileId);
+    response.body.entries[0].text = 'Changed response';
+    assert.equal(chat.parseManagedChatRoom(routeFixture(state, { method: 'POST', path: `${base}/sync` }).body).entries[0].text,
+      'Ready for the next session?', 'repeated sync returns isolated fixture data');
+    assert.equal(routeFixture(state, { method: 'POST', path: `${base}/unreviewed-write` }).status, 503);
+  }
+  const legacy = routeFixture(state, { method: 'POST', path: `/api/local/friend/${fixtureIds.primary}/chat/sync` });
+  assert.equal(chat.parseManagedChatRoom(legacy.body).profileId, fixtureIds.primary);
+  assert.equal(routeFixture(state, { method: 'POST', path: `/api/local/profiles/${fixtureIds.primary}/chat/sync` }).status, 503);
+  assert.throws(() => chat.parseManagedChatRoom({ ...legacy.body, pending: [{ id: 'draft', text: 'Hello', submitted: 'false' }] }),
+    /invalid delivery state/, 'the actual strict decoder still rejects malformed queue state');
+});
+
 test('Files and add-ons decode actual current inline contracts', () => {
   const state = createFixtureState('host-ready');
   const base = `/api/local/profiles/${fixtureIds.primary}`;
@@ -162,7 +192,95 @@ test('Host and Friend shared-save primary views pass actual inline decoders', ()
   shared.parseRecoveryStatus(get(friend, `${friendBase}/recovery`));
   shared.parseSharingView(routeFixture(friend, { method: 'POST', path: `${friendBase}/sharing/check` }).body);
   const consent = routeFixture(friend, { method: 'PUT', path: `${friendBase}/consent`, body: { enabled: true } });
-  contracts.parseBasicResult(consent.body); shared.parseFriendSharedWorldStatus(consent.body.status);
+  const decodedConsent = shared.parseFriendResult(consent.body);
+  assert.equal(decodedConsent.ok, true); assert.equal(decodedConsent.status.consented, true);
+});
+
+test('ordinary Friend fixtures have no shared-world lineage while shared scenarios retain their signed roster', () => {
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world`;
+  for (const scenario of ['friend-connected', 'friend-offline', 'friend-disabled']) {
+    const decoded = shared.parseFriendSharedWorldStatus(get(createFixtureState(scenario), path));
+    assert.equal(decoded.rosterRevision, null, scenario);
+    assert.equal(decoded.trust, 'Unverified', scenario);
+    assert.equal(decoded.hostVersion, null, scenario);
+    assert.equal(decoded.thisPcVersion, null, scenario);
+  }
+  const sharedStatus = shared.parseFriendSharedWorldStatus(get(createFixtureState('friend-shared'), path));
+  assert.equal(sharedStatus.rosterRevision, 1);
+  assert.equal(sharedStatus.trust, 'VerifiedSignedRoster');
+});
+
+test('verified-copy and Receiving landings decode without creating signed Host or Start authority', () => {
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world`;
+  for (const scenario of ['friend-shared-verified-offline', 'friend-shared-receiving-offline']) {
+    const state = createFixtureState(scenario);
+    const status = shared.parseFriendSharedWorldStatus(get(state, path));
+    assert.equal(status.consented, true);
+    assert.equal(status.hostVersion, 5);
+    assert.equal(status.rosterRevision, 1);
+    assert.equal(status.trust, 'VerifiedSignedRoster');
+    assert.equal(state.friend.state, 'Connected');
+    assert.equal(state.friend.profiles[0].state, 'Offline');
+    const recovery = shared.parseRecoveryStatus(get(state, `${path}/recovery`));
+    assert.equal(recovery.state, 'NoOffer');
+    for (const key of ['authorityHeadHash', 'candidateAddress', 'candidateDeviceId', 'proposalHash'])
+      assert.equal(recovery[key], null, `${scenario} does not invent ${key}`);
+    const restore = get(state, `${path}/handoff/restore`);
+    const decodedRestore = readiness.parseRestoreStatus(restore);
+    assert.equal(decodedRestore.staged, false);
+    assert.equal(decodedRestore.restored, false);
+    assert.equal(decodedRestore.readyForManualStart, false);
+    assert.equal(successor.parseSharedSuccessorIdentity(restore), null);
+    if (scenario.includes('verified')) {
+      assert.equal(status.thisPcVersion, 5);
+      assert.equal(status.state, 'Ready');
+      assert.equal(status.transferPhase, null);
+      assert.equal(status.receiptConfirmed, true);
+      assert.equal(status.receivedBytes, status.totalBytes);
+      assert.ok(status.receivedUtc);
+    } else {
+      assert.equal(status.thisPcVersion, null);
+      assert.equal(status.state, 'Receiving');
+      assert.equal(status.transferPhase, 'Receiving');
+      assert.equal(status.receivedBytes, 1048576);
+      assert.equal(status.totalBytes, 4194304);
+      assert.equal(status.receivedUtc, null);
+      assert.equal(status.receiptConfirmed, null);
+    }
+    const pull = routeFixture(state, { method: 'POST', path: `${path}/pull` });
+    assert.equal(pull.status, 503, 'landing capture cannot silently trigger a real transfer');
+  }
+});
+
+test('layout visibility excludes closed disclosure bodies while retaining native summaries and open content', () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let helper;
+  const visit = node => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'concealedByClosedDetails') helper = node.getText(ast);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast); assert.ok(helper, 'actual browser layout helper exists');
+  const concealed = runInNewContext(`${helper}\n;concealedByClosedDetails`);
+  const node = (tagName, parentElement = null, open = false) => {
+    const el = { tagName, parentElement, open, children: [], contains(other) {
+      for (let current = other; current; current = current.parentElement) if (current === this) return true;
+      return false;
+    } };
+    parentElement?.children.push(el); return el;
+  };
+  const outer = node('DETAILS'), summary = node('SUMMARY', outer), summaryIcon = node('SPAN', summary);
+  const body = node('DIV', outer), clearActivity = node('BUTTON', body);
+  const inner = node('DETAILS', body, true), innerSummary = node('SUMMARY', inner), fileButton = node('BUTTON', inner);
+  assert.equal(concealed(outer), false); assert.equal(concealed(summary), false); assert.equal(concealed(summaryIcon), false);
+  for (const el of [clearActivity, innerSummary, fileButton]) assert.equal(concealed(el), true);
+  outer.open = true;
+  for (const el of [clearActivity, innerSummary, fileButton]) assert.equal(concealed(el), false);
+  inner.open = false;
+  assert.equal(concealed(innerSummary), false); assert.equal(concealed(fileButton), true);
+  const secondSummary = node('SUMMARY', inner);
+  assert.equal(concealed(secondSummary), true, 'only the first direct summary is exposed by a closed native disclosure');
+  assert.equal(concealed(node('BUTTON')), false, 'a genuinely visible clipped control remains eligible for checking');
 });
 
 test('draft revision storage never crosses fixture states', () => {
@@ -236,6 +354,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     ...['access', 'stop', 'network', 'diagnostics', 'advanced'].map(id => `host-pc-${id}`),
     'host-first-use', 'host-compare-all',
     ...['play', 'chat', 'logs', 'shared-saves', 'network', 'connection', 'pairing'].map(id => `join-${id}`),
+    'join-shared-verified-copy', 'join-shared-receiving',
     'join-first-pairing', 'join-permitted-controls', 'join-permitted-start', 'attention-issues', 'attention-history',
     ...['appearance', 'notifications', 'windows', 'updates', 'shortcuts'].map(id => `settings-${id}`),
     'dialog-server-tools', 'dialog-managed-sharing-host', 'dialog-managed-sharing-friend', 'join-consent', 'dialog-save-consent',
@@ -248,12 +367,31 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     assert.ok(fixtureScenarios.includes(plan.testCase.scenario), `known fixture ${plan.testCase.scenario}`);
     assert.ok(plan.testCase.screen, `${plan.testCase.id} asserts an actual screen`);
   }
+  const history = plans.find(plan => plan.testCase.id === 'attention-history').testCase;
+  assert.equal(history.action, 'history'); assert.equal(history.screen.role, 'region'); assert.equal(history.screen.name, 'Activity history');
+  for (const id of ['join-shared-saves', 'join-consent']) {
+    const screen = plans.find(plan => plan.testCase.id === id).testCase.screen;
+    assert.equal(screen.role, 'region');
+    assert.equal(screen.name, 'Next shared-save action', `${id} targets the actual task card after Shared copy polish`);
+  }
   for (const id of captures) {
     const variants = plans.filter(plan => plan.testCase.id === id).map(plan => plan.variant);
     assert.ok(variants.some(v => v.theme === 'dark' && v.viewport.width >= 1000), `${id} dark desktop`);
     assert.ok(variants.some(v => v.theme === 'light' && v.viewport.width <= 390), `${id} light narrow`);
   }
   assert.ok(plans.some(plan => plan.variant.scale === 150), 'large text coverage is retained');
+  for (const id of ['tooltip-hover', 'tooltip-keyboard'])
+    assert.ok(plans.some(plan => plan.testCase.id === id && plan.variant.scale === 150 && plan.variant.viewport.width === 390),
+      `${id} checks anchored tails at narrow 150% text`);
+  for (const [id, action, role, name] of [
+    ['join-shared-verified-copy', 'shared-verified-copy', 'heading', 'Prepare hosting on this PC'],
+    ['join-shared-receiving', 'shared-receiving', 'region', 'Save transfer progress']
+  ]) {
+    const screen = plans.find(plan => plan.testCase.id === id).testCase;
+    assert.equal(screen.action, action);
+    assert.equal(screen.screen.role, role);
+    assert.equal(screen.screen.name, name);
+  }
 });
 
 test('hosted workflow pins dependencies and runs source-only checks before rendering', () => {

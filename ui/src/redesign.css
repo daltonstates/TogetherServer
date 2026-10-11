@@ -75,7 +75,8 @@
 
 body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .shell { font-family: 'Segoe UI', system-ui, sans-serif; }
-.topbar { background: var(--color-topbar); border-color: var(--color-border-subtle); box-shadow: none; }
+.app-shell .topbar { background: var(--color-topbar); border-color: var(--color-border-subtle); box-shadow: none; }
+.app-shell .topbar .brand strong { color: var(--color-text); }
 .brand-mark { background: var(--color-accent); color: var(--color-accent-ink); box-shadow: none; border-radius: 7px; }
 .brand small { color: var(--color-text-muted); }
 .topbar, .status-strip { flex-shrink: 0; }
@@ -154,7 +155,7 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 40px; max-width: 100%; padding: 9px 13px; border: 1px solid var(--color-accent);
   border-radius: 8px; background: var(--color-accent); color: var(--color-accent-ink);
-  font-weight: 500; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+  font-weight: 500; line-height: 1.4; white-space: normal; overflow-wrap: normal; word-break: normal;
   box-shadow: none; transition: background-color .12s, border-color .12s;
 }
 .ui-button:hover:not(:disabled) { background: var(--color-accent-hover); border-color: var(--color-accent-hover); filter: none; }
@@ -202,6 +203,7 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 }
 .settings-dialog::backdrop, .modal-dialog::backdrop, .command-palette::backdrop { background: var(--color-overlay); }
 .settings-dialog-header, .settings-dialog-footer { background: var(--color-surface); border-color: var(--color-border-subtle); padding: 16px 20px; }
+.settings-dialog-header { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: start; }
 .settings-dialog-heading h2 { font-size: 1.25rem; font-weight: 600; }
 .settings-dialog-heading p { font-size: .875rem; line-height: 1.5; white-space: pre-line; }
 .settings-dialog-body { padding: 20px; }
@@ -239,7 +241,7 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .section-sidebar-title { margin: 14px 7px 5px; color: var(--color-text-muted); font-size: .75rem; font-weight: 600; letter-spacing: .04em; }
 .section-sidebar-links { display: grid; gap: 3px; }
 .section-sidebar-links .ui-button { width: 100%; }
-.section-mobile-picker { display: none; }
+.app-shell .context-sidebar .section-mobile-picker { display: none; }
 .context-picker { position: relative; min-width: 0; }
 .context-picker-trigger {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -264,10 +266,20 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .host-focused-detail, .host-focused-detail .server-detail, .server-detail-pane { min-width: 0; width: 100%; }
 .app-shell .host-focused-detail .server-detail { display: block; }
 .app-shell .server-detail-card { margin: 0; }
+.app-shell :is(.server-log-viewer, .server-log-console, .server-log-empty) { background: var(--color-field); }
+.app-shell .server-log-console { scrollbar-color: var(--color-border-strong) var(--color-field); }
+.app-shell .server-log-line { min-width: 0; }
+.app-shell .server-log-line.severity-error { background: var(--color-danger-bg); }
+.app-shell .server-log-actions { flex-wrap: wrap; max-width: 100%; min-width: 0; }
+.app-shell .server-log-actions .ui-button { flex: 0 0 auto; overflow-wrap: normal; word-break: normal; white-space: nowrap; }
 .join-host-caption { display: flex; align-items: center; gap: 7px; color: var(--color-text-muted); font-size: .85rem; }
 .server-tools-menu.actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; }
-.server-tools-menu > .ui-button { width: 100%; justify-content: flex-start; background: transparent; border-color: transparent; }
-.server-tools-menu > .ui-button:hover { background: var(--color-surface-raised); border-color: var(--color-border); }
+.app-shell .server-tools-menu > .ui-button {
+  width: 100%; min-height: 44px; justify-content: flex-start; text-align: left;
+  background: transparent; border-color: transparent;
+}
+.app-shell .server-tools-menu > .ui-button:hover { background: var(--color-surface-raised); border-color: var(--color-border); }
+.app-shell .server-command-header .server-actions .icon-button { width: 44px; min-width: 44px; flex: 0 0 44px; padding: 8px; }
 .app-shell .context-content .friend-server-list { display: grid; margin: 0; padding: 0; }
 .app-shell .context-sidebar .context-picker-trigger.ui-button {
   display: flex; justify-content: space-between; width: 100%; min-height: 40px;
@@ -291,7 +303,7 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 @media (max-width: 700px) {
   .app-shell .context-workspace { grid-template-columns: minmax(0, 1fr); }
   .app-shell .context-sidebar { position: static; padding: 10px; }
-  .section-mobile-picker { display: grid; gap: 6px; }
+  .app-shell .context-sidebar .section-mobile-picker { display: grid; gap: 6px; }
   .section-mobile-picker .ui-select { width: 100%; }
   .app-shell .context-sidebar .section-sidebar-links { display: none; }
   .context-picker-popover { width: 100%; max-height: 55dvh; }
@@ -319,6 +331,16 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   .app-shell :is(.context-sidebar, .workspace-sidebar):has(.sidebar-section-picker) nav { display: none; }
   .panel { padding: 16px; }
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .staging-banner { max-height: min(180px, 26dvh); overflow-y: auto; }
+  .app-shell .next-action { flex-flow: column nowrap; align-items: stretch; }
+  .app-shell .next-action > :is(span, div) { flex: none; width: 100%; min-width: 0; }
+  .app-shell .server-file-row { flex-flow: column nowrap; align-items: stretch; }
+  .app-shell .server-file-row > div { flex: none; width: 100%; min-width: 0; }
+  .app-shell .server-file-row .actions { display: flex; flex-wrap: wrap; }
+  .app-shell .server-file-row .actions .ui-button { flex: 1 1 10rem; min-width: 0; }
+  .app-shell .server-files-panel > * { min-width: 0; }
+  .app-shell .section-heading { flex-wrap: wrap; gap: 8px 12px; align-items: flex-start; }
+  .app-shell .section-heading > :is(h2, h3, h4, div) { flex: none; width: 100%; min-width: 0; }
   .settings-dialog-header, .settings-dialog-body, .settings-dialog-footer { padding: 16px; }
   .settings-dialog-header { flex-wrap: wrap; }
   .settings-dialog .settings-dialog-close { margin-inline-start: auto; }
@@ -331,6 +353,11 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   .settings-dialog { width: calc(100vw - 16px); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .settings-dialog-heading h2 { font-size: 1.125rem; }
   .settings-dialog .ui-button { min-height: 44px; }
+  .app-shell .server-command-header .server-actions { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; }
+  .app-shell .server-command-header .server-actions .server-primary-action { grid-column: 1 / -1; width: 100%; }
+  .app-shell .server-command-header .server-actions .server-invite-button { grid-column: 1; }
+  .app-shell .server-command-header .server-actions .icon-button { grid-column: 2; }
+  .app-shell .server-command-header .server-actions .ui-button { min-width: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ui-button, .settings-card.ui-button { transition: none; }

@@ -15,7 +15,7 @@ const { fileURLToPath } = await import('node:url');
 const { createServer } = await import('node:http');
 const { createRequire } = await import('node:module');
 const { createHash } = await import('node:crypto');
-const { createFixtureState, routeFixture, fixtureNow } = await import('./ui-redesign-fixtures.mjs');
+const { createFixtureState, routeFixture, fixtureNow, fixtureIds } = await import('./ui-redesign-fixtures.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'local-data/ui-redesign-visual-review');
 await mkdir(output, { recursive: true });
@@ -47,7 +47,7 @@ const pcSections = [
 ];
 const joinSections = [
   ['play', 'Play', heading('Play')], ['chat', 'Chat', heading('Server chat')],
-  ['logs', 'Logs', region('Server logs')], ['shared-saves', 'Shared saves', heading('Get a private save on this PC')],
+  ['logs', 'Logs', region('Server logs')], ['shared-saves', 'Shared saves', region('Next shared-save action')],
   ['network', 'Connection help', heading('Connection help')],
   ['connection', 'Connection settings', heading('Connection settings')],
   ['pairing', 'Add a Host', heading('Add another Host')],
@@ -63,11 +63,15 @@ const cases = [
   { id: 'host-first-use', scenario: 'host-first-use', workspace: 'Host', screen: heading('Host or join a server') },
   { id: 'host-compare-all', scenario: 'host-multi', workspace: 'Host', action: 'compare', screen: { role: 'dialog', name: 'All servers' } },
   ...joinSections.map(([id, label, screen]) => ({ id: `join-${id}`, scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', id, label], screen })),
+  { id: 'join-shared-verified-copy', scenario: 'friend-shared-verified-offline', workspace: 'Join',
+    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: heading('Prepare hosting on this PC'), action: 'shared-verified-copy' },
+  { id: 'join-shared-receiving', scenario: 'friend-shared-receiving-offline', workspace: 'Join',
+    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: 'shared-receiving' },
   { id: 'join-first-pairing', scenario: 'friend-pairing', workspace: 'Join', screen: heading('Join a server') },
   { id: 'join-permitted-controls', scenario: 'friend-permitted', workspace: 'Join', section: ['Join sections', 'connection', 'Connection settings'], screen: heading('Connection settings'), action: 'permitted-controls' },
   { id: 'join-permitted-start', scenario: 'friend-offline', workspace: 'Join', section: ['Join sections', 'play', 'Play'], screen: heading('Play'), action: 'permitted-start' },
   { id: 'attention-issues', scenario: 'host-attention', workspace: 'Attention', screen: heading('Attention Center') },
-  { id: 'attention-history', scenario: 'host-attention', workspace: 'Attention', screen: { css: '[aria-label="Activity history"] h3', text: 'Activity history' }, action: 'history' },
+  { id: 'attention-history', scenario: 'host-attention', workspace: 'Attention', screen: region('Activity history'), action: 'history' },
   ...appSections.map(([id, label, title]) => ({ id: `settings-${id}`, scenario: 'host-ready', workspace: 'App Settings', section: ['App settings sections', id, label], screen: heading(title) })),
 ];
 const dialogs = [
@@ -87,7 +91,7 @@ const dialogs = [
     screen: heading(game === 'Valheim' ? 'Choose a world' : 'Name this server'),
   })),
   { id: 'dialog-managed-sharing-host', scenario: 'host-shared', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'], action: 'manage-sharing', screen: { role: 'dialog', name: 'Manage sharing' } },
-  { id: 'join-consent', scenario: 'friend-shared', workspace: 'Join', section: ['Join sections', 'shared-saves', 'Shared saves'], action: 'consent', screen: heading('Get a private save on this PC') },
+  { id: 'join-consent', scenario: 'friend-shared', workspace: 'Join', section: ['Join sections', 'shared-saves', 'Shared saves'], action: 'consent', screen: region('Next shared-save action') },
   { id: 'dialog-save-consent', scenario: 'friend-shared', workspace: 'Join', section: ['Join sections', 'shared-saves', 'Shared saves'], button: 'Host this save', screen: { role: 'dialog', name: 'Host this save' } },
   { id: 'dialog-managed-sharing-friend', scenario: 'friend-shared', workspace: 'Join', section: ['Join sections', 'shared-saves', 'Shared saves'], action: 'manage-sharing', screen: { role: 'dialog', name: 'Manage sharing' } },
   { id: 'tooltip-hover', scenario: 'host-ready', workspace: 'Host', action: 'tooltip-hover', screen: { role: 'tooltip', name: /.+/ } },
@@ -98,7 +102,8 @@ const variants = [
   { id: 'lightnarrow', viewport: { width: 390, height: 844 }, theme: 'light', scale: 100 },
 ];
 const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups', 'host-files', 'host-pc-access', 'host-pc-stop',
-  'host-first-use', 'join-play', 'join-shared-saves', 'join-first-pairing', 'attention-issues', 'settings-appearance']);
+  'host-first-use', 'join-play', 'join-shared-saves', 'join-first-pairing', 'attention-issues', 'settings-appearance',
+  'tooltip-hover', 'tooltip-keyboard']);
 const plans = [...cases, ...dialogs].flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
@@ -130,6 +135,39 @@ async function performActions(page, testCase, record) {
   if (testCase.section) await section(page, testCase.section, record);
   if (testCase.button) await click(page, new RegExp(testCase.button), record, false);
   switch (testCase.action) {
+    case 'shared-verified-copy': case 'shared-receiving': {
+      const next = await visible(page.getByRole('region', { name: 'Next shared-save action', exact: true }));
+      const verified = testCase.action === 'shared-verified-copy';
+      if (testCase.action === 'shared-verified-copy') {
+        await visible(next.getByRole('heading', { name: 'Prepare hosting on this PC', exact: true }));
+        await visible(page.getByText('Verified save copy 5 on this PC. Copy possession does not grant hosting authority or prove readiness.', { exact: true }));
+      } else {
+        await visible(next.getByRole('heading', { name: 'Receiving the save copy', exact: true }));
+        const progress = await visible(page.getByRole('region', { name: 'Save transfer progress', exact: true }));
+        await visible(progress.getByText(/^Receiving copy/));
+        const bytes = await visible(progress.getByRole('progressbar', { name: 'Save bytes received', exact: true }));
+        const values = await bytes.evaluate(el => ({ value: el.value, max: el.max }));
+        if (values.value !== 1048576 || values.max !== 4194304) throw new Error('Receiving byte progress differs from the strict fixture');
+      }
+      const primary = next.locator('button:not(.secondary):not(.text-button)');
+      if (verified) {
+        if (await primary.count() !== 1 || (await primary.textContent()).trim() !== 'Host this save' || !await primary.isEnabled())
+          throw new Error('Verified-copy landing must expose only the enabled primary action Host this save');
+      } else {
+        if (await primary.count() > 1) throw new Error('Receiving progress must not compete with multiple primary actions');
+        const redundantGet = page.getByRole('button', { name: 'Get latest save', exact: true });
+        if (await redundantGet.isVisible() && await redundantGet.isEnabled())
+          throw new Error('Receiving progress must disable a redundant Get latest save request');
+        await visible(page.getByText('Get latest save is unavailable while this copy is being received, verified or acknowledged.', { exact: true }));
+      }
+      const manage = await visible(next.getByRole('button', { name: 'Manage sharing', exact: true }));
+      if (!await manage.isEnabled()) throw new Error('Shared-save landing must keep Manage sharing reachable');
+      if (await page.getByRole('button', { name: 'Review Start server', exact: true }).count())
+        throw new Error('Synthetic copy possession must never establish Start authority');
+      record.assertions.push(verified ? 'Synthetic verified copy exposes one primary Host this save and secondary Manage sharing; no signed Host or Start authority created' :
+        'Synthetic Receiving byte progress leads with at most one primary, redundant receiving blocked, and Manage sharing reachable; no signed Host or Start authority created');
+      break;
+    }
     case 'compare': await click(page, 'Compare all servers', record); break;
     case 'server-tools': await click(page, 'More server actions', record); break;
     case 'setup': case 'setup-game': {
@@ -152,8 +190,18 @@ async function performActions(page, testCase, record) {
     case 'consent': {
       const consent = await visible(page.getByRole('checkbox', { name: 'Allow saves on this PC', exact: true }));
       record.actions.push({ action: 'check', name: 'Allow saves on this PC', fixtureOnly: true });
-      await consent.check();
+      if (await consent.isChecked()) throw new Error('Consent fixture must start with receiving disabled');
+      const responsePromise = page.waitForResponse(response => response.request().method() === 'PUT' &&
+        new URL(response.url()).pathname === `/api/local/friend/${fixtureIds.primary}/shared-world/consent`);
+      await consent.click();
+      const response = await responsePromise;
+      const body = await response.json();
+      if (response.status() !== 200 || body.ok !== true || body.status?.consented !== true)
+        throw new Error('Synthetic consent response did not confirm receiving enabled');
       await page.waitForFunction(() => [...document.querySelectorAll('input[type="checkbox"]')].some(el => el.checked && el.closest('label')?.textContent.includes('Allow saves on this PC')));
+      await visible(page.getByRole('region', { name: 'Next shared-save action', exact: true })
+        .getByRole('heading', { name: 'Get the save before preparing hosting', exact: true }));
+      record.assertions.push('Synthetic consent completed successfully and the controlled checkbox committed checked state');
       break;
     }
     case 'permitted-controls':
@@ -166,7 +214,16 @@ async function performActions(page, testCase, record) {
       if (!await start.isEnabled()) throw new Error('Permitted synthetic Start button is disabled');
       record.assertions.push('Permitted Start control enabled; no dispatch requested'); break;
     }
-    case 'history': await page.locator('[aria-label="Activity history"]').scrollIntoViewIfNeeded(); break;
+    case 'history': {
+      const disclosure = page.locator('.attention-history-disclosure');
+      const summary = await visible(disclosure.locator(':scope > summary').filter({ hasText: 'Activity history' }));
+      record.actions.push({ action: 'open-disclosure', name: 'Activity history' });
+      if (!await disclosure.evaluate(el => el.open)) await summary.click();
+      await visible(page.getByRole('region', { name: 'Activity history', exact: true }).getByRole('heading', { name: /^Activity history/ }));
+      await visible(page.getByRole('searchbox', { name: 'Search attention', exact: true }));
+      record.assertions.push('Activity history disclosure opened with its genuine history heading and search filter visible');
+      break;
+    }
     case 'tooltip-hover': case 'tooltip-keyboard': {
       const target = page.locator('.notifications-menu summary, .notification-menu summary, summary[aria-label^="Notifications"]').first();
       await visible(target);
@@ -213,13 +270,21 @@ async function focusDetails(page) {
 }
 async function layoutFindings(page) {
   return page.evaluate(() => {
+    function concealedByClosedDetails(el) {
+      for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName !== 'DETAILS' || ancestor.open) continue;
+        const summary = [...ancestor.children].find(child => child.tagName === 'SUMMARY');
+        if (!summary?.contains(el)) return true;
+      }
+      return false;
+    }
     const visible = el => {
       const r = el.getBoundingClientRect(), style = getComputedStyle(el);
-      return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !el.closest('[hidden], [inert]');
+      return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !el.closest('[hidden], [inert]') && !concealedByClosedDetails(el);
     };
     const findings = [];
     if (document.documentElement.scrollWidth > innerWidth + 2) findings.push({ kind: 'document-horizontal-overflow', width: document.documentElement.scrollWidth, viewport: innerWidth });
-    for (const el of document.querySelectorAll('button,input,select,textarea,[role="tooltip"],dialog[open],h1,h2,h3,h4')) {
+    for (const el of document.querySelectorAll('button,input,select,textarea,summary,[role="tooltip"],dialog[open],h1,h2,h3,h4')) {
       if (!visible(el) || el.closest('.sr-only')) continue;
       const r = el.getBoundingClientRect(), label = (el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 120);
       if (r.left < -2 || r.right > innerWidth + 2) findings.push({ kind: 'element-outside-horizontal-viewport', tag: el.tagName, label, bounds: r.toJSON() });
@@ -339,6 +404,16 @@ try {
       if (pending.size) throw new Error('Synthetic API responses still pending at capture');
       await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
       await visible(screen);
+      // Workspace navigation can retain a focus tooltip even after hover exits.
+      // Escape dismisses it through the UI; never send Escape into an open dialog.
+      if (!hasDialog && !testCase.action?.startsWith('tooltip')) {
+        await page.mouse.move(0, 0);
+        if (await page.getByRole('tooltip').count()) {
+          await page.keyboard.press('Escape');
+          await page.getByRole('tooltip').waitFor({ state: 'hidden', timeout: 8000 });
+          record.actions.push({ action: 'dismiss-page-tooltip', method: 'hover-exit-and-Escape' });
+        }
+      }
       record.screenBounds = await screen.boundingBox();
       if (!record.screenBounds || record.screenBounds.y >= variant.viewport.height || record.screenBounds.y + record.screenBounds.height <= 0) {
         throw new Error('The named screen is outside the capture viewport');
@@ -390,5 +465,5 @@ try {
   manifest.skippedCases = manifest.inventory.filter(entry => !attempted.has(entry.id)).map(entry => ({ ...entry, status: 'skipped', reason: 'Run ended before this case; see fatalErrors. No screen assertion or capture performed.' }));
   manifest.status = manifest.fatalErrors.length || manifest.summary.failed || manifest.summary.skipped ? 'failed' : manifest.summary.layoutFindings ? 'captured-with-layout-findings' : 'captured-awaiting-visual-inspection';
   await saveManifest();
-  if (manifest.status === 'failed') process.exitCode = 1;
+  if (manifest.status === 'failed' || manifest.summary.layoutFindings > 0) process.exitCode = 1;
 }
