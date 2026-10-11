@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { GameSettingsPanel } from './GameSettingsPanel'
 import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft } from './protectedUiDrafts'
@@ -55,7 +55,6 @@ it('previews exact lines, sends only reviewed values, refreshes canonical state,
     return json(saved ? { ...baseView, sha256: afterSha, settings: { ...values, difficulty: 'hard' }, canUndo: true } : baseView)
   })
   vi.stubGlobal('fetch', fetcher)
-  const confirm = vi.spyOn(window, 'confirm')
   render(<GameSettingsPanel {...props} />)
   fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
   expect(screen.queryByRole('button', { name: 'Save with checkpoint' })).not.toBeInTheDocument()
@@ -72,7 +71,7 @@ it('previews exact lines, sends only reviewed values, refreshes canonical state,
   await waitFor(() => expect(screen.getByLabelText('Difficulty')).toHaveValue('normal'))
   expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/game-settings/undo'), expect.objectContaining({
     method: 'POST', body: JSON.stringify({ expectedSha256: afterSha }) }))
-  expect(confirm).not.toHaveBeenCalled()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
 
 it('invalidates a review after another edit and blocks Save if the server resumes', async () => {
@@ -183,7 +182,6 @@ it('shows malformed contracts as retryable errors and keeps unsupported games ou
 it('searches descriptions without losing hidden edits and allows canceling a dirty reload', async () => {
   const fetcher = vi.fn(async () => json(baseView))
   vi.stubGlobal('fetch', fetcher)
-  vi.spyOn(window, 'confirm').mockReturnValue(false)
   render(<GameSettingsPanel {...props} />)
   fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
   fireEvent.change(screen.getByLabelText('Search game settings'), { target: { value: 'capacity' } })
@@ -192,8 +190,145 @@ it('searches descriptions without losing hidden edits and allows canceling a dir
   fireEvent.change(screen.getByLabelText('Search game settings'), { target: { value: '' } })
   expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
   fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Reload game settings?' })
+  expect(dialog).toHaveTextContent('Reloading replaces unsaved settings and player lists. Keep their protected drafts and reload?')
+  expect(fetcher).toHaveBeenCalledOnce()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
   expect(fetcher).toHaveBeenCalledOnce()
+})
+
+it('keeps the protected settings draft before an accepted reload', async () => {
+  const fetcher = vi.fn(async () => json(baseView))
+  vi.stubGlobal('fetch', fetcher)
+  render(<GameSettingsPanel {...props} />)
+  fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Reload game settings?' })
+  expect(fetcher).toHaveBeenCalledOnce()
+  fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep drafts and reload' }))
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+  expect(saveProtectedDraft).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'settings', profileId: props.profileId }),
+    expect.stringContaining('"difficulty":"hard"'), expect.any(Number))
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('normal')
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+
+it('declines settings discard without changing the draft, then discards only after acceptance', async () => {
+  const fetcher = vi.fn(async () => json(baseView))
+  vi.stubGlobal('fetch', fetcher)
+  render(<GameSettingsPanel {...props} />)
+  fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved settings' }))
+  let dialog = await screen.findByRole('dialog', { name: 'Discard unsaved settings?' })
+  expect(dialog).toHaveTextContent('Discard these unsaved settings? The current saved settings stay unchanged.')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  expect(clearProtectedDraft).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved settings' }))
+  dialog = await screen.findByRole('dialog', { name: 'Discard unsaved settings?' })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Discard settings' }))
+  await waitFor(() => expect(screen.getByLabelText('Difficulty')).toHaveValue('normal'))
+  await waitFor(() => expect(clearProtectedDraft).toHaveBeenCalledOnce())
+  expect(fetcher).toHaveBeenCalledOnce()
+})
+
+it('rejects an accepted settings reload when recovery becomes blocked during confirmation', async () => {
+  const fetcher = vi.fn(async () => json(baseView))
+  vi.stubGlobal('fetch', fetcher)
+  const rendered = render(<GameSettingsPanel {...props} />)
+  fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Reload game settings?' })
+  rendered.rerender(<GameSettingsPanel {...props} recoveryBlocked />)
+  expect(screen.getByRole('dialog')).toBe(dialog)
+  rendered.rerender(<GameSettingsPanel {...props} />)
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep drafts and reload' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  expect(fetcher).toHaveBeenCalledOnce()
+})
+
+it.each([false, true])('does not reload captured lists after child content changes during the parent decision (already dirty: %s)', async alreadyDirty => {
+  const listView = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'MinecraftJava', key: 'allow-list',
+    label: 'Allowed players', sha256: beforeSha, entries: [], canUndo: false }
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/allow-list') ? listView : {
+    ...baseView, lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] }))
+  vi.stubGlobal('fetch', fetcher)
+  render(<GameSettingsPanel {...props} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage allowed players' }))
+  await screen.findByLabelText('Java player name')
+  if (alreadyDirty) fireEvent.change(screen.getByLabelText('Java player name'), { target: { value: 'OldPlayer' } })
+  fireEvent.change(screen.getByLabelText('Difficulty'), { target: { value: 'hard' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Reload game settings?' })
+  fireEvent.change(screen.getByLabelText('Java player name'), { target: { value: 'NewPlayer' } })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep drafts and reload' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  expect(screen.getByLabelText('Java player name')).toHaveValue('NewPlayer')
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('keeps an unchanged reload decision valid while a player-list draft finishes autosaving', async () => {
+  const listView = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'MinecraftJava', key: 'allow-list',
+    label: 'Allowed players', sha256: beforeSha, entries: [], canUndo: false }
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/allow-list') ? listView : {
+    ...baseView, lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] }))
+  vi.stubGlobal('fetch', fetcher)
+  let finishListSave: (() => void) | undefined
+  vi.mocked(saveProtectedDraft).mockImplementation((identity, text, revision) => identity.purpose === 'list'
+    ? new Promise(resolve => { finishListSave = () => resolve({ ok: true, text, revision: revision + 1, message: '' }) })
+    : Promise.resolve({ ok: true, text, revision: revision + 1, message: '' }))
+  render(<GameSettingsPanel {...props} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage allowed players' }))
+  fireEvent.change(await screen.findByLabelText('Java player name'), { target: { value: 'KeptPlayer' } })
+  fireEvent.change(screen.getByLabelText('Difficulty'), { target: { value: 'hard' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Reload game settings?' })
+  await waitFor(() => expect(finishListSave).toBeTypeOf('function'))
+  await act(async () => { finishListSave!() })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep drafts and reload' }))
+  await waitFor(() => expect(screen.getByLabelText('Difficulty')).toHaveValue('normal'))
+  expect(fetcher.mock.calls.filter(([input]) => String(input).endsWith('/game-settings'))).toHaveLength(2)
+  expect(vi.mocked(saveProtectedDraft).mock.calls.some(([identity, text]) => identity.purpose === 'list' && text.includes('KeptPlayer'))).toBe(true)
+})
+
+it('owns a persistent list confirmation and refuses stale collapsed-list decisions', async () => {
+  const listView = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'Valheim', key: 'permit-list',
+    label: 'Permitted players', sha256: beforeSha, entries: [], canUndo: false }
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/permit-list') ? listView : {
+    ...baseView, kind: 'Valheim', settings: null, sha256: null,
+    lists: [{ key: 'permit-list', label: 'Permitted players', available: true }] }))
+  vi.stubGlobal('fetch', fetcher)
+  render(<GameSettingsPanel {...props} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage permitted players' }))
+  fireEvent.change(await screen.findByLabelText('Platform user ID'), { target: { value: 'Steam_222' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload this list' }))
+  let dialog = await screen.findByRole('dialog', { name: 'Reload player list?' })
+  expect(dialog).toHaveTextContent('Reloading replaces this unsaved player list. Keep the protected draft and reload?')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(screen.getByLabelText('Platform user ID')).toHaveValue('Steam_222')
+  fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved list edits' }))
+  dialog = await screen.findByRole('dialog', { name: 'Discard player list edits?' })
+  expect(dialog).toHaveTextContent('Discard this unsaved player list and unfinished entries? The saved list stays unchanged.')
+  fireEvent.click(screen.getByRole('button', { name: 'Close list' }))
+  expect(screen.getByRole('dialog')).toBe(dialog)
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Discard list edits' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  fireEvent.click(screen.getByRole('button', { name: 'Manage permitted players' }))
+  expect(screen.getByLabelText('Platform user ID')).toHaveValue('Steam_222')
+  expect(clearProtectedDraft).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved list edits' }))
+  fireEvent.click(within(await screen.findByRole('dialog', { name: 'Discard player list edits?' })).getByRole('button', { name: 'Discard list edits' }))
+  await waitFor(() => expect(screen.getByLabelText('Platform user ID')).toHaveValue(''))
+  await waitFor(() => expect(clearProtectedDraft).toHaveBeenCalledOnce())
+  expect(fetcher).toHaveBeenCalledTimes(2)
 })
 
 it('keeps bulk paste in a reviewed local draft until the exact game-list preview is accepted', async () => {

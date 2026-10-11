@@ -1,5 +1,20 @@
 export type SharedGame = 'Valheim' | 'MinecraftJava' | 'MinecraftBedrock' | 'Factorio' | 'Terraria' | 'Fixture' | string
 
+// A projection supplied by the owning workspace from a verified signed decision
+// and a separate current game observation. Save receipt is never this evidence.
+export type SharedSignedHost = {
+  pcName: string
+  state: 'Preparing' | 'Offline' | 'Starting' | 'ObservedReady' | 'Unknown'
+  checkedUtc: string | null
+}
+
+export function sharedHostObservation(host?: SharedSignedHost, now = Date.now()): string {
+  if (!host) return 'Unknown · signed Host not checked'
+  const checked = host.checkedUtc === null ? NaN : Date.parse(host.checkedUtc)
+  if (!Number.isFinite(checked) || checked > now || now - checked > 45000) return 'Unknown · observation stale or unavailable'
+  return host.state === 'ObservedReady' ? 'Ready observed · game join unverified' : host.state
+}
+
 export type FutureHostFields = {
   gameName: string
   serverFileLabel: string

@@ -8,6 +8,7 @@ import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft, type DraftIdentity } from './protectedUiDrafts'
 import { Icon } from './Icon'
 import { successFeedbackMs } from './actionFeedback'
+import { useConfirmation } from './Confirmation'
 
 const messageLimit = 500
 const messageIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -276,6 +277,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   const lifetime = useChatLifetime()
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const actionPending = useRef(false)
   const syncScope = useMemo(() => ({ base, hostId, visible, supported }), [base, hostId, visible, supported])
   const [syncState, setSyncState] = useState<{
     scope: typeof syncScope; status: 'pending' | 'success' | 'error'; message: string
@@ -295,9 +297,60 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   const follow = useRef(true)
   const messages = useRef<HTMLDivElement>(null)
   const [lastReadId, setLastReadId] = useState(() => readLastMessage(scope))
-  const [noticeEdit, setNoticeEdit] = useState<{ base: string; text: string; revision: number } | null>(null)
+  const [noticeEdit, setNoticeEdit] = useState<{ base: string; text: string; expectedText: string; revision: number } | null>(null)
   const [noticeError, setNoticeError] = useState('')
   const editingNotice = noticeEdit?.base === base ? noticeEdit : null
+  const { confirm, confirmationDialog } = useConfirmation()
+  const noticeDirty = !!editingNotice && editingNotice.text !== editingNotice.expectedText
+  const queueDirty = !!queueEdit && queueEdit.text !== queueEdit.expectedText
+  const roomIdentity = useMemo(() => ({ base, hostId, roomHostId: room?.hostId }), [base, hostId, room?.hostId])
+  // Each edit object is an exact revision, including reopening or changing back
+  // to the same text. A review of one object never authorizes a later edit.
+  const guardSnapshot = { roomIdentity, roomOk: room?.ok,
+    noticeRevision: room?.notice?.revision, supported, visible,
+    noticeEdit, queueEdit, busy, syncing, text, working: draft.working, recovering: draft.recovering,
+    queueTarget: room?.pending.find(queued => queued.id === queueEdit?.id) }
+  const latestGuard = useRef(guardSnapshot)
+  useLayoutEffect(() => { latestGuard.current = guardSnapshot })
+  const reviewingEdits = useRef(false)
+  const flushComposer = draft.flush
+  const flushForNavigation = useCallback(async () => {
+    const target = latestGuard.current
+    const sameTarget = () => {
+      const actual = latestGuard.current
+      return !lifetime.current.signal.aborted && actual.roomIdentity === target.roomIdentity &&
+        actual.roomOk === target.roomOk && actual.noticeRevision === target.noticeRevision &&
+        actual.supported === target.supported && actual.visible === target.visible &&
+        actual.noticeEdit === target.noticeEdit && actual.queueEdit === target.queueEdit &&
+        actual.text === target.text && actual.recovering === target.recovering &&
+        !actual.busy && !actionPending.current && !actual.syncing && !syncRequest.current &&
+        actual.queueTarget?.text === target.queueTarget?.text &&
+        actual.queueTarget?.submitted === target.queueTarget?.submitted
+    }
+    if (!target.supported || reviewingEdits.current || !sameTarget()) return false
+    reviewingEdits.current = true
+    try {
+      // Persist only the composer. Never publish a notice, send a message, or
+      // save/cancel a queued message as a side effect of navigation.
+      if (!await flushComposer() || !sameTarget()) return false
+      const discardNotice = !!target.noticeEdit && target.noticeEdit.text !== target.noticeEdit.expectedText
+      const discardQueue = !!target.queueEdit && target.queueEdit.text !== target.queueEdit.expectedText
+      if (!discardNotice && !discardQueue) return true
+      const label = discardNotice && discardQueue ? 'notice and queued message' : discardNotice ? 'notice' : 'queued message'
+      const accepted = await confirm({ title: 'Discard unsaved chat edits?',
+        description: `Discard the unsaved ${label} edits to leave this chat? The published notice and queued messages stay as they are. Your unfinished message is kept on this PC.`,
+        confirmLabel: `Discard ${label} edits`, destructive: true })
+      if (!accepted || !sameTarget() || latestGuard.current.working) return false
+      if (discardNotice) { setNoticeEdit(null); setNoticeError('') }
+      if (discardQueue) { setQueueEdit(null); setQueueError('') }
+      // The caller may immediately recheck the registered guard before React
+      // commits these state updates. Publish the exact discarded revisions now.
+      latestGuard.current = { ...latestGuard.current,
+        noticeEdit: discardNotice ? null : target.noticeEdit,
+        queueEdit: discardQueue ? null : target.queueEdit }
+      return true
+    } finally { reviewingEdits.current = false }
+  }, [confirm, flushComposer, lifetime])
   const decodeRoom = useCallback((value: unknown, context?: string) => {
     const decoded = parseManagedChatRoom(value, context)
     if (decoded.profileId.toLowerCase() !== profileId.toLowerCase())
@@ -334,8 +387,9 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
     syncRequest.current = null
   }, [syncScope])
   useEffect(() => {
-    onDraftStateChange?.({ dirty: draft.dirty, saving: draft.working, recovering: draft.recovering, flush: draft.flush })
-  }, [draft.dirty, draft.working, draft.recovering, draft.flush, onDraftStateChange])
+    onDraftStateChange?.({ dirty: draft.dirty || noticeDirty || queueDirty,
+      saving: draft.working || busy || syncing, recovering: draft.recovering, flush: flushForNavigation })
+  }, [draft.dirty, draft.working, draft.recovering, noticeDirty, queueDirty, busy, syncing, flushForNavigation, onDraftStateChange])
   useEffect(() => () => {
     // A guarded transition can unmount before the final clean-state effect.
     // Remove this room's guard before the next keyed room registers its own.
@@ -370,7 +424,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   }
 
   async function syncNow() {
-    if (busy || !visible || !supported || syncRequest.current || lifetime.current.signal.aborted) return
+    if (busy || actionPending.current || !visible || !supported || syncRequest.current || lifetime.current.signal.aborted) return
     const request = new AbortController()
     syncRequest.current = request
     setSyncState({ scope: syncScope, status: 'pending', message: 'Syncing chat\u2026' })
@@ -397,8 +451,8 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
 
   async function send(event: React.FormEvent) {
     event.preventDefault()
-    if (busy || !draft.ready || !text.trim() || text.length > messageLimit) return
-    setBusy(true)
+    if (busy || actionPending.current || !draft.ready || !text.trim() || text.length > messageLimit) return
+    actionPending.current = true; setBusy(true)
     try {
       if (!await draft.flush()) {
         if (!lifetime.current.signal.aborted)
@@ -412,12 +466,12 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       if (next.ok) await draft.accepted(text)
       setError(next.ok ? '' : next.message)
     } catch (failure) { if (!lifetime.current.signal.aborted) setError(errorMessage(failure)) }
-    finally { if (!lifetime.current.signal.aborted) setBusy(false) }
+    finally { actionPending.current = false; if (!lifetime.current.signal.aborted) setBusy(false) }
   }
 
   async function changeQueued(id: string, expectedText: string, nextText: string | null) {
-    if (busy || host || (nextText !== null && (!nextText.trim() || nextText.length > messageLimit))) return
-    setBusy(true); setQueueError('')
+    if (busy || actionPending.current || host || (nextText !== null && (!nextText.trim() || nextText.length > messageLimit))) return
+    actionPending.current = true; setBusy(true); setQueueError('')
     try {
       const next = await changeJson(`${base}/queue/${encodeURIComponent(id)}${nextText === null ? '/cancel' : ''}`,
         nextText === null ? 'POST' : 'PUT', decodeRoom,
@@ -426,12 +480,12 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       if (next.ok) { keepRoom(next); setQueueEdit(null) }
       else setQueueError(next.message)
     } catch (failure) { if (!lifetime.current.signal.aborted) setQueueError(errorMessage(failure)) }
-    finally { if (!lifetime.current.signal.aborted) setBusy(false) }
+    finally { actionPending.current = false; if (!lifetime.current.signal.aborted) setBusy(false) }
   }
 
   async function changeMember(deviceId: string, allowed: boolean) {
-    if (busy || !host) return
-    setBusy(true)
+    if (busy || actionPending.current || !host) return
+    actionPending.current = true; setBusy(true)
     try {
       const next = await changeJson(`${base}/members/${deviceId}`, 'PUT',
         decodeRoom, { allowed }, lifetime.current.signal)
@@ -439,12 +493,12 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       keepRoom(next)
       setError('')
     } catch (failure) { if (!lifetime.current.signal.aborted) setError(errorMessage(failure)) }
-    finally { if (!lifetime.current.signal.aborted) setBusy(false) }
+    finally { actionPending.current = false; if (!lifetime.current.signal.aborted) setBusy(false) }
   }
 
   function editNotice() {
     if (!host || !room?.ok || !room.noticeSupported) return
-    setNoticeEdit({ base, text: room.notice?.text ?? '', revision: room.notice?.revision ?? 0 })
+    setNoticeEdit({ base, text: room.notice?.text ?? '', expectedText: room.notice?.text ?? '', revision: room.notice?.revision ?? 0 })
     setNoticeError('')
   }
 
@@ -455,8 +509,8 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   }
 
   async function changeNotice(nextText: string | null, expectedRevision: number) {
-    if (busy || !host || !room?.ok || !room.noticeSupported) return
-    setBusy(true)
+    if (busy || actionPending.current || !host || !room?.ok || !room.noticeSupported) return
+    actionPending.current = true; setBusy(true)
     try {
       const next = await changeJson(`${base}/notice`, 'PUT', decodeRoom,
         { text: nextText, expectedRevision }, lifetime.current.signal)
@@ -465,11 +519,12 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       if (next.ok) { setNoticeEdit(null); setNoticeError('') }
       else setNoticeError(next.message)
     } catch (failure) { if (!lifetime.current.signal.aborted) setNoticeError(errorMessage(failure)) }
-    finally { if (!lifetime.current.signal.aborted) setBusy(false) }
+    finally { actionPending.current = false; if (!lifetime.current.signal.aborted) setBusy(false) }
   }
 
-  if (!supported) return <p className="helper-text">Update the Host app to use server chat.</p>
+  if (!supported) return <>{confirmationDialog}<p className="helper-text">Update the Host app to use server chat.</p></>
   return <section className="server-chat" aria-label="Server chat">
+    {confirmationDialog}
     <div className="server-chat-heading"><div><h3>Server chat</h3>
       <p>Talk about this server with the people who have access to its room.</p></div>
       <div className="server-chat-sync">
@@ -556,7 +611,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       <TextArea id={`chat-${profileId}`} value={text} maxLength={500} rows={3}
         placeholder="Ask about an issue or share an update" disabled={busy || !draft.ready}
         onChange={event => draft.change(event.target.value)} />
-      <div><small>{text.length}/500</small><Button type="submit" disabled={busy || !draft.ready || !text.trim() || text.length > messageLimit}>Send</Button></div>
+      <div><small>{text.length}/500</small><Button type="submit" disabled={busy || !draft.ready || !text.trim() || text.length > messageLimit}><Icon name={busy ? 'loader' : 'chat'} />Send</Button></div>
       {!draft.ready && !draft.recovering && !draft.feedback && <small role="status">Checking for an unfinished message…</small>}
       {(draft.dirty || draft.feedback) && <small role={draft.failed ? 'alert' : 'status'}>
         {draft.dirty && !draft.failed ? 'Saving unfinished message…' : draft.feedback}</small>}

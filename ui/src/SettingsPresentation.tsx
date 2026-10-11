@@ -2,6 +2,27 @@ import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { Button } from './Controls'
 import { Icon, type IconName } from './Icon'
 
+const focusableSelector = 'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'
+
+function focusableElements(root: HTMLElement) {
+  return Array.from(root.querySelectorAll<HTMLElement>(focusableSelector)).filter(element => {
+    if (element.tabIndex < 0 || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false
+    for (let ancestor: HTMLElement | null = element; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+      if (ancestor instanceof HTMLDetailsElement && !ancestor.open && !ancestor.querySelector(':scope > summary')?.contains(element)) return false
+      const style = getComputedStyle(ancestor)
+      if (style.display === 'none' || style.visibility === 'hidden') return false
+    }
+    return true
+  }).sort((first, second) => first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
+}
+
+function focusMeaningfulAction(dialog: HTMLDialogElement) {
+  const body = dialog.querySelector<HTMLElement>('.settings-dialog-body')
+  const footer = dialog.querySelector<HTMLElement>('.settings-dialog-footer')
+  const target = (body && focusableElements(body)[0]) || (footer && focusableElements(footer)[0]) || dialog
+  target.focus({ preventScroll: true })
+}
+
 export function SettingsCard({ icon, title, description, summary, actionLabel, onOpen, disabled = false }: {
   icon: IconName
   title: string
@@ -50,10 +71,18 @@ export function SettingsDialog({ title, description, onClose, busy = false, chil
     if (typeof dialog.showModal === 'function') dialog.showModal()
     else {
       dialog.setAttribute('open', '')
-      dialog.querySelector<HTMLButtonElement>('.settings-dialog-close:not(:disabled)')?.focus({ preventScroll: true })
     }
+    focusMeaningfulAction(dialog)
+
+    // Native dialog is not available in some embedded/test environments.
+    const containFocus = (event: FocusEvent) => {
+      const topDialog = Array.from(document.querySelectorAll('dialog[open]')).at(-1)
+      if (topDialog === dialog && event.target instanceof Node && !dialog.contains(event.target)) focusMeaningfulAction(dialog)
+    }
+    document.addEventListener('focusin', containFocus)
 
     return () => {
+      document.removeEventListener('focusin', containFocus)
       if (dialog.open) {
         if (typeof dialog.close === 'function') dialog.close()
         else dialog.removeAttribute('open')
@@ -68,8 +97,20 @@ export function SettingsDialog({ title, description, onClose, busy = false, chil
     onCancel={event => { event.preventDefault(); if (!busy) onClose() }}
     onKeyDown={event => {
       if (event.key === 'Escape') {
+        event.preventDefault()
         event.stopPropagation()
-        if (busy) event.preventDefault()
+        if (!busy) onClose()
+      }
+      if (event.key === 'Tab') {
+        const controls = focusableElements(event.currentTarget)
+        const first = controls[0], last = controls.at(-1)
+        if (!first) { event.preventDefault(); event.currentTarget.focus(); return }
+        const active = document.activeElement
+        if (event.shiftKey && (active === first || !controls.includes(active as HTMLElement))) {
+          event.preventDefault(); last?.focus()
+        } else if (!event.shiftKey && (active === last || !controls.includes(active as HTMLElement))) {
+          event.preventDefault(); first.focus()
+        }
       }
     }}>
     <header className="settings-dialog-header">
@@ -77,8 +118,8 @@ export function SettingsDialog({ title, description, onClose, busy = false, chil
         <h2 id={`${id}-title`}>{title}</h2>
         {description && <p id={`${id}-description`}>{description}</p>}
       </div>
-      <Button className="secondary settings-dialog-close" aria-label={`Close ${title}`} disabled={busy} onClick={onClose}>
-        <Icon name="close" size={17} />Close
+      <Button className="secondary icon-button settings-dialog-close" aria-label={`Close ${title}`} title={`Close ${title}`} disabled={busy} onClick={onClose}>
+        <Icon name="close" size={17} />
       </Button>
     </header>
     <div className="settings-dialog-body">{children}</div>

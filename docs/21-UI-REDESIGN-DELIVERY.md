@@ -2,7 +2,9 @@
 
 ## Authorized sequence
 
-The owner approved the design-first plan on 2026-10-10: create a complete clickable mockup atlas, review it, then implement the application redesign after design approval. This delivery slice covers the atlas only. Application implementation is awaiting the owner's review; it has not begun.
+The owner approved the design-first plan on 2026-10-10: create a complete clickable mockup atlas, review it, then implement the application redesign after design approval. Following the revised atlas and hosted visual review, the owner authorized application implementation using parallel Codex CLI workers and subagents with compact handoffs. The reviewed atlas remains the design authority.
+
+Application implementation is divided into isolated slices: shared controls, tooltips and dialogs; guided Shared saves; task-focused pages; and coordinator-owned navigation and integration. Workers use `gpt-6.1-sol`. Integration, builds and commits are serialized. Local validation remains code-only; rendered browser checks use the previously approved separate GitHub-hosted Windows runner. Native and real game/network/save acceptance remain separate.
 
 ## Design decisions
 
@@ -47,7 +49,7 @@ Final revised verification: **24 PASS groups, 1,414 rendered states, zero JSDOM 
 
 Two bounded `gpt-6.1-sol` workers owned the Host and Join catalogs. The coordinator owned the shared model, shell, tooltips, build and verification; integration/builds were serialized. A read-only Codex CLI review encountered the Windows `setup refresh` helper failure and was stopped; read-only subagent reviews completed instead. Those reviews caught stale lifecycle banners, missing independent permission checks, an incorrect Friend voting instruction, stale readiness in denied states, and a duplicate Open game dispatch. Corrections are included in the final pass. Intermediate verification also caught a missing icon and an outdated offline tooltip selector; a Stop regression was corrected to perform its required acknowledgement before submission.
 
-This revision changes only mockups/documentation. Browser/native layout acceptance and real game/network/save acceptance remain unrun. Approval of the revised atlas is pending before application implementation.
+That revision changed only mockups/documentation. At its completion, approval was pending before application implementation. The subsequent hosted visual review and implementation authorization are recorded below.
 
 ## Visual polish after owner feedback
 
@@ -63,14 +65,26 @@ Run `38091678751` produced 395 screenshots. All 29 pages and 158 dialogs were re
 
 Final [hosted render `38093652729`](https://github.com/daltonstates/TogetherServer/actions/runs/38093652729) passed with **445 screenshots and zero automated findings**. Every default view has dark desktop and light narrow evidence; twelve key views include the opposite theme and narrow 150% text. Eleven shared-save states, four actual tooltip samples and three-client hosting outcomes are included. The coordinator reviewed the final page contact sheets and changed shared landings. All 158 final default-dialog PNGs match the preceding run reviewed by the two workers. `VISUAL-REVIEW.json` records the exact source/archive SHA-256, run, review scope and outstanding acceptance. Room-member action labels wrap heavily on narrow screens but remain readable; no clipping or overlapping warnings were found.
 
-The final code-only verification passes **26 groups and 1,414 selectable states**, including all 310 source mappings and 28 browser-confirmation call sites. The fragment is 279,367 bytes. `VALIDATION.json` only recognizes separate visual evidence when its standalone source SHA-256 matches and manual review is recorded complete. Application implementation remains gated on the owner's review of this revision.
+The final atlas code-only verification passed **26 groups and 1,414 selectable states**, including all 310 source mappings and 28 browser-confirmation call sites. The fragment is 279,367 bytes. `VALIDATION.json` only recognizes separate visual evidence when its standalone source SHA-256 matches and manual review is recorded complete. The owner subsequently authorized application implementation with Codex CLI workers and subagents.
 
 ## Acceptance boundaries
 
 Code-only atlas checks cover source inventory, links, script execution, individual states, accessibility names, navigation, dialog dismissal, masking, setup variants and pending feedback. They do not certify rendered pixels or native WebView behavior. Actual Chromium viewport/layout evidence comes from the explicitly approved hosted Windows runner and is recorded separately. Native WebView/application acceptance and real game/network/save acceptance remain unrun and require their own approved separate runner or unattended session. No such interactive check runs on the owner's active desktop.
 
-No runtime UI, backend, public API, settings, credentials, worlds, production process or listener has been changed. Later application slices must preserve protected-draft flush, explicit discards, revocation and expiry distinctions, Unknown occupancy, exact process identity, Offline restore prerequisites, signed shared-world authority and separate game/network acceptance.
+The mockup slices changed no runtime UI, backend, public API, settings, credentials, worlds, production process or listener. Application implementation below preserves protected-draft flush, explicit discards, revocation and expiry distinctions, Unknown occupancy, exact process identity, Offline restore prerequisites, signed shared-world authority and separate game/network acceptance.
 
-## Next authorized work
+## Application implementation: 2026-10-10
 
-After the owner approves the complete mockups, implement the navigation/settings split and shared shell first, then compact Host, Join, supporting pages and dialogs. Use bounded workers with disjoint ownership; serialize integration/builds/commits. Run focused UI regression checks, the full UI suite and code-only gate for application changes, and record actual browser/native acceptance separately.
+The owner authorized implementation using Codex CLI and subagents. Three bounded `gpt-6.1-sol` CLI workers implemented shared primitives and confirmations, task-focused supporting pages, and shared-save guidance. Initial edits used separate worktrees; later fixes used disjoint file ownership. The coordinator integrated the actual navigation, selected-server and selected-Host workspaces, contextual settings and notification destinations. Integration, builds and commits are serialized.
+
+App Settings always opens Appearance from the header gear and application rail in either mode. Hosting controls are grouped under This Host PC, game configuration remains scoped to the selected server, and Join owns its connection and recovery pages. Searchable selectors replace permanent server lists. Primary actions keep icons and short labels; supporting evidence and tools have named pages, menus or disclosures. One shared tooltip implementation supplies anchored tails, keyboard/touch access and dismissal. All 28 former browser confirmations use application dialogs with explicit choices.
+
+Shared saves separates a verified private copy, signed hosting authority and current server observations. The guided path identifies the responsible PC and retains consent, verified-copy, preparation, pairing and manual Start reviews. Management detail remains accessible in Manage sharing. Existing read-only APIs do not expose planned successor authority to other Friend PCs: these clients retain Unknown authority and require explicit trust/pairing instead of inventing an active Host. This interface boundary is documented in [the complete coverage map](22-UI-REDESIGN-COVERAGE.md).
+
+The final full UI run passed **76 files and 902 tests**. An earlier run passed 861/862 and exposed a duplicate backup action; the duplicate was removed. Focused reviews also corrected unguarded chat-tool edits, stale save progress, successor identity, navigation during pairing and draft-save cancellation messaging. The pure hosted-render fixture suite passed **12/12**. No browser, app, game or native window was launched on the owner's desktop. Final code-only/build and source-bound hosted screenshot results are recorded below when complete.
+
+The historical atlas inventory is reconciled in [22-UI-REDESIGN-COVERAGE.md](22-UI-REDESIGN-COVERAGE.md): all 187 views, 310 mappings and confirmation decisions remain reachable or have an explicit incorporated destination. Inventory review does not claim every dialog has rendered acceptance.
+
+Final local verification passed TypeScript, lint, the bundled UI build, locked .NET restore/build, source/synthetic feature checks, whitespace checks and desktop diagnostic isolation. `scripts/verify-code-only.ps1` exited 0. The account cannot create symbolic links, so its synthetic source-link cases remain explicitly skipped. The initial nested PowerShell wrapper returned 1 after harmless Git line-ending warnings despite a passing script; the clean direct invocation above is the recorded gate result. Vite reports its existing large-bundle advisory; the build succeeds. Backend source, contracts and dependency manifests/lockfiles are unchanged.
+
+Pending acceptance: the owner-approved hosted synthetic application render and manual screenshot review, followed separately by native WebView/application and real game/Friend-PC/network/save checks. Those latter checks have not been run or claimed.

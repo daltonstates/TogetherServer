@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { FriendSnapshot, PublicProfile } from './contracts'
 import { effectiveFriendPermissions, friendConnectionExplanation, FriendConnectionExplanation, FriendPlayFlow } from './FriendPlayFlow'
@@ -90,6 +90,33 @@ describe('Friend state and permission explanations', () => {
 })
 
 describe('the composed play flow', () => {
+  it('loads local scoped notification settings only after the owner opens that disclosure', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ quietMode: false, allowedEvents: ['Backup'], servers: [],
+      systemState: 'AcceptsNotifications', systemAllowsNotifications: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetcher)
+    render(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs} />)
+    expect(fetcher).not.toHaveBeenCalled()
+    const disclosure = screen.getByText('Server notifications').closest('details')!
+    disclosure.open = true
+    fireEvent(disclosure, new Event('toggle'))
+    expect(await screen.findByRole('heading', { name: `Notifications for ${profile.name}` })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Server alerts' })).toBeEnabled())
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(fetcher.mock.calls[0][0]).toBe('/api/local/desktop/notifications')
+    expect(screen.queryByRole('checkbox', { name: /Quiet mode/ })).not.toBeInTheDocument()
+  })
+  it('keeps occupied Stop blockers visible while Connection Doctor stays in server tools', () => {
+    const occupied = { ...profile, onlinePlayers: 1 }
+    const doctor = vi.fn()
+    render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [occupied] }} profile={occupied} nowMs={nowMs}
+      onStop={vi.fn()} onOpenConnectionDoctor={doctor} />)
+    expect(screen.getByRole('heading', { name: 'Play' })).toBeInTheDocument()
+    expect(screen.getAllByRole('status').find(element => element.textContent?.includes('Players are online.'))).toHaveTextContent('Wait until the server reports zero players.')
+    expect(screen.getByRole('button', { name: 'Open Connection Doctor' })).not.toBeVisible()
+    fireEvent.click(screen.getByText('Server tools and connection help'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connection Doctor' }))
+    expect(doctor).toHaveBeenCalledOnce()
+  })
   it('groups one explicit Start, then waiting, then existing game/copy/manual steps without automatic actions', () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher)
     const onStart = vi.fn(), onRefresh = vi.fn()

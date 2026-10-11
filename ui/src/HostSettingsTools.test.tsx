@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import hostWire from '../../contracts/host-snapshot.v1.json'
 import { parseSnapshot, type HostSnapshot } from './contracts'
@@ -25,6 +25,36 @@ function props(section: 'stop' | 'network' | 'advanced' = 'stop'): ComponentProp
 }
 
 describe('Host settings cards and editors', () => {
+  it('opens notifications for the selected Host server and keeps its dialog open while the scoped save is pending', async () => {
+    const input = props('advanced')
+    const notificationPreferences = { quietMode: false, allowedEvents: ['Backup'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true }
+    const response = () => new Response(JSON.stringify(notificationPreferences), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    let finish: ((value: Response) => void) | undefined
+    const fetcher = vi.fn<typeof fetch>(async (_url, options) => options?.method === 'PUT'
+      ? new Promise<Response>(resolve => { finish = resolve }) : response())
+    vi.stubGlobal('fetch', fetcher)
+    render(<HostSettingsTools {...input} />)
+    expect(fetcher).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Server notifications Edit server notifications' }))
+    const profile = input.snapshot.settings.profiles.find(item => item.id === input.selectedProfileId)!
+    expect(await screen.findByRole('heading', { name: `Notifications for ${profile.name}` })).toBeInTheDocument()
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Server alerts' }), { target: { value: 'off' } })
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(fetcher.mock.calls[1][1]!.body as string)).toEqual({ profileId: profile.id, connectionId: null, allowedEvents: [] })
+    expect(screen.getByRole('button', { name: 'Done' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Close Server notifications' })).toBeDisabled()
+    await act(async () => finish?.(response()))
+    expect(screen.getByRole('button', { name: 'Done' })).toBeEnabled()
+    expect(input.onSave).not.toHaveBeenCalled()
+  })
+  it('keeps the hosting power choice in Stop & timer and leaves unknown occupancy warnings intact', () => {
+    const keepAwake = { enabled: false, detail: 'Power request inactive.', onChange: vi.fn() }
+    render(<HostSettingsTools {...props()} keepAwake={keepAwake} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /Keep Windows awake/ }))
+    expect(keepAwake.onChange).toHaveBeenCalledExactlyOnceWith(true)
+    expect(screen.getByText('Power request inactive.')).toBeInTheDocument()
+    expect(screen.getByText(/positive or Unknown count cancels/)).toBeInTheDocument()
+  })
   it('keeps timer fields out of the overview, cancels locally, and reopens saved values', () => {
     const input = props()
     render(<HostSettingsTools {...input} />)
@@ -100,7 +130,7 @@ describe('Host settings cards and editors', () => {
     const input = props('network')
     render(<HostSettingsTools {...input} />)
     expect(screen.queryByRole('region', { name: 'Connection evidence' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Connection Doctor Open Connection Doctor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connection Doctor' }))
     expect(screen.getByRole('dialog', { name: 'Connection Doctor' })).toBeInTheDocument()
     expect(input.onTestRoute).not.toHaveBeenCalled()
     expect(input.onSave).not.toHaveBeenCalled()

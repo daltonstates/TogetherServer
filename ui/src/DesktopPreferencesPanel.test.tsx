@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { DesktopPreferencesPanel, UpdateDetailsPanel } from './DesktopPreferencesPanel'
+import { DesktopPreferencesPanel, ServerNotificationPreferences, ServerNotificationSettings, UpdateDetailsPanel } from './DesktopPreferencesPanel'
 import { notificationEventKinds, parseDesktopUpdateDetails, parseNotificationPreferences, parseUpdatePreparation,
-  updatePreparationReport, type DesktopUpdateDetails, type NotificationPreferences } from './desktopPreferencesWire'
+  updatePreparationReport, type DesktopUpdateDetails, type NotificationPreferenceChange, type NotificationPreferences } from './desktopPreferencesWire'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
 const connectionId = '22222222-2222-4222-8222-222222222222'
@@ -14,6 +14,45 @@ const update: DesktopUpdateDetails = { state: 'Available', currentVersion: '0.3.
   promptSnoozed: false, snoozedUntilUtc: null }
 
 describe('desktop notification preferences', () => {
+  it('saves Off and custom choices only for the selected Host server, without changing Quiet or update choices', async () => {
+    const saver = vi.fn(async () => preferences)
+    render(<ServerNotificationSettings serverId={profileId} serverName="Host server" loader={async () => preferences} saver={saver} />)
+    const alerts = await screen.findByRole('combobox', { name: 'Server alerts' })
+    fireEvent.change(alerts, { target: { value: 'off' } })
+    await waitFor(() => expect(saver).toHaveBeenCalledWith({ profileId, connectionId: null, allowedEvents: [] }, expect.any(AbortSignal)))
+    await waitFor(() => expect(alerts).not.toBeDisabled())
+    fireEvent.change(alerts, { target: { value: 'custom' } })
+    await waitFor(() => expect(saver).toHaveBeenLastCalledWith({ profileId, connectionId: null,
+      allowedEvents: notificationEventKinds.filter(kind => kind !== 'Update') }, expect.any(AbortSignal)))
+    expect(screen.queryByRole('checkbox', { name: /Quiet mode/ })).not.toBeInTheDocument()
+  })
+
+  it('aborts an old scoped save when another saved Host opens and ignores its late completion', async () => {
+    let finish: ((next: NotificationPreferences) => void) | undefined
+    let signal: AbortSignal | undefined
+    const saver = vi.fn((_change: NotificationPreferenceChange, nextSignal?: AbortSignal) => {
+      signal = nextSignal
+      return new Promise<NotificationPreferences>(resolve => { finish = resolve })
+    })
+    const loader = vi.fn(async () => preferences)
+    const view = render(<ServerNotificationSettings serverId={profileId} serverName="First" connectionId={connectionId} loader={loader} saver={saver} />)
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Server alerts' }), { target: { value: 'off' } })
+    view.rerender(<ServerNotificationSettings serverId={profileId} serverName="Second" connectionId={profileId} loader={loader} saver={saver} />)
+    expect(signal?.aborted).toBe(true)
+    await act(async () => finish?.({ ...preferences, servers: [{ profileId, connectionId, allowedEvents: [] }] }))
+    expect(await screen.findByRole('combobox', { name: 'Server alerts' })).toHaveValue('default')
+    expect(screen.getByRole('heading', { name: 'Notifications for Second' })).toBeInTheDocument()
+    expect(screen.queryByText('Notification preferences saved on this PC.')).not.toBeInTheDocument()
+  })
+  it('excludes app-update defaults when the first server override is created from inherited events', async () => {
+    const saver = vi.fn(async () => preferences)
+    render(<ServerNotificationPreferences server={{ id: profileId, name: 'Inherited', connectionId }} loader={async () => preferences} saver={saver} />)
+    await screen.findByRole('combobox', { name: 'Server alerts' })
+    fireEvent.click(screen.getByText('Choose notification events'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Server starts and stops' }))
+    await waitFor(() => expect(saver).toHaveBeenCalledWith({ profileId, connectionId,
+      allowedEvents: notificationEventKinds.filter(kind => kind !== 'Lifecycle' && kind !== 'Update') }, expect.any(AbortSignal)))
+  })
   it('persists quiet mode through the native service and announces the accepted result', async () => {
     const onQuietModeChange = vi.fn()
     const saver = vi.fn(async () => ({ ...preferences, quietMode: true }))
@@ -27,11 +66,13 @@ describe('desktop notification preferences', () => {
   it('keeps server and connection scope on event changes and resets only the selected override', async () => {
     const scoped = { ...preferences, servers: [{ profileId, connectionId, allowedEvents: ['Backup' as const] }] }
     const saver = vi.fn(async () => scoped)
-    render(<DesktopPreferencesPanel servers={[{ id: profileId, name: 'Saved server', connectionId }]}
+    render(<ServerNotificationPreferences server={{ id: profileId, name: 'Saved server', connectionId }}
       loader={async () => scoped} saver={saver} />)
-    await screen.findByRole('checkbox', { name: /Quiet mode/ })
+    await screen.findByText('These choices apply only to this server.')
     fireEvent.click(screen.getByText('Choose notification events'))
-    fireEvent.change(screen.getByLabelText('Apply to'), { target: { value: `${connectionId}:${profileId}` } })
+    expect(screen.queryByRole('checkbox', { name: /Quiet mode/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'App updates' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Apply to')).not.toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Backups and shared saves' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Server starts and stops' })).not.toBeChecked()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Server starts and stops' }))
@@ -39,6 +80,17 @@ describe('desktop notification preferences', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Use default choices' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Use default choices' }))
     await waitFor(() => expect(saver).toHaveBeenLastCalledWith({ profileId, connectionId, allowedEvents: null }, expect.any(AbortSignal)))
+  })
+
+  it('keeps PC defaults global even if legacy callers provide a server list', async () => {
+    const saver = vi.fn(async () => preferences)
+    render(<DesktopPreferencesPanel servers={[{ id: profileId, name: 'Saved server', connectionId }]}
+      loader={async () => preferences} saver={saver} />)
+    await screen.findByRole('checkbox', { name: /Quiet mode/ })
+    fireEvent.click(screen.getByText('Choose notification events'))
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'App updates' }))
+    await waitFor(() => expect(saver).toHaveBeenCalledWith({ allowedEvents: notificationEventKinds.filter(kind => kind !== 'Update') }, expect.any(AbortSignal)))
   })
 
   it('reports OS suppression separately and can recover a failed preference read', async () => {

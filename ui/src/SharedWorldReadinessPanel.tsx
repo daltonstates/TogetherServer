@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
+import { Icon } from './Icon'
 import { SharedWorldRouteDetails } from './SharedWorldRouteDetails'
 import { SharedWorldServerFile } from './SharedWorldServerFile'
 import { createSharedRouteDetails, futureHostFields, nextHostingStep, normalizedDirectIpHttpsEndpoint,
@@ -82,13 +83,23 @@ function parseRouteCheck(value: unknown): RouteCheck {
   return item as RouteCheck
 }
 
-export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, game, onBrowseServerFile, onOpenHostSetup }:
+export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, game, onBrowseServerFile, onOpenHostSetup, onOpenHostControls, expanded, includeRehearsal = true, onSignedSuccessorChange, authorityHeadHash = null, authorityRevision = null }:
   { profileId: string; onHostingSetupChange?: (ready: boolean) => void; game?: SharedGame;
-    onBrowseServerFile?: (game: SharedGame) => Promise<string | null>; onOpenHostSetup?: () => void }) {
+    onBrowseServerFile?: (game: SharedGame) => Promise<string | null>; onOpenHostSetup?: () => void;
+    onOpenHostControls?: () => void; expanded?: boolean; includeRehearsal?: boolean;
+    onSignedSuccessorChange?: (source: unknown) => void; authorityHeadHash?: string | null;
+    authorityRevision?: number | null }) {
   const fields = futureHostFields(game)
   const knownGame = ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(game ?? '')
-  const scope = useRef(profileId)
-  scope.current = profileId
+  const scopeKey = JSON.stringify([profileId, game, authorityHeadHash, authorityRevision])
+  const scope = useRef({ key: scopeKey })
+  if (scope.current.key !== scopeKey) scope.current = { key: scopeKey }
+  const scopeToken = scope.current
+  const request = useRef(0)
+  const metadataController = useRef<AbortController | null>(null)
+  const initializedMetadata = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const panel = useRef<HTMLDetailsElement>(null)
   const routePanel = useRef<HTMLDetailsElement>(null)
   const [serverFile, setServerFile] = useState('')
@@ -102,6 +113,8 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
   const [factorioRconPort, setFactorioRconPort] = useState('27015')
   const [gamePassword, setGamePassword] = useState('')
   const [handoff, setHandoff] = useState<RestoreStatus | null>(null)
+  const [verifiedScope, setVerifiedScope] = useState<{ key: string } | null>(null)
+  const [observationReason, setObservationReason] = useState('Rechecking signed hosting readiness. Start readiness is Unknown.')
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
   const [result, setResult] = useState<Readiness | null>(null)
   const [routeRecordHash, setRouteRecordHash] = useState('')
@@ -109,7 +122,10 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
   const [routeResult, setRouteResult] = useState<RouteCheck | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const firstMissing = nextHostingStep(result?.reasons ?? handoff?.pendingChecks ?? [])
+  const currentHandoff = verifiedScope === scopeToken && handoff?.staged === true &&
+    handoff.recordHash !== null && (authorityHeadHash === null || handoff.recordHash === authorityHeadHash)
+  const readyForManualStart = currentHandoff && handoff.restored && handoff.readyForManualStart
+  const firstMissing = nextHostingStep(result?.reasons ?? (currentHandoff ? handoff.pendingChecks : []))
   const goToStep = (destination: HostingStepDestination) => {
     if (destination === 'route') {
       if (routePanel.current) { routePanel.current.open = true; routePanel.current.scrollIntoView?.({ block: 'nearest' }) }
@@ -117,11 +133,12 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     }
     if (destination === 'game' || destination === 'receive') {
       const surface = panel.current?.closest('[aria-label="Host on this PC"]')?.parentElement
-      const target = destination === 'game' ? surface?.querySelector<HTMLDetailsElement>('.connection-doctor') :
-        surface?.querySelector<HTMLElement>('[aria-label="Receive save copies"]')
+      const target = destination === 'game' ? panel.current?.querySelector<HTMLElement>('[data-hosting-step="game-acceptance"]') :
+        surface?.querySelector<HTMLElement>('[aria-label="Get save for hosting"], [aria-label="Receive save copies"]')
       if (target) {
         if (target instanceof HTMLDetailsElement) target.open = true
         target.scrollIntoView?.({ block: 'nearest' })
+        target.focus()
       }
       return
     }
@@ -132,23 +149,59 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     target?.scrollIntoView?.({ block: 'nearest' })
     target?.focus()
   }
-  useEffect(() => { onHostingSetupChange?.(handoff?.readyForManualStart === true) },
-    [handoff?.readyForManualStart, onHostingSetupChange])
+  useEffect(() => { onHostingSetupChange?.(readyForManualStart) },
+    [readyForManualStart, onHostingSetupChange])
+  useEffect(() => () => { onHostingSetupChange?.(false) }, [onHostingSetupChange])
+  useEffect(() => { onSignedSuccessorChange?.(currentHandoff ? handoff : null) },
+    [currentHandoff, handoff, onSignedSuccessorChange])
   useEffect(() => {
-    let active = true
     setHandoff(null); setResult(null); setRestoreResult(null); setRouteResult(null); setError('')
     setServerFile(''); setGameVersion(''); setPasswordSet(false); setControlPort('5131'); setGamePort(futureHostFields(game).gamePort)
     setServerName('Recovered world'); setExecutable(''); setPreparedServerRoot(''); setFactorioRconPort('27015'); setGamePassword('')
     setRouteRecordHash(''); setRouteFingerprint(''); setBusy(false)
-    void getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus)
-      .then(status => { if (active) {
-        setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
-        setRouteRecordHash(status.recordHash ?? '')
-        setRouteFingerprint(status.controlRouteFingerprint ?? '')
-      } })
-      .catch(() => {})
-    return () => { active = false }
+    initializedMetadata.current = false
   }, [profileId, game])
+  const refreshHandoff = useCallback(async () => {
+    // A stage check may hash a large save. Keep one read in flight for this scope.
+    if (metadataController.current && !metadataController.current.signal.aborted) return
+    const sequence = ++request.current
+    const controller = new AbortController()
+    metadataController.current = controller
+    setVerifiedScope(null)
+    setObservationReason('Rechecking signed hosting readiness. Start readiness is Unknown.')
+    try {
+      const status = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
+        parseRestoreStatus, controller.signal)
+      if (controller.signal.aborted || scope.current !== scopeToken || request.current !== sequence) return
+      setHandoff(status)
+      if (!initializedMetadata.current) {
+        initializedMetadata.current = true
+        setPreparedServerRoot(current => current || status.preparedServerRoot || '')
+        setRouteRecordHash(current => current || status.recordHash || '')
+        setRouteFingerprint(current => current || status.controlRouteFingerprint || '')
+      }
+      if (authorityHeadHash !== null && status.recordHash !== authorityHeadHash) {
+        setObservationReason('Hosting blocked: the verified staged copy does not match the current signed hosting decision.')
+        return
+      }
+      setVerifiedScope(scopeToken)
+      setObservationReason(status.staged && status.recordHash !== null ? '' :
+        'Hosting blocked: no exact verified signed handoff is staged on this PC.')
+    } catch (cause) {
+      if (controller.signal.aborted || scope.current !== scopeToken || request.current !== sequence) return
+      setObservationReason(`Hosting readiness is Unknown: refresh failed. ${errorMessage(cause)}`)
+    } finally {
+      if (metadataController.current === controller) metadataController.current = null
+    }
+  }, [profileId, scopeToken, authorityHeadHash])
+  useEffect(() => {
+    const requests = request
+    setResult(null); setRestoreResult(null); setRouteResult(null); setBusy(false)
+    void refreshHandoff()
+    // Even without a parent head, only a fresh backend GET may verify the unique signed head and exact stage.
+    const timer = window.setInterval(() => void refreshHandoff(), 5000)
+    return () => { window.clearInterval(timer); metadataController.current?.abort(); ++requests.current }
+  }, [refreshHandoff])
   const setup = () => ({ serverFile: serverFile || null, gameVersion: gameVersion || null,
     enabledAddOns: handoff?.requiredAddOns ?? [], newPasswordConfigured: passwordSet,
     controlPort: Number(controlPort), gamePort: Number(gamePort) })
@@ -157,50 +210,46 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     try {
       const value = await changeJson(`/api/local/friend/${profileId}/shared-world/${action}`, 'POST',
         parseTakeoverReadiness, setup())
-      if (scope.current === profileId) setResult(value)
-    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
-    finally { if (scope.current === profileId) setBusy(false) }
+      if (mounted.current && scope.current === scopeToken) setResult(value)
+    } catch (cause) { if (mounted.current && scope.current === scopeToken) setError(errorMessage(cause)) }
+    finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
   const stage = async () => {
-    setBusy(true); setError('')
+    metadataController.current?.abort(); ++request.current
+    setBusy(true); setError(''); setVerifiedScope(null)
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/stage`,
         'POST', parseStageResult)
       if (!result.ok) throw new Error(result.message)
-      const status = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
-        parseRestoreStatus)
-      if (scope.current !== profileId) return
-      setHandoff(status); setPreparedServerRoot(status.preparedServerRoot ?? '')
-      setRouteRecordHash(status.recordHash ?? '')
-      setRouteFingerprint(status.controlRouteFingerprint ?? '')
-    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
-    finally { if (scope.current === profileId) setBusy(false) }
+      if (mounted.current && scope.current === scopeToken) await refreshHandoff()
+    } catch (cause) { if (mounted.current && scope.current === scopeToken) setError(errorMessage(cause)) }
+    finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
   const restore = async () => {
-    if (!handoff?.recordHash) return
-    setBusy(true); setError('')
+    if (!currentHandoff || !handoff?.recordHash) return
+    metadataController.current?.abort(); ++request.current
+    setBusy(true); setError(''); setVerifiedScope(null)
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
         'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
           name: serverName, serverName, gamePassword: gamePassword || null,
           executablePath: executable || null, preparedServerRoot: preparedServerRoot || null,
           factorioRconPort: Number(factorioRconPort) })
-      const next = result.ok ? await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus) : null
-      if (scope.current === profileId) { setRestoreResult(result); if (next) setHandoff(next) }
-    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
-    finally { if (scope.current === profileId) setBusy(false) }
+      if (mounted.current && scope.current === scopeToken) { setRestoreResult(result); await refreshHandoff() }
+    } catch (cause) { if (mounted.current && scope.current === scopeToken) setError(errorMessage(cause)) }
+    finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
   const finish = async () => {
-    if (!handoff?.recordHash) return
-    setBusy(true); setError('')
+    if (!currentHandoff || !handoff?.recordHash) return
+    metadataController.current?.abort(); ++request.current
+    setBusy(true); setError(''); setVerifiedScope(null)
     try {
       const value = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/finish`,
         'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
           executablePath: executable || null, preparedServerRoot: preparedServerRoot || null })
-      const next = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`, parseRestoreStatus)
-      if (scope.current === profileId) { setRestoreResult(value); setHandoff(next) }
-    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
-    finally { if (scope.current === profileId) setBusy(false) }
+      if (mounted.current && scope.current === scopeToken) { setRestoreResult(value); await refreshHandoff() }
+    } catch (cause) { if (mounted.current && scope.current === scopeToken) setError(errorMessage(cause)) }
+    finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
   const probeRoute = async () => {
     setBusy(true); setError(''); setRouteResult(null)
@@ -208,18 +257,21 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
       const next = await changeJson(`/api/local/friend/${profileId}/shared-world/route-check`,
         'POST', parseRouteCheck, { recordHash: routeRecordHash.trim(),
           tlsFingerprint: routeFingerprint.trim() })
-      if (scope.current === profileId) setRouteResult(next)
-    } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
-    finally { if (scope.current === profileId) setBusy(false) }
+      if (mounted.current && scope.current === scopeToken) setRouteResult(next)
+    } catch (cause) { if (mounted.current && scope.current === scopeToken) setError(errorMessage(cause)) }
+    finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
-  return <details ref={panel}><summary>Check this PC for future hosting</summary>
+  return <details ref={panel} open={expanded || undefined}><summary>Check this PC for future hosting</summary>
     <p>Restore the exact signed planned handoff or recovery majority into a fresh managed world. Finish local and control route checks, then switch to Host for manual Start.</p>
+    {(!currentHandoff || observationReason) && <p role="status">{verifiedScope !== scopeToken && !observationReason ?
+      'Rechecking signed hosting readiness. Start readiness is Unknown.' : observationReason}</p>}
+    <p className="helper-text" data-hosting-step="game-acceptance" tabIndex={-1}>After manual Start on this PC, test a real game load, a Friend join, a recognizable saved change and a saved restart. Local preparation and file checks do not prove these results.</p>
     <p className="helper-text" data-hosting-step="permission-help" tabIndex={-1}>Eligible host is a separate grant from Receive and Start. Ask the original owner to review this PC's grant; a verified copy alone does not allow hosting.</p>
     <ol aria-label="This PC handoff checklist">
-      <li aria-current={!handoff?.staged ? 'step' : undefined}>{handoff?.staged ? 'Checked' : 'Next'} · This PC: check the signed decision and exact received copy.</li>
-      <li aria-current={handoff?.staged && !handoff.restored ? 'step' : undefined}>{handoff?.restored ? 'Done' : 'Later'} · This PC: restore into a fresh managed world.</li>
-      <li aria-current={handoff?.restored && !handoff.readyForManualStart ? 'step' : undefined}>{handoff?.readyForManualStart ? 'Done' : 'Later'} · This PC and another approved Friend PC: finish local setup and check the pinned control route.</li>
-      <li aria-current={handoff?.readyForManualStart ? 'step' : undefined}>Manual choice · This PC: open Host, review Start, then test a real game join and saved restart.</li>
+      <li aria-current={!currentHandoff ? 'step' : undefined}>{currentHandoff ? 'Checked' : 'Next'} · This PC: check the signed decision and exact received copy.</li>
+      <li aria-current={currentHandoff && !handoff.restored ? 'step' : undefined}>{currentHandoff && handoff.restored ? 'Done' : 'Later'} · This PC: restore into a fresh managed world.</li>
+      <li aria-current={currentHandoff && handoff.restored && !readyForManualStart ? 'step' : undefined}>{readyForManualStart ? 'Done' : 'Later'} · This PC and another approved Friend PC: finish local setup and check the pinned control route.</li>
+      <li aria-current={readyForManualStart ? 'step' : undefined}>Manual choice · This PC: open Host, review Start, then test a real game join and saved restart.</li>
     </ol>
     {firstMissing && <section aria-label="Next hosting step"><strong>Next: {firstMissing.reason}</strong>
       <div className="actions"><Button className="text-button" onClick={() => goToStep(firstMissing.destination)}>{firstMissing.action}</Button></div>
@@ -241,16 +293,16 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     </details> : null}
     <p className="helper-text">Check matching add-ons, a fresh managed location, and the direct-IP Friend control route before hosting. Test the real game load and join after Start.</p>
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
-      Check this PC</Button><Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
-      Rehearse file restore</Button></div>
+      Check this PC</Button>{includeRehearsal && <Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
+      Rehearse file restore</Button>}</div>
     </div>
     {onOpenHostSetup && <Button className="text-button" onClick={onOpenHostSetup}>Open this PC's Host setup</Button>}
     <details ref={routePanel}><summary>Test successor's control route from another Friend PC</summary>
       <p>On another Friend PC, use the signed authority hash and successor certificate fingerprint. This checks pinned HTTPS. Test the game route after Start.</p>
-      {handoff?.recordHash && <p className="helper-text">Current signed authority: <code style={{ overflowWrap: 'anywhere' }}>{handoff.recordHash}</code></p>}
+      {currentHandoff && <p className="helper-text">Current signed authority: <code style={{ overflowWrap: 'anywhere' }}>{handoff.recordHash}</code></p>}
       {handoff?.controlRouteFingerprint && <p className="helper-text">This PC's TLS fingerprint: <code style={{ overflowWrap: 'anywhere' }}>{handoff.controlRouteFingerprint}</code></p>}
       {handoff?.controlRouteAddress && <p className="helper-text">Signed successor route: {handoff.controlRouteAddress}</p>}
-      {handoff?.recordHash && handoff.controlRouteFingerprint && <Button className="text-button"
+      {currentHandoff && handoff.controlRouteFingerprint && <Button className="text-button"
         onClick={() => void navigator.clipboard.writeText(
           createSharedRouteDetails(profileId, { recordHash: handoff.recordHash!, tlsFingerprint: handoff.controlRouteFingerprint!, endpoint: handoff.controlRouteAddress }))
           .then(() => setError('')).catch(() => setError('Could not copy route details. Select the signed hash and fingerprint above to copy them manually.'))}>
@@ -267,7 +319,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
         Check direct-IP control route</Button>
       {routeResult && <p role="status">{routeResult.message}</p>}
     </details>
-    {handoff?.staged && <div data-hosting-step="folder" tabIndex={-1}><p role="status">{handoff.message}</p>
+    {handoff?.staged && <div data-hosting-step="folder" tabIndex={-1}>{currentHandoff && <p role="status">{handoff.message}</p>}
       {!handoff.restored && <><label>New server name<Input value={serverName}
         onChange={event => setServerName(event.target.value)} /></label>
         {(game === 'MinecraftJava' || !knownGame) && <label>{game === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different from the server file'}<Input value={executable}
@@ -281,14 +333,15 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
         {fields.password && <label>New game password, if this game uses one<Input type="password" value={gamePassword}
           onChange={event => setGamePassword(event.target.value)} /></label>}
         {fields.factorio && <p className="helper-text">RCON is local administration only. Never forward its port.</p>}
-        <Button disabled={busy} onClick={() => void restore()}>Restore verified copy</Button></>}
-      {handoff.restored && !handoff.readyForManualStart && <Button disabled={busy}
+        <Button disabled={busy || !currentHandoff} onClick={() => void restore()}>Restore verified copy</Button></>}
+      {handoff.restored && !readyForManualStart && <Button disabled={busy || !currentHandoff}
         onClick={() => void finish()}>Finish setup and checks</Button>}
-      {handoff.readyForManualStart && <div className="start-connection-notice" role="note">
+      {readyForManualStart && <div className="start-connection-notice" role="note">
         <strong>Before the first Start on this PC</strong>
         <p>The signed Friend control route was checked from another PC and the local game ports were available. Incoming game traffic is still unverified while the server is stopped. Switch to Host and start, then test the game connection and a real join from another network before relying on this Host.</p>
+        {onOpenHostControls && <Button onClick={onOpenHostControls}><Icon name="play" />Review Start in Host</Button>}
       </div>}
-      <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul></div>}
+      {currentHandoff && <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul>}</div>}
     {!handoff?.staged && <Button data-hosting-step="folder" className="secondary" disabled={busy} onClick={() => void stage()}>
       Check planned handoff</Button>}
     {restoreResult && <div role="status"><p>{restoreResult.message}</p>

@@ -8,17 +8,19 @@ import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { HostRemoteRehearsal } from './RemoteRehearsal'
 import type { InternetRouteCheck, PortDiagnostics } from './ServerReadiness'
 import { SettingsCard, SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
+import { ServerNotificationPreferences } from './DesktopPreferencesPanel'
+import './TaskFirstPages.css'
 
 export type HostSettingsPatch = Partial<Pick<Settings, 'idleMinutes' | 'friendTimerExtensionMinutes' |
   'friendTimerExtensionMaximumMinutes' | 'maxConcurrentServers' | 'companionPort' |
   'companionEndpoint' | 'companionBindAddress' | 'connectionRoute'>>
 type Tool = 'countdown' | 'extensions' | 'safety' | 'doctor' | 'route' | 'tcp' |
-  'limits' | 'listener' | 'identity' | 'move' | 'revoked' | 'rehearsal'
+  'limits' | 'listener' | 'identity' | 'move' | 'revoked' | 'rehearsal' | 'notifications'
 const titles: Record<Tool, string> = {
   countdown: 'Empty-server countdown', extensions: 'Friend timer extensions', safety: 'Remote Stop safety',
   doctor: 'Connection Doctor', route: 'Friend connection route', tcp: 'Internet and local connection checks',
   limits: 'Hosting limits', listener: 'Advanced network settings', identity: 'Secure Host identity',
-  move: 'Move hosting to another PC', revoked: 'Revoked Friend PCs', rehearsal: 'Test with another owned PC'
+  move: 'Move hosting to another PC', revoked: 'Revoked Friend PCs', rehearsal: 'Test with another owned PC', notifications: 'Server notifications'
 }
 const routeLabels: Record<Settings['connectionRoute']['mode'], string> = {
   DirectInternet: 'Direct Internet', PrivateMesh: 'Private mesh', AdvancedAddress: 'Advanced address'
@@ -27,7 +29,7 @@ const routeLabels: Record<Settings['connectionRoute']['mode'], string> = {
 export function HostSettingsTools({ section, snapshot, companion, ports, routeCheck, previousRouteVerdict,
   routeDiscovery, selectedProfileId, busy, dirty, checkingPorts, checkingRoute, detectingAddress, friendAppStatus, addressError,
   isStaging, notice, moveKit, onClearNotice, onDraftStateChange, onSave, onAutoShutdown, onRefresh, onTestRoute, onDetectAddress,
-  onOpenAccess, onOpenDiagnostics, onCertificate, onInspectMoveKit, onNewHost }: {
+  onOpenAccess, onOpenDiagnostics, onCertificate, onInspectMoveKit, onNewHost, keepAwake }: {
   section: 'stop' | 'network' | 'advanced'
   snapshot: HostSnapshot
   companion: CompanionInfo | null
@@ -58,8 +60,10 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
   onCertificate: (action: 'stage' | 'activate' | 'retire-previous') => void
   onInspectMoveKit: () => void
   onNewHost: () => void
+  keepAwake?: { enabled: boolean; detail?: string; onChange: (enabled: boolean) => void }
 }) {
   const [tool, setTool] = useState<Tool | null>(null)
+  const [childBusy, setChildBusy] = useState(false)
   const [draft, setDraft] = useState(snapshot.settings)
   const settings = snapshot.settings
   const open = (next: Tool) => { onClearNotice(); setDraft(structuredClone(settings)); setTool(next) }
@@ -78,7 +82,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
     tool === 'limits' ? wholeMinutes(draft.maxConcurrentServers, 16) :
     tool === 'listener' ? wholeMinutes(draft.companionPort, 65535) && draft.companionPort >= 1024 : true
   const selectedProfile = settings.profiles.find(profile => profile.id === selectedProfileId) ?? settings.profiles[0]
-  const modalBusy = busy || checkingPorts || checkingRoute || detectingAddress
+  const modalBusy = busy || checkingPorts || checkingRoute || detectingAddress || childBusy
   const save = async () => { if (valid && changed && await onSave(patch)) setTool(null) }
   const changeRoute = (mode: Settings['connectionRoute']['mode'], address = '') => {
     const selected = address.trim()
@@ -87,12 +91,16 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
     setDraft(current => ({ ...current, connectionRoute: { mode, address: selected }, companionEndpoint: endpoint,
       companionBindAddress: mode === 'DirectInternet' ? '0.0.0.0' : selected || current.companionBindAddress }))
   }
-  return <section className="settings-section">
+  return <section className="settings-section task-first-page">
     {section === 'stop' && <>
       <SettingsSectionHeading icon="clock" title="Stop & timer" description="Automatic shutdown and safe Friend Stop requests." />
       <div className="settings-controls"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong>
         <small>Starts after a Ready server reports exactly zero players. A positive or Unknown count cancels the countdown.</small></span>
         <Input type="checkbox" checked={settings.autoShutdownEnabled} disabled={busy} onChange={event => onAutoShutdown(event.target.checked)} /></label></div>
+      {keepAwake && <div className="settings-controls"><label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong>
+        <small>Prevents idle sleep while an exact managed server is running. Manual sleep can still interrupt hosting.</small>
+        {keepAwake.detail && <small>{keepAwake.detail}</small>}</span><Input type="checkbox" checked={keepAwake.enabled} disabled={busy || dirty}
+          onChange={event => keepAwake.onChange(event.target.checked)} /></label></div>}
       <div className="settings-card-grid">
         <SettingsCard icon="clock" title="Empty-server countdown" description="Wait before gracefully stopping an empty server."
           summary={`${settings.idleMinutes} minutes · ${settings.autoShutdownEnabled ? 'Enabled' : 'Automatic shutdown is off'}`} actionLabel="Edit countdown" disabled={busy || dirty} onOpen={() => open('countdown')} />
@@ -107,9 +115,8 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
       <div className="settings-controls"><p><strong>Friend app:</strong> {friendAppStatus}.</p>
         {addressError && <p className="warning-text" role="status">{addressError}</p>}
         {companion?.listenerWarning && <p className="warning-text" role="status">{companion.listenerWarning}</p>}</div>
+      <div className="actions"><Button disabled={modalBusy} onClick={() => open('doctor')}><Icon name="plug" />Connection Doctor</Button></div>
       <div className="settings-card-grid">
-        <SettingsCard icon="plug" title="Connection Doctor" description="Listener, address, authentication, and game join evidence."
-          summary="Check each stage" actionLabel="Open Connection Doctor" onOpen={() => open('doctor')} />
         <SettingsCard icon="link" title="Friend connection route" description="Choose the networking you use to reach this Host."
           summary={routeLabels[settings.connectionRoute.mode]} actionLabel="Edit connection route" disabled={busy || dirty} onOpen={() => open('route')} />
         <SettingsCard icon="search" title="Internet and local checks" description="Public address, outside TCP test, and router target."
@@ -124,6 +131,8 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
     {section === 'advanced' && <>
       <SettingsSectionHeading icon="settings" title="Advanced" description="Host limits, secure connection details, and moving PCs." />
       <div className="settings-card-grid">
+        {selectedProfile && <SettingsCard icon="bell" title="Server notifications" description={`Windows alerts for ${selectedProfile.name} on this PC.`}
+          actionLabel="Edit server notifications" disabled={modalBusy} onOpen={() => open('notifications')} />}
         <SettingsCard icon="server" title="Hosting limits" description="Maximum number of managed servers running at once."
           summary={`${settings.maxConcurrentServers} ${settings.maxConcurrentServers === 1 ? 'server' : 'servers'} at once`} actionLabel="Edit hosting limits" disabled={busy || dirty} onOpen={() => open('limits')} />
         <SettingsCard icon="plug" title="Advanced network settings" description="Friend app TCP port, bind IP, and secure address."
@@ -191,6 +200,8 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
         <p className="helper-text">The kit contains world files and basic setup, with no game binaries, Friend credentials, private keys, or passwords.</p></div>}
       {tool === 'revoked' && <div className="settings-dialog-stack">{companion?.devices.filter(device => device.revoked).map(device => <div className="settings-detail-row" key={device.id}><strong>{device.name}</strong><span>Access removed</span></div>)}</div>}
       {tool === 'rehearsal' && <HostRemoteRehearsal />}
+      {tool === 'notifications' && selectedProfile && <ServerNotificationPreferences
+        server={{ id: selectedProfile.id, name: selectedProfile.name }} onBusyChange={setChildBusy} />}
       {editing && !valid && <p className="warning-text" role="status">{tool === 'extensions' && draft.friendTimerExtensionMaximumMinutes < draft.friendTimerExtensionMinutes ? 'The maximum must cover at least one extension increment.' : 'Enter a whole number within the range shown above.'}</p>}
     </SettingsDialog>}
   </section>

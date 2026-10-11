@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { DataRecoveryView, Run } from './contracts'
@@ -57,5 +57,47 @@ describe('DataRecoveryPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch to My server' }))
     expect(onSwitchToHost).toHaveBeenCalledOnce()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+
+  it('asks before forgetting an exited record and preserves the process-check warning', async () => {
+    const { props } = renderPanel({ runs: [run('exited-id', 'Failed')] })
+    fireEvent.click(screen.getByRole('button', { name: 'Forget exited record' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Forget exited record' })
+    expect(within(dialog).getByText('Forget this saved session only if TogetherServer confirms that its server process is no longer running?')).toBeInTheDocument()
+    expect(props.onForgetRecordedRun).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Forget exited record' }))
+    await waitFor(() => expect(props.onForgetRecordedRun).toHaveBeenCalledWith('exited-id'))
+    expect(props.onAcknowledge).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Confirm and re-enable/ })).toBeDisabled()
+  })
+
+  it('cancels forgetting without invoking the owner callback', async () => {
+    const { props } = renderPanel({ runs: [run('exited-id', 'Failed')] })
+    fireEvent.click(screen.getByRole('button', { name: 'Forget exited record' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(props.onForgetRecordedRun).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { runs: [run('exited-id', 'Unknown')] },
+    { runs: [run('exited-id', 'Ready')] },
+    { runs: [run('other-id', 'Failed')] },
+    { runs: [{ ...run('exited-id', 'Failed'), processId: 123 }] },
+    { configuredProfileIds: ['exited-id'] },
+    { pending: 'other-action' },
+    { mode: 'Friend' as const },
+    { recovery: { lifecycleBlocked: false, notices: [] } }
+  ])('does not forget when the current record or guards change during confirmation: %j', async changed => {
+    const { props, rerender } = renderPanel({ runs: [run('exited-id', 'Failed')] })
+    fireEvent.click(screen.getByRole('button', { name: 'Forget exited record' }))
+    const dialog = await screen.findByRole('dialog')
+    rerender(<DataRecoveryPanel {...props} {...changed} />)
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Forget exited record' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(props.onForgetRecordedRun).not.toHaveBeenCalled()
+    expect(props.onAcknowledge).not.toHaveBeenCalled()
   })
 })

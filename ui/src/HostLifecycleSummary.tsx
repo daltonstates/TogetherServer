@@ -4,6 +4,7 @@ import type { Run } from './contracts'
 import type { Profile } from './GameProfile'
 import type { ActivityDestination } from './notificationState'
 import { playerCountAvailability } from './PlayersPanel'
+import { Icon } from './Icon'
 
 export type HostLifecycleSummaryProps = {
   profile: Pick<Profile, 'id' | 'name' | 'kind' | 'maintenance'>
@@ -70,18 +71,25 @@ export function HostLifecycleSummary(props: HostLifecycleSummaryProps) {
   const view = hostLifecycleView(props)
   const showAction = !props.compact || (view.next.kind === 'navigate' &&
     !(view.next.destination.workspace === 'host' && view.next.destination.section === 'overview'))
+  const actionLabel = view.next.kind === 'start' ? 'Start' : view.next.destination.section === 'players'
+    ? view.next.label.includes('timer') ? 'Timer' : 'Players'
+    : view.next.destination.section === 'setup' ? 'Maintenance'
+      : view.next.destination.workspace === 'settings' ? 'Recovery' : 'Review'
+  const actionIcon = view.next.kind === 'start' ? 'play' : view.next.destination.section === 'players'
+    ? view.next.label.includes('timer') ? 'clock' : 'users'
+    : view.next.destination.section === 'setup' ? 'settings' : 'search'
   return <section className="players-workspace host-lifecycle-summary" aria-labelledby={headingId}>
     <div className="players-heading"><div><h3 id={headingId} className={props.compact ? 'sr-only' : undefined}>{props.compact ? 'Server status details' : `${props.profile.name} · Next action`}</h3>
       {!props.compact && <small>Observed phase</small>}<p><strong>{view.phase}</strong></p></div>
       {showAction && (view.next.kind === 'start'
-        ? <Button disabled={props.busy || !props.startGate.allowed || !props.onStart} onClick={() => {
+        ? <Button aria-label={view.next.label} title={view.next.reason} disabled={props.busy || !props.startGate.allowed || !props.onStart} onClick={() => {
           if (view.next.kind === 'start' && props.run?.profileId === props.profile.id &&
               props.run.state === 'Offline' && props.startGate.allowed && !props.busy &&
               !props.lifecycleBlocked && !props.profile.maintenance?.enabled) props.onStart?.()
-        }}>{view.next.label}</Button>
-        : <Button className="secondary" onClick={() => {
+        }}><Icon name={actionIcon} />{actionLabel}</Button>
+        : <Button className="secondary" aria-label={view.next.label} title={view.next.reason} onClick={() => {
           if (view.next.kind === 'navigate') props.onOpen(view.next.destination)
-        }}>{view.next.label}</Button>)}
+        }}><Icon name={actionIcon} />{actionLabel}</Button>)}
     </div>
     <p className="helper-text">{view.detail}</p>
     <small>{view.next.reason}</small>

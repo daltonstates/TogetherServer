@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button } from './Controls'
 import { ContractError, type Decoder } from './contracts'
+import { useConfirmation } from './Confirmation'
 
 type AddOnItem = { key: string; name: string; version: string; requiredGameVersion: string;
   enabled: boolean; compatibility: string; type: string }
@@ -57,6 +58,15 @@ export function ServerAddOnsPanel({ profileId, state, maintenance, busy, recover
   const [view, setView] = useState<AddOnView | null>(null)
   const [pending, setPending] = useState(false)
   const [notice, setNotice] = useState<{ good: boolean; text: string } | null>(null)
+  const { confirm, confirmationDialog } = useConfirmation()
+  const inFlight = useRef(false)
+  const current = useRef({ profileId, state, maintenance, busy, recoveryBlocked, view, revision: 0 })
+  if (current.current.profileId !== profileId || current.current.state !== state ||
+    current.current.maintenance !== maintenance || current.current.busy !== busy ||
+    current.current.recoveryBlocked !== recoveryBlocked || current.current.view !== view) {
+    current.current = { profileId, state, maintenance, busy, recoveryBlocked, view,
+      revision: current.current.revision + 1 }
+  }
   const base = `/api/local/profiles/${profileId}/addons`
   useEffect(() => {
     let active = true
@@ -70,17 +80,21 @@ export function ServerAddOnsPanel({ profileId, state, maintenance, busy, recover
     try { setView(await getLocalJson(base, parseAddOns)) }
     catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
-  const change = async (path: string, payload: Record<string, unknown>, confirm: string) => {
-    if (!allowed || !view || !window.confirm(confirm)) return
+  const change = async (path: string, payload: Record<string, unknown>, description: string) => {
+    if (!allowed || !view || inFlight.current) return
+    const revision = current.current.revision
+    inFlight.current = true
     setPending(true)
-    setNotice(null)
     try {
+      if (!await confirm({ title: 'Confirm add-on change', description,
+        confirmLabel: 'Continue' }) || current.current.revision !== revision) return
+      setNotice(null)
       const result = await changeJson(`${base}/${path}`, 'POST', parseResult, payload)
       setNotice({ good: result.ok, text: result.message })
       if (result.view.ok) setView(result.view)
       else await refresh()
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
-    finally { setPending(false) }
+    finally { inFlight.current = false; setPending(false) }
   }
   return <section className="server-addons-panel" aria-label="Server add-ons">
     <div className="section-heading"><div><h4>Add-ons &amp; game version</h4>
@@ -114,5 +128,6 @@ export function ServerAddOnsPanel({ profileId, state, maintenance, busy, recover
       {(view.canImport || view.canUndo) && !allowed &&
         <p className="helper-text">Begin maintenance and stop this server before changing add-ons.</p>}
     </>}
+    {confirmationDialog}
   </section>
 }

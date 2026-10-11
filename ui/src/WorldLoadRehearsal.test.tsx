@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseWorldLoadView, WorldLoadRehearsalPanel } from './WorldLoadRehearsal'
 
@@ -9,6 +9,55 @@ const view = () => ({ id: 'b7dc82fb-256f-45f9-962a-8039f5e0b5ab', game: 'Terrari
   gracefulStops: 0, cleaned: false, preparedUtc: '2026-10-04T12:00:00Z' })
 afterEach(() => vi.unstubAllGlobals())
 describe('guided world load', () => {
+  it('requires a dialog decision before stopped cleanup and retains the original source on decline', async () => {
+    const source = view()
+    const fetch = vi.fn(async (path: string) => new Response(JSON.stringify(path.endsWith('/cleanup') ?
+      { ok: true, code: 'WorldLoadCleaned', message: 'Original source retained.', rehearsal: { ...source, cleaned: true } } :
+      { ok: true, message: '', rehearsals: [source] })))
+    vi.stubGlobal('fetch', fetch)
+    render(<WorldLoadRehearsalPanel profileId="test-profile" received />)
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh results' }))
+    const opener = await screen.findByRole('button', { name: 'Clean up this disposable copy' })
+    opener.focus()
+    fireEvent.click(opener)
+    const dialog = screen.getByRole('dialog', { name: 'Clean up disposable copy?' })
+    expect(dialog).toHaveAccessibleDescription('Confirm the disposable game is stopped. Remove only this rehearsal’s working copy and retain its result and original source?')
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    expect(fetch.mock.calls.filter(([path]) => path.endsWith('/cleanup'))).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(opener).toHaveFocus()
+    expect(fetch.mock.calls.filter(([path]) => path.endsWith('/cleanup'))).toHaveLength(0)
+    expect(screen.getByText(/Copy:/)).toHaveTextContent(source.copyIdentity)
+    fireEvent.click(opener)
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Clean up copy' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Original source retained.'))
+    expect(fetch).toHaveBeenCalledWith(`/api/local/world-load/${source.id}/cleanup`, expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ confirmStopped: true })
+    }))
+  })
+
+  it('does not clean up a changed selection, profile or unmounted panel after opening the dialog', async () => {
+    const first = view(), second = { ...view(), id: 'a7dc82fb-256f-45f9-962a-8039f5e0b5ab', copyIdentity: 'B'.repeat(64) }
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, message: '', rehearsals: [first, second] })))
+    vi.stubGlobal('fetch', fetch)
+    const rendered = render(<WorldLoadRehearsalPanel profileId="test-profile" received />)
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh results' }))
+    await screen.findByRole('button', { name: 'Clean up this disposable copy' })
+    fireEvent.click(screen.getByRole('button', { name: 'Clean up this disposable copy' }))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: second.id } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Clean up copy' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Clean up this disposable copy' }))
+    rendered.rerender(<WorldLoadRehearsalPanel profileId="other-profile" received />)
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Clean up copy' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Clean up this disposable copy' }))
+    rendered.unmount()
+    await Promise.resolve()
+    expect(fetch.mock.calls).toHaveLength(1)
+  })
+
   it('preserves unobserved and owner-reported outcomes without automatic proof', () => {
     expect(parseWorldLoadView(view()).loadOutcome).toBe('Unobserved')
     expect(parseWorldLoadView({ ...view(), loadOutcome: 'OwnerConfirmed' }).loadOutcome).toBe('OwnerConfirmed')

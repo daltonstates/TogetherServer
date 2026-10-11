@@ -58,6 +58,7 @@ describe('SettingsDialog', () => {
     expect(dialog).toHaveAttribute('aria-modal', 'true')
     expect(dialog).toHaveAttribute('open')
     expect(showModal).toHaveBeenCalledOnce()
+    expect(screen.getByRole('textbox', { name: 'Preferred page' })).toHaveFocus()
     expect(screen.getByRole('textbox', { name: 'Preferred page' }).closest('.settings-dialog-body')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Save preferences' }).closest('.settings-dialog-footer')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Save preferences' }))
@@ -136,6 +137,44 @@ describe('SettingsDialog', () => {
     view.unmount()
     expect(focus).not.toHaveBeenCalled()
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('focuses a footer action or the dialog instead of Close when the body has no usable controls', () => {
+    const view = render(<SettingsDialog title="Review" onClose={vi.fn()} footer={<Button>Keep settings</Button>}>
+      <Input disabled aria-label="Unavailable" /><Button hidden>Hidden action</Button>
+    </SettingsDialog>)
+    expect(screen.getByRole('button', { name: 'Keep settings' })).toHaveFocus()
+    view.unmount()
+    render(<SettingsDialog title="Information" onClose={vi.fn()}><p>No actions.</p></SettingsDialog>)
+    expect(screen.getByRole('dialog', { name: 'Information' })).toHaveFocus()
+  })
+
+  it('skips fields inside closed disclosures when choosing initial focus', () => {
+    render(<SettingsDialog title="Visible settings" onClose={vi.fn()}>
+      <details><summary>Advanced settings</summary><Input aria-label="Hidden advanced field" /></details>
+      <Input aria-label="Visible field" />
+    </SettingsDialog>)
+    expect(screen.getByRole('textbox', { name: 'Visible field' })).toHaveFocus()
+  })
+
+  it('contains Tab and outside focus in the fallback environment and cancels Escape', () => {
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: undefined })
+    const onClose = vi.fn()
+    render(<><Button>Outside</Button><SettingsDialog title="Fallback" onClose={onClose} footer={<Button>Save</Button>}>
+      <Input aria-label="Name" />
+    </SettingsDialog></>)
+    const input = screen.getByRole('textbox', { name: 'Name' })
+    expect(input).toHaveFocus()
+    screen.getByRole('button', { name: 'Outside' }).focus()
+    expect(input).toHaveFocus()
+    const save = screen.getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.keyDown(save, { key: 'Tab' })
+    expect(screen.getByRole('button', { name: 'Close Fallback' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true })
+    expect(save).toHaveFocus()
+    fireEvent.keyDown(save, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledOnce()
   })
 })
 

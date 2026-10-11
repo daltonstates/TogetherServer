@@ -8,8 +8,9 @@ export type DesktopDraftFlushReply = { type: 'together-drafts-flushed'; requestI
 export type NativeDraftWebView = NativeWebView & { postMessage(message: DesktopDraftFlushReply): void }
 
 const guid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
-const sections = { host: ['overview', 'backups', 'players', 'sessions', 'files', 'chat', 'logs'],
-  join: ['overview', 'network', 'shared-saves', 'chat', 'logs'], settings: ['access', 'network', 'diagnostics', 'app', 'stop'] }
+const sections = { host: ['overview', 'backups', 'players', 'sessions', 'files', 'chat', 'logs', 'setup', 'access', 'stop', 'network', 'diagnostics', 'advanced'],
+  join: ['overview', 'play', 'pairing', 'connection', 'network', 'shared-saves', 'chat', 'logs'],
+  settings: ['access', 'network', 'diagnostics', 'app', 'stop', 'advanced', 'appearance', 'notifications', 'windows', 'updates', 'shortcuts'] }
 
 export function parseDesktopNotification(value: unknown): DesktopNotificationTarget | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null

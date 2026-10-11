@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
+import { useConfirmation, type ConfirmationOptions } from './Confirmation'
 import { ContractError, parseBasicResult, type BasicResult, type Decoder } from './contracts'
 import { ServerAddOnsPanel } from './ServerAddOnsPanel'
 import { editorFileDiff } from './editorChanges'
@@ -114,6 +115,21 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
   const changed = loaded?.content !== null && loaded?.content !== undefined && draft !== loaded.content
   const protectedDraft = useEditorProtectedDraft(loaded ? { purpose: 'file', profileId, key: `file:${loaded.key}` } : null,
     changed && loaded ? JSON.stringify({ version: 1, key: loaded.key, sha256: loaded.sha256, content: draft }) : null)
+  const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
+  const confirmationInFlight = useRef(false)
+  const currentConfirmationTarget = useRef({ signature: '', revision: 0 })
+  const confirmationSignature = JSON.stringify({ profileId, state, maintenance, busy, pending, recoveryBlocked,
+    view, loaded, draft, backups, recovered: protectedDraft.recovered })
+  if (currentConfirmationTarget.current.signature !== confirmationSignature) {
+    currentConfirmationTarget.current = { signature: confirmationSignature, revision: currentConfirmationTarget.current.revision + 1 }
+  }
+  const confirmCurrent = async (options: ConfirmationOptions) => {
+    if (confirmationInFlight.current) return false
+    confirmationInFlight.current = true
+    const revision = currentConfirmationTarget.current.revision
+    try { return await requestConfirmation(options) && revision === currentConfirmationTarget.current.revision }
+    finally { confirmationInFlight.current = false }
+  }
   useEditorDirtyGuard(`file:${profileId}`, changed, onDraftStateChange)
   useEditorDraftGuard(`file:${profileId}`, changed, protectedDraft, onDraftGuardChange)
   const diff = changed && loaded?.content !== null && loaded?.content !== undefined ? editorFileDiff(loaded.content, draft) : null
@@ -134,7 +150,8 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
 
   const loadFile = async (key: string) => {
     if (pending || busy) return
-    if (changed && !window.confirm('Reloading replaces the editor contents. Keep your protected draft and reload this file?')) return
+    if (changed && !(await confirmCurrent({ title: 'Reload server file?',
+      description: 'Reloading replaces the editor contents. Keep your protected draft and reload this file?', confirmLabel: 'Keep draft and reload' }))) return
     setPending(`read-${key}`)
     setNotice(null)
     try {
@@ -184,7 +201,8 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
 
   const undo = async () => {
     if (!loaded?.sha256 || !loaded.canUndo || !editAllowed || changed) return
-    if (!window.confirm('Restore the previous file version? TogetherServer will make another offline world checkpoint first.')) return
+    if (!(await confirmCurrent({ title: 'Restore previous file version?',
+      description: 'Restore the previous file version? TogetherServer will make another offline world checkpoint first.', confirmLabel: 'Restore previous version', destructive: true }))) return
     setPending('undo')
     setNotice(null)
     try {
@@ -219,7 +237,8 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
 
   const createConfiguration = async (key: string) => {
     if (!editAllowed) return
-    if (!window.confirm('Create this game configuration? TogetherServer will make an offline world checkpoint first.')) return
+    if (!(await confirmCurrent({ title: 'Create game configuration?',
+      description: 'Create this game configuration? TogetherServer will make an offline world checkpoint first.', confirmLabel: 'Create configuration' }))) return
     setPending(`create-${key}`)
     setNotice(null)
     try {
@@ -245,8 +264,10 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
     finally { setPending('') }
   }
   const restoreSetup = async (id: string) => {
-    if (!editAllowed || changed ||
-        !window.confirm('Restore this complete setup checkpoint? The world, reviewed configuration, and managed add-on state will change while the server stays offline. A pre-restore checkpoint will be kept.')) return
+    if (!editAllowed || changed) return
+    if (!(await confirmCurrent({ title: 'Restore complete setup?',
+      description: 'Restore this complete setup checkpoint? The world, reviewed configuration, and managed add-on state will change while the server stays offline. A pre-restore checkpoint will be kept.',
+      confirmLabel: 'Restore setup', destructive: true }))) return
     setPending('restore-setup')
     try {
       const result = await changeJson(`${base}/backups/${id}/restore-setup`, 'POST', parseBasicResult)
@@ -261,8 +282,10 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
     finally { setPending('') }
   }
   const prepareChanges = async () => {
-    if (busy || pending || recoveryBlocked ||
-        !window.confirm('Prepare to change this server? TogetherServer will pause Friend controls, require a fresh zero-player count before any automatic Stop, and make a complete offline setup checkpoint.')) return
+    if (busy || pending || recoveryBlocked) return
+    if (!(await confirmCurrent({ title: 'Prepare server changes?',
+      description: 'Prepare to change this server? TogetherServer will pause Friend controls, require a fresh zero-player count before any automatic Stop, and make a complete offline setup checkpoint.',
+      confirmLabel: 'Prepare changes' }))) return
     setPending('prepare')
     try {
       const result = await changeJson(`${base}/prepare-change`, 'POST', parseBasicResult)
@@ -272,8 +295,10 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
     finally { setPending('') }
   }
   const finishChanges = async () => {
-    if (busy || pending || recoveryBlocked || changed || state !== 'Ready' || !maintenance ||
-        !window.confirm('Have you joined this server from a real game client and checked the changed setup? Confirm to end maintenance and allow Friend controls again.')) return
+    if (busy || pending || recoveryBlocked || changed || state !== 'Ready' || !maintenance) return
+    if (!(await confirmCurrent({ title: 'Finish maintenance?',
+      description: 'Have you joined this server from a real game client and checked the changed setup? Confirm to end maintenance and allow Friend controls again.',
+      confirmLabel: 'Confirm game join and finish' }))) return
     setPending('finish')
     try {
       const result = await changeJson(`${base}/finish-change`, 'POST', parseBasicResult,
@@ -281,6 +306,12 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
       setNotice({ good: result.ok, text: result.message })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
+  }
+  const discard = async () => {
+    if (!loaded || !changed || pending) return
+    if (!(await confirmCurrent({ title: 'Discard file edits?',
+      description: 'Discard the unsaved contents of this editor? The current saved file stays unchanged.', confirmLabel: 'Discard file edits', destructive: true }))) return
+    setDraft(loaded.content ?? ''); setReviewed(null); await protectedDraft.clear()
   }
 
   return <section className="server-files-panel" aria-label="Server files and settings">
@@ -357,10 +388,7 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
           <p>Save first checkpoints the offline world and supported setup, then keeps the previous file version for Undo.</p>
         </section>}
         <div className="actions"><Button disabled={!editAllowed || !changed || !reviewMatches || protectedDraft.recovered !== null} onClick={() => void save()}>{pending === 'save' ? 'Saving…' : 'Save with checkpoint'}</Button>
-          <Button className="text-button" disabled={!changed || !!pending} onClick={() => {
-            if (!window.confirm('Discard the unsaved contents of this editor? The current saved file stays unchanged.')) return
-            setDraft(loaded.content ?? ''); setReviewed(null); void protectedDraft.clear()
-          }}>Discard unsaved file edits</Button>
+          <Button className="text-button" disabled={!changed || !!pending} onClick={() => void discard()}>Discard unsaved file edits</Button>
           <Button className="secondary" disabled={!editAllowed || !loaded.canUndo || !!changed} onClick={() => void undo()}>Undo last change</Button></div>
         {changed && <small>Unsaved changes in this editor.</small>}</div>}
       {!maintenance || state !== 'Offline' ? <div className="next-action"><span>{!maintenance ? 'Begin maintenance before changing files.' : 'Stop or resolve this server before changing files.'}</span>
@@ -369,5 +397,6 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
           <div className="actions"><Button className="secondary" disabled={busy || recoveryBlocked || !!changed} onClick={onStart}>Start server</Button>
             <Button className="text-button" onClick={onOpenDoctor}>Connection Doctor</Button></div></div>}
     </>}
+    {confirmationDialog}
   </section>
 }

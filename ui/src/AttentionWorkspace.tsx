@@ -1,6 +1,7 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Button, Input, Select } from './Controls'
 import { Icon } from './Icon'
+import './TaskFirstPages.css'
 import type { ActivityEvent } from './contracts'
 import { activityDestination, type ActivityDestination } from './notificationState'
 
@@ -211,7 +212,7 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
       (event.profileId === null || serverIds.has(event.profileId)))))
     .flatMap(group => group.events).sort((a, b) => (Date.parse(b.occurredUtc) || 0) - (Date.parse(a.occurredUtc) || 0)).slice(0, maximumIds)
   const scopedProblems = mode === 'Host' ? currentProblems.filter(problem => serverIds.has(problem.id) && problem.priority > 0 && !!problem.warning) : []
-  const problems = filterAttentionProblems(scopedProblems, filters)
+  const problems = [...scopedProblems].sort((a, b) => b.priority - a.priority)
   const events = filterAttentionEvents(scopedEvents, filters, nowMs, servers, ids)
   const groups = groupAttentionEvents(events)
   const categories = [...new Set([...scopedProblems.map(problemCategory), ...scopedEvents.map(event => event.category)])].sort()
@@ -249,10 +250,18 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
   return <section className="attention-workspace" aria-labelledby={headingId}>
     <div className="attention-toolbar"><div><h2 id={headingId}>Attention Center</h2>
       <span>{mode === 'Host' ? `${scopedProblems.length} current problems` : 'Current saved Host activity'} · {unreadCount} unread history notices</span></div>
-      <div className="attention-toolbar-actions"><Button className="secondary" disabled={!scopedEvents.some(event => opaqueId(event.id) && !ids.dismissedIds.includes(event.id))}
-        onClick={() => changeIds({ ...ids, dismissedIds: [...ids.dismissedIds, ...scopedEvents.map(event => event.id)] },
-          mode === 'Host' ? 'History cleared for this Host. Current problems remain visible.' : 'History cleared for this saved Host.')}>Clear history</Button></div>
     </div>
+    {mode === 'Host' && <section aria-label="Current problems" className="attention-current"><h3>Current problems · {problems.length}</h3>
+      <p className="helper-text">From the current Host state. Reading or dismissing history cannot resolve these problems. History filters apply only to past events below.</p>
+      {problems.length === 0 ? <p>No current server problems are reported.</p> :
+        problems.map(problem => <article className="notification-item bad" key={problem.id}><span aria-hidden="true"><Icon name="warning" /></span><div><strong>{problem.name}</strong><p>{problem.warning}</p>
+          <small>{problemCategory(problem)} · {problemSeverity(problem)}</small>
+          {onOpen && <Button className="text-button" onClick={() => onOpen(problem.destination)}>{problem.destination.label}</Button>}
+        </div></article>)}
+    </section>}
+    {children}
+    <details className="attention-history-disclosure">
+      <summary><Icon name="logs" />Activity history · {events.length} notices</summary>
     <div className="settings-grid attention-filters" style={{ padding: '1rem' }}>
       <label>Search attention<Input type="search" value={filters.search} maxLength={200} placeholder="Server, category or notice" onChange={event => setFilters({ ...filters, search: event.target.value })} /></label>
       <label>Server<Select value={filters.serverId} onChange={event => setFilters({ ...filters, serverId: event.target.value })}>
@@ -273,15 +282,9 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
       </Select></label>
       <Button className="text-button" onClick={() => setFilters({ ...defaultAttentionFilters })}>Reset filters</Button>
     </div>
-    {children}
-    {mode === 'Host' && <section aria-label="Current problems" style={{ padding: '0 1rem 1rem' }}><h3>Current problems · {problems.length}</h3>
-      <p className="helper-text">From the current Host state. Reading or dismissing history cannot resolve these problems. History time filters apply below.</p>
-      {problems.length === 0 ? <p>{scopedProblems.length ? 'No current problems match these filters.' : 'No current server problems are reported.'}</p> :
-        problems.map(problem => <article className="notification-item bad" key={problem.id}><span aria-hidden="true"><Icon name="warning" /></span><div><strong>{problem.name}</strong><p>{problem.warning}</p>
-          <small>{problemCategory(problem)} · {problemSeverity(problem)}</small>
-          {onOpen && <Button className="text-button" onClick={() => onOpen(problem.destination)}>{problem.destination.label}</Button>}
-        </div></article>)}
-    </section>}
+      <div className="attention-history-tools"><div className="attention-toolbar-actions"><Button className="secondary" disabled={!scopedEvents.some(event => opaqueId(event.id) && !ids.dismissedIds.includes(event.id))}
+        onClick={() => changeIds({ ...ids, dismissedIds: [...ids.dismissedIds, ...scopedEvents.map(event => event.id)] },
+          mode === 'Host' ? 'History cleared for this Host. Current problems remain visible.' : 'History cleared for this saved Host.')}>Clear history</Button></div></div>
     <section aria-label="Activity history" style={{ padding: '0 1rem 1rem' }}><h3>Activity history · {events.length}</h3>
       <p className="helper-text">Past events can remain after a problem ends. Clear history hides the retained notices on this PC; new events appear normally.</p>
       <div className="attention-list">
@@ -295,6 +298,7 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
         </div></article>)}
       </div>
     </section>
+    </details>
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{mode === 'Host' ? `${scopedProblems.length} current problems. ` : ''}{unreadCount} unread history notices.</span>
     <p className="helper-text" role="status" aria-live="polite" aria-atomic="true">{feedback}</p>
   </section>
