@@ -2030,7 +2030,7 @@ export function App() {
               {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
               {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <p className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</p>}
               {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
-              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind} worldName={profile.name}
+              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
                 serverState={profile.state} serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint}
                 connectedHostName={snapshot.connectionName || 'Saved Host'} onOpenPlay={() => selectJoinSection('play')} onPairHost={() => selectJoinSection('pairing')}
                 onOpenHostControls={() => void openSharedHost(profile.id, false)}

@@ -10,11 +10,64 @@ const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('Shared hosting identity', () => {
+  it.each([true, false])('omits ordinary unshared Play details when capability is %s and no sharing evidence exists', async available => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requests.push(url)
+      return reply(url.endsWith('/recovery') ? { state: 'NoOffer', authorityHeadHash: null } :
+        { consented: true, hostVersion: null, thisPcVersion: null, rosterRevision: null, state: 'Host version not checked', error: null })
+    }))
+    render(<SharedHostingIdentity profileId={deviceId} host={false} available={available} serverState="Ready" serverStatusFresh />)
+    await act(async () => {})
+    expect(screen.queryByRole('region', { name: 'Shared world hosting identity' })).not.toBeInTheDocument()
+    expect(requests.some(url => url.endsWith('/handoff/restore'))).toBe(false)
+  })
+  it.each([{ thisPcVersion: 2 }, { hostVersion: 3 }, { rosterRevision: 1 },
+    { state: 'Competing save histories. Review before receiving another save.' }])(
+    'retains Unknown signed authority when shared-world evidence exists: %j', async evidence => {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.endsWith('/recovery') ?
+        { state: 'NoOffer', authorityHeadHash: null } : { consented: false, hostVersion: null,
+          thisPcVersion: null, rosterRevision: null, state: 'Consent off', error: null, ...evidence })))
+      render(<SharedHostingIdentity profileId={deviceId} host={false} available={false} serverState="Ready" serverStatusFresh />)
+      expect(await screen.findByText('Signed Host not checked')).toBeInTheDocument()
+      expect(screen.getByText('Current Host server: Unknown')).toBeInTheDocument()
+      expect(screen.getByText('Connected server: Ready observed · game join unverified')).toBeInTheDocument()
+    })
+  it('retains last known shared evidence as Unknown after a relevance read fails and clears it on a valid unshared read', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let evidenceRead = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/recovery')) return reply({ state: 'NoOffer', authorityHeadHash: null })
+      if (++evidenceRead === 2) throw new Error('offline')
+      return reply({ consented: false, hostVersion: null, thisPcVersion: evidenceRead === 1 ? 2 : null,
+        rosterRevision: null, state: 'Consent off', error: null })
+    }))
+    render(<SharedHostingIdentity profileId={deviceId} host={false} serverState="Ready" serverStatusFresh />)
+    await act(async () => {})
+    expect(screen.getByText('Signed Host not checked')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByText('Last known: Signed Host not checked')).toBeInTheDocument()
+    expect(screen.getByText('Current Host server: Unknown · latest identity check failed')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.queryByRole('region', { name: 'Shared world hosting identity' })).not.toBeInTheDocument()
+  })
+
   it('keeps an ordinary unshared Host free of hosting authority details', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ enabled: false, latest: null, authority: { state: 'NoTakeover' } })))
     render(<SharedHostingIdentity profileId={deviceId} host />)
     await act(async () => {})
     expect(screen.queryByRole('region', { name: 'Shared world hosting identity' })).not.toBeInTheDocument()
+  })
+  it('retains a known shared identity as Unknown when capability disappears and the local read fails', async () => {
+    let fail = false
+    vi.stubGlobal('fetch', vi.fn(async () => { if (fail) throw new Error('offline'); return reply(quorum) }))
+    const view = render(<SharedHostingIdentity profileId={deviceId} host={false} available serverState="Ready" serverStatusFresh />)
+    await screen.findByText(/Signed Host · PC ending/)
+    fail = true
+    view.rerender(<SharedHostingIdentity profileId={deviceId} host={false} available={false} serverState="Ready" serverStatusFresh />)
+    await act(async () => {})
+    expect(screen.getByText(/Last known: Signed Host · PC ending/)).toBeInTheDocument()
+    expect(screen.getByText('Current Host server: Unknown · latest identity check failed')).toBeInTheDocument()
   })
   it('identifies a prepared local signed successor only from the verified stage and matching route projection', () => {
     const source = { staged: true, recordHash: head.recordHash, controlRouteAddress: head.hostAddress,

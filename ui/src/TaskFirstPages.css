@@ -21,9 +21,17 @@
 .task-first-setup .wizard-footer { gap: .75rem; flex-wrap: wrap; }
 .task-first-setup .setup-progress { flex-wrap: wrap; }
 .task-first-setup .game-choice-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); }
+.task-first-setup .game-choice.ui-button { flex-direction: column; align-items: flex-start; min-width: 0; background: var(--color-surface-raised); color: var(--color-text); border-color: var(--color-border); }
+.task-first-setup .game-choice.ui-button[aria-pressed="false"]:hover:not(:disabled) { background: var(--color-field); border-color: var(--color-border-strong); }
+.task-first-setup .game-choice.ui-button[aria-pressed="true"] { background: var(--color-accent-soft); color: var(--color-accent-text); border-color: var(--color-accent); }
+.task-first-setup .game-choice.ui-button small { margin-top: 0; color: var(--color-text-secondary); }
 @media (max-width: 560px) {
   .app-settings-content { padding: .75rem; }
   .task-first-connection .connection-fields { grid-template-columns: minmax(0, 1fr); }
   .task-first-connection .connection-details-heading { flex-wrap: wrap; }
+  .friend-server-support > .server-actions { grid-template-columns: minmax(0, 1fr); }
+  .friend-server-support > .server-actions .ui-button { width: 100%; min-width: 0; overflow-wrap: normal; word-break: normal; }
+  .app-shell .backups-primary-task > .section-heading { flex-direction: column; align-items: stretch; gap: .75rem; }
+  .app-shell .backups-primary-task > .section-heading > .ui-button { width: 100%; flex: none; }
   .task-first-setup .wizard-footer > .actions { flex-wrap: wrap; }
 }
