@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button, Input } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import {
   parseDeviceAccessExpiryResult,
   type Device,
@@ -258,9 +259,9 @@ function AccessDeadlineEditor({
             <span>Exact UTC</span><strong>{customValidation.utc}</strong>
             <span>On this PC</span><strong>{formatLocal(customValidation.date)}</strong>
           </div>}
-          {choice === 'Custom' && !customValidation.ok && customLocal && <p className="access-deadline-validation" role="alert">{customValidation.message}</p>}
         </details>
       </fieldset>
+      {choice === 'Custom' && !customValidation.ok && customLocal && <DismissibleNotice as="p" scope={device.id} noticeKey={JSON.stringify([customLocal, customValidation.message])} className="access-deadline-validation" role="alert">{customValidation.message}</DismissibleNotice>}
 
       <div className="access-deadline-save">
         <small>{choice === 'Clear' ? 'Clearing only removes the owner deadline.' : choice && choice !== 'Custom' ? 'The duration starts when the Host saves it.' : 'Assignments and permissions will not change.'}</small>
@@ -268,16 +269,16 @@ function AccessDeadlineEditor({
           {saving ? 'Saving deadline…' : 'Save deadline'}
         </Button>
       </div>
-      {feedback && <div className={`access-deadline-feedback ${feedback.kind}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.text}</div>}
+      {feedback && <DismissibleNotice scope={device.id} className={`access-deadline-feedback ${feedback.kind}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.text}</DismissibleNotice>}
     </details>
   </section>
 }
 
-export function FriendAccessExpiredNotice({ connectionCode }: { connectionCode?: string | null }) {
+export function FriendAccessExpiredNotice({ connectionCode, connectionId }: { connectionCode?: string | null; connectionId?: string }) {
   if (connectionCode !== 'AccessExpired') return null
-  return <div className="friend-access-expired" role="status">
+  return <DismissibleNotice scope={connectionId} className="friend-access-expired" role="status">
     <strong>Access expired</strong>
     <p>The Host ended access for this PC at the saved time.</p>
     <small>Ask the Host to extend or clear the end date. This saved connection remains here, so you do not need a new server code.</small>
-  </div>
+  </DismissibleNotice>
 }

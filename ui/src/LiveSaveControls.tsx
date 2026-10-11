@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError, type Decoder } from './contracts'
 import { futureHostFields, liveSaveDisabledReason } from './sharedWorldUx'
 
@@ -62,6 +63,8 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
   { profileId: string; status: LiveSaveStatus; onUpdated: () => Promise<void> }) {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [messageResult, setMessageResult] = useState(0)
+  const showMessage = (text: string) => { setMessage(text); setMessageResult(result => result + 1) }
   const retry = useRef<{ profileId: string; id: string } | null>(null)
   const act = async (action: 'save' | 'withdraw' | 'resume') => {
     if (action === 'save' && !status.available) return
@@ -70,10 +73,10 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
     try {
       const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/live/${action}`, 'POST', parseAction,
         action === 'resume' ? undefined : { requestId: action === 'withdraw' ? status.lastAttempt?.requestId : retry.current.id })
-      setMessage(`${result.code}: ${result.message}`)
+      showMessage(`${result.code}: ${result.message}`)
       if (result.ok || result.attempt && !['Requested', 'Capturing', 'Publishing'].includes(result.attempt.state)) retry.current = null
       await onUpdated()
-    } catch (error) { setMessage(errorMessage(error)) }
+    } catch (error) { showMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   return <section aria-label="Live save sharing">
@@ -83,10 +86,10 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
       {status.resumePending && <Button className="secondary" disabled={busy} onClick={() => void act('resume')}>Retry save resume</Button>}
       {status.lastAttempt && status.lastAttempt.state !== 'Published' && status.lastAttempt.state !== 'Withdrawn' &&
         <Button className="text-button" disabled={busy} onClick={() => void act('withdraw')}>Withdraw this attempt</Button>}</div>
-    <p className="helper-text">{status.message}</p>
-    {!status.available && <p className="helper-text">{liveSaveDisabledReason(status.game)} Use the verified copy after a graceful Stop while these checks remain open.</p>}
+    <DismissibleNotice as="p" scope={profileId} className="helper-text">{status.message}</DismissibleNotice>
+    {!status.available && <DismissibleNotice as="p" scope={profileId} className="helper-text">{liveSaveDisabledReason(status.game)} Use the verified copy after a graceful Stop while these checks remain open.</DismissibleNotice>}
     {status.lastAttempt && <p>Last attempt: {status.lastAttempt.state}. {status.lastAttempt.message}</p>}
-    {message && <p role="status">{message}</p>}
+    {message && <DismissibleNotice as="p" scope={profileId} noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
     {status.stages.length > 0 && <details><summary>Game acceptance checks</summary>
       <p>0 of {status.stages.length} real-game stages accepted. Each stage needs separate evidence.</p>
       <p>Each real game needs its own save, transfer, load and restart evidence. Owner load confirmations do not enable live capture.</p>

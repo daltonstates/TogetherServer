@@ -8,6 +8,7 @@ import { readProtectedDraft } from './protectedUiDrafts'
 import { serializeProtectedSetupDraft } from './setupDraft'
 import type { DesktopNotificationTarget } from './desktopNotificationBridge'
 import type { NotificationPreferences } from './desktopPreferencesWire'
+import type { DesktopUpdateDetails } from './desktopPreferencesWire'
 import { App } from './main'
 import themeCss from './theme.css?inline'
 import baseCss from './style.css?inline'
@@ -207,6 +208,49 @@ function nativeNotifications() {
 }
 
 describe('Task-first app and Host PC navigation', () => {
+  it('keeps update review open while a reminder save is pending, then permits closing after failure', async () => {
+    const update: DesktopUpdateDetails = { state: 'Available', currentVersion: '0.3.2', latestVersion: '0.4.0',
+      message: 'Available.', publisherTrust: 'GitHub digest only', releaseNotes: '', releaseNotesUrl: null,
+      promptSnoozed: false, snoozedUntilUtc: null }
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/update' ? update
+      : path === '/api/local/instance' ? { ...instance, updatesAvailable: true } : read(path, ...args))
+    let finish!: (result: { ok: boolean; message: string }) => void
+    transport.change.mockImplementation((path: string) => {
+      if (path === '/api/local/update/snooze') return new Promise(resolve => { finish = resolve })
+      if (path === '/api/local/update/check') return Promise.resolve(update)
+      return Promise.resolve({ ok: true, code: 'Requested', message: 'Request accepted.', snapshot: state })
+    })
+    await openHost()
+    fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
+    fireEvent.click(within(await screen.findByRole('navigation', { name: 'App settings sections' })).getByRole('button', { name: 'Updates' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review update' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Update TogetherServer' })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Remind me' }), { target: { value: 'OneHour' } })
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Not now' })).toBeDisabled())
+    fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(dialog).toHaveAttribute('open')
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    await act(async () => { finish({ ok: false, message: 'Could not save reminder.' }) })
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Not now' })).toBeEnabled())
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Not now' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expectNoServerAction()
+  })
+
+  it('allows a lifecycle warning to close while keeping Start blocked by canonical recovery', async () => {
+    recoveryBlocked = true
+    const workspace = await openHost()
+    const message = await within(workspace).findByText('Start and Restart need local data recovery.')
+    const warning = message.closest('.dismissible-notice') as HTMLElement
+    expect(warning).not.toBeNull()
+    expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeDisabled()
+    fireEvent.click(within(warning).getByRole('button', { name: 'Dismiss notification' }))
+    expect(within(workspace).queryByText('Start and Restart need local data recovery.')).not.toBeInTheDocument()
+    expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeDisabled()
+    expectNoMutation()
+  })
+
   it('keeps dismissed recovery off Host and global Settings while retaining an Attention review', async () => {
     host().startupRecovery = { previousSessionInterrupted: true, previousStartedUtc: '2026-10-10T12:00:00Z',
       items: [], message: 'No previously active saved server needs action.', windowsRestartRegistered: true }
@@ -750,7 +794,10 @@ describe('Host task structure', () => {
     await waitFor(() => expect(workspace).toHaveAttribute('data-server-tab', failure), { timeout: 3000 })
     const error = await within(workspace).findByRole('alert')
     expect(error).toBeVisible()
-    const retry = within(error).getByRole('button', { name: 'Try section again' })
+    const retry = within(error.closest('.pane-error') as HTMLElement).getByRole('button', { name: 'Try section again' })
+    expect(retry).toBeVisible()
+    fireEvent.click(within(error).getByRole('button', { name: 'Dismiss section error' }))
+    expect(error).not.toBeInTheDocument()
     expect(retry).toBeVisible()
     transport.failures[failure] = false
     fireEvent.click(retry)
@@ -1304,8 +1351,10 @@ describe('Friend task structure', () => {
     expect(screen.queryByText(/^Host permissions:/)).not.toBeInTheDocument()
     fireEvent.click(within(play).getByRole('button', { name: 'Open Connection Doctor' }))
     const summary = await screen.findByText(/^Connection Doctor ·/)
-    expect(summary.closest('details')).toHaveAttribute('open')
-    expect(summary).toHaveFocus()
+    await waitFor(() => {
+      expect(summary.closest('details')).toHaveAttribute('open')
+      expect(summary).toHaveFocus()
+    })
     expect(joinSections().getByRole('button', { name: 'Connection help' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
     expectNoServerAction()

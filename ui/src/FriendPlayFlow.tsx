@@ -1,5 +1,6 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import type { FriendSnapshot, PublicProfile } from './contracts'
 import { friendCheckFreshness } from './FriendConnectionDoctor'
@@ -120,10 +121,10 @@ export function FriendConnectionExplanation({ snapshot, nowMs, onRetry }: {
   snapshot: FriendSnapshot; nowMs?: number; onRetry?: () => void
 }) {
   const explanation = friendConnectionExplanation(snapshot, nowMs)
-  return <div className="friend-connection-explanation" role="status"><strong>{explanation.title}</strong><p>{explanation.detail}</p>
+  return <DismissibleNotice scope={snapshot.connectionId ?? snapshot.endpoint ?? undefined} noticeKey={explanation.state} className="friend-connection-explanation" role="status"><strong>{explanation.title}</strong><p>{explanation.detail}</p>
     {!explanation.currentAccess && ['disconnected', 'stale', 'unknown'].includes(explanation.state) && onRetry
       && <Button className="secondary" onClick={onRetry}>Retry saved connection</Button>}
-  </div>
+  </DismissibleNotice>
 }
 
 export function FriendPermissionExplanation({ snapshot, profile, nowMs }: {
@@ -187,7 +188,7 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
     {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && !permissions.actions.stop.available &&
-      <p className="warning-text" role="status">{permissions.actions.stop.reason}</p>}
+      <DismissibleNotice as="p" scope={JSON.stringify([snapshot.connectionId, profile.id, identityKey])} className="warning-text" role="status">{permissions.actions.stop.reason}</DismissibleNotice>}
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}

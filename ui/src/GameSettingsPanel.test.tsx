@@ -98,11 +98,18 @@ it('rejects an invalid maximum and keeps a stale-file refusal visible without sa
   render(<GameSettingsPanel {...props} />)
   fireEvent.change(await screen.findByLabelText('Maximum players'), { target: { value: '201' } })
   expect(screen.getByRole('button', { name: 'Review settings changes' })).toBeDisabled()
+  fireEvent.click(within(screen.getByText('Maximum players must be a whole number from 1 to 200.')).getByRole('button', { name: 'Dismiss notification' }))
+  expect(screen.queryByText('Maximum players must be a whole number from 1 to 200.')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Review settings changes' })).toBeDisabled()
   fireEvent.change(screen.getByLabelText('Maximum players'), { target: { value: '10' } })
   fireEvent.click(screen.getByRole('button', { name: 'Review settings changes' }))
   expect(await screen.findByText('The file changed. Reload before saving.')).toBeInTheDocument()
   expect(screen.getByLabelText('Maximum players')).toHaveValue(10)
   expect(screen.queryByRole('button', { name: 'Save with checkpoint' })).not.toBeInTheDocument()
+  fireEvent.click(within(screen.getByText('The file changed. Reload before saving.')).getByRole('button', { name: 'Dismiss notification' }))
+  expect(screen.getByLabelText('Maximum players')).toHaveValue(10)
+  expect(screen.queryByRole('button', { name: 'Save with checkpoint' })).not.toBeInTheDocument()
+  expect(fetcher).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: 'PUT' }))
 })
 
 it('limits Bedrock modes and requires allowed players through the edition-specific switch', async () => {

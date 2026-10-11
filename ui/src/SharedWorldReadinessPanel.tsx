@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import { SharedWorldRouteDetails } from './SharedWorldRouteDetails'
 import { SharedWorldServerFile } from './SharedWorldServerFile'
@@ -206,7 +207,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     enabledAddOns: handoff?.requiredAddOns ?? [], newPasswordConfigured: passwordSet,
     controlPort: Number(controlPort), gamePort: Number(gamePort) })
   const run = async (action: 'readiness' | 'rehearse') => {
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setResult(null)
     try {
       const value = await changeJson(`/api/local/friend/${profileId}/shared-world/${action}`, 'POST',
         parseTakeoverReadiness, setup())
@@ -228,7 +229,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
   const restore = async () => {
     if (!currentHandoff || !handoff?.recordHash) return
     metadataController.current?.abort(); ++request.current
-    setBusy(true); setError(''); setVerifiedScope(null)
+    setBusy(true); setError(''); setVerifiedScope(null); setRestoreResult(null)
     try {
       const result = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
         'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
@@ -242,7 +243,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
   const finish = async () => {
     if (!currentHandoff || !handoff?.recordHash) return
     metadataController.current?.abort(); ++request.current
-    setBusy(true); setError(''); setVerifiedScope(null)
+    setBusy(true); setError(''); setVerifiedScope(null); setRestoreResult(null)
     try {
       const value = await changeJson(`/api/local/friend/${profileId}/shared-world/handoff/finish`,
         'POST', parseRestoreResult, { recordHash: handoff.recordHash, setup: setup(),
@@ -317,7 +318,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
       <Button className="secondary" disabled={busy || !/^[0-9A-Fa-f]{64}$/.test(routeRecordHash.trim()) ||
         !/^[0-9A-Fa-f]{64}$/.test(routeFingerprint.trim())} onClick={() => void probeRoute()}>
         Check direct-IP control route</Button>
-      {routeResult && <p role="status">{routeResult.message}</p>}
+      {routeResult && <DismissibleNotice as="p" scope={scopeKey} role="status">{routeResult.message}</DismissibleNotice>}
     </details>
     {handoff?.staged && <div data-hosting-step="folder" tabIndex={-1}>{currentHandoff && <p role="status">{handoff.message}</p>}
       {!handoff.restored && <><label>New server name<Input value={serverName}
@@ -336,23 +337,23 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
         <Button disabled={busy || !currentHandoff} onClick={() => void restore()}>Restore verified copy</Button></>}
       {handoff.restored && !readyForManualStart && <Button disabled={busy || !currentHandoff}
         onClick={() => void finish()}>Finish setup and checks</Button>}
-      {readyForManualStart && <div className="start-connection-notice" role="note">
+      {readyForManualStart && <DismissibleNotice scope={scopeKey} noticeKey={handoff.recordHash ?? undefined} className="start-connection-notice" role="note">
         <strong>Before the first Start on this PC</strong>
         <p>The signed Friend control route was checked from another PC and the local game ports were available. Incoming game traffic is still unverified while the server is stopped. Switch to Host and start, then test the game connection and a real join from another network before relying on this Host.</p>
         {onOpenHostControls && <Button onClick={onOpenHostControls}><Icon name="play" />Review Start in Host</Button>}
-      </div>}
+      </DismissibleNotice>}
       {currentHandoff && <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul>}</div>}
     {!handoff?.staged && <Button data-hosting-step="folder" className="secondary" disabled={busy} onClick={() => void stage()}>
       Check planned handoff</Button>}
-    {restoreResult && <div role="status"><p>{restoreResult.message}</p>
+    {restoreResult && <DismissibleNotice scope={scopeKey} role="status"><p>{restoreResult.message}</p>
       {restoreResult.pendingChecks && <ul>{restoreResult.pendingChecks.map(check =>
-        <li key={check}>{check}</li>)}</ul>}</div>}
-    {error && <p role="alert">{error}</p>}
-    {result && <div role="status"><p>{result.managedProcessRehearsalPassed ?
+        <li key={check}>{check}</li>)}</ul>}</DismissibleNotice>}
+    {error && <DismissibleNotice as="p" scope={scopeKey} role="alert">{error}</DismissibleNotice>}
+    {result && <DismissibleNotice scope={scopeKey} role="status"><p>{result.managedProcessRehearsalPassed ?
       'Disposable fixture process checked and removed.' : result.rehearsalPassed ? 'Disposable file restore checked and removed.' :
       result.ready ? 'Local checks passed.' : 'Hosting still needs setup.'}</p>
       {result.reasons.length > 0 && <ul>{result.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
       {result.rehearsalPassed && <details><summary>Technical details</summary>
-        <p>Version: {result.version} · Hash: {result.versionHash}</p></details>}</div>}
+        <p>Version: {result.version} · Hash: {result.versionHash}</p></details>}</DismissibleNotice>}
   </details>
 }

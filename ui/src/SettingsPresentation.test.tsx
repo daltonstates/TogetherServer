@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Button, Input } from './Controls'
 import { SettingsCard, SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
+import { DismissibleNotice } from './DismissibleNotice'
 
 describe('SettingsCard', () => {
   it('exposes a named action and readable summary before opening its editor', () => {
@@ -67,6 +68,20 @@ describe('SettingsDialog', () => {
     expect(onClose).toHaveBeenCalledOnce()
     view.unmount()
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('focuses the editor before leading feedback and retains keyboard access to its close control', () => {
+    render(<SettingsDialog title="Server editor" onClose={vi.fn()}>
+      <DismissibleNotice role="alert">An earlier save failed</DismissibleNotice>
+      <Input aria-label="Server name" />
+    </SettingsDialog>)
+    const input = screen.getByRole('textbox', { name: 'Server name' })
+    expect(input).toHaveFocus()
+    const close = screen.getByRole('button', { name: 'Dismiss notification' })
+    close.focus()
+    fireEvent.click(close)
+    expect(input).toHaveFocus()
+    expect(screen.getByRole('dialog', { name: 'Server editor' })).toBeVisible()
   })
 
   it('blocks native cancel and Close while saving, then permits cancel with the latest callback', () => {

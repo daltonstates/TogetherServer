@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, TextArea } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { SharedWorldServerFile } from './SharedWorldServerFile'
 import { futureHostFields, normalizedDirectIpHttpsEndpoint, type SharedGame } from './sharedWorldUx'
 
@@ -101,6 +102,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   const [result, setResult] = useState<RouteCheck | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const noticeScope = JSON.stringify([profileId, game, shown?.branchHash])
   useEffect(() => {
     setOwnBranches([]); setShown(null); setHosting(null); setServerFile(''); setGameVersion('')
     setControlPort('5131'); setGamePort(futureHostFields(game).gamePort); setNewPasswordSet(false); setGamePassword('')
@@ -180,7 +182,8 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
         .catch(() => setError('Could not copy this proof. Select the proof code below to copy it manually.'))}>Copy separate-copy proof</Button>
         <TextArea aria-label="Signed separate-copy proof code" rows={3} readOnly value={JSON.stringify(shown)} /></>}</>}
     {shown && hosting && <section aria-label="Host this separate copy">
-      <p role={hosting.reviewRequired ? 'alert' : 'status'}>{hosting.message}</p>
+      {hosting.reviewRequired ? <DismissibleNotice as="p" scope={noticeScope} role="alert">{hosting.message}</DismissibleNotice> :
+        <p role="status">{hosting.message}</p>}
       {!hosting.reviewRequired && <>
         <p>Another game server may still be running. This copy stays separate until the group reviews both save histories.</p>
         {hosting.requiredAddOns?.length ? <details><summary>Required add-ons</summary>
@@ -212,13 +215,13 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
           <Button className="secondary" disabled={busy} onClick={() => void hostChange(
             hosting.restored ? 'finish' : 'restore')}>
             {hosting.restored ? 'Finish local and route checks' : 'Restore into a fresh managed world'}</Button></>}
-        {hosting.readyForManualStart && <><div className="start-connection-notice" role="note"><strong>Before starting this separate copy</strong><p>Local game ports passed the setup check. Incoming game traffic and a real join are still unverified; test both after Start. This separate copy is not the authoritative world.</p></div><label><Input type="checkbox" checked={splitAccepted}
+        {hosting.readyForManualStart && <><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this separate copy</strong><p>Local game ports passed the setup check. Incoming game traffic and a real join are still unverified; test both after Start. This separate copy is not the authoritative world.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
           onChange={event => setSplitAccepted(event.target.checked)} /> I understand another server may still be running</label>
           <Button disabled={busy || !splitAccepted} onClick={() => void hostChange('start')}>
             Start warned separate copy</Button></>}
-        {hosting.running && <p role="alert">This separate server is running. Use Host mode to stop the exact managed game process before group review.</p>}
+        {hosting.running && <DismissibleNotice as="p" scope={noticeScope} role="alert">This separate server is running. Use Host mode to stop the exact managed game process before group review.</DismissibleNotice>}
       </>}
-      {hostAction && <p role={hostAction.ok ? 'status' : 'alert'}>{hostAction.message}</p>}
+      {hostAction && <DismissibleNotice as="p" scope={noticeScope} role={hostAction.ok ? 'status' : 'alert'}>{hostAction.message}</DismissibleNotice>}
       {hostAction?.pendingChecks?.length ? <ul>{hostAction.pendingChecks.map(reason =>
         <li key={reason}>{reason}</li>)}</ul> : null}
       <Button className="text-button" disabled={busy} onClick={() => void select(shown)}>
@@ -228,7 +231,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
       maxLength={512 * 1024} value={pasted} onChange={event => setPasted(event.target.value)} /></label>
     <Button className="secondary" disabled={busy || !pasted.trim()}
       onClick={() => void check()}>Check candidate control route from this PC</Button>
-    {result && <p role={result.controlRouteObserved ? 'status' : 'alert'}>{result.message}</p>}
-    {error && <p role="alert">{error}</p>}
+    {result && <DismissibleNotice as="p" scope={noticeScope} role={result.controlRouteObserved ? 'status' : 'alert'}>{result.message}</DismissibleNotice>}
+    {error && <DismissibleNotice as="p" scope={noticeScope} role="alert">{error}</DismissibleNotice>}
   </details>
 }

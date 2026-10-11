@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError, type ChatDraft } from './contracts'
 import { maximumNoticeTextLength, parseChatRoomWithNotice, validPinnedNoticeText,
   parsePinnedNoticeFields, type ChatRoomWithNotice, type PinnedNoticeFields } from './pinnedNoticeContracts'
@@ -452,7 +453,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   async function send(event: React.FormEvent) {
     event.preventDefault()
     if (busy || actionPending.current || !draft.ready || !text.trim() || text.length > messageLimit) return
-    actionPending.current = true; setBusy(true)
+    actionPending.current = true; setBusy(true); setError('')
     try {
       if (!await draft.flush()) {
         if (!lifetime.current.signal.aborted)
@@ -485,7 +486,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
 
   async function changeMember(deviceId: string, allowed: boolean) {
     if (busy || actionPending.current || !host) return
-    actionPending.current = true; setBusy(true)
+    actionPending.current = true; setBusy(true); setError('')
     try {
       const next = await changeJson(`${base}/members/${deviceId}`, 'PUT',
         decodeRoom, { allowed }, lifetime.current.signal)
@@ -510,7 +511,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
 
   async function changeNotice(nextText: string | null, expectedRevision: number) {
     if (busy || actionPending.current || !host || !room?.ok || !room.noticeSupported) return
-    actionPending.current = true; setBusy(true)
+    actionPending.current = true; setBusy(true); setNoticeError('')
     try {
       const next = await changeJson(`${base}/notice`, 'PUT', decodeRoom,
         { text: nextText, expectedRevision }, lifetime.current.signal)
@@ -531,14 +532,14 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         <Button className="secondary" disabled={busy || syncing || !visible} aria-busy={syncing}
           aria-describedby={syncFeedbackId} onClick={() => void syncNow()}>
           <Icon name={syncing ? 'loader' : 'refresh'} />{syncing ? 'Syncing\u2026' : 'Sync now'}</Button>
-        <span id={syncFeedbackId} className={`server-chat-sync-feedback${currentSync?.status === 'error' ? ' warning-text' : ''}`}
+        {currentSync && currentSync.status !== 'pending' ? <DismissibleNotice as="span" scope={scope} id={syncFeedbackId} className={`server-chat-sync-feedback${currentSync.status === 'error' ? ' warning-text' : ''}`}
           role={currentSync?.status === 'error' ? 'alert' : 'status'} aria-label="Chat sync" aria-atomic="true">
           {currentSync?.status === 'success' && <Icon name="check" />}
           {currentSync?.status === 'error' && <Icon name="warning" />}{currentSync?.message}
-        </span>
+        </DismissibleNotice> : <span id={syncFeedbackId} className="server-chat-sync-feedback" role="status" aria-label="Chat sync" aria-atomic="true">{currentSync?.message}</span>}
       </div></div>
-    {room && !room.ok && <p className="warning-text" role="status">{room.message}</p>}
-    {error && <p className="warning-text" role="alert">{error}</p>}
+    {room && !room.ok && <DismissibleNotice as="p" scope={scope} className="warning-text" role="status">{room.message}</DismissibleNotice>}
+    {error && <DismissibleNotice as="p" scope={scope} className="warning-text" role="alert">{error}</DismissibleNotice>}
     {room && <section className="server-chat-notice" aria-label="Pinned notice">
       <div className="server-chat-notice-heading"><strong>Pinned notice</strong>
         {host && room.ok && room.noticeSupported && !editingNotice &&
@@ -564,7 +565,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
             onClick={() => void changeNotice(null, editingNotice.revision)}>Clear notice</Button>}
         </div>
       </form>}
-      {noticeError && <p className="warning-text" role="alert">{noticeError}</p>}
+      {noticeError && <DismissibleNotice as="p" scope={scope} className="warning-text" role="alert">{noticeError}</DismissibleNotice>}
     </section>}
     <div ref={messages} className="server-chat-messages" role="log" aria-live={following ? 'polite' : 'off'}
       aria-label="Messages" tabIndex={0} onScroll={onScroll}>
@@ -600,12 +601,12 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         !room?.pending.some(queued => queued.id === queueEdit.id && !queued.submitted)}>Save queued message</Button>
       <Button className="secondary" disabled={busy} onClick={() => setQueueEdit(null)}>Keep queued message</Button>
     </form>}
-    {queueError && <p className="warning-text" role="alert">{queueError}</p>}
-    {room?.ok && draft.recovering && <section aria-label="Recovered unfinished message">
+    {queueError && <DismissibleNotice as="p" scope={scope} className="warning-text" role="alert">{queueError}</DismissibleNotice>}
+    {room?.ok && draft.recovering && <DismissibleNotice as="section" scope={scope} noticeKey={draft.recovered ?? undefined} aria-label="Recovered unfinished message">
       <strong>Review your unfinished message</strong><p>{draft.recovered}</p>
       <Button className="secondary" disabled={busy || draft.working} onClick={draft.resume}>Use recovered message</Button>
       <Button className="secondary" disabled={busy || draft.working} onClick={() => void draft.discard()}>Discard recovered message</Button>
-    </section>}
+    </DismissibleNotice>}
     {room?.ok && <form className="server-chat-compose" onSubmit={event => void send(event)}>
       <label htmlFor={`chat-${profileId}`}>Message</label>
       <TextArea id={`chat-${profileId}`} value={text} maxLength={500} rows={3}
@@ -613,8 +614,8 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         onChange={event => draft.change(event.target.value)} />
       <div><small>{text.length}/500</small><Button type="submit" disabled={busy || !draft.ready || !text.trim() || text.length > messageLimit}><Icon name={busy ? 'loader' : 'chat'} />Send</Button></div>
       {!draft.ready && !draft.recovering && !draft.feedback && <small role="status">Checking for an unfinished message…</small>}
-      {(draft.dirty || draft.feedback) && <small role={draft.failed ? 'alert' : 'status'}>
-        {draft.dirty && !draft.failed ? 'Saving unfinished message…' : draft.feedback}</small>}
+      {(draft.dirty || draft.feedback) && (draft.dirty && !draft.failed ? <small role="status">Saving unfinished message…</small> :
+        <DismissibleNotice as="small" scope={scope} role={draft.failed ? 'alert' : 'status'}>{draft.feedback}</DismissibleNotice>)}
       {!draft.ready && !draft.recovering && draft.feedback && <Button className="secondary" disabled={draft.working}
         onClick={draft.retry}>Retry unfinished message</Button>}
     </form>}
@@ -700,6 +701,6 @@ function ChatCardSummary({ profileId, host, connectionId, hostId, authorized, su
     {unread > 0 && <Button className="secondary" onClick={onOpenChat} disabled={!onOpenChat} aria-label={`${unread} unread chat messages`}>
       Chat · {unread} unread</Button>}
     <PinnedNoticePreview room={displayed} authorized={authorized} onOpenChat={onOpenChat} />
-    {failed && <small role="status">Chat preview could not be refreshed. Open chat to check current access and updates.</small>}
+    {failed && <DismissibleNotice as="small" scope={scope} role="status">Chat preview could not be refreshed. Open chat to check current access and updates.</DismissibleNotice>}
   </div>
 }

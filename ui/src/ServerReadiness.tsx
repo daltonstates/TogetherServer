@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Icon } from './Icon'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 
 export type GamePortCheck = {
   profileId: string
@@ -359,11 +360,11 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
       <SummaryLine summary={gameAccess} icon="game" loading={refreshing} />
     </div>
 
-    {issue && <div className={`readiness-action ${issue.tone}`} role="status">
+    {issue && <DismissibleNotice className={`readiness-action ${issue.tone}`} role="status" scope={profileId}>
       <span className="readiness-action-icon"><Icon name="warning" /></span>
       <span className="readiness-action-copy"><strong>{issue.title}</strong><span>{issue.detail}</span></span>
       {issue.connection && onOpenConnection && <Button type="button" onClick={onOpenConnection}>Fix connection</Button>}
-    </div>}
+    </DismissibleNotice>}
 
     <div className="readiness-footer">
       <details className="readiness-details">

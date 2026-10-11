@@ -1,4 +1,6 @@
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
+import type { ActionNotice } from './actionFeedback'
 import type { UiPreferences } from './qolPreferences'
 
 export function AppearancePreferences({ value, onChange }: {
@@ -34,11 +36,12 @@ export function ServerStateExplanation({ state }: { state: string }) {
 }
 
 export function ActionFeedback({ notice, label = 'Result' }: {
-  notice: { good: boolean; text: string } | null; label?: string
+  notice: ActionNotice | null; label?: string
 }) {
-  return notice ? <p className={`action-feedback ${notice.good ? 'good' : 'bad'}`} role="status" aria-atomic="true">
+  return notice ? <DismissibleNotice as="p" className={`action-feedback ${notice.good ? 'good' : 'bad'}`} role="status" aria-atomic="true"
+    noticeKey={notice.receivedAtMs} dismissLabel="Dismiss result">
     <strong>{label}: </strong>{notice.text}
-  </p> : null
+  </DismissibleNotice> : null
 }
 
 export function TimerPresets({ minutes, deadline, savedMinutes, busy, onChange, onAdd }: {

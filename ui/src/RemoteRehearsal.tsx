@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError, type Decoder, type FriendSnapshot } from './contracts'
 
 export type RehearsalReport = {
@@ -45,16 +46,18 @@ const parseSetup: Decoder<{ ok: boolean; message: string }> = (value, context = 
 export function HostRemoteRehearsal() {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [messageResult, setMessageResult] = useState(0)
+  const showMessage = (text: string) => { setMessage(text); setMessageResult(result => result + 1) }
   const prepare = async () => {
     setBusy(true)
-    try { setMessage((await changeJson('/api/local/rehearsal/prepare', 'POST', parseSetup)).message) }
-    catch (error) { setMessage(errorMessage(error)) }
+    try { showMessage((await changeJson('/api/local/rehearsal/prepare', 'POST', parseSetup)).message) }
+    catch (error) { showMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   return <details className="connection-doctor"><summary>Test with another owned PC</summary>
     <p>Prepare a disposable server with synthetic save data. Pair the development app on the test PC with this server's code, grant Receive, then allow saves on that PC. Production access and game worlds are separate.</p>
     <Button className="secondary" disabled={busy} onClick={() => void prepare()}>{busy ? 'Preparing…' : 'Prepare rehearsal'}</Button>
-    {message && <p role="status">{message}</p>}
+    {message && <DismissibleNotice as="p" noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>
 }
 
@@ -65,6 +68,8 @@ export function FriendRemoteRehearsal({ snapshot }: { snapshot: FriendSnapshot }
   const [busy, setBusy] = useState(false)
   const [report, setReport] = useState<RehearsalReport | null>(null)
   const [message, setMessage] = useState('')
+  const [messageResult, setMessageResult] = useState(0)
+  const showMessage = (text: string) => { setMessage(text); setMessageResult(result => result + 1) }
   const retry = useRef<{ profileId: string; requestId: string } | null>(null)
   const selected = candidates.some(profile => profile.id === profileId) ? profileId : candidates[0]?.id
   const run = async () => {
@@ -78,7 +83,7 @@ export function FriendRemoteRehearsal({ snapshot }: { snapshot: FriendSnapshot }
         { requestId: retry.current.requestId, networkContext: context }, controller.signal)
       setReport(next)
       if (next.stages[4].state === 'Passed') retry.current = null
-    } catch (error) { setMessage(errorMessage(error)) }
+    } catch (error) { showMessage(errorMessage(error)) }
     finally { window.clearTimeout(timer); setBusy(false) }
   }
   return <details className="connection-doctor"><summary>Run rehearsal</summary>
@@ -97,8 +102,8 @@ export function FriendRemoteRehearsal({ snapshot }: { snapshot: FriendSnapshot }
         <div><small>{labels[stage.id]}</small><strong>{stage.state}</strong><p>{stage.detail}</p></div>
       </article>)}</div>
       <Button className="text-button" onClick={() => void navigator.clipboard.writeText(JSON.stringify(report, null, 2)).then(
-        () => setMessage('Redacted report copied.'), () => setMessage('Clipboard is unavailable.'))}>Copy redacted report</Button>
+        () => showMessage('Redacted report copied.'), () => showMessage('Clipboard is unavailable.'))}>Copy redacted report</Button>
     </>}
-    {message && <p role="status">{message}</p>}
+    {message && <DismissibleNotice as="p" scope={`${snapshot.connectionId}:${selected ?? ''}`} noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>
 }

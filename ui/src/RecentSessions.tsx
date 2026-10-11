@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { recordedTimestampTicks } from './weeklySummaryWire'
 import {
   parseRecentServerSessions,
@@ -201,7 +202,7 @@ export function SessionHistory({ entries, filters, onFiltersChange, window = {},
       <Button className="text-button" disabled={filters.metric === 'all' && filters.outcome === 'all' && !filters.fromDate && !filters.throughDate}
         onClick={() => onFiltersChange({ ...emptySessionFilters })}>Clear session filters</Button>
     </div>
-    {dateError && <p className="warning-text" role="alert">{dateError}</p>}
+    {dateError && <DismissibleNotice as="p" noticeKey={`${filters.fromDate}:${filters.throughDate}`} className="warning-text" role="alert">{dateError}</DismissibleNotice>}
     <p role="status">{filtered.length} of {entries.length} retained sessions match{showMetrics ? ` · ${metricLabels[filters.metric]}` : ''}.</p>
     {!dateError && filtered.length === 0 && <p>No retained sessions match these filters.</p>}
     <div className="recent-session-list" aria-label="Filtered sessions">
@@ -258,11 +259,11 @@ export function RecentSessions({ profileId, visible, loader = defaultLoader }: {
       <Button className="secondary" disabled={loading || !visible} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh'}</Button>
     </div>
     {loading && !currentResult && <div className="recent-sessions-state" role="status">Loading recent sessions…</div>}
-    {loadError && <div className="recent-sessions-state error" role="alert"><strong>Recent sessions unavailable</strong>
-      <p>TogetherServer could not read the saved session history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
+    {loadError && <DismissibleNotice scope={profileId} className="recent-sessions-state error" role="alert"><strong>Recent sessions unavailable</strong>
+      <p>TogetherServer could not read the saved session history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
     {!loadError && currentResult?.sessions.length === 0 && <div className="recent-sessions-state"><strong>No archived sessions yet</strong>
       <p>A summary appears after TogetherServer saves a completed server session.</p></div>}
-    {!loadError && currentResult && currentResult.sessions.length > 0 && <SessionHistory entries={currentResult.sessions.map(session => ({ session }))}
+    {!loadError && currentResult && currentResult.sessions.length > 0 && <SessionHistory key={profileId} entries={currentResult.sessions.map(session => ({ session }))}
       filters={filters} onFiltersChange={setFilters} />}
     <p className="recent-sessions-boundary">Player numbers came from the game server during that session. They do not show who joined or prove that a join or world save succeeded.</p>
   </section>

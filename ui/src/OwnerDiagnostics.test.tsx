@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OwnerDiagnostics, ownerDiagnosticExplanation, ownerTroubleshootingReport } from './OwnerDiagnostics'
 import type { OwnerDiagnosticsView, SupportReportExport } from './contracts'
@@ -41,9 +41,14 @@ describe('OwnerDiagnostics', () => {
     await screen.findByText('Redacted explanation copied.')
     expect(writeText.mock.calls[0][0]).toContain('Local game ports: Open on PC')
     expect(writeText.mock.calls[0][0]).toContain('does not prove an outside game route')
+    fireEvent.click(within(screen.getByText('Redacted explanation copied.')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Redacted explanation copied.')).not.toBeInTheDocument()
+    expect(screen.getByText('Open on PC')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy explanation for Local game ports' }))
+    expect(await screen.findByText('Redacted explanation copied.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Copy summary' }))
     await screen.findByText('Concise redacted troubleshooting summary copied.')
-    expect(writeText.mock.calls[1][0]).toBe(ownerTroubleshootingReport(diagnostics, diagnostics.servers[0].profileId))
+    expect(writeText.mock.calls[2][0]).toBe(ownerTroubleshootingReport(diagnostics, diagnostics.servers[0].profileId))
     expect(supportReportLoader).not.toHaveBeenCalled()
   })
 
@@ -121,6 +126,9 @@ describe('OwnerDiagnostics', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy report' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(report.content))
     expect(await screen.findByText(/Redacted support report copied/)).toBeInTheDocument()
+    fireEvent.click(within(screen.getByText(/Redacted support report copied/)).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText(/Redacted support report copied/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download JSON' })).toBeEnabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Download JSON' }))
     await waitFor(() => expect(click).toHaveBeenCalledOnce())

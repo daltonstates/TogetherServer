@@ -250,6 +250,17 @@ describe('local deadline validation', () => {
 })
 
 describe('FriendAccessExpiredNotice', () => {
+  it('keeps dismissal local to the saved connection and shows the same expiry for a different Host', () => {
+    const view = render(<FriendAccessExpiredNotice connectionId="first" connectionCode="AccessExpired" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Access expired')).not.toBeInTheDocument()
+    view.rerender(<FriendAccessExpiredNotice connectionId="first" connectionCode="AccessExpired" />)
+    expect(screen.queryByText('Access expired')).not.toBeInTheDocument()
+    view.rerender(<FriendAccessExpiredNotice connectionId="second" connectionCode="AccessExpired" />)
+    expect(screen.getByText('Access expired')).toBeInTheDocument()
+    expect(screen.getByText(/saved connection remains here/i)).toBeInTheDocument()
+  })
+
   it('presents typed AccessExpired as owner-ended access while preserving the saved connection', () => {
     const { rerender } = render(<FriendAccessExpiredNotice connectionCode="AccessExpired" />)
 
@@ -260,4 +271,19 @@ describe('FriendAccessExpiredNotice', () => {
     rerender(<FriendAccessExpiredNotice connectionCode="CredentialExpired" />)
     expect(screen.queryByText(/saved connection remains here/i)).not.toBeInTheDocument()
   })
+})
+
+it('lets an invalid deadline warning close while retaining validation and refusing Save', () => {
+  const { onSave } = renderEditor()
+  const input = screen.getByLabelText('Local date and time')
+  fireEvent.change(input, { target: { value: '2026-09-28T11:00' } })
+  expect(screen.getByRole('alert')).toHaveTextContent('Choose a local time in the future.')
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(input).toHaveValue('2026-09-28T11:00')
+  expect(screen.getByRole('button', { name: 'Save deadline' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Save deadline' }))
+  expect(onSave).not.toHaveBeenCalled()
+  fireEvent.change(input, { target: { value: '2026-09-28T10:00' } })
+  expect(screen.getByRole('alert')).toHaveTextContent('Choose a local time in the future.')
 })

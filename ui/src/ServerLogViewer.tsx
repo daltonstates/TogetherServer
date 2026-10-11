@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import {
   parseServerLogResult,
@@ -344,6 +345,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const message = unsupported?.message ?? (requestError || result?.message ||
     'Loading recent lines from this server session.')
   const visibleRecords = onlyProblems ? records.filter(record => serverLogProblem(record) !== null) : records
+  const sourceMessage = <><strong>{stateLabel(sourceState, paused)}</strong><span>{message}</span></>
 
   return <section ref={rootRef} className="server-log-viewer" aria-label="Server logs">
     <div className="server-log-toolbar">
@@ -373,7 +375,9 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
         onClick={() => setOnlyProblems(value => !value)}>Likely problems</Button>
       <Button className="text-button" disabled={!filters.severity && !filters.category && !filters.contains && !filterDraft.severity && !filterDraft.category && !filterDraft.contains} onClick={() => { setFilterDraft(emptyFilters); setFilters(emptyFilters); saveLogPreferences(emptyFilters) }}>Clear</Button>
     </form>
-    <div className={`server-log-source state-${sourceState.toLocaleLowerCase()}`} role="status"><strong>{stateLabel(sourceState, paused)}</strong><span>{message}</span></div>
+    {unsupported || requestError || result?.ok === false
+      ? <DismissibleNotice className={`server-log-source state-${sourceState.toLocaleLowerCase()}`} role="status" scope={endpoint} noticeKey={message}>{sourceMessage}</DismissibleNotice>
+      : <div className={`server-log-source state-${sourceState.toLocaleLowerCase()}`} role="status">{sourceMessage}</div>}
     {!followLatest && <div className="server-log-reading" role="status"><span>{newLineCount > 0 ? `${newLineCount}${newLineCount === 1000 ? '+' : ''} new line${newLineCount === 1 ? '' : 's'}` : 'Reading earlier lines'}{readingLineExpired ? ' · The line you were reading is no longer in the loaded view.' : ''}</span>
       <Button className="secondary" onClick={jumpToLatest}>Jump to latest</Button></div>}
     <div ref={consoleRef} className="server-log-console" role="log" aria-live="off" aria-label="Server log console"

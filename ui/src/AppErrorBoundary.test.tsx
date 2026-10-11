@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AppErrorBoundary } from './AppErrorBoundary'
 
@@ -14,5 +14,8 @@ describe('AppErrorBoundary', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('The interface needs to reload')
     expect(screen.getByRole('button', { name: 'Reload interface' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss interface error' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reload interface' })).toBeVisible()
   })
 })

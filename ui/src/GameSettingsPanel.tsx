@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, Select, TextArea } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { useConfirmation, type ConfirmationOptions } from './Confirmation'
 import { editorBulkPlayers } from './editorChanges'
 import { EditorDraftRecovery, useEditorDirtyGuard, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftStateChange, type EditorDraftGuard, type EditorDraftGuardChange } from './editorProtectedDraft'
@@ -183,11 +184,11 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
     <div className="section-heading"><div><h3>Game settings</h3>
       <p>Choose common settings and manage who can join. Changes apply after the next Start.</p></div>
       <Button className="secondary" disabled={!!pending || busy} onClick={() => void reload()}>Reload game settings</Button></div>
-    {notice && <div className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</div>}
+    {notice && <DismissibleNotice scope={profileId} className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</DismissibleNotice>}
     {!view && !notice && <p className="helper-text">Loading game settings…</p>}
-    {view && !view.ok && <p className="helper-text">{view.message}</p>}
+    {view && !view.ok && <DismissibleNotice as="p" scope={profileId} className="helper-text">{view.message}</DismissibleNotice>}
     {view?.settings && draft && <>
-      <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} disabled={!!pending}
+      <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} status={protectedDraft.status} scope={`${profileId}:settings:properties`} disabled={!!pending}
         onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
       <label>Search game settings<Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Difficulty, players, joining…" /></label>
       {search.trim() && <p className="helper-text" role="status">{labels.filter(matches).length} of {labels.length} settings match.</p>}
@@ -210,7 +211,7 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
       </div>
       <p className="helper-text">Game mode normally applies to new players; the saved player or world mode can remain unless you apply it when players join.
         Requiring allowed players uses this edition's list below.</p>
-      {issue && changed && <p className="helper-text" role="status">{issue}</p>}
+      {issue && changed && <DismissibleNotice as="p" scope={profileId} className="helper-text" role="status">{issue}</DismissibleNotice>}
       <div className="actions"><Button disabled={!allowed || !changed || !!issue} onClick={() => void preview()}>
         {pending === 'preview' ? 'Reviewing…' : 'Review settings changes'}</Button>
         <Button className="secondary" disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
@@ -225,7 +226,7 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
       onConfirmationTargetChange={updateListConfirmationTarget} summary={list} kind={view.kind} editAllowed={allowed} blocked={busy || !!pending || recoveryBlocked} />)}
     {view && (view.settings !== null || view.lists.length > 0) && <>
       <p className="helper-text">Each save and Undo makes an offline setup checkpoint first. Undo restores the previous version of that file.</p>
-      {recoveryBlocked ? <p className="helper-text">Resolve local recovery before changing game settings.</p> :
+      {recoveryBlocked ? <DismissibleNotice as="p" scope={profileId} className="helper-text">Resolve local recovery before changing game settings.</DismissibleNotice> :
         (!maintenance || state !== 'Offline') && <div className="next-action"><span>{!maintenance ?
           'Prepare maintenance before editing settings or access lists.' : 'Stop or resolve this server before editing settings or access lists.'}</span>
           <Button className="secondary" disabled={busy || !!pending} onClick={onPrepareMaintenance}>Open maintenance guide</Button></div>}
@@ -386,12 +387,12 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
         onClick={() => setOpen(value => !value)}>{open ? 'Close list' : `Manage ${summary.label.toLowerCase()}`}</Button></div>
     {!summary.available && <p className="helper-text">The game has not created this list yet. Start it once, then stop and reload to manage the list.</p>}
     {open && summary.available && <>
-      {notice && <div className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</div>}
+      {notice && <DismissibleNotice scope={`${profileId}:${summary.key}`} className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</DismissibleNotice>}
       {!view && !notice && <p className="helper-text">Loading players…</p>}
-      {view && !view.ok && <p className="helper-text">{view.message}</p>}
+      {view && !view.ok && <DismissibleNotice as="p" scope={`${profileId}:${summary.key}`} className="helper-text">{view.message}</DismissibleNotice>}
       <Button className="text-button" disabled={blocked || !!pending} onClick={() => void reload()}>Reload this list</Button>
       {view?.ok && <>
-        <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} disabled={!!pending}
+        <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} status={protectedDraft.status} scope={`${profileId}:list:${summary.key}`} disabled={!!pending}
           onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
         {kind === 'Valheim' && summary.key === 'permit-list' && <p className="helper-text">
           A non-empty permitted list restricts joining to these IDs. An empty list allows other players subject to bans and the game password.</p>}

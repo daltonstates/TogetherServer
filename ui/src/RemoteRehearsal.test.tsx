@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HostRemoteRehearsal, parseRehearsalReport } from './RemoteRehearsal'
 
@@ -53,5 +53,18 @@ describe('remote rehearsal evidence', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Prepare rehearsal' }))
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('grant Receive'))
     expect(fetch).toHaveBeenCalledWith('/api/local/rehearsal/prepare', expect.objectContaining({ method: 'POST', body: undefined }))
+  })
+  it('dismisses a preparation result and shows the same message from a new preparation', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, message: 'Pair the test PC and grant Receive.' })))
+    vi.stubGlobal('fetch', fetch)
+    render(<HostRemoteRehearsal />)
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare rehearsal' }))
+    const result = await screen.findByRole('status')
+    fireEvent.click(within(result).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare rehearsal' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('grant Receive')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 })

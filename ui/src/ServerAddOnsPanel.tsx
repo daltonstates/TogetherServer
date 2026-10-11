@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Button } from './Controls'
 import { ContractError, type Decoder } from './contracts'
 import { useConfirmation } from './Confirmation'
@@ -100,8 +101,8 @@ export function ServerAddOnsPanel({ profileId, state, maintenance, busy, recover
     <div className="section-heading"><div><h4>Add-ons &amp; game version</h4>
       <p>Game version: <strong>{view?.gameVersion ?? 'Loading…'}</strong></p></div>
       <Button className="secondary" disabled={pending || busy} onClick={() => void refresh()}>Refresh</Button></div>
-    {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-    {view?.warning && <div className="notice bad" role="status">{view.warning}</div>}
+    {notice && <DismissibleNotice scope={profileId} className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
+    {view?.warning && <DismissibleNotice scope={profileId} noticeKey={view.stateToken} className="notice bad" role="status">{view.warning}</DismissibleNotice>}
     {view && <>
       <p className="helper-text">{view.requiredOnFriendPc}</p>
       {view.items.length > 0 ? <div className="server-file-list">{view.items.map(item =>

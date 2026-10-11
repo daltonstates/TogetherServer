@@ -95,6 +95,28 @@ describe('Host settings cards and editors', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: /Friend extension maximum/ }), { target: { value: '19' } })
     expect(screen.getByRole('button', { name: 'Save timer' })).toBeDisabled()
     expect(screen.getByRole('status')).toHaveTextContent('maximum must cover at least one extension increment')
+    fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save timer' })).toBeDisabled()
+    fireEvent.change(screen.getByRole('spinbutton', { name: /Friend extension maximum/ }), { target: { value: '20' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: /Friend extension maximum/ }), { target: { value: '19' } })
+    expect(screen.getByRole('status')).toHaveTextContent('maximum must cover at least one extension increment')
+    expect(input.onSave).not.toHaveBeenCalled()
+  })
+
+  it('keeps a dismissed TCP result hidden through polling and shows a later route test', () => {
+    const input = props('network')
+    const routeCheck = { state: 'Not reachable' as const, detail: 'The Friend app TCP port could not be reached.',
+      port: input.snapshot.settings.companionPort, checkedUtc: '2026-10-11T12:00:00Z' }
+    const view = render(<HostSettingsTools {...input} routeCheck={routeCheck} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Internet and local checks Open connection checks' }))
+    fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
+    const updated = { ...routeCheck, detail: 'Updated display details for the same test.' }
+    view.rerender(<HostSettingsTools {...input} routeCheck={updated} />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    view.rerender(<HostSettingsTools {...input} routeCheck={{ ...updated, checkedUtc: '2026-10-11T12:01:00Z' }} />)
+    expect(screen.getByRole('status')).toHaveTextContent(updated.detail)
+    expect(input.onTestRoute).not.toHaveBeenCalled()
     expect(input.onSave).not.toHaveBeenCalled()
   })
 

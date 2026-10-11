@@ -515,6 +515,13 @@ describe('manual chat sync feedback', () => {
     expect(screen.getByText(/Leave spawn clear/)).toBeInTheDocument()
     expect(screen.getByLabelText('Message')).toHaveValue('Keep my unfinished question')
     expect(screen.queryByText('Chat synced.')).not.toBeInTheDocument()
+    const callsBeforeDismiss = fetch.mock.calls.length
+    fireEvent.click(within(screen.getByRole('alert', { name: 'Chat sync' })).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('alert', { name: 'Chat sync' })).not.toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(callsBeforeDismiss)
+    expect(screen.getByLabelText('Message')).toHaveValue('Keep my unfinished question')
+    expect(screen.getByText(/Leave spawn clear/)).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Pinned notice' })).queryByRole('button', { name: 'Dismiss notification' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
     await waitFor(() => expect(screen.getByRole('status', { name: 'Chat sync' })).toHaveTextContent('Chat synced.'))
     expect(screen.queryByRole('alert', { name: 'Chat sync' })).not.toBeInTheDocument()

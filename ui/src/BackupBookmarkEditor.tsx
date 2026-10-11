@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { ApiError, changeJson } from './api'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { parseBackupBookmarkResult, validBackupLabel, type BackupBookmark, type BackupBookmarkChange,
   type BackupBookmarkResult, type BackupBookmarksResult } from './backupBookmarksWire'
 import { backupBytes, backupKindName, pinPreview, suggestedBackupNames } from './backupCatalogModel'
@@ -94,11 +95,11 @@ export function BackupBookmarkEditor({ backup, updater = updateBackupBookmark, c
         </Select>
         <label className="check"><Input type="checkbox" checked={pinned} disabled={saving}
           onChange={event => setPinned(event.target.checked)} />Pin this backup</label>
-        <small>{preview.message}</small>
-        {!valid && <p role="alert">Use English letters, numbers, spaces or simple punctuation in the name.</p>}
-        {backup.pinned && !pinned && <p>After you save, a later backup can remove this one through automatic retention. Unpinning removes nothing now.</p>}
+        {preview.blocked ? <DismissibleNotice as="small" scope={`${backup.profileId}:${backup.backupId}`} role="status">{preview.message}</DismissibleNotice> : <small>{preview.message}</small>}
+        {!valid && <DismissibleNotice as="p" scope={`${backup.profileId}:${backup.backupId}`} role="alert">Use English letters, numbers, spaces or simple punctuation in the name.</DismissibleNotice>}
+        {backup.pinned && !pinned && <DismissibleNotice as="p" scope={`${backup.profileId}:${backup.backupId}`}>After you save, a later backup can remove this one through automatic retention. Unpinning removes nothing now.</DismissibleNotice>}
         <Button className="secondary" type="submit" disabled={saving || !changed || !valid || preview.blocked}>{saving ? 'Saving…' : 'Save name and pin'}</Button>
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <DismissibleNotice as="p" scope={`${backup.profileId}:${backup.backupId}`} className="error" role="alert">{error}</DismissibleNotice>}
       </form>
     </details>
   </article>

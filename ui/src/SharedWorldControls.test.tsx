@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus,
   parseHostSharedWorldStatus, parseLiveOrphanReview, normalizedDirectIpHttpsEndpoint,
@@ -91,9 +91,11 @@ describe('Shared saves controls', () => {
     expect(screen.getByText(/Use its hash-verified post-Stop file copy/)).toBeInTheDocument()
   })
 
-  it('keeps receiver consent off until this PC opts in and shows version lag', async () => {
+  it('keeps receiver consent off after warning dismissal until this PC opts in and shows version lag', async () => {
     let consent = false
+    const mutations: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method) mutations.push(url)
       if (url.endsWith('/consent')) {
         consent = true
         return reply({ ok: true, code: 'ConsentSaved', message: 'Consent saved',
@@ -105,11 +107,23 @@ describe('Shared saves controls', () => {
         thisPcVersion: 1, state: 'Consent off', error: null })
       throw new Error(`Unexpected request ${url}`)
     }))
-    render(<FriendSharedWorlds profileId={profile} available />)
+    const view = render(<FriendSharedWorlds profileId={profile} connectionId="first" available />)
     await screen.findByRole('region', { name: 'Shared worlds' })
     const toggle = await screen.findByLabelText('Allow saves on this PC')
     expect(toggle).not.toBeChecked()
     expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
+    const notice = await screen.findByText('Receiving consent is required before Get latest save.')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Receiving consent is required before Get latest save.')).not.toBeInTheDocument()
+    expect(toggle).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
+    expect(mutations).toHaveLength(0)
+    view.rerender(<FriendSharedWorlds profileId={profile} connectionId="first" available />)
+    expect(screen.queryByText('Receiving consent is required before Get latest save.')).not.toBeInTheDocument()
+    view.rerender(<FriendSharedWorlds profileId={profile} connectionId="second" available />)
+    expect(screen.getByText('Receiving consent is required before Get latest save.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
+    expect(mutations).toHaveLength(0)
     fireEvent.click(toggle)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Get latest save' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Get latest save' }))

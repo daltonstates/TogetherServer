@@ -1,4 +1,5 @@
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import type { HostSnapshot } from './contracts'
 import { activityDestination, type ActivityDestination } from './notificationState'
 
@@ -88,7 +89,7 @@ export function AllServerOverview({ snapshot, selectedProfileId, nowMs, error = 
   const rows = snapshot ? allServerRows(snapshot, nowMs) : []
   return <section className="all-server-overview" aria-label="All servers">
     <div className="all-server-heading"><h2>All servers</h2><span>{rows.filter(row => row.priority > 0).length} need attention</span></div>
-    {error && <p role="alert">Overview could not refresh. Showing the last available snapshot; stale counts are Unknown.</p>}
+    {error && <DismissibleNotice as="p" role="alert" noticeKey={error}>Overview could not refresh. Showing the last available snapshot; stale counts are Unknown.</DismissibleNotice>}
     {!snapshot ? <p role="status">Loading saved servers…</p> : rows.length === 0 ? <p>No saved servers yet. Add a server to begin.</p> :
       <div className="all-server-rows">{rows.map(row => <article key={row.id} className={row.id === selectedProfileId ? 'all-server-row selected' : 'all-server-row'}>
         <div className="all-server-identity"><strong>{row.name}</strong><span>{row.state}</span>{row.warning && <small>{row.warning}</small>}</div>

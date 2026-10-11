@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { errorMessage } from './api'
 import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft, type DraftIdentity } from './protectedUiDrafts'
 
@@ -171,17 +172,20 @@ export function useEditorDirtyGuard(source: string, dirty: boolean, onChange?: E
   useEffect(() => () => onChange?.(source, false), [source, onChange])
 }
 
-export function EditorDraftRecovery({ recovered, message, onRecover, onDiscard, disabled = false, purpose = 'file' }: {
-  recovered: string | null; message: string; onRecover: () => void; onDiscard: () => void; disabled?: boolean; purpose?: 'file' | 'setup'
+export function EditorDraftRecovery({ recovered, message, onRecover, onDiscard, disabled = false, purpose = 'file', scope, status }: {
+  recovered: string | null; message: string; onRecover: () => void; onDiscard: () => void; disabled?: boolean; purpose?: 'file' | 'setup'; scope?: string; status?: DraftState['status']
 }) {
-  if (recovered === null) return message ? <p className="helper-text" role="status">{message}</p> : null
+  const progress = status === 'loading' || status === 'saving' ||
+    !status && ['Keeping a protected draft on this PC…', 'Clearing this protected draft…'].includes(message)
+  if (recovered === null) return !message ? null : progress ? <p className="helper-text" role="status">{message}</p> :
+    <DismissibleNotice as="p" scope={scope} className="helper-text" role="status">{message}</DismissibleNotice>
   const setup = purpose === 'setup'
-  return <section className={setup ? 'notice setup-draft-recovery' : 'notice'} aria-label={setup ? 'Recovered server setup' : 'Recovered editor draft'}>
+  return <DismissibleNotice as="section" scope={scope} noticeKey={JSON.stringify([recovered, message])} className={setup ? 'notice setup-draft-recovery' : 'notice'} aria-label={setup ? 'Recovered server setup' : 'Recovered editor draft'}>
     <strong>{setup ? 'Saved server setup' : 'A protected draft is available on this PC.'}</strong>
     <p>{setup ? 'Review your saved game, world and server app to continue. Enter the game password again before saving.'
       : 'Your saved file is unchanged. Put the draft into the editor to review it against the current file, or discard the draft.'}</p>
     {message && <p>{message}</p>}
     <div className="actions"><Button className={setup ? undefined : 'secondary'} disabled={disabled} onClick={onRecover}>{setup ? 'Review saved setup' : 'Review recovered draft'}</Button>
       <Button className="text-button" disabled={disabled} onClick={onDiscard}>{setup ? 'Discard saved setup' : 'Discard recovered draft'}</Button></div>
-  </section>
+  </DismissibleNotice>
 }

@@ -1,4 +1,5 @@
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import type { ActivityEvent, Run } from './contracts'
 import type { Profile } from './GameProfile'
@@ -132,14 +133,14 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
           : 'Waiting for a fresh trusted count.'}</p>
       </div>
     </div>
-    {!trustedNow && <div className="players-warning" role="note">
+    {!trustedNow && <DismissibleNotice className="players-warning" role="note" scope={run.profileId} noticeKey={evidence.state}>
       <Icon name="warning" size={19} />
       <div>
         <strong>{evidence.state === 'Stale' ? 'Player observation is stale'
           : evidence.state === 'DisplayOnly' ? 'Custom player count is display only' : 'Player count unavailable'}</strong>
         <p>Friend and automatic Stop remain blocked.</p>
       </div>
-    </div>}
+    </DismissibleNotice>}
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{trustedNow
       ? `${evidence.count} players reported by the game server.`
       : 'Player count unavailable. Friend and automatic Stop remain blocked.'}</span>

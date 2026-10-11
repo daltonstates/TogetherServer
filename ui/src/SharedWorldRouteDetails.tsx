@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, TextArea } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { errorMessage } from './api'
 import { parseSharedRouteDetails, type SharedRouteDetails } from './sharedWorldUx'
 
@@ -32,6 +33,6 @@ export function SharedWorldRouteDetails({ profileId, onReviewed }:
       <p className="helper-text">The signed decision supplies the address used for the check. A pasted address is a review hint.</p>
       <p className="helper-text">The app still checks signed authority and pinned TLS. Pasting does not change a saved address or grant access.</p>
     </div>}
-    {error && <p role="alert">{error}</p>}
+    {error && <DismissibleNotice as="p" scope={profileId} role="alert">{error}</DismissibleNotice>}
   </section>
 }

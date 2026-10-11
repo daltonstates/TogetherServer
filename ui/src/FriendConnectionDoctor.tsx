@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import { Button, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import type { FriendSnapshot, GameEndpointResult, PublicProfile } from './contracts'
 import { splitJoinAddress } from './ConnectionDetails'
 import { Icon } from './Icon'
@@ -216,6 +217,7 @@ function FriendDoctorContent(props: FriendConnectionDoctorProps) {
     && friendCheckFreshness(snapshot.lastConnectedUtc, nowMs) === 'current'
   const reportKey = JSON.stringify([selectedProfileId, snapshot.lastConnectedUtc, profile?.joinAddress, props.identityKey])
   const copy = async (concise: boolean) => {
+    setCopyState({ key: reportKey, message: '' })
     try {
       await navigator.clipboard.writeText(concise ? friendDoctorTroubleshooting(stages) : friendDoctorReport(stages, nowMs))
       setCopyState({ key: reportKey, message: concise ? 'Troubleshooting explanation copied.' : 'Redacted report copied.' })
@@ -250,7 +252,7 @@ function FriendDoctorContent(props: FriendConnectionDoctorProps) {
       <Button className="text-button" onClick={() => void copy(true)}>Copy troubleshooting explanation</Button>
       <Button className="text-button" onClick={() => void copy(false)}>Copy redacted report</Button></div>
     {!canProbe && <small>{profile && !friendGameProbeSupported(profile) ? 'Use the manual game join steps; this fixed probe is unavailable.' : 'Choose an assigned server with fresh Ready or Listening status to check its game route.'}</small>}
-    {copyState.key === reportKey && copyState.message && <small role="status">{copyState.message}</small>}
+    {copyState.key === reportKey && copyState.message && <DismissibleNotice as="small" scope={reportKey} role="status">{copyState.message}</DismissibleNotice>}
     <small className="evidence-boundary">A TCP, TLS, authentication, protocol or game-query success never proves a real join or saved change.</small>
   </details>
 }
@@ -270,10 +272,10 @@ export function FriendGameCheckResult({ snapshot, profile, gameResults, ...optio
   const stage = friendConnectionDoctorStages(snapshot, gameResults, { ...options, selectedProfileId: profile.id })
     .find(item => item.id === 'game')
   if (!stage) return null
-  return <div className={stage.complete ? 'helper-text' : 'warning-text'} role="status">
+  return <DismissibleNotice scope={JSON.stringify([snapshot.connectionId, profile.id, options.identityKey])} noticeKey={JSON.stringify([stage.checkedUtc, stage.state, stage.freshness])} className={stage.complete ? 'helper-text' : 'warning-text'} role="status">
     <strong>{stage.label}: {stage.state}</strong><p>{stage.detail}</p>
     {stage.checkedUtc && <small>{stage.freshness === 'current' ? 'Checked' : 'Previous check'}{' '}
       <time dateTime={stage.checkedUtc}>{new Date(stage.checkedUtc).toLocaleString()}</time>
       {stage.freshness !== 'current' && ' · Stale or unverified; run the check again.'}</small>}
-  </div>
+  </DismissibleNotice>
 }

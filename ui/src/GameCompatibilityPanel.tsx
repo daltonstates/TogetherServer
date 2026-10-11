@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError } from './contracts'
 import { friendCheckFreshness } from './FriendConnectionDoctor'
 import { parseGameCompatibility, parseGameRequirements, validManualGameVersion,
@@ -81,7 +82,7 @@ function ScopedCompatibilityPanel({ profileId, host, available = true, nowMs }: 
       <p>{requirements ? requirements.gameName
         : !available ? 'Reconnect for current requirements' : busy ? 'Reading saved game requirements…' : 'Requirements unavailable'}</p></div>
       <Button className="text-button" disabled={busy || !available} onClick={() => void refresh()}>Refresh requirements</Button></div>
-    {error && <p className="error-text" role="alert">{error}</p>}
+    {error && <DismissibleNotice as="p" scope={profileId} className="error-text" role="alert">{error}</DismissibleNotice>}
     {requirements && <>
       <div className="compatibility-summary" role="status">
         <dl className="compatibility-facts">

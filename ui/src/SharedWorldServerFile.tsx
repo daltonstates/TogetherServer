@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Input } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { futureHostFields, type SharedGame } from './sharedWorldUx'
 
 export function SharedWorldServerFile({ profileId, game, value, disabled, onChange, onBrowseServerFile, id }:
@@ -35,6 +36,6 @@ export function SharedWorldServerFile({ profileId, game, value, disabled, onChan
     <p className="helper-text">{fields.serverFileHint}</p>
     {onBrowseServerFile && <Button className="secondary" disabled={disabled || choosing} onClick={() => void browse()}>
       {choosing ? 'Choosing file…' : 'Browse this PC'}</Button>}
-    {message && <p role="status">{message}</p>}
+    {message && <DismissibleNotice as="p" scope={JSON.stringify([profileId, game])} role="status">{message}</DismissibleNotice>}
   </div>
 }

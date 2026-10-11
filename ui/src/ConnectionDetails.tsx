@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import './TaskFirstPages.css'
 
@@ -114,7 +115,7 @@ function SplitConnectionEndpoint({ field, parts, refreshing, onCopyPart }: {
       onReveal: () => setShown(current => ({ ...current, [part]: true })),
       onHide: () => setShown(current => ({ ...current, [part]: false })), onCopy: () => void copy(part)
     }} />)}
-    {message && <small role="status" style={{ gridColumn: '1 / -1' }}>{message}</small>}
+    {message && <DismissibleNotice as="small" role="status" style={{ gridColumn: '1 / -1' }}>{message}</DismissibleNotice>}
   </>
 }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { getLocalJson } from './api'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { BackupBookmarkEditor, updateBackupBookmark, type BackupBookmarkUpdater } from './BackupBookmarkEditor'
 import type { BackupBookmark, BackupBookmarksResult } from './backupBookmarksWire'
 import { parseBackupCatalog } from './backupCatalogWire'
@@ -239,8 +240,8 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
       <Button className="secondary" disabled={loading || !!working} onClick={() => { setNotice(''); void load() }}>
         {loading ? 'Loading…' : legacyLabels ? 'Refresh names and pins' : 'Refresh backups'}</Button></div>
     {loading && !catalog && <p role="status">{legacyLabels ? 'Loading backup names and pins…' : 'Loading backups…'}</p>}
-    {error && <div className="error" role="alert"><strong>{legacyLabels ? 'Backup names and pins unavailable' : 'Backups unavailable'}</strong>
-      <p>Could not read completed backups on this Host. Refresh before using previous results.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
+    {error && <DismissibleNotice scope={profileId} className="error" role="alert"><strong>{legacyLabels ? 'Backup names and pins unavailable' : 'Backups unavailable'}</strong>
+      <p>Could not read completed backups on this Host. Refresh before using previous results.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
     {!error && catalog && <>
       {summary && <div className="world-protection-summary" aria-label="Protection summary"><strong>Protection summary</strong>
         <p>{summary.newest ? `Newest catalog entry: ${new Date(summary.newest.createdUtc).toLocaleString()}.` : 'No completed backup recorded.'} {catalog.pinnedCount} pinned · {backupBytes(catalog.retainedSizeBytes)} retained · {backupBytes(catalog.availableSpaceBytes)} free.</p>
@@ -252,7 +253,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
         <small>Pins have separate count and byte limits. Available drive space is a separate measurement.</small>
         </details>
       </div>}
-      {notice && <p role="status">{notice}</p>}
+      {notice && <DismissibleNotice as="p" scope={profileId} role="status">{notice}</DismissibleNotice>}
       <div className="backup-catalog-filters">
         <label htmlFor={`${titleId}-query`}>Search backups</label><Input id={`${titleId}-query`} value={filters.query} maxLength={128} placeholder="Name, pin, kind or date"
           onChange={event => { setFilters({ ...filters, query: event.target.value }); setExpanded(true) }} />
@@ -298,7 +299,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
           if (!review.canRestore || unavailableReasons.restore) return
           void run(review.backup, 'Restore', (_backup, signal) => onRestore(review, signal))
         }} />}
-      {restoreId && !review && <p>The reviewed backup is no longer in this catalog. Choose a completed copy again.</p>}
+      {restoreId && !review && <DismissibleNotice as="p" scope={profileId} noticeKey={restoreId}>The reviewed backup is no longer in this catalog. Choose a completed copy again.</DismissibleNotice>}
       {catalog.moreBackupsAvailable && <p>Only 100 retained backups are loaded, with pins first. Filters and comparisons cover these rows; exact retention candidates require the complete catalog.</p>}
     </>}
     <p className="recent-sessions-boundary">Pins protect from automatic retention on this PC. Use Copy to vault for another location, and Verify for a separate integrity check.</p>

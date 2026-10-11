@@ -1,5 +1,5 @@
 import { createRef, type ComponentProps } from 'react'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { HostSetupDialog, getSetupIssues } from './HostSetupDialog'
 import type { HostSnapshot, Settings } from '../../contracts'
@@ -65,6 +65,23 @@ describe('Host setup review', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: /^World name/u }))
     fireEvent.click(screen.getByRole('button', { name: 'Enter a game password.' }))
     expect(document.activeElement).toBe(screen.getByLabelText(/^Game password/u, { selector: 'input[type="password"]' }))
+  })
+  it('dismisses setup blockers without enabling Save and shows them for another server', () => {
+    const input = propsFor(profile)
+    const rendered = render(<HostSetupDialog {...input} />)
+    exposeDialog(input)
+    fireEvent.click(within(screen.getByRole('region', { name: 'Setup blockers' })).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('region', { name: 'Setup blockers' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save for later' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save and start' })).toBeDisabled()
+    expect(input.onSave).not.toHaveBeenCalled()
+    rendered.rerender(<HostSetupDialog {...input} />)
+    expect(screen.queryByRole('region', { name: 'Setup blockers' })).not.toBeInTheDocument()
+    const next = propsFor({ ...profile, id: '22222222-2222-4222-8222-222222222222' })
+    rendered.rerender(<HostSetupDialog {...next} dialogRef={input.dialogRef} />)
+    expect(screen.getByRole('region', { name: 'Setup blockers' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save and start' })).toBeDisabled()
+    expect(next.onSave).not.toHaveBeenCalled()
   })
   it('applies a full non-overlapping port suggestion without starting a server', () => {
     const saved: Profile = { ...profile, gamePort: 2456, name: 'Original', serverName: 'Original', worldId: 'original',

@@ -1,6 +1,6 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftGuard } from './editorProtectedDraft'
+import { EditorDraftRecovery, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftGuard } from './editorProtectedDraft'
 import type { DraftIdentity, ProtectedDraftResult } from './protectedUiDrafts'
 
 const draftApi = vi.hoisted(() => ({ read: vi.fn(), save: vi.fn(), clear: vi.fn() }))
@@ -20,6 +20,32 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('protected editor drafts', () => {
+  it('dismisses a recovered draft without recovering, discarding or persisting it, and resets for another file', () => {
+    const onRecover = vi.fn(), onDiscard = vi.fn()
+    const props = { recovered: 'Protected earlier edit', message: '', onRecover, onDiscard, disabled: true }
+    const view = render(<EditorDraftRecovery {...props} scope="first:file" />)
+    expect(screen.getByRole('button', { name: 'Review recovered draft' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('region', { name: 'Recovered editor draft' })).not.toBeInTheDocument()
+    expect(onRecover).not.toHaveBeenCalled()
+    expect(onDiscard).not.toHaveBeenCalled()
+    expect(draftApi.read).not.toHaveBeenCalled()
+    expect(draftApi.save).not.toHaveBeenCalled()
+    expect(draftApi.clear).not.toHaveBeenCalled()
+    view.rerender(<EditorDraftRecovery {...props} scope="first:file" />)
+    expect(screen.queryByRole('region', { name: 'Recovered editor draft' })).not.toBeInTheDocument()
+    view.rerender(<EditorDraftRecovery {...props} scope="second:file" />)
+    expect(screen.getByRole('region', { name: 'Recovered editor draft' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Discard recovered draft' })).toBeDisabled()
+  })
+
+  it('keeps pending protected-draft writes visible as progress output', () => {
+    render(<EditorDraftRecovery recovered={null} message="Keeping a protected draft on this PC…"
+      status="saving" onRecover={vi.fn()} onDiscard={vi.fn()} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Keeping a protected draft')
+    expect(screen.queryByRole('button', { name: 'Dismiss notification' })).not.toBeInTheDocument()
+  })
+
   it('never overwrites an unread recovered draft with initial or newly edited state', async () => {
     const read = deferred<ProtectedDraftResult>()
     draftApi.read.mockReturnValueOnce(read.promise)

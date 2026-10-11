@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 
@@ -7,6 +7,15 @@ function BrokenView(): never {
 }
 
 describe('PaneErrorBoundary', () => {
+  it('allows dismissal while retaining Retry and shows a new failure after Retry', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    render(<PaneErrorBoundary title="Players"><BrokenView /></PaneErrorBoundary>)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss section error' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Try section again' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Players could not be shown')
+  })
+
   it('contains a pane failure without replacing the rest of the interface', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
 

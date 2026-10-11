@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { ConnectionDoctor } from './ConnectionDoctor'
 import type { CompanionInfo, HostSnapshot, HostMoveKitResult, RouteDiscovery, Settings } from './contracts'
 import { gameLabel } from './GameProfile'
@@ -113,8 +114,8 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
     {section === 'network' && <>
       <SettingsSectionHeading icon="link" title="Connection help" description="Check the app connection and game route separately." />
       <div className="settings-controls"><p><strong>Friend app:</strong> {friendAppStatus}.</p>
-        {addressError && <p className="warning-text" role="status">{addressError}</p>}
-        {companion?.listenerWarning && <p className="warning-text" role="status">{companion.listenerWarning}</p>}</div>
+        {addressError && <DismissibleNotice as="p" scope={settings.companionEndpoint} className="warning-text" role="status">{addressError}</DismissibleNotice>}
+        {companion?.listenerWarning && <DismissibleNotice as="p" scope={settings.companionEndpoint} className="warning-text" role="status">{companion.listenerWarning}</DismissibleNotice>}</div>
       <div className="actions"><Button disabled={modalBusy} onClick={() => open('doctor')}><Icon name="plug" />Connection Doctor</Button></div>
       <div className="settings-card-grid">
         <SettingsCard icon="link" title="Friend connection route" description="Choose the networking you use to reach this Host."
@@ -150,7 +151,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
       description={editing ? 'Review your changes, then save. Cancel leaves the saved settings in place.' : undefined}
       footer={<><Button className="secondary" disabled={modalBusy} onClick={() => setTool(null)}>{editing ? 'Cancel' : 'Done'}</Button>
         {editing && <Button disabled={modalBusy || !changed || !valid} onClick={() => void save()}><Icon name={busy ? 'loader' : 'check'} />{busy ? 'Saving…' : tool === 'countdown' || tool === 'extensions' ? 'Save timer' : 'Save settings'}</Button>}</>}>
-      {notice && <p className={`action-feedback ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</p>}
+      {notice && <DismissibleNotice as="p" scope={tool} className={`action-feedback ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
       {tool === 'countdown' && <div className="settings-dialog-fields"><label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" step="1" value={draft.idleMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, idleMinutes: Number(event.target.value) }))} /><small>Minutes, from 1 to 1440.</small></label>
         <p className="helper-text">At the end, the Host checks the server again and stops only at exactly zero players. Friend app presence does not gate the timer. Added time stays saved when a count change cancels the countdown.</p></div>}
       {tool === 'extensions' && <div className="settings-dialog-fields"><label>Friend extension increment<Input type="number" min="1" max="120" step="1" value={draft.friendTimerExtensionMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, friendTimerExtensionMinutes: Number(event.target.value) }))} /><small>Fixed minutes per approved Friend request, from 1 to 120.</small></label>
@@ -170,11 +171,11 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
           {routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select></label>}
         <p className="helper-text">TogetherServer reads adapters and saves your selected route. It does not install clients or change firewall, router, DNS, or network policies.</p></div>}
       {tool === 'tcp' && <div className="settings-dialog-stack"><div className="settings-detail-row"><strong>Public game address</strong><span>{settings.publicGameIp && settings.publicGameIpCheckedUtc && Date.now() - Date.parse(settings.publicGameIpCheckedUtc) < 3600000 ? `${settings.publicGameIp} · address hint; Friend join untested` : 'Address unavailable or stale'}</span></div>
-        {addressError && <p className="warning-text" role="status">{addressError}</p>}
+        {addressError && <DismissibleNotice as="p" scope={settings.companionEndpoint} className="warning-text" role="status">{addressError}</DismissibleNotice>}
         <div className="actions"><Button className="secondary" disabled={modalBusy} onClick={onDetectAddress}><Icon name={detectingAddress ? 'loader' : 'refresh'} />{detectingAddress ? 'Refreshing…' : 'Refresh public address'}</Button>
           <Button className="secondary" disabled={modalBusy || dirty} onClick={onTestRoute}><Icon name={checkingRoute ? 'loader' : 'search'} />{checkingRoute ? 'Testing TCP port…' : 'Test Friend app port from internet'}</Button></div>
         <p className="helper-text">The outside TCP check uses portchecker.io, which sees this PC's public IP and port. No code or saved access is sent.</p>
-        {routeCheck && <div className="settings-detail-row" role="status"><strong>{previousRouteVerdict ? 'Previous TCP result' : routeCheck.state} · TCP {routeCheck.port}</strong><span>{routeCheck.detail}</span><small>Checked {new Date(routeCheck.checkedUtc).toLocaleString()}.{previousRouteVerdict && ' This result is stale; test again.'} TCP reachability does not prove pinned pairing or a game join.</small></div>}
+        {routeCheck && <DismissibleNotice scope={settings.companionEndpoint} noticeKey={`${routeCheck.checkedUtc}:${routeCheck.state}:${previousRouteVerdict}`} trackMessage={false} className="settings-detail-row" role="status"><strong>{previousRouteVerdict ? 'Previous TCP result' : routeCheck.state} · TCP {routeCheck.port}</strong><span>{routeCheck.detail}</span><small>Checked {new Date(routeCheck.checkedUtc).toLocaleString()}.{previousRouteVerdict && ' This result is stale; test again.'} TCP reachability does not prove pinned pairing or a game join.</small></DismissibleNotice>}
         {ports?.control.lanForwardDetail && <div className="settings-detail-row"><strong>Router forwarding target on this PC</strong><span>{ports.control.lanForwardDetail}</span>{ports.control.lanAddresses?.map(item => <small key={`${item.interfaceName}-${item.address}`}>{item.address} · {item.interfaceName} · gateway {item.gateway}</small>)}</div>}
         <p className="helper-text">Friend app HTTPS uses TCP {settings.companionPort}. Game ports are separate; Friends connect outbound. Test app connection and game join from another network separately.</p></div>}
       {tool === 'limits' && <div className="settings-dialog-fields"><label>Maximum servers running at once<Input type="number" min="1" max="16" step="1" value={draft.maxConcurrentServers} disabled={busy} onChange={event => setDraft(current => ({ ...current, maxConcurrentServers: Number(event.target.value) }))} /><small>Most homes should leave this at 1. Each running world still needs distinct ports and save storage.</small></label></div>}
@@ -202,7 +203,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
       {tool === 'rehearsal' && <HostRemoteRehearsal />}
       {tool === 'notifications' && selectedProfile && <ServerNotificationPreferences
         server={{ id: selectedProfile.id, name: selectedProfile.name }} onBusyChange={setChildBusy} />}
-      {editing && !valid && <p className="warning-text" role="status">{tool === 'extensions' && draft.friendTimerExtensionMaximumMinutes < draft.friendTimerExtensionMinutes ? 'The maximum must cover at least one extension increment.' : 'Enter a whole number within the range shown above.'}</p>}
+      {editing && !valid && <DismissibleNotice as="p" scope={tool} className="warning-text" role="status">{tool === 'extensions' && draft.friendTimerExtensionMaximumMinutes < draft.friendTimerExtensionMinutes ? 'The maximum must cover at least one extension increment.' : 'Enter a whole number within the range shown above.'}</DismissibleNotice>}
     </SettingsDialog>}
   </section>
 }

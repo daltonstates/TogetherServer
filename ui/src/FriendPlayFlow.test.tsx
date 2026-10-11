@@ -90,6 +90,26 @@ describe('Friend state and permission explanations', () => {
 })
 
 describe('the composed play flow', () => {
+  it('retains the Unknown-player Stop guard after dismissal and repeats the warning for another connection', () => {
+    const onStop = vi.fn()
+    const unknown = { ...profile, onlinePlayers: null, joinAddress: null }
+    const props = { profile: unknown, nowMs, onStop, showServerNotifications: false }
+    const current = { ...snapshot, profiles: [unknown] }
+    const view = render(<FriendPlayFlow {...props} snapshot={current} />)
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop server' }))
+    expect(onStop).not.toHaveBeenCalled()
+    view.rerender(<FriendPlayFlow {...props} snapshot={{ ...current, lastConnectedUtc: '2026-10-08T15:00:05Z' }} />)
+    expect(screen.queryByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).not.toBeInTheDocument()
+    view.rerender(<FriendPlayFlow {...props} snapshot={{ ...current, connectionId: 'another-Host' }} />)
+    expect(screen.getByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
   it('loads local scoped notification settings only after the owner opens that disclosure', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ quietMode: false, allowedEvents: ['Backup'], servers: [],
       systemState: 'AcceptsNotifications', systemAllowsNotifications: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))

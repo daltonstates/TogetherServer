@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ComponentProps } from 'react'
 import { changeJson, getLocalJson } from './api'
 import { parseBasicResult } from './contracts'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import { notificationEventKinds, parseNotificationPreferences, parseUpdatePreparation, saveNotificationPreferences,
   trustedReleaseNotesLink, updatePreparationReport, type DesktopUpdateDetails, type NotificationEventKind,
@@ -44,6 +45,7 @@ export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, 
   useEffect(() => () => pending.current?.abort(), [])
 
   const selectedServer = server
+  const noticeScope = JSON.stringify([selectedServer?.connectionId, selectedServer?.id])
   const override = selectedServer && preferences?.servers.find(server => server.profileId === selectedServer.id &&
     server.connectionId === (selectedServer.connectionId ?? null))
   const allowed = override?.allowedEvents ?? preferences?.allowedEvents ?? []
@@ -71,12 +73,12 @@ export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, 
     <h3 id={titleId}>{selectedServer ? `Notifications for ${selectedServer.name}` : 'Notifications on this PC'}</h3>
     <p>{selectedServer ? 'Choices for this server on this PC. App updates use the PC default.' : 'Choose which important events can appear in Windows. Hosting and Friend checks keep running.'}</p>
     {!preferences && !error && <p role="status">Loading notification preferences…</p>}
-    {error && <div className="error" role="alert"><p>Could not save or read notification preferences. Try again.</p>
-      <Button className="secondary" disabled={busy} onClick={() => setReloadKey(value => value + 1)}>Try again</Button></div>}
+    {error && <DismissibleNotice scope={noticeScope} noticeKey={reloadKey} className="error" role="alert"><p>Could not save or read notification preferences. Try again.</p>
+      <Button className="secondary" disabled={busy} onClick={() => setReloadKey(value => value + 1)}>Try again</Button></DismissibleNotice>}
     {preferences && <>
       {!selectedServer && <label className="setting-toggle"><span><strong>Quiet mode</strong><small>Keep events in Attention and pause Windows popups.</small></span>
         <Input type="checkbox" checked={preferences.quietMode} disabled={busy} onChange={event => void save({ quietMode: event.target.checked })} /></label>}
-      {!preferences.systemAllowsNotifications && <p className="helper-text">Windows is currently keeping notifications quiet. Events remain in Attention.</p>}
+      {!preferences.systemAllowsNotifications && <DismissibleNotice as="p" scope={noticeScope} className="helper-text">Windows is currently keeping notifications quiet. Events remain in Attention.</DismissibleNotice>}
       {selectedServer && <label>Server alerts<Select value={!override ? 'default' : override.allowedEvents.length ? 'custom' : 'off'} disabled={busy}
         onChange={event => void save({ profileId: selectedServer.id, connectionId: selectedServer.connectionId ?? null,
           allowedEvents: event.target.value === 'default' ? null : event.target.value === 'off' ? [] : preferences.allowedEvents.filter(kind => kind !== 'Update') })}>
@@ -91,7 +93,7 @@ export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, 
           onClick={() => void save({ profileId: selectedServer.id, connectionId: selectedServer.connectionId ?? null, allowedEvents: null })}>Use default choices</Button>}
       </details>
     </>}
-    {message && <p role="status" aria-live="polite" aria-atomic="true">{message}</p>}
+    {message && <DismissibleNotice as="p" scope={noticeScope} role="status" aria-live="polite" aria-atomic="true">{message}</DismissibleNotice>}
   </section>
 }
 
@@ -137,7 +139,7 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
   const preparation = busy ? polled ?? update.preparation : update.preparation ?? polled
   const snooze = async (duration: UpdateReminderDuration) => {
     if (!update.latestVersion) return
-    setSnoozeBusy(true)
+    setSnoozeBusy(true); setMessage('')
     try {
       const result = snoozeSaver ? await snoozeSaver(update.latestVersion, duration) :
         await changeJson('/api/local/update/snooze', 'POST', parseBasicResult, { version: update.latestVersion, duration })
@@ -170,14 +172,16 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
       </Select></label>
     </div>}
     {preparation && (busy || preparation.stage !== 'Idle') && <div className="update-preparation" aria-busy={busy}>
-      <p role="status" aria-live="polite" aria-atomic="true"><strong>{stageLabels[preparation.stage]}</strong> · {preparation.message}</p>
+      {preparation.stage === 'Blocked' || preparation.stage === 'Failed' ?
+        <DismissibleNotice as="p" scope={update.latestVersion ?? undefined} role="status" aria-live="polite" aria-atomic="true"><strong>{stageLabels[preparation.stage]}</strong> · {preparation.message}</DismissibleNotice> :
+        <p role="status" aria-live="polite" aria-atomic="true"><strong>{stageLabels[preparation.stage]}</strong> · {preparation.message}</p>}
       {preparation.totalBytes !== null && preparation.stage === 'Downloading' && <>
         <progress aria-label="Update download" max={preparation.totalBytes} value={preparation.downloadedBytes} />
         <small>{Math.round(preparation.downloadedBytes / preparation.totalBytes * 100)}% downloaded</small>
       </>}
-      {preparation.blocker && <p className="error" role="alert">{preparation.blocker}</p>}
+      {preparation.blocker && <DismissibleNotice as="p" scope={update.latestVersion ?? undefined} className="error" role="alert">{preparation.blocker}</DismissibleNotice>}
       <Button className="text-button" onClick={downloadReport}>Download preparation report</Button>
     </div>}
-    {message && <p role="status" aria-live="polite" aria-atomic="true">{message}</p>}
+    {message && <DismissibleNotice as="p" scope={update.latestVersion ?? undefined} role="status" aria-live="polite" aria-atomic="true">{message}</DismissibleNotice>}
   </section>
 }

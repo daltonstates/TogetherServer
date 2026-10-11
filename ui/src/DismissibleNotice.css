@@ -1,0 +1,8 @@
+.dismissible-notice { position: relative !important; min-height: 44px; padding-inline-end: 3.5rem !important; overflow-wrap: anywhere; }
+:is(output, small, span).dismissible-notice:not(.server-chat-sync-feedback) { display: block; }
+.dismissible-notice > .notice-dismiss.ui-button { position: absolute; inset-block-start: 0; inset-inline-end: .25rem; width: 44px; min-height: 44px; margin: 0; padding: 8px; border-color: transparent; background: transparent; color: inherit; }
+.dismissible-notice > .notice-dismiss.ui-button:hover { background: var(--color-surface-raised); border-color: var(--color-border); }
+.dismissible-notice > .notice-dismiss.ui-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -3px; }
+.settings-detail-row.dismissible-notice > :nth-last-child(2) { color: var(--color-text); text-align: end; }
+.data-recovery .section-heading { flex-wrap: wrap; }
+.data-recovery-reopen { margin-block-end: 1rem; }

@@ -1,5 +1,6 @@
 import { useId } from 'react'
 import { Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon, type IconName } from './Icon'
 import type { Device, ServerPermission } from './contracts'
 import { devicePermission, type PermissionValues } from './permissionState'
@@ -110,7 +111,7 @@ export function FriendAccessSummary({ device, servers, nowMs }: FriendAccessSumm
     {view.helper === 'Active' && <p className="helper-text">{view.state === 'Available'
       ? `Temporary helper access is active until ${dateLabel(device.temporaryHelperUntilUtc)} on existing assignments.`
       : `A temporary helper overlay is recorded until ${dateLabel(device.temporaryHelperUntilUtc)}; device access currently blocks its use.`} These are the Host’s projected grants; saved permissions and exceptions are unavailable during the overlay.</p>}
-    {view.helper === 'RefreshNeeded' && <p className="warning-text">The last snapshot included temporary helper grants. Refresh from the Host to see the saved permissions now; this view cannot infer them.</p>}
+    {view.helper === 'RefreshNeeded' && <DismissibleNotice as="p" scope={device.id} noticeKey={device.temporaryHelperUntilUtc ?? undefined} className="warning-text">The last snapshot included temporary helper grants. Refresh from the Host to see the saved permissions now; this view cannot infer them.</DismissibleNotice>}
     {view.helper === 'Inactive' && exceptions > 0 && <small>{exceptions} assigned {exceptions === 1 ? 'server has' : 'servers have'} permission exceptions.</small>}
     {view.rows.length === 0 ? <p className="helper-text">No servers assigned. Device-wide permissions do not grant access to an unassigned server.</p> :
       <details className="advanced-block"><summary>Effective access by server</summary>
@@ -126,6 +127,7 @@ export function FriendAccessSummary({ device, servers, nowMs }: FriendAccessSumm
 }
 
 export type FriendAccessConfiguration = PermissionValues & {
+  id?: string
   assignedProfileIds: readonly string[]
   serverPermissions: readonly ServerPermission[]
   temporaryHelperActive?: boolean
@@ -254,10 +256,10 @@ export function FriendAccessReview({ before, after, servers, clearsExceptions = 
           <ReviewPermissionSide assigned permissions={review.afterDefaults} label="After" defaults />
         </div>}
     </div>
-    {review.helperProjection && <p className="warning-text friend-review-note"><Icon name="warning" />
-      <span>End temporary helper access and refresh before editing saved permissions. The current Host view includes the helper overlay.</span></p>}
-    {clearsExceptions && <p className="friend-review-note"><Icon name="refresh" />
-      <span>This preset replaces all four device defaults and clears per-server exceptions on every assigned server.</span></p>}
+    {review.helperProjection && <DismissibleNotice as="p" scope={before.id} className="warning-text friend-review-note"><Icon name="warning" />
+      <span>End temporary helper access and refresh before editing saved permissions. The current Host view includes the helper overlay.</span></DismissibleNotice>}
+    {clearsExceptions && <DismissibleNotice as="p" scope={before.id} className="friend-review-note"><Icon name="refresh" />
+      <span>This preset replaces all four device defaults and clears per-server exceptions on every assigned server.</span></DismissibleNotice>}
     {changed.length > 0 && <ul className="friend-access-change-list" aria-label="Server access before and after">
       {changed.map(row => <ReviewServerChange key={row.profileId} row={row} />)}
     </ul>}

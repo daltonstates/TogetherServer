@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { useConfirmation, type ConfirmationOptions } from './Confirmation'
 import { ContractError, parseBasicResult, type BasicResult, type Decoder } from './contracts'
 import { ServerAddOnsPanel } from './ServerAddOnsPanel'
@@ -316,13 +317,13 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
 
   return <section className="server-files-panel" aria-label="Server files and settings">
     <div className="section-heading"><div><h3>Files &amp; settings</h3><p>Open the folders and edit the files this server actually uses.</p></div></div>
-    {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
+    {notice && <DismissibleNotice scope={profileId} className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
     <div className="next-action"><span>{editAllowed ? 'Ready to review and save guarded edits.' : recoveryBlocked ? 'Resolve local recovery before preparing changes.' : 'Prepare changes creates the offline checkpoint required for safe editing.'}</span>
       <div className="actions"><Button className="secondary" disabled={busy || !!pending || recoveryBlocked}
         onClick={() => void prepareChanges()}>Prepare changes</Button>
         {maintenance && state === 'Ready' && <Button className="secondary" disabled={busy || !!pending || !!changed || recoveryBlocked}
           onClick={() => void finishChanges()}>Finish maintenance</Button>}</div></div>
-    {!editAllowed && state !== 'Offline' && <p className="warning-text">Preparing changes needs a fresh zero-player count. Positive or Unknown counts block a graceful Stop.</p>}
+    {!editAllowed && state !== 'Offline' && <DismissibleNotice as="p" scope={profileId} className="warning-text">Preparing changes needs a fresh zero-player count. Positive or Unknown counts block a graceful Stop.</DismissibleNotice>}
     <details className="server-support-disclosure"><summary>Editing safely</summary><section aria-label="Prepare for editing"><ol>
       <li>{maintenance ? 'Friend lifecycle controls are paused.' : 'Pause Friend lifecycle controls with Prepare changes.'}</li>
       <li>{state === 'Offline' ? 'Server is offline. Prepare changes still verifies the setup checkpoint.' : 'Prepare changes needs a fresh exact zero-player count before graceful Stop. Positive or Unknown counts block it.'}</li>
@@ -376,7 +377,7 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
       </section>
       {loaded && <div className="server-file-editor"><h4>{view.files.find(file => file.key === loaded.key)?.label ?? 'Server file'}</h4>
         <p className="helper-text">Changes are saved only while maintenance is on and the server is offline. A matching on-disk version is required.</p>
-        <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} disabled={!!pending}
+        <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} status={protectedDraft.status} scope={`${profileId}:file:${loaded.key}`} disabled={!!pending}
           onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
         <label>File contents<TextArea rows={15} spellCheck={false} value={draft} disabled={!!pending || protectedDraft.recovered !== null} onChange={event => { setDraft(event.target.value); setReviewed(null) }} /></label>
         {changed && <Button className="secondary" disabled={!!pending || protectedDraft.recovered !== null} onClick={() => loaded.sha256 && setReviewed({ key: loaded.key, sha256: loaded.sha256, content: draft })}>Review file changes</Button>}

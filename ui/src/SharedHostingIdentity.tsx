@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getLocalJson } from './api'
+import { DismissibleNotice } from './DismissibleNotice'
 import { normalizedDirectIpHttpsEndpoint } from './sharedWorldUx'
 
 type HostingIdentity = { label: string; address: string | null; local: boolean; warning: string | null; hidden?: boolean; recordHash?: string }
@@ -48,7 +49,7 @@ export function parseSharedHostingIdentity(value: unknown, host: boolean): Hosti
     return { label: authority.state === 'ThisPcHost' ? 'This PC · signed Host' :
       `Signed Host · PC ending ${head.hostDeviceId.slice(-6).toUpperCase()}`,
       address, local: authority.state === 'ThisPcHost', warning: authority.state === 'OldHostFenced' ?
-        'This PC is fenced from hosting this shared world.' : null }
+        'This PC is fenced from hosting this shared world.' : null, recordHash: head.recordHash }
   }
   // The local recovery projection names the current verified quorum head only
   // in these two states. Armed candidates and historical offers are not Hosts.
@@ -114,13 +115,13 @@ export function SharedHostingIdentity({ profileId, host, available = true, world
     return () => { active = false; controller.abort(); window.clearTimeout(timer) }
   }, [profileId, host, available, identityScope])
   if (!host && identity === null) return null
-  return <SharedHostingIdentityView identity={identity} failed={failed} host={host} worldName={worldName}
+  return <SharedHostingIdentityView identity={identity} failed={failed} host={host} worldName={worldName} scope={identityScope}
     serverState={serverState} serverStatusFresh={serverStatusFresh} observedHostAddress={observedHostAddress} />
 }
 
-export function SharedHostingIdentityView({ identity, failed = false, host,
+export function SharedHostingIdentityView({ identity, failed = false, host, scope,
   serverState, serverStatusFresh = false }: {
-  identity: HostingIdentity | null; failed?: boolean; host: boolean; worldName?: string;
+  identity: HostingIdentity | null; failed?: boolean; host: boolean; worldName?: string; scope?: string;
   serverState?: string; serverStatusFresh?: boolean; observedHostAddress?: string | null
 }) {
   if (identity?.hidden || host && identity === null) return null
@@ -135,6 +136,6 @@ export function SharedHostingIdentityView({ identity, failed = false, host,
       {!host && serverState && identity?.label === 'Signed Host not checked' && <small>Connected server: {serverStatusFresh ?
         serverState === 'Ready' ? 'Ready observed · game join unverified' : serverState : 'Unknown'}</small>}
     </p>
-    {identity?.warning && <p role="alert">{identity.warning}</p>}
+    {identity?.warning && <DismissibleNotice as="p" scope={scope} noticeKey={identity.recordHash ?? identity.label} role="alert">{identity.warning}</DismissibleNotice>}
   </section>
 }

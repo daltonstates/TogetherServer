@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage } from './api'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import { parseBasicResult } from './contracts'
 
@@ -21,7 +22,7 @@ function ScopedOpenGameButton({ profileId, kind, available, disabledReason }: Op
   async function open() {
     if (pending.current || busy || !available) return
     const controller = new AbortController(); pending.current = controller
-    setBusy(true)
+    setBusy(true); setMessage('')
     try {
       const result = await changeJson(`/api/local/friend/${encodeURIComponent(profileId)}/open-game`, 'POST', parseBasicResult, undefined, controller.signal)
       if (controller.signal.aborted) return
@@ -32,7 +33,7 @@ function ScopedOpenGameButton({ profileId, kind, available, disabledReason }: Op
   return <div className="open-game-action"><Button className="server-primary-action" disabled={busy || !available} onClick={() => void open()}><Icon name={busy ? 'loader' : 'game'} />{busy ? 'Opening game…' : 'Open game'}</Button>
     <small>Opens an installed game through Steam. Join in the game; opening it does not join the server.</small>
     {!available && <small>{disabledReason ?? 'Reconnect for fresh access and wait for the server before opening the game.'}</small>}
-    {message && <p className={failed ? 'error-text' : 'helper-text'} role={failed ? 'alert' : 'status'}>{message}</p>}
+    {message && <DismissibleNotice as="p" scope={profileId} className={failed ? 'error-text' : 'helper-text'} role={failed ? 'alert' : 'status'}>{message}</DismissibleNotice>}
   </div>
 }
 

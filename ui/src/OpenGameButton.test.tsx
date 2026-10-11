@@ -4,6 +4,21 @@ import { OpenGameButton } from './OpenGameButton'
 
 afterEach(() => vi.unstubAllGlobals())
 describe('explicit Open game action', () => {
+  it('dismisses only the result and shows a new identical result after another explicit click', async () => {
+    const fetcher = vi.fn(async () => Response.json({ ok: false, code: 'SteamHandlerUnavailable',
+      message: 'Open Steam yourself, then copy the server address.' }))
+    vi.stubGlobal('fetch', fetcher)
+    render(<OpenGameButton profileId="saved" kind="Factorio" available />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open game' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Open game' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Open Steam yourself')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
   it('does nothing on mount or rerender and sends only the assigned profile action after a click', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, code: 'GameOpenRequested', message: 'Asked Steam to open the game. Join in the game.' })))
     vi.stubGlobal('fetch', fetcher)

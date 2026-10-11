@@ -1,6 +1,7 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { Button, Input } from './Controls'
 import { useConfirmation } from './Confirmation'
+import { Icon } from './Icon'
 import type { DataRecoveryView, Run, Snapshot } from './contracts'
 import { safeFileName } from './setupDraft'
 
@@ -22,6 +23,8 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
   onConfirmedChange, onAcknowledge, onSwitchToHost, onStopRecordedRun, onForgetRecordedRun }:
   DataRecoveryPanelProps) {
   const { confirm, confirmationDialog } = useConfirmation()
+  const [dismissed, setDismissed] = useState<string | null>(null)
+  const noticeIdentity = JSON.stringify([recovery.lifecycleBlocked, recovery.notices])
   const inFlight = useRef(false)
   const guard = JSON.stringify({ recovery, mode, pending, configuredProfileIds,
     runs: runs.map(run => ({ profileId: run.profileId, state: run.state,
@@ -47,13 +50,16 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
   const managedRunBlocksAcknowledgement = recovery.lifecycleBlocked && mode === 'Host' &&
     runs.some(run => run.state !== 'Offline')
 
-  return <>{recovery.notices.length > 0 && <section className={`panel data-recovery ${recovery.lifecycleBlocked ? 'blocking' : ''}`}
+  return <>{recovery.notices.length > 0 && (dismissed === noticeIdentity
+    ? <Button className="secondary data-recovery-reopen" onClick={() => setDismissed(null)}><Icon name="warning" />Review local data</Button>
+    : <section className={`panel data-recovery ${recovery.lifecycleBlocked ? 'blocking' : ''}`}
     role={recovery.lifecycleBlocked ? 'alert' : 'status'} aria-labelledby="data-recovery-title">
     <div className="section-heading"><div><h2 id="data-recovery-title">Local data needs review</h2>
       <p>{recovery.lifecycleBlocked
         ? 'TogetherServer moved unreadable server-control data aside and blocked Start and Restart so it does not control the wrong process.'
         : 'TogetherServer moved unreadable local data aside. Review the saved files before clearing this notice.'}</p></div>
-      <span className="status error">{recovery.lifecycleBlocked ? 'Server controls blocked' : 'Review needed'}</span></div>
+      <span className="status error">{recovery.lifecycleBlocked ? 'Server controls blocked' : 'Review needed'}</span>
+      <Button className="secondary icon-button" aria-label="Dismiss local data warning" onClick={() => setDismissed(noticeIdentity)}><Icon name="close" /></Button></div>
     <ul className="recovery-file-list">{recovery.notices.map((item, index) => <li key={`${item.detectedUtc}-${index}`}>
       <strong>{safeFileName(item.stateFile)}</strong><span>{item.reason}</span>
       <small>Saved as {safeFileName(item.quarantinedFile)} - {new Date(item.detectedUtc).toLocaleString()}</small>
@@ -85,7 +91,7 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
       </Button>
     </div> : <div className="next-action"><span>Only My server can verify and acknowledge local recovery.</span>
       <Button disabled={!!pending} onClick={onSwitchToHost}>Switch to My server</Button></div>}
-  </section>}
+  </section>)}
     {confirmationDialog}
   </>
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { parseWeeklyServerSummary, type WeeklyServerSummaryResult } from './weeklySummaryWire'
 import { emptySessionFilters, SessionHistory, type SessionFilters, type SessionMetric } from './RecentSessions'
 
@@ -70,8 +71,8 @@ export function WeeklySummary({ profileId, visible, refreshKey = 0, loader = def
       <p>Retained session evidence for this server on this Host.</p></div>
       <Button className="secondary" disabled={loading || !visible} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh summary'}</Button></div>
     {loading && !result && <p role="status">Loading seven-day summary…</p>}
-    {error && <div className="error" role="alert"><strong>Seven-day summary unavailable</strong>
-      <p>Could not read this Host’s retained session evidence.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
+    {error && <DismissibleNotice scope={profileId} className="error" role="alert"><strong>Seven-day summary unavailable</strong>
+      <p>Could not read this Host’s retained session evidence.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
     {!error && summary && <>
       <p>{new Date(summary.windowStartUtc).toLocaleString()} – {new Date(summary.windowEndUtc).toLocaleString()}</p>
       {summary.archivedSessionCount === 0 && <p>No completed session evidence in these seven days.</p>}

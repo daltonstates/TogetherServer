@@ -27,6 +27,21 @@ function renderPanel(overrides: Partial<ComponentProps<typeof DataRecoveryPanel>
 }
 
 describe('DataRecoveryPanel', () => {
+  it('dismisses and reopens recovery without acknowledging data or changing lifecycle guards', () => {
+    const { props, rerender } = renderPanel({ runs: [run('unknown-id', 'Unknown')] })
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss local data warning' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    rerender(<DataRecoveryPanel {...props} recovery={structuredClone(props.recovery)} />)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Review local data' }))
+    expect(screen.getByRole('alert')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Confirm and re-enable/ })).toBeDisabled()
+    expect(screen.getByRole('checkbox')).toBeDisabled()
+    expect(props.onAcknowledge).not.toHaveBeenCalled()
+    expect(props.onStopRecordedRun).not.toHaveBeenCalled()
+    expect(props.onForgetRecordedRun).not.toHaveBeenCalled()
+  })
+
   it('exposes only safe actions for orphaned recorded runs', () => {
     renderPanel({ runs: [run('live-id', 'Process running'), run('exited-id', 'Failed'), run('unknown-id', 'Unknown')] })
 

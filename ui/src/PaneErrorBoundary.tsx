@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 
 type Props = {
   children: ReactNode
@@ -7,12 +8,12 @@ type Props = {
   resetKey?: string | number
 }
 
-type State = { failed: boolean }
+type State = { failed: boolean; attempt: number }
 
 export class PaneErrorBoundary extends Component<Props, State> {
-  state: State = { failed: false }
+  state: State = { failed: false, attempt: 0 }
 
-  static getDerivedStateFromError(): State {
+  static getDerivedStateFromError(): Partial<State> {
     return { failed: true }
   }
 
@@ -27,10 +28,12 @@ export class PaneErrorBoundary extends Component<Props, State> {
 
   render() {
     if (!this.state.failed) return this.props.children
-    return <section className="pane-error" role="alert">
+    return <section className="pane-error">
+      <DismissibleNotice role="alert" scope={String(this.props.resetKey ?? this.props.title)} noticeKey={this.state.attempt} dismissLabel="Dismiss section error">
       <strong>{this.props.title} could not be shown</strong>
       <p>The rest of TogetherServer is still available. Try this section again; no server action was taken.</p>
-      <Button className="secondary" onClick={() => this.setState({ failed: false })}>Try section again</Button>
+      </DismissibleNotice>
+      <Button className="secondary" onClick={() => this.setState(current => ({ failed: false, attempt: current.attempt + 1 }))}>Try section again</Button>
     </section>
   }
 }

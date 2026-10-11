@@ -23,6 +23,18 @@ afterEach(() => {
 })
 
 describe('ServerLogViewer', () => {
+  it('dismisses a read error while retaining log controls and allows a later endpoint error', async () => {
+    const loader = vi.fn<ServerLogLoader>().mockRejectedValue(new Error('Host log request failed.'))
+    const view = render(<ServerLogViewer endpoint="/first" visible loader={loader} />)
+    await screen.findByText('Host log request failed.')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Host log request failed.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
+    expect(screen.getByRole('log')).toBeInTheDocument()
+    view.rerender(<ServerLogViewer endpoint="/second" visible loader={loader} />)
+    expect(await screen.findByText('Host log request failed.')).toBeVisible()
+  })
+
   it('ignores a late failed read after the endpoint changes', async () => {
     let rejectOld!: (error: Error) => void
     const loader: ServerLogLoader = endpoint => endpoint === '/old' ? new Promise((_resolve, reject) => {

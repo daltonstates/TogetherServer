@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError, type Decoder, type WorldBackupRecord } from './contracts'
 import { useConfirmation } from './Confirmation'
 
@@ -69,6 +70,7 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
   const [selectedId, setSelectedId] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [messageResult, setMessageResult] = useState(0)
   const [gameVersion, setGameVersion] = useState('')
   const selected = records.find(item => item.id === selectedId) ?? records[0]
   const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
@@ -80,8 +82,9 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
     selected?.rehearsalProfileId, selected?.managedStarts, selected?.gracefulStops,
     selected?.loadOutcome, selected?.changeOutcome, selected?.restartOutcome, busy])
   const chosenBackup = backups.some(item => item.id === backupId) ? backupId : backups[0]?.id
+  const showMessage = (text: string) => { setMessage(text); setMessageResult(result => result + 1) }
   const adopt = (result: Result) => {
-    setMessage(`${result.code}: ${result.message}`)
+    showMessage(`${result.code}: ${result.message}`)
     if (result.rehearsal) {
       const item = result.rehearsal
       setRecords(previous => [item, ...previous.filter(record => record.id !== item.id)])
@@ -93,9 +96,9 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
     try {
       const list = await getLocalJson(`/api/local/world-load/source/${profileId}`, parseList)
       if (list.ok) setRecords(list.rehearsals)
-      else setMessage(list.message)
+      else showMessage(list.message)
     }
-    catch (error) { setMessage(errorMessage(error)) }
+    catch (error) { showMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const prepare = async () => {
@@ -104,7 +107,7 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
       adopt(await changeJson(received ? `/api/local/friend/${profileId}/world-load/prepare` :
         `/api/local/profiles/${profileId}/world-load/prepare`, 'POST', parseWorldLoadResult,
         received ? undefined : { backupId: chosenBackup }))
-    } catch (error) { setMessage(errorMessage(error)) }
+    } catch (error) { showMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const action = async (name: string, body?: unknown) => {
@@ -121,7 +124,7 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
     }
     setBusy(true)
     try { adopt(await changeJson(`/api/local/world-load/${selected.id}/${name}`, 'POST', parseWorldLoadResult, body)) }
-    catch (error) { setMessage(errorMessage(error)) }
+    catch (error) { showMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
   const confirmOutcome = (step: string, passed: boolean) => void action('confirm', { step, passed, gameVersion: gameVersion.trim() || null })
@@ -160,6 +163,6 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
         {selected.ownerReportedGameVersion && <p>Owner-reported game version: {selected.ownerReportedGameVersion}</p>}
         <p className="helper-text">Working folder: {selected.worldDirectory}</p><p>Recorded Starts: {selected.managedStarts} · graceful Stops: {selected.gracefulStops}</p></details>
     </section>}
-    {message && <p role="status">{message}</p>}
+    {message && <DismissibleNotice as="p" scope={`${received ? 'received' : 'host'}:${profileId}`} noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>{confirmationDialog}</>
 }

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AcceptanceRecorder, acceptanceExplanationReport, staleAcceptanceExplanation,
   type AcceptanceIdentityField, type AcceptanceLoader, type AcceptanceSaver } from './AcceptanceRecorder'
@@ -20,6 +20,23 @@ describe('AcceptanceRecorder stale evidence', () => {
     expect(screen.getByText(/exact changed setting is not available/)).toBeInTheDocument()
     expect(screen.getByText(/a version change cannot be named/)).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).not.toBeChecked()
+  })
+
+  it('dismisses stale evidence without confirming any check and restores the warning for a new server', async () => {
+    const loader: AcceptanceLoader = async id => ({ ...view, profileId: id })
+    const saver = vi.fn<AcceptanceSaver>()
+    const display = render(<AcceptanceRecorder profileId={profileId} loader={loader} saver={saver} />)
+    await screen.findByText('Configuration changed')
+    fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Configuration changed')).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox')).not.toBeChecked()
+    expect(saver).not.toHaveBeenCalled()
+    display.rerender(<AcceptanceRecorder profileId={profileId} loader={loader} saver={saver} />)
+    expect(screen.queryByText('Configuration changed')).not.toBeInTheDocument()
+    display.rerender(<AcceptanceRecorder profileId={otherId} loader={loader} saver={saver} />)
+    expect(await screen.findByText('Configuration changed')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox')).not.toBeChecked()
+    expect(saver).not.toHaveBeenCalled()
   })
 
   it('distinguishes readable changed files from unavailable files without inventing a game update', () => {
@@ -57,6 +74,11 @@ describe('AcceptanceRecorder stale evidence', () => {
     expect(copied).toContain('earlier confirmations are stale')
     expect(copied).not.toMatch(/PRIVATE_|192\.0\.2|C:\\|11111111|a{64}/u)
     expect(new TextEncoder().encode(copied).length).toBeLessThan(2048)
+    fireEvent.click(within(screen.getByText('Redacted owner-check explanation copied.')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Redacted owner-check explanation copied.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy explanation' }))
+    expect(await screen.findByText('Redacted owner-check explanation copied.')).toBeInTheDocument()
+    expect(writeText).toHaveBeenCalledTimes(2)
   })
 
   it('aborts a pending confirmation and ignores its result after a profile switch', async () => {

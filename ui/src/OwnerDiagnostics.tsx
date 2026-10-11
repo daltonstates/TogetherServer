@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import {
   parseOwnerDiagnostics, parseSupportReportExport,
   type OwnerDiagnosticCheck, type OwnerDiagnosticsView, type SupportReportExport
@@ -77,10 +78,11 @@ export function ownerTroubleshootingReport(view: OwnerDiagnosticsView, selectedP
     'Read-only evidence. No join, saved-world, continuous availability or permission to stop a server is inferred.'].join('\n\n')
 }
 
-function DiagnosticCard({ check, onCopy, copyStatus }: {
+function DiagnosticCard({ check, onCopy, copyStatus, scope }: {
   check: OwnerDiagnosticCheck
   onCopy: (check: OwnerDiagnosticCheck) => void
-  copyStatus?: string
+  copyStatus?: { text: string; result: number }
+  scope: string
 }) {
   const fact = reviewedFact(check)
   return <article className={`owner-diagnostic-check tone-${check.tone.toLocaleLowerCase()}`}>
@@ -88,7 +90,7 @@ function DiagnosticCard({ check, onCopy, copyStatus }: {
     <p>{check.detail}</p>
     <div className="owner-diagnostic-next"><span>Next</span><p>{check.nextAction}</p><small>{check.location}</small></div>
     {fact && <Button className="text-button" aria-label={`Copy explanation for ${fact.label}`} onClick={() => onCopy(check)}>Copy explanation</Button>}
-    {copyStatus && <output role="status">{copyStatus}</output>}
+    {copyStatus && <DismissibleNotice as="output" scope={`${scope}:${check.id}`} noticeKey={copyStatus.result} role="status">{copyStatus.text}</DismissibleNotice>}
   </article>
 }
 
@@ -103,10 +105,11 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
   const [exportBusy, setExportBusy] = useState<'copy' | 'download' | 'summary' | ''>('')
-  const [exportStatus, setExportStatus] = useState<{ tone: 'neutral' | 'error'; text: string } | null>(null)
-  const [explanationStatus, setExplanationStatus] = useState<{ check: OwnerDiagnosticCheck; text: string } | null>(null)
+  const [exportStatus, setExportStatus] = useState<{ tone: 'neutral' | 'error'; text: string; result: number } | null>(null)
+  const [explanationStatus, setExplanationStatus] = useState<{ check: OwnerDiagnosticCheck; text: string; result: number } | null>(null)
   const pending = useRef<AbortController | null>(null)
   const generation = useRef(0)
+  const resultSequence = useRef(0)
 
   const load = useCallback(async () => {
     pending.current?.abort()
@@ -148,9 +151,9 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
     const current = generation.current
     try {
       await navigator.clipboard.writeText(ownerDiagnosticExplanation(check))
-      if (generation.current === current) setExplanationStatus({ check, text: 'Redacted explanation copied.' })
+      if (generation.current === current) setExplanationStatus({ check, text: 'Redacted explanation copied.', result: ++resultSequence.current })
     } catch {
-      if (generation.current === current) setExplanationStatus({ check, text: 'Could not copy the explanation. Try again.' })
+      if (generation.current === current) setExplanationStatus({ check, text: 'Could not copy the explanation. Try again.', result: ++resultSequence.current })
     }
   }
 
@@ -161,9 +164,9 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
     setExportStatus(null)
     try {
       await navigator.clipboard.writeText(ownerTroubleshootingReport(diagnostics, selected?.profileId ?? ''))
-      if (generation.current === current) setExportStatus({ tone: 'neutral', text: 'Concise redacted troubleshooting summary copied.' })
+      if (generation.current === current) setExportStatus({ tone: 'neutral', text: 'Concise redacted troubleshooting summary copied.', result: ++resultSequence.current })
     } catch {
-      if (generation.current === current) setExportStatus({ tone: 'error', text: 'Could not copy the troubleshooting summary. Try again.' })
+      if (generation.current === current) setExportStatus({ tone: 'error', text: 'Could not copy the troubleshooting summary. Try again.', result: ++resultSequence.current })
     } finally { setExportBusy('') }
   }
 
@@ -174,7 +177,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
       const report = await supportReportLoader()
       if (action === 'copy') {
         await navigator.clipboard.writeText(report.content)
-        setExportStatus({ tone: 'neutral', text: `Redacted support report copied (${report.sizeBytes} bytes).` })
+        setExportStatus({ tone: 'neutral', text: `Redacted support report copied (${report.sizeBytes} bytes).`, result: ++resultSequence.current })
       } else {
         const url = URL.createObjectURL(new Blob([report.content], { type: report.contentType }))
         try {
@@ -183,10 +186,10 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
           link.download = report.fileName
           link.click()
         } finally { URL.revokeObjectURL(url) }
-        setExportStatus({ tone: 'neutral', text: `Downloaded ${report.fileName} (${report.sizeBytes} bytes).` })
+        setExportStatus({ tone: 'neutral', text: `Downloaded ${report.fileName} (${report.sizeBytes} bytes).`, result: ++resultSequence.current })
       }
     } catch {
-      setExportStatus({ tone: 'error', text: 'The redacted support report could not be created. No private error details were added.' })
+      setExportStatus({ tone: 'error', text: 'The redacted support report could not be created. No private error details were added.', result: ++resultSequence.current })
     } finally { setExportBusy('') }
   }
 
@@ -197,12 +200,12 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
       <Button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? 'Refreshing…' : 'Refresh checks'}</Button>
     </div>
 
-    {loadError && <div className="owner-diagnostics-error" role="alert"><strong>Diagnostics unavailable</strong>
+    {loadError && <DismissibleNotice scope={selectedProfileId} className="owner-diagnostics-error" role="alert"><strong>Diagnostics unavailable</strong>
       <p>TogetherServer could not assemble the fixed local checks. No server action was started.</p>
-      <Button className="secondary" onClick={() => void load()}>Try again</Button></div>}
+      <Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
 
     {!loadError && diagnostics && <>
-      <div className="owner-diagnostics-boundary" role="note">{diagnostics.evidenceBoundary}</div>
+      <DismissibleNotice scope={selected?.profileId ?? selectedProfileId} className="owner-diagnostics-boundary" role="note">{diagnostics.evidenceBoundary}</DismissibleNotice>
       {diagnostics.servers.length > 0 ? <>
         <label className="owner-diagnostics-server">Selected server<Select aria-label="Diagnostics server"
           value={selected?.profileId ?? ''} onChange={event => onSelectedProfileIdChange?.(event.target.value)}>
@@ -210,7 +213,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
         </Select></label>
         {selected && <div className="owner-diagnostics-grid" aria-label={`${selected.label} diagnostic checks`}>
           {selected.checks.map(check => <DiagnosticCard key={check.id} check={check} onCopy={check => void copyExplanation(check)}
-            copyStatus={explanationStatus?.check === check ? explanationStatus.text : undefined} />)}
+            scope={selected.profileId} copyStatus={explanationStatus?.check === check ? explanationStatus : undefined} />)}
         </div>}
       </> : <div className="owner-diagnostics-empty"><strong>No saved server yet</strong>
         <p>Save a server setup to see its process, player count, and local port checks. App checks remain available below.</p></div>}
@@ -218,7 +221,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
       <div className="owner-diagnostics-shared"><h4>App, recovery, and Friend access</h4>
         <div className="owner-diagnostics-grid">{diagnostics.sharedChecks.map(check =>
           <DiagnosticCard key={check.id} check={check} onCopy={check => void copyExplanation(check)}
-            copyStatus={explanationStatus?.check === check ? explanationStatus.text : undefined} />)}</div></div>
+            scope={selected?.profileId ?? selectedProfileId} copyStatus={explanationStatus?.check === check ? explanationStatus : undefined} />)}</div></div>
       <section className="support-export" aria-labelledby="support-export-title">
         <div><h4 id="support-export-title">Export support report</h4>
           <p>Copy summary keeps only reviewed check states and next steps. Copy report and Download JSON include the larger redacted report.</p>
@@ -229,7 +232,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
           {exportBusy === 'copy' ? 'Copying…' : 'Copy report'}</Button>
           <Button className="secondary" disabled={!!exportBusy} onClick={() => void exportReport('download')}>
             {exportBusy === 'download' ? 'Preparing…' : 'Download JSON'}</Button></div>
-        {exportStatus && <output className={`support-export-status ${exportStatus.tone}`} role="status">{exportStatus.text}</output>}
+        {exportStatus && <DismissibleNotice as="output" scope={selected?.profileId ?? selectedProfileId} noticeKey={exportStatus.result} className={`support-export-status ${exportStatus.tone}`} role="status">{exportStatus.text}</DismissibleNotice>}
       </section>
     </>}
   </section>

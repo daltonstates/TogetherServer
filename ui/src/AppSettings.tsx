@@ -1,3 +1,4 @@
+import { DismissibleNotice } from './DismissibleNotice'
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Button, Input } from './Controls'
 import { DesktopPreferencesPanel, UpdateDetailsPanel } from './DesktopPreferencesPanel'
@@ -75,7 +76,7 @@ export function AppSettings({ section, onSectionChange, onClose, onBusyChange, p
           <Input type="checkbox" checked={desktop?.launchAtLogin ?? false} disabled={!desktop?.available || !desktop.startupAvailable || desktopBusy || busy} onChange={event => onDesktopChange({ launchAtLogin: event.target.checked })} /></label>
         <label className="setting-toggle"><span><strong>Close to tray</strong><small>Hosting and Friend checks keep running.</small></span>
           <Input type="checkbox" checked={desktop?.closeToTray ?? false} disabled={!desktop?.available || desktopBusy || busy} onChange={event => onDesktopChange({ closeToTray: event.target.checked })} /></label>
-        {!desktop?.available && <p className="warning-text" role="status">Windows preferences are unavailable in this build.</p>}
+        {!desktop?.available && <DismissibleNotice as="p" className="warning-text" role="status">Windows preferences are unavailable in this build.</DismissibleNotice>}
         <div className="settings-danger-row"><span><strong>Quit TogetherServer</strong><small>Active or unresolved hosted servers still block Quit.</small></span>
           <Button className="secondary" disabled={!desktop?.available || pageBusy} onClick={onQuit}><Icon name="power" />Quit {instance?.displayName ?? 'TogetherServer'}</Button></div>
       </div>}
@@ -85,7 +86,7 @@ export function AppSettings({ section, onSectionChange, onClose, onBusyChange, p
           <Button className="secondary" disabled={pageBusy || instance?.updatesAvailable === false} onClick={() => void checkUpdate()}>
             <Icon name={updateBusy ? 'loader' : 'refresh'} />{updateBusy ? 'Checking…' : 'Check for updates'}</Button></div>
         {update && <><p className="helper-text">Update trust: {update.publisherTrust}. Stop all managed servers and resolve uncertain process records before updating.</p>
-          <p className={update.state === 'Unavailable' || update.publisherTrust === 'Signature rejected' ? 'warning-text' : 'helper-text'} role="status">{update.message}</p>
+          <DismissibleNotice as="p" className={update.state === 'Unavailable' || update.publisherTrust === 'Signature rejected' ? 'warning-text' : 'helper-text'} role="status">{update.message}</DismissibleNotice>
           {update.state === 'Available' && <Button className="secondary" disabled={pageBusy || instance?.updatesAvailable === false} onClick={onReviewUpdate}><Icon name="refresh" />Review update</Button>}
           <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={onReloadUpdate} onBusyChange={setChildBusy} /></>}
       </div>}

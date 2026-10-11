@@ -7,7 +7,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 const base = {
     ok: true, code: 'AddOnsReady', message: 'Ready', gameVersion: '2.0.72',
     requiredOnFriendPc: 'Match the enabled mod set.', stateToken: 'before',
-    canImport: true, canUndo: false, warning: null, importType: 'FactorioMod',
+    canImport: true, canUndo: false, warning: null as string | null, importType: 'FactorioMod',
     items: [{ key: 'fixture_1.0.0.zip', name: 'fixture', version: '1.0.0',
       requiredGameVersion: '2.0', enabled: true, compatibility: 'Version matches', type: 'Factorio mod' }]
 }
@@ -54,6 +54,24 @@ it('declines an add-on change without making a mutation request', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   expect(fetcher).toHaveBeenCalledTimes(1)
   expect(screen.getByRole('button', { name: 'Disable' })).toBeEnabled()
+})
+
+it('dismisses a recurring version warning while keeping Unknown-state changes blocked', async () => {
+  const view = { ...base, warning: 'Version needs review' }
+  const fetcher = stubAddOns(view)
+  const rendered = render(<ServerAddOnsPanel {...props} state="Unknown" />)
+  await screen.findByText(view.warning)
+  fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
+  expect(screen.queryByText(view.warning)).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Disable' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Import mod ZIP' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Mark version reviewed' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+  expect(screen.queryByText(view.warning)).not.toBeInTheDocument()
+  rendered.rerender(<ServerAddOnsPanel {...props} state="Unknown" profileId="22222222-2222-4222-8222-222222222222" />)
+  expect(await screen.findByText(view.warning)).toBeInTheDocument()
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
 })
 
 it.each([

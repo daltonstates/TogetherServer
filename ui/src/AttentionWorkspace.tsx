@@ -1,5 +1,6 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Button, Input, Select } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import './TaskFirstPages.css'
 import type { ActivityEvent } from './contracts'
@@ -254,10 +255,10 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
     {mode === 'Host' && <section aria-label="Current problems" className="attention-current"><h3>Current problems · {problems.length}</h3>
       <p className="helper-text">From the current Host state. Reading or dismissing history cannot resolve these problems. History filters apply only to past events below.</p>
       {problems.length === 0 ? <p>No current server problems are reported.</p> :
-        problems.map(problem => <article className="notification-item bad" key={problem.id}><span aria-hidden="true"><Icon name="warning" /></span><div><strong>{problem.name}</strong><p>{problem.warning}</p>
+        problems.map(problem => <DismissibleNotice as="article" className="notification-item bad" key={problem.id} scope={activitySource}><span aria-hidden="true"><Icon name="warning" /></span><div><strong>{problem.name}</strong><p>{problem.warning}</p>
           <small>{problemCategory(problem)} · {problemSeverity(problem)}</small>
           {onOpen && <Button className="text-button" onClick={() => onOpen(problem.destination)}>{problem.destination.label}</Button>}
-        </div></article>)}
+        </div></DismissibleNotice>)}
     </section>}
     {children}
     <details className="attention-history-disclosure">
@@ -300,6 +301,6 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
     </section>
     </details>
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{mode === 'Host' ? `${scopedProblems.length} current problems. ` : ''}{unreadCount} unread history notices.</span>
-    <p className="helper-text" role="status" aria-live="polite" aria-atomic="true">{feedback}</p>
+    {feedback && <DismissibleNotice as="p" className="helper-text" role="status" aria-live="polite" aria-atomic="true">{feedback}</DismissibleNotice>}
   </section>
 }

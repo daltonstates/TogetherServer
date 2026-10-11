@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LiveSaveControls, parseLiveSaveStatus } from './LiveSaveControls'
 const status = (available = false) => ({ available, message: 'Game-specific completion and load checks remain unverified.',
@@ -71,6 +71,10 @@ describe('live capture gates', () => {
     expect(screen.getByRole('button', { name: 'Save and share now' })).toBeDisabled()
     expect(screen.getByText(/Other-PC transfer and receipt:/)).toBeInTheDocument()
     expect(screen.getByText(/Owner load confirmations do not enable/)).toBeInTheDocument()
+    fireEvent.click(within(screen.getByText(status().message)).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText(status().message)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save and share now' })).toBeDisabled()
+    expect(screen.getByText(/Other-PC transfer and receipt:/)).toBeInTheDocument()
   })
   it('uses a fixed scoped request and retains its identity after a lost reply', async () => {
     const fetch = vi.fn().mockRejectedValueOnce(new Error('lost reply')).mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, code: 'LiveSavePublished', message: 'Synthetic copy published.', attempt: null })))
@@ -84,5 +88,25 @@ describe('live capture gates', () => {
     expect(fetch.mock.calls[0][0]).toBe('/api/local/profiles/test/shared-world/live/save')
     expect(fetch.mock.calls[0][1].body).toBe(fetch.mock.calls[1][1].body)
     expect(Object.keys(JSON.parse(fetch.mock.calls[0][1].body))).toEqual(['requestId'])
+  })
+  it('dismisses only the displayed result and shows an identical result from a later request', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, code: 'LiveSavePublished', message: 'Synthetic copy published.', attempt: null })))
+    vi.stubGlobal('fetch', fetch)
+    let finishRefresh!: () => void
+    const updated = vi.fn(() => new Promise<void>(resolve => { finishRefresh = resolve }))
+    render(<LiveSaveControls profileId="test" status={parseLiveSaveStatus(status(true))} onUpdated={updated} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save and share now' }))
+    fireEvent.click(within(await screen.findByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Working…' })).toBeDisabled()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(updated).toHaveBeenCalledTimes(1)
+    await act(async () => { finishRefresh() })
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save and share now' })).toBeEnabled()
+    updated.mockResolvedValueOnce(undefined)
+    fireEvent.click(screen.getByRole('button', { name: 'Save and share now' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Synthetic copy published.')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 })

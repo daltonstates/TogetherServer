@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { Button, Input, Select, TextArea } from '../../Controls'
+import { DismissibleNotice } from '../../DismissibleNotice'
 import type { CustomScriptBundle, Discovery, HostSnapshot, Settings } from '../../contracts'
 import type { CustomPort, Profile } from '../../GameProfile'
 import { profileGameLabel } from '../../GameProfile'
@@ -28,12 +29,12 @@ function ConfiguredPortWarning({ profile, profiles, onApply, busy }: {
   const warning = setupPortSuggestion(profile, profiles)
   if (!warning.conflicts.length) return null
   const ports = plannedPorts(profile).map(port => `${port.protocol} ${port.port}`).join(', ')
-  return <div className="configured-port-warning" role="status"><strong>Duplicate saved game port</strong>
+  return <DismissibleNotice scope={profile.id} className="configured-port-warning" role="status"><strong>Duplicate saved game port</strong>
     <p>{ports} overlaps {warning.conflicts.map(conflict => conflict.name).join(', ')}. TogetherServer will not run both configurations at once.</p>
     {warning.patch ? <><small>Suggested: {plannedPorts({ ...profile, ...warning.patch }).map(port => `${port.protocol} ${port.port}`).join(', ')}. Windows and game-file port availability is checked again at Start.</small>
       <Button className="secondary" disabled={busy} onClick={() => onApply(warning.patch!)}>Apply suggested ports</Button></> :
       <small>No primary-port suggestion can resolve these saved overlaps. Review the declared ports below.</small>}
-  </div>
+  </DismissibleNotice>
 }
 
 export function isValidGamePassword(password: string): boolean {
@@ -250,16 +251,16 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
   return <dialog ref={dialogRef} className="panel settings-panel modal-dialog task-first-setup" aria-labelledby="setup-title"
     onCancel={event => { event.preventDefault(); onCancel() }}>
     <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p className="setup-current-step">Step {setupStepIndex + 1} of {setupSteps.length} · {stepTitle}</p></div></div>
-    {freshWorldsOnly && <div className="staging-setup-notice"><strong>Development worlds persist in separate storage.</strong><span>Create and reuse them here. Existing production worlds cannot be selected, scanned, or copied, and every development save stays in the development data folder.</span></div>}
-    {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-    {setupDraftRecovery && onRecoverSetupDraft && onDiscardSetupDraft && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup"
+    {freshWorldsOnly && <DismissibleNotice scope={editedProfile?.id} className="staging-setup-notice"><strong>Development worlds persist in separate storage.</strong><span>Create and reuse them here. Existing production worlds cannot be selected, scanned, or copied, and every development save stays in the development data folder.</span></DismissibleNotice>}
+    {notice && <DismissibleNotice scope={editedProfile?.id} className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
+    {setupDraftRecovery && onRecoverSetupDraft && onDiscardSetupDraft && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup" scope={editedProfile?.id}
       disabled={!!pending} onRecover={onRecoverSetupDraft} onDiscard={onDiscardSetupDraft} />}
     {importReview && onConfirmImport && onCancelImport && <SetupImportReviewPanel review={importReview} busy={!!pending}
       onConfirm={onConfirmImport} onCancel={onCancelImport} />}
     <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
-      {profile.kind !== 'Valheim' && <p className="warning-text" role="status">{setupSupport(profile.kind).label}. {setupSupport(profile.kind).actions}</p>}
+      {profile.kind !== 'Valheim' && <DismissibleNotice as="p" scope={profile.id} className="warning-text" role="status">{setupSupport(profile.kind).label}. {setupSupport(profile.kind).actions}</DismissibleNotice>}
       {setupStep === 'game' && onReuseProfile && savedProfiles.length > 0 && <details className="advanced-block"><summary>Reuse a saved server's nonsecret setup</summary>
         <p>Creates a new server with separate world selection and ports. Worlds, passwords, Friend access, and custom scripts are never copied.</p>
         <div className="choices">{savedProfiles.filter(saved => !freshWorldsOnly || !['Custom', 'Factorio', 'Terraria'].includes(saved.kind)).map(saved =>
@@ -334,15 +335,15 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
             onTermsChange={accepted => onMinecraftTermsChange(profile.id, accepted)}
             installBusy={pending === 'install-minecraft'} />
         : profile.kind === 'Factorio' ? <div className="factorio-server-setup">
-          <div className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Factorio, accept terms, or expose RCON to Friends. The built-in driver has fixture-tested Start, authenticated local player count, /quit, and backup behavior; real-game join/save acceptance is still required.</p></div>
+          <DismissibleNotice scope={profile.id} className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Factorio, accept terms, or expose RCON to Friends. The built-in driver has fixture-tested Start, authenticated local player count, /quit, and backup behavior; real-game join/save acceptance is still required.</p></DismissibleNotice>
           <label>Factorio server executable<div className="field-with-button"><Input disabled={!!pending} value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\Factorio\\bin\\x64\\factorio.exe" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseFactorio(profile, 'executable')}>Browse</Button></div></label>
         </div>
         : profile.kind === 'Terraria' ? <div className="factorio-server-setup">
-          <div className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Terraria. The built-in driver can launch the copied world and request a graceful exit; a TCP listener cannot establish player count, join, or save integrity. Remote and automatic Stop stay blocked.</p></div>
+          <DismissibleNotice scope={profile.id} className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Terraria. The built-in driver can launch the copied world and request a graceful exit; a TCP listener cannot establish player count, join, or save integrity. Remote and automatic Stop stay blocked.</p></DismissibleNotice>
           <label>Terraria server executable<div className="field-with-button"><Input disabled={!!pending} value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\Terraria\\TerrariaServer.exe" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseTerraria(profile, 'executable')}>Browse</Button></div></label>
         </div>
         : profile.kind === 'Custom' ? <div className="custom-script-manager" id={`setup-${profile.id}-scripts`} tabIndex={-1}>
-          <div className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></div>
+          <DismissibleNotice scope={profile.id} className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></DismissibleNotice>
           {customScriptsLoading[profile.id] && <p className="helper-text script-loading" role="status"><Icon name="loader" />Loading protected scripts…</p>}
           <label>Start script<TextArea disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.start ?? ''} onChange={event => onEditCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
           <label>Status and players script<TextArea disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.status ?? ''} onChange={event => onEditCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and echo every contract value.\n@{ contractVersion = [int]$env:TOGETHERSERVER_CONTRACT_VERSION; probeId = $env:TOGETHERSERVER_PROBE_ID; operationId = $env:TOGETHERSERVER_OPERATION_ID; state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Existing scripts still show status, but contract v2 checks and the guided live test are required before player counts can allow remote Stop, Restart, replacement, or automatic shutdown.</small></label>
@@ -381,9 +382,9 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         <p>{setupSupport(profile.kind).actions}</p><p>{setupSupport(profile.kind).limits}</p></details>
     </div>)}
     {editedProfile && <>{setupStep === 'review' && savedProfiles.some(saved => saved.id === editedProfile.id) && <details className="advanced-block danger-zone"><summary>Danger zone</summary><p className="helper-text">Removing this server forgets its setup and Friend access. TogetherServer leaves its world files in place.</p><Button className="text-button danger" disabled={!!pending} onClick={() => onRemoveProfile(editedProfile)}>Remove from TogetherServer</Button></details>}
-    {currentIssues.length > 0 && <section aria-label="Setup blockers" className="field-error"><strong role="status">{currentIssues.length} setup {currentIssues.length === 1 ? 'item needs' : 'items need'} attention</strong>
+    {currentIssues.length > 0 && <DismissibleNotice as="section" scope={`${editedProfile.id}:${setupStep}`} aria-label="Setup blockers" className="field-error"><strong role="status">{currentIssues.length} setup {currentIssues.length === 1 ? 'item needs' : 'items need'} attention</strong>
       {issueList(currentIssues)}
-    </section>}
+    </DismissibleNotice>}
     {laterIssues.length > 0 && <details className="advanced-block"><summary>Other setup items · {laterIssues.length}</summary>{issueList(laterIssues)}</details>}
     <div className="wizard-footer"><div className="actions"><Button className="text-button" disabled={!!pending} onClick={onFinishLater}>Finish later</Button>
       <Button className="text-button" disabled={!!pending} onClick={onCancel}>{savedProfiles.length > 0 ? 'Cancel' : 'Cancel setup'}</Button></div><div className="actions">

@@ -76,6 +76,13 @@ describe('guided world load', () => {
     expect(screen.queryByRole('button', { name: 'Stop disposable copy' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'The change survived restart' })).toBeDisabled()
     expect(fetch).toHaveBeenCalledWith('/api/local/friend/test-profile/world-load/prepare', expect.objectContaining({ method: 'POST', body: undefined }))
+    fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByText(/Copy:/)).toHaveTextContent(view().copyIdentity)
+    expect(screen.getByRole('button', { name: 'The change survived restart' })).toBeDisabled()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare disposable copy' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Disposable copy prepared.')
   })
   it('keeps the fixed Stop available for a managed rehearsal when a changed binary blocks Start', async () => {
     const changed = { ...view(), game: 'Valheim', sourceKind: 'Backup', state: 'Game binary changed',

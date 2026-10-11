@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { changeJson, getLocalJson } from './api'
 import { Button, Input } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import { parseAcceptanceResult, parseAcceptanceView, type AcceptanceResult, type AcceptanceView } from './contracts'
 
 export type AcceptanceIdentityField = 'game' | 'world' | 'serverApp' | 'ports' | 'route' | 'listing' | 'serverName'
@@ -74,6 +75,7 @@ export function AcceptanceRecorder({ profileId, visible = true, configurationEvi
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [copyStatus, setCopyStatus] = useState('')
+  const [copyResult, setCopyResult] = useState(0)
   const pending = useRef<AbortController | null>(null)
   const scope = useRef(0)
 
@@ -122,9 +124,15 @@ export function AcceptanceRecorder({ profileId, visible = true, configurationEvi
     const currentScope = scope.current
     try {
       await navigator.clipboard.writeText(acceptanceExplanationReport(view, configurationEvidence))
-      if (scope.current === currentScope) setCopyStatus('Redacted owner-check explanation copied.')
+      if (scope.current === currentScope) {
+        setCopyStatus('Redacted owner-check explanation copied.')
+        setCopyResult(result => result + 1)
+      }
     } catch {
-      if (scope.current === currentScope) setCopyStatus('Could not copy the explanation. Try again.')
+      if (scope.current === currentScope) {
+        setCopyStatus('Could not copy the explanation. Try again.')
+        setCopyResult(result => result + 1)
+      }
     }
   }
 
@@ -134,15 +142,15 @@ export function AcceptanceRecorder({ profileId, visible = true, configurationEvi
     <div className="section-heading"><div><h3 id={titleId}>Acceptance Recorder</h3>
       <p>Keep owner-confirmed real-world checks tied to this exact server and route configuration.</p></div>
       <Button className="text-button" disabled={!!busy || !visible} onClick={() => void load()}>Refresh</Button></div>
-    {error && <p className="warning-text" role="alert">{error}</p>}
+    {error && <DismissibleNotice as="p" scope={profileId} className="warning-text" role="alert">{error}</DismissibleNotice>}
     {!currentView && !error && <p className="helper-text" role="status">Loading recorded checks…</p>}
-    {currentView && explanations.length > 0 && <div className="notice bad" role="status">
+    {currentView && explanations.length > 0 && <DismissibleNotice scope={profileId} className="notice bad" role="status">
       <strong>{currentView.gameFilesChanged ? 'Game server file identity changed' : 'Configuration changed'}</strong>
       <ul>{explanations.map(explanation => <li key={explanation}>{explanation}</li>)}</ul>
       <p>Earlier confirmations no longer count for this setup. Review the change, keep the server stopped for any file work, and repeat the affected real checks.</p>
       {currentView.updatedUtc && <small>Earlier checks last recorded {new Date(currentView.updatedUtc).toLocaleString()}.</small>}
-    </div>}
-    {currentView && !currentView.gameFilesAvailable && <p className="warning-text" role="status">The selected game server files could not be read. Check the saved server app before relying on earlier tests.</p>}
+    </DismissibleNotice>}
+    {currentView && !currentView.gameFilesAvailable && <DismissibleNotice as="p" scope={profileId} className="warning-text" role="status">The selected game server files could not be read. Check the saved server app before relying on earlier tests.</DismissibleNotice>}
     {currentView && <>
       <div className="acceptance-checks">{currentView.checks.map(check => <label className="acceptance-check" key={check.id}>
         <Input type="checkbox" checked={check.confirmed} disabled={!!busy}
@@ -151,7 +159,7 @@ export function AcceptanceRecorder({ profileId, visible = true, configurationEvi
           {check.confirmedUtc && <small>Owner confirmed {new Date(check.confirmedUtc).toLocaleString()}.</small>}</span>
       </label>)}</div>
       <Button className="secondary" onClick={() => void copyExplanation()}>Copy explanation</Button>
-      {copyStatus && <output role="status">{copyStatus}</output>}
+      {copyStatus && <DismissibleNotice as="output" scope={profileId} noticeKey={copyResult} role="status">{copyStatus}</DismissibleNotice>}
       <small className="evidence-boundary">{currentView.evidenceBoundary}</small>
     </>}
   </section>

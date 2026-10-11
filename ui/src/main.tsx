@@ -34,6 +34,7 @@ import { MaintenanceGuide } from './MaintenanceGuide'
 import { TemporaryHelperAccess } from './TemporaryHelperAccess'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
 import { StartupRecoveryNotice } from './StartupRecoveryNotice'
+import { DismissibleNotice } from './DismissibleNotice'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { PlayersPanel, playerCountAvailability } from './PlayersPanel'
@@ -303,6 +304,7 @@ export function App() {
   const [loadError, setLoadError] = useState('')
   const [update, setUpdate] = useState<DesktopUpdateDetails | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateReminderBusy, setUpdateReminderBusy] = useState(false)
   const [notificationUnread, setNotificationUnread] = useState(false)
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>('host')
   const [appSection, setAppSection] = useState<AppSection>('appearance')
@@ -665,6 +667,7 @@ export function App() {
   }
 
   const dismissUpdatePrompt = () => {
+    if (updateBusy || updateReminderBusy) return
     setShowUpdatePrompt(false)
   }
 
@@ -1834,9 +1837,9 @@ export function App() {
           </summary></Tooltip>
           <div className="notification-panel">
             <div className="notification-panel-heading"><div><strong>Notifications</strong><small>Recent app and connection activity</small></div>{visibleActivity.length > 0 && <Button className="text-button" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
-            {update?.state === 'Available' && <div className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></div>}
-            {notice && <div className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></div>}
-            {groupedActivity.slice(0, 8).map(({ item, repeatCount }) => <div className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{snapshot?.mode === 'Host' && activityDestination(item) && <Button className="text-button" onClick={() => openActivity(item)}>{activityDestination(item)!.label}</Button>}{snapshot?.mode === 'Friend' && item.profileId && snapshot.profiles.some(profile => profile.id === item.profileId) && <Button className="text-button" onClick={() => openFriendServer(item.profileId!)}>Open server</Button>}</div></div>)}
+            {update?.state === 'Available' && <DismissibleNotice noticeKey={update.latestVersion} className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></DismissibleNotice>}
+            {notice && <DismissibleNotice noticeKey={notice.receivedAtMs} onDismiss={() => setNotice(null)} className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></DismissibleNotice>}
+            {groupedActivity.slice(0, 8).map(({ item, repeatCount }) => <DismissibleNotice scope={activitySource} noticeKey={item.id} className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{snapshot?.mode === 'Host' && activityDestination(item) && <Button className="text-button" onClick={() => openActivity(item)}>{activityDestination(item)!.label}</Button>}{snapshot?.mode === 'Friend' && item.profileId && snapshot.profiles.some(profile => profile.id === item.profileId) && <Button className="text-button" onClick={() => openFriendServer(item.profileId!)}>Open server</Button>}</div></DismissibleNotice>)}
             {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && <p className="notification-empty">No recent activity.</p>}
           </div>
         </details>
@@ -1845,15 +1848,15 @@ export function App() {
       </HeaderTools>
     </header>
 
-    {update?.state === 'Available' && !update.promptSnoozed && !uiPreferences.quietMode && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
+    {update?.state === 'Available' && !update.promptSnoozed && !uiPreferences.quietMode && <DismissibleNotice noticeKey={update.latestVersion} as="aside" className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></DismissibleNotice>}
 
-    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>App <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Separate development servers and data. Production data is not loaded or copied.</span></aside>}
+    {appInstance?.isStaging && <DismissibleNotice as="aside" className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>App <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Separate development servers and data. Production data is not loaded or copied.</span></DismissibleNotice>}
 
     {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
       <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
-      <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={async () => { await reloadUpdate(); dismissUpdatePrompt() }} />
-      <div className="update-dialog-content"><p>{updateBlockedReason ?? 'Before closing, TogetherServer verifies the download, preserves the previous EXE, and creates a same-user settings/access recovery checkpoint.'}</p><p className="helper-text">Publisher trust: {update.publisherTrust}. A trusted Windows publisher still requires the owner’s signing certificate; unsigned builds remain clearly labeled.</p>{notice && !notice.good && <div className="notice bad" role="status">{notice.text}</div>}</div>
-      <div className="actions update-dialog-actions"><Button className="secondary" disabled={updateBusy} onClick={dismissUpdatePrompt}>Not now</Button><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div>
+      <UpdateDetailsPanel update={update} busy={updateBusy} onBusyChange={setUpdateReminderBusy} onSnoozed={async () => { await reloadUpdate(); setShowUpdatePrompt(false) }} />
+      <div className="update-dialog-content"><p>{updateBlockedReason ?? 'Before closing, TogetherServer verifies the download, preserves the previous EXE, and creates a same-user settings/access recovery checkpoint.'}</p><p className="helper-text">Publisher trust: {update.publisherTrust}. A trusted Windows publisher still requires the owner’s signing certificate; unsigned builds remain clearly labeled.</p>{notice && !notice.good && <DismissibleNotice noticeKey={notice.receivedAtMs} className="notice bad" role="status">{notice.text}</DismissibleNotice>}</div>
+      <div className="actions update-dialog-actions"><Button className="secondary" disabled={updateBusy || updateReminderBusy} onClick={dismissUpdatePrompt}>Not now</Button><Button disabled={updateBusy || updateReminderBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => void installUpdate()}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div>
     </dialog>}
 
     <CommandPalette open={commandPaletteOpen} commands={commands} onClose={() => setCommandPaletteOpen(false)} />
@@ -1864,7 +1867,7 @@ export function App() {
       <div className={workspacePage === 'host' || workspacePage === 'join' ? 'page-heading sr-only' : 'page-heading'}><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
       </div>
 
-      {loadError && <div className="notice bad" role="alert">Connection to this local app failed: {loadError}</div>}
+      {loadError && <DismissibleNotice className="notice bad" role="alert">Connection to this local app failed: {loadError}</DismissibleNotice>}
       {(!snapshot || !appInstance) && !loadError && <section className="panel">Loading local state…</section>}
 
       {dataRecovery && <PaneErrorBoundary title="Data recovery" resetKey={dataRecovery.notices.map(item => item.detectedUtc).join('|')}><DataRecoveryPanel recovery={dataRecovery} mode={snapshot?.mode ?? null}
@@ -1890,9 +1893,9 @@ export function App() {
           profiles={savedProfiles} busy={!!pending || dirty} pendingProfileId={pending.startsWith('resume-') ? pending.slice('resume-'.length) : undefined}
           onResume={profileId => void resumeHosting(profileId)} />}
         <div className="attention-list">
-          {snapshot?.mode === 'Host' && storageWarnings.map((warning, index) => <article className="notification-item bad" role="status" key={`storage-${index}`}><span><Icon name="warning" /></span><div><strong>Storage health</strong><p>{warning}</p></div></article>)}
-          {update?.state === 'Available' && <article className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available - v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update...</> : 'Update and restart'}</Button></div></article>}
-          {notice && <article className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></article>}
+          {snapshot?.mode === 'Host' && storageWarnings.map((warning, index) => <DismissibleNotice as="article" className="notification-item bad" role="status" key={`storage-${index}`}><span><Icon name="warning" /></span><div><strong>Storage health</strong><p>{warning}</p></div></DismissibleNotice>)}
+          {update?.state === 'Available' && <DismissibleNotice noticeKey={update.latestVersion} as="article" className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available - v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update...</> : 'Update and restart'}</Button></div></DismissibleNotice>}
+          {notice && <DismissibleNotice noticeKey={notice.receivedAtMs} onDismiss={() => setNotice(null)} as="article" className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></DismissibleNotice>}
         </div>
         {snapshot?.mode === 'Host' && snapshot.storageHealth && <details className="advanced-block storage-health-details"><summary>Storage and resource details</summary>
           <div className="storage-health-grid">{snapshot.storageHealth.locations.map(location => <div className="storage-health-item" key={location.id}><span><strong>{location.label}</strong><small>{location.state}</small></span><span>{location.availableSpaceBytes == null ? 'Space unavailable' : `${formatBytes(location.availableSpaceBytes)} available`}{location.usedBytes > 0 ? ` · ${formatBytes(location.usedBytes)} measured` : ''}</span><small>{location.detail}</small></div>)}</div>
@@ -1937,8 +1940,8 @@ export function App() {
             <div className="join-host-caption"><Icon name="monitor" /><span>Host: <strong>{snapshot.connectionName || 'Saved Host'}</strong></span></div>
             <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state === 'Disabled' ? 'Connected · controls paused' : snapshot.state}</span>
               {(joinSection === 'network' || joinSection === 'connection') && <span>{snapshot.lastConnectedUtc ? `Last reached ${Math.max(0, Math.floor((nowMs - Date.parse(snapshot.lastConnectedUtc)) / 60000))} min ago · ${new Date(snapshot.lastConnectedUtc).toLocaleString()}` : 'Waiting for a reply from the Host'}</span>}</div>
-            {snapshot.expiryWarning && <div className="notice bad" role="status">{snapshot.expiryWarning}</div>}
-            <FriendAccessExpiredNotice connectionCode={snapshot.connectionCode} />
+            {snapshot.expiryWarning && <DismissibleNotice scope={snapshot.connectionId} className="notice bad" role="status">{snapshot.expiryWarning}</DismissibleNotice>}
+            <FriendAccessExpiredNotice connectionCode={snapshot.connectionCode} connectionId={snapshot.connectionId} />
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>This PC is saved. Ask the Host to approve it under Friend access; you do not need a new code.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
             {(joinSection === 'network' || joinSection === 'connection') && <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
               <Button className="text-button" onClick={() => void changeScope(() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null); setJoinSection('pairing') })}>Add another Host</Button></div>}
@@ -1948,7 +1951,7 @@ export function App() {
               <label className="invite-input">Server code<Input autoFocus type="password" autoComplete="off" value={friendInvite} onChange={event => { setFriendInvite(event.target.value.trim()); setPairIssue(null) }} placeholder="Paste the invite here" /></label>
               <Button type="submit" disabled={!!pending || !friendInvite}>{pending === 'pair' ? 'Connecting…' : 'Connect'}</Button>
             </form>
-            {pairIssue && <div className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></div>}
+            {pairIssue && <DismissibleNotice className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></DismissibleNotice>}
             <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<Input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
           {snapshot.endpoint && showPairing && <Button className="secondary" disabled={pending === 'pair'} onClick={() => { setShowPairing(false); setJoinSection('play'); setPairIssue(null); setFriendInvite('') }}>Cancel and return to saved Host</Button>}
@@ -1970,11 +1973,11 @@ export function App() {
                 {profile.state === 'Ready' && <span className="server-player-count"><Icon name="users" size={14} />{playerCount(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.onlinePlayers : null, profile.maxPlayers)}</span>}
                 {profile.state === 'Ready' && profile.onlinePlayers === 0 && friendConnectionExplanation(snapshot, nowMs).currentAccess && <ServerCountdown deadline={profile.autoShutdownAtUtc} nowMs={nowMs} />}
               </div></div>
-              {profile.operation && currentRemoteOperation(profile, nowMs) && <div className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></div>}
+              {profile.operation && currentRemoteOperation(profile, nowMs) && <DismissibleNotice scope={connectionKey} noticeKey={profile.operation.id + ':' + (['Succeeded', 'Failed', 'Interrupted'].includes(profile.operation.state) ? profile.operation.state : 'pending')} trackMessage={false} className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></DismissibleNotice>}
               <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
 
 
-              {profile.maintenanceEnabled && <div className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></div>}
+              {profile.maintenanceEnabled && <DismissibleNotice scope={connectionKey} className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></DismissibleNotice>}
               {joinSection === 'play' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host={false}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')} worldName={profile.name} serverState={profile.state}
                 serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint} />}
@@ -2012,8 +2015,8 @@ export function App() {
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || !permissions.actions.extend.available} title={!permissions.actions.extend.available ? permissions.actions.extend.reason : undefined} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {['Ready', 'Listening'].includes(profile.state) && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
-                {!permissions.actions.restart.available && profile.canRestartNow && <p className="inline-blocker">{permissions.actions.restart.reason}</p>}
-                {!permissions.actions.extend.available && profile.canExtendTimer && <p className="inline-blocker">{permissions.actions.extend.reason}</p>}
+                {!permissions.actions.restart.available && profile.canRestartNow && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">{permissions.actions.restart.reason}</DismissibleNotice>}
+                {!permissions.actions.extend.available && profile.canExtendTimer && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">{permissions.actions.extend.reason}</DismissibleNotice>}
               </details>}
                 {joinSection === 'logs' && logAvailability.visible && <div className="friend-log-surface">
                 {<PaneErrorBoundary title="Shared server logs" resetKey={profile.id}><ServerLogViewer
@@ -2023,13 +2026,13 @@ export function App() {
               </div>}
               {joinSection === 'network' && <FriendGameCheckResult snapshot={snapshot} profile={profile} gameResults={gameEndpointResults}
                 gameResultIdentities={gameResultIdentities} nowMs={nowMs} />}
-              {operationConflict && <div className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{operationConflict.message}</p>
+              {operationConflict && <DismissibleNotice scope={connectionKey} noticeKey={profile.operation?.id} className="port-conflict-action" role="alert"><strong>Shared game port</strong><p>{operationConflict.message}</p>
                 {operationConflict.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending || operationBusy} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
-                  : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</div>}
+                  : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</DismissibleNotice>}
               {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
-              {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <p className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</p>}
+              {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</DismissibleNotice>}
               {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
-              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
+              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} connectionId={snapshot.connectionId} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
                 serverState={profile.state} serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint}
                 connectedHostName={snapshot.connectionName || 'Saved Host'} onOpenPlay={() => selectJoinSection('play')} onPairHost={() => selectJoinSection('pairing')}
                 onOpenHostControls={() => void openSharedHost(profile.id, false)}
@@ -2150,11 +2153,11 @@ export function App() {
                     <Button className="secondary icon-button" aria-label="More server actions" title="More server actions" onClick={() => setServerToolsProfileId(profile.id)}><Icon name="more" /></Button>
                   </div>
                   {status && !['Offline', 'Ready'].includes(status.state) && <p className="server-progress" role="status">{status.detail}</p>}
-                  {dirty && <p className="inline-blocker">Save or cancel setup changes before server actions.</p>}
-                  {!friendAppAddress && <p className="inline-blocker">Set the Host connection address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Connection help</Button></p>}
-                  {!dirty && hasUnsavedServerEdits && <p className="inline-blocker">Save or discard file changes before starting.</p>}
-                  {dataRecovery?.lifecycleBlocked && <p className="inline-blocker">Start and Restart need local data recovery. <Button className="text-button" onClick={() => openHostSettings('diagnostics')}>Review recovery</Button></p>}
-                  {profile.maintenance?.enabled && <p className="inline-blocker">Maintenance is on; Friend controls are paused. <Button className="text-button" onClick={() => selectHostTab('setup')}>Continue maintenance</Button></p>}
+                  {dirty && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or cancel setup changes before server actions.</DismissibleNotice>}
+                  {!friendAppAddress && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Set the Host connection address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Connection help</Button></DismissibleNotice>}
+                  {!dirty && hasUnsavedServerEdits && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or discard file changes before starting.</DismissibleNotice>}
+                  {dataRecovery?.lifecycleBlocked && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Start and Restart need local data recovery. <Button className="text-button" onClick={() => openHostSettings('diagnostics')}>Review recovery</Button></DismissibleNotice>}
+                  {profile.maintenance?.enabled && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Maintenance is on; Friend controls are paused. <Button className="text-button" onClick={() => selectHostTab('setup')}>Continue maintenance</Button></DismissibleNotice>}
                   <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
                 </div>
                 <div className="server-tab-content">
@@ -2162,18 +2165,18 @@ export function App() {
                   worldName={profile.worldId} serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} observedHostAddress={snapshot.settings.companionEndpoint} />}
                 {hostServerTab === 'overview' && inviteProfileId === profile.id && <div className="inline-invite">
                   {invitation ? <><div className="invite-ready"><span><Icon name={activeInviteWarning ? 'warning' : 'check'} /></span><div><strong>{activeInviteWarning ? 'Server code ready, connection needs attention' : 'Server code ready'}</strong><p>{activeInviteWarning ? 'Fix the connection below before sending the code.' : 'Send it privately. The same code keeps working until you replace it.'}</p></div></div>
-                    {activeInviteWarning && <p className="connection-warning" role="alert">{activeInviteWarning}</p>}
-                    {!activeInviteWarning && currentRouteResult?.state === 'Not reachable' && <p className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</p>}
+                    {activeInviteWarning && <DismissibleNotice scope={connectionKey} as="p" className="connection-warning" role="alert">{activeInviteWarning}</DismissibleNotice>}
+                    {!activeInviteWarning && currentRouteResult?.state === 'Not reachable' && <DismissibleNotice scope={connectionKey} as="p" className="connection-warning" role="alert">The internet test could not reach this PC at {new Date(currentRouteResult.checkedUtc).toLocaleTimeString()}. Open Friend access to fix the connection before sharing.</DismissibleNotice>}
                     <div className="actions">{activeInviteWarning
                       ? <Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try connection again</Button>
                       : <Button onClick={() => void copyText(invitation, 'Server code')}><Icon name="copy" />Copy code</Button>}
                       <Button className="text-button" onClick={() => { setInviteProfileId(''); setInvitation(''); setInviteListenerWarning(null) }}>Done</Button></div>
                     <details className="advanced-block"><summary>New PCs and replacing the code</summary><label className="check-row"><Input type="checkbox" checked={pairingRequireApproval} onChange={event => setPairingRequireApproval(event.target.checked)} />Ask me to approve each new PC before it can connect</label><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void issueInvite(profile.id)}>Save approval setting</Button><Button className="danger-outline" disabled={!!pending} onClick={() => void issueInvite(profile.id, true)}>Replace code and remove old access</Button></div><small>Replacing the code disconnects PCs that joined with the old code. To remove only one PC, use Friend access.</small></details></>
-                    : inviteListenerWarning ? <><p className="connection-warning" role="alert">{inviteListenerWarning}</p>
+                    : inviteListenerWarning ? <><DismissibleNotice scope={connectionKey} as="p" className="connection-warning" role="alert">{inviteListenerWarning}</DismissibleNotice>
                       <div className="actions"><Button disabled={!!pending} onClick={() => void inviteFriend(profile.id)}><Icon name="refresh" />Try again</Button>
                         <Button className="text-button" onClick={() => { setInviteProfileId(''); setInviteListenerWarning(null) }}>Done</Button></div></>
                       : pending === 'invite' ? <p className="helper-text" role="status">Getting server code…</p>
-                        : <><p className="connection-warning" role="alert">The server code was not loaded.</p><div className="actions"><Button onClick={() => void inviteFriend(profile.id)}>Try again</Button><Button className="text-button" onClick={() => setInviteProfileId('')}>Done</Button></div></>}
+                        : <><DismissibleNotice scope={connectionKey} as="p" className="connection-warning" role="alert">The server code was not loaded.</DismissibleNotice><div className="actions"><Button onClick={() => void inviteFriend(profile.id)}>Try again</Button><Button className="text-button" onClick={() => setInviteProfileId('')}>Done</Button></div></>}
                 </div>}
                 {hostServerTab === 'overview' && ['Ready', 'Listening'].includes(status?.state ?? '') && gameAddress && <ConnectionDetails fields={connectionFields}
                   refreshing={checkingPorts || detectingPublicIp}
@@ -2183,8 +2186,8 @@ export function App() {
                 {hostServerTab === 'overview' && <>
                   {status?.state === 'Offline' && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
                   {['Ready', 'Listening'].includes(status?.state ?? '') && !gameAddress && <div className="connection-empty"><h2>Connection details</h2><p>The joining address is unavailable. Confirm the Host route before sharing it.</p><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Set connection address</Button></div>}
-                  {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <p className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></p>}
-                  {status?.state === 'Ready' && count === null && <p className="inline-blocker"><Icon name="warning" />Players are unknown; Friend and automatic Stop are blocked. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></p>}
+                  {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <DismissibleNotice scope={connectionKey} noticeKey={shownBackupStatus.lastFailureUtc} as="p" className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></DismissibleNotice>}
+                  {status?.state === 'Ready' && count === null && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker"><Icon name="warning" />Players are unknown; Friend and automatic Stop are blocked. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></DismissibleNotice>}
                 </>}
                 {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   onNavigateIssue={destination => destination === 'health' ? void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST') : selectHostTab('files')}
@@ -2212,7 +2215,7 @@ export function App() {
                   key={profile.id} profileId={profile.id} visible={workspacePage === 'host'} /></PaneErrorBoundary>}
                 {hostServerTab === 'backups' && <div className="backups-primary-task"><div className="section-heading"><div><h2>Backups</h2><p>Create a save copy or review a backup to restore.</p></div>
                   <Button disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void createManualBackup(profile.id)}><Icon name={pending === `manual-backup-${profile.id}` ? 'loader' : 'archive'} />{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button></div>
-                  {status?.state !== 'Offline' && <p className="inline-blocker">Stop the server and confirm it is Offline before creating or restoring a backup.</p>}</div>}
+                  {status?.state !== 'Offline' && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Stop the server and confirm it is Offline before creating or restoring a backup.</DismissibleNotice>}</div>}
                 {hostServerTab === 'backups' && <PaneErrorBoundary title="Backups" resetKey={profile.id}><BackupCatalog
                   key={profile.id} profileId={profile.id} visible={workspacePage === 'host'}
                   refreshKey={backupCatalogRevisions[profile.id] ?? 0} currentWorld={profile.worldId} currentGame={profile.kind}
@@ -2240,7 +2243,7 @@ export function App() {
                     onAdd={minutes => void extendCountdown(profile.id, minutes)} />
                   <div className="timer-extension"><label>Custom minutes<Input type="number" min="1" max="1440" step="1" value={countdownExtensions[profile.id] ?? '15'} disabled={!!pending || dirty} onChange={event => setCountdownExtensions(current => ({ ...current, [profile.id]: event.target.value }))} /></label><Button className="secondary" disabled={!!pending || dirty} onClick={() => void extendCountdown(profile.id)}>{pending === `extend-${profile.id}` ? <><Icon name="loader" />Adding…</> : 'Add time'}</Button></div>
                 </details>}
-                {profile.maintenance?.enabled && <div hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote Start, Stop, and Restart are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></div>}
+                {profile.maintenance?.enabled && <DismissibleNotice scope={connectionKey} hidden={hostServerTab !== 'players'} className="notice bad" role="status"><strong>Maintenance mode is on</strong><p>{profile.maintenance.message || 'Friends can see status, but remote Start, Stop, and Restart are paused.'}</p><Button className="secondary" disabled={!!pending || dirty} onClick={() => void saveMaintenance(profile, false)}>End maintenance</Button></DismissibleNotice>}
                 <div hidden={hostServerTab !== 'setup'}><MaintenanceGuide enabled={!!profile.maintenance?.enabled}
                   message={maintenanceMessages[profile.id] ?? profile.maintenance?.message ?? ''}
                   state={status?.state ?? 'Unknown'} onlinePlayers={status?.onlinePlayers ?? null}
@@ -2270,11 +2273,15 @@ export function App() {
                   </div>
                   {!certification?.certified && status?.state !== 'Offline' && !certification?.inProgress && certification?.stage !== 'Failed' && <small>Stop the server locally before beginning certification.</small>}
                 </div>}
-                {(hostServerTab === 'overview' || hostServerTab === 'setup') && recovery && <div className={`safety-status ${recovery.state === 'Suspended' ? 'warning-text' : ''}`}><strong>Crash recovery: {recovery.state}</strong><p>{recovery.state === 'Pending' && recovery.nextAttemptUtc ? `Attempt ${recovery.attempts + 1} of 3 after ${new Date(recovery.nextAttemptUtc).toLocaleString()}.` : recovery.state === 'Starting' ? `Recovery attempt ${recovery.attempts} of 3 is starting.` : recovery.state === 'Recovered' ? `Ready again after ${recovery.attempts} attempt${recovery.attempts === 1 ? '' : 's'}.` : `Suspended after ${recovery.attempts} failed attempts.`}</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}</div>}
+                {(hostServerTab === 'overview' || hostServerTab === 'setup') && recovery && (recovery.state === 'Suspended'
+                  ? <DismissibleNotice className="safety-status warning-text" role="alert" scope={profile.id} noticeKey={recovery.attempts}>
+                    <strong>Crash recovery: Suspended</strong><p>Suspended after {recovery.attempts} failed attempts.</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}
+                  </DismissibleNotice>
+                  : <div className="safety-status"><strong>Crash recovery: {recovery.state}</strong><p>{recovery.state === 'Pending' && recovery.nextAttemptUtc ? `Attempt ${recovery.attempts + 1} of 3 after ${new Date(recovery.nextAttemptUtc).toLocaleString()}.` : recovery.state === 'Starting' ? `Recovery attempt ${recovery.attempts} of 3 is starting.` : recovery.state === 'Recovered' ? `Ready again after ${recovery.attempts} attempt${recovery.attempts === 1 ? '' : 's'}.` : `Suspended after ${recovery.attempts} failed attempts.`}</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}</div>)}
                   {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <details hidden={hostServerTab !== 'backups'} className="backups-support server-support-disclosure"><summary><Icon name="shield" />Protection & sharing</summary><PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' || profile.kind === 'Terraria' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
                     {shownBackupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(shownBackupStatus.lastSuccessfulUtc).toLocaleString()} · {shownBackupStatus.completedCount} retained · {formatBytes(shownBackupStatus.retainedSizeBytes)} used.</small>}
                     {shownBackupStatus?.availableSpaceBytes != null && <small>{formatBytes(shownBackupStatus.availableSpaceBytes)} available on the backup drive.</small>}
-                    {shownBackupStatus?.lastFailureUtc && <p className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</p>}
+                    {shownBackupStatus?.lastFailureUtc && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</DismissibleNotice>}
                     <div className="actions"><Button className="secondary" disabled={pending === `backups-${profile.id}`} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
                     <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds. “Copy to vault” uses a Windows folder picker, verifies every hash after transfer, and keeps the local backup. Choose an external or network location when you want another-device protection. “Test restore” uses disposable scratch storage and never swaps the live world.</small>
                     <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []} worldName={profile.worldId}
@@ -2301,10 +2308,10 @@ export function App() {
                         void run(profile.id, `/api/local/profiles/${profile.id}/forget`, 'POST')
                     }}>Archive exited record</Button>}</div>
                   {pending && <p className="helper-text" role="status">Completing the current action…</p>}
-                  {dirty && <p className="warning-text">Save or cancel setup changes before using server tools.</p>}
-                  {dataRecovery?.lifecycleBlocked && <p className="warning-text">Resolve local data recovery before restarting.</p>}
+                  {dirty && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Save or cancel setup changes before using server tools.</DismissibleNotice>}
+                  {dataRecovery?.lifecycleBlocked && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Resolve local data recovery before restarting.</DismissibleNotice>}
                   {status?.state !== 'Offline' && <p className="helper-text">Edit setup is available when this server is Offline.</p>}
-                  {status?.state === 'Unknown' && <p className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</p>}
+                  {status?.state === 'Unknown' && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</DismissibleNotice>}
                 <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
                   {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}
                   {status?.state === 'Ready' && <small>{profile.kind === 'Fixture' ? 'Synthetic fixture evidence.' : 'Readiness was observed locally; confirm a real game join separately.'}</small>}
@@ -2335,10 +2342,10 @@ export function App() {
           resume={draft.profiles.length > 0 && dirty || !!pausedSetupProfileId} recovered={setupDraftRecovery.recovered !== null}
           onCreate={addProfile} onResume={continueSetup} onJoin={() => void switchMode('friend')}
           onMove={() => openHostSettings('advanced')}
-          recovery={<EditorDraftRecovery {...setupDraftRecovery} purpose="setup" disabled={!!pending}
+          recovery={<EditorDraftRecovery {...setupDraftRecovery} purpose="setup" scope="host-setup" disabled={!!pending}
             onRecover={recoverSetupDraft} onDiscard={() => void discardSetupDraft()} />} />}
 
-        {!showSetup && savedProfiles.length > 0 && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup" disabled={!!pending}
+        {!showSetup && savedProfiles.length > 0 && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup" scope="host-setup" disabled={!!pending}
           onRecover={recoverSetupDraft} onDiscard={() => void discardSetupDraft()} />}
         {!showSetup && savedProfiles.length > 0 && pausedSetupProfileId && <Button className="secondary" disabled={!!pending} onClick={continueSetup}>Resume unfinished setup</Button>}
         {!showSetup && firstSessionProfileId && (() => {
@@ -2384,7 +2391,7 @@ export function App() {
         {hostScope === 'pc' && <section className="settings-workspace host-pc-workspace" aria-label="This Host PC">
           <div className="context-heading-utility"><Button className="secondary icon-button" disabled={!!pending} title="Return to selected server" aria-label="Return to selected server" onClick={() => void closeHostSettings()}><Icon name="server" /></Button></div>
           <div className="settings-content">
-            {dirty && <p className="warning-text" role="status">Finish or cancel your server setup changes before editing Host settings.</p>}
+            {dirty && <DismissibleNotice as="p" className="warning-text" role="status">Finish or cancel your server setup changes before editing Host settings.</DismissibleNotice>}
             {hostSettingsSection === 'access' && <section className="settings-section">
               <SettingsSectionHeading icon="users" title="Friend access" description="Choose a PC to manage its servers, permissions, and access time." />
               <div className="access-toggles settings-controls"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Connections stay available while this Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
@@ -2424,11 +2431,11 @@ export function App() {
                 onClick={() => { if (tab === 'servers' && !serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab(tab); setRemoveDeviceConfirm(false) }}><Icon name={icon} />{label}</Button>)}
           </nav>
           <ActionFeedback notice={currentActionNotice(actionNotices[serverAccessDevice.id], snapshot, feedbackNowMs)} />
-          {notice && !notice.good && <p className="warning-text" role="status">{notice.text}</p>}
+          {notice && !notice.good && <DismissibleNotice noticeKey={notice.receivedAtMs} as="p" className="warning-text" role="status">{notice.text}</DismissibleNotice>}
           {discardDeviceEdits && <div className="settings-inline-confirm" role="alert"><strong>Discard unsaved PC changes?</strong><p>Changes you have already saved remain in place.</p><div className="actions"><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={() => setDiscardDeviceEdits(false)}>Continue editing</Button><Button className="danger-outline" disabled={!!pending || deadlineDraftState.saving} onClick={finishDeviceServerAccess}>Discard changes</Button></div></div>}
           {deviceAccessTab === 'permissions' && <div className="settings-dialog-stack">
-            {serverAccessDevice.temporaryHelperActive && <p className="warning-text" role="status">The last Host view includes temporary helper permissions. End helper access under Access time and refresh before editing usual permissions.</p>}
-            {serverAccessDirty && <p className="warning-text" role="status">Save or discard your server edits before changing usual permissions. <Button className="text-button" onClick={() => setDeviceAccessTab('servers')}>Review server edits</Button></p>}
+            {serverAccessDevice.temporaryHelperActive && <DismissibleNotice as="p" className="warning-text" role="status">The last Host view includes temporary helper permissions. End helper access under Access time and refresh before editing usual permissions.</DismissibleNotice>}
+            {serverAccessDirty && <DismissibleNotice as="p" className="warning-text" role="status">Save or discard your server edits before changing usual permissions. <Button className="text-button" onClick={() => setDeviceAccessTab('servers')}>Review server edits</Button></DismissibleNotice>}
             <fieldset className="device-permissions-editor" disabled={!!pending || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending || serverAccessDirty}>
               <legend>Usual permissions</legend>
               {(() => {
@@ -2457,7 +2464,7 @@ export function App() {
           </div>}
           {deviceAccessTab === 'servers' && <div className="settings-dialog-stack">
             <p className="helper-text">Assignment gives status and connection details. Each server's Start, Stop, Add time, and View logs choices stay independent.</p>
-            {serverAccessDevice.temporaryHelperActive && <p className="warning-text" role="status">End temporary helper access and refresh before editing saved server permissions.</p>}
+            {serverAccessDevice.temporaryHelperActive && <DismissibleNotice as="p" className="warning-text" role="status">End temporary helper access and refresh before editing saved server permissions.</DismissibleNotice>}
             <fieldset className="server-picker-fieldset" disabled={!!pending || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending}>
               <legend className="sr-only">Server access</legend>
               <label className="server-picker-search">Search servers<Input value={serverAccessSearch} placeholder="Search by server or game" onChange={event => setServerAccessSearch(event.target.value)} /></label>

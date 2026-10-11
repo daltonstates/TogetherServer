@@ -19,7 +19,9 @@ function focusableElements(root: HTMLElement) {
 function focusMeaningfulAction(dialog: HTMLDialogElement) {
   const body = dialog.querySelector<HTMLElement>('.settings-dialog-body')
   const footer = dialog.querySelector<HTMLElement>('.settings-dialog-footer')
-  const target = (body && focusableElements(body)[0]) || (footer && focusableElements(footer)[0]) || dialog
+  const bodyControls = body ? focusableElements(body) : []
+  const target = bodyControls.find(element => !element.classList.contains('notice-dismiss'))
+    || (footer && focusableElements(footer)[0]) || bodyControls[0] || dialog
   target.focus({ preventScroll: true })
 }
 

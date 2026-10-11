@@ -1,4 +1,5 @@
 import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
 import type { Profile } from './GameProfile'
 import { currentOutsideResult, type InternetRouteCheck, type PortDiagnostics } from './ServerReadiness'
 
@@ -42,7 +43,7 @@ export function HostStartConnectionNotice({ profile, ports, routeCheck, onOpenCo
           : `Friend app TCP ${control.port} is listening locally. No current outside TCP checker result is shown here; a signed successor route check is evaluated separately.`
   const needsAttention = (control && !['Idle', 'Off', 'Open on PC'].includes(control.state)) ||
     outside?.state === 'Not reachable'
-  return <div className={`start-connection-notice${needsAttention ? ' attention' : ''}`}
+  return <DismissibleNotice className={`start-connection-notice${needsAttention ? ' attention' : ''}`} scope={profile.id}
     role="note" aria-label="Connection check before Start">
     <strong>Before starting</strong>
     <p><b>Game:</b> {gamePorts(profile, game)} Local port availability is checked again at Start.
@@ -56,12 +57,12 @@ export function HostStartConnectionNotice({ profile, ports, routeCheck, onOpenCo
       {onOpenConnection && <Button className="text-button" onClick={onOpenConnection}>Review connection</Button>}
     </div>}
     {canTestControl && <small>The TCP check uses portchecker.io and does not test game ports or pairing.</small>}
-  </div>
+  </DismissibleNotice>
 }
 
 export function FriendStartConnectionNotice() {
-  return <div className="start-connection-notice" role="note" aria-label="Connection check before Start">
+  return <DismissibleNotice className="start-connection-notice" role="note" aria-label="Connection check before Start">
     <strong>Before starting</strong>
     <p>Your Friend app has reached the Host control connection. The Host checks local game ports at Start. This does not confirm the game route; after Start, check the game connection from this PC and make a real join.</p>
-  </div>
+  </DismissibleNotice>
 }

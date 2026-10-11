@@ -60,6 +60,11 @@ it('removes manual Start when a refreshed route check has expired', async () => 
   fireEvent.click(await screen.findByRole('button', {
     name: 'Review separate copy and show proof code' }))
   expect(await screen.findByRole('button', { name: 'Start warned separate copy' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Start warned separate copy' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+  expect(screen.queryByText('Before starting this separate copy')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('I understand another server may still be running')).not.toBeChecked()
+  expect(screen.getByRole('button', { name: 'Start warned separate copy' })).toBeDisabled()
   expired = true
   fireEvent.click(screen.getByRole('button', { name: 'Refresh separate-copy status' }))
   await waitFor(() => expect(screen.queryByRole('button', {
