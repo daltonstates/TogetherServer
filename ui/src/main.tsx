@@ -1842,7 +1842,7 @@ export function App() {
 
     {update?.state === 'Available' && !update.promptSnoozed && !uiPreferences.quietMode && <aside className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></aside>}
 
-    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>Isolated ports: local app <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Development servers, saved access, settings, and worlds stay in this separate instance. Production data is not loaded or copied.</span></aside>}
+    {appInstance?.isStaging && <aside className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>App <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Separate development servers and data. Production data is not loaded or copied.</span></aside>}
 
     {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
       <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
@@ -2001,9 +2001,9 @@ export function App() {
                    : profile.kind === 'Valheim' ? 'The game password is shared separately by your Host.' : undefined}
                  />}
                 requirements={['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.gameKind ?? profile.kind) &&
-                ['Connected', 'Disabled'].includes(snapshot.state) && <PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
+                ['Connected', 'Disabled'].includes(snapshot.state) && <details className="server-support-disclosure"><summary><Icon name="game" />Game requirements</summary><PaneErrorBoundary title="Game requirements" resetKey={`${snapshot.connectionId}-${profile.id}`}>
                   <GameCompatibilityPanel key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} host={false} />
-                </PaneErrorBoundary>} />}
+                </PaneErrorBoundary></details>} />}
               {joinSection === 'connection' && <details className="friend-server-support" open><summary>Players & server tools</summary>
                 <ServerActivity state={permissions.currentAccess ? profile.state : 'Unknown'} online={permissions.currentAccess ? profile.onlinePlayers : null} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
                   refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}

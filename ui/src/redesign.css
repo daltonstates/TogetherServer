@@ -325,6 +325,14 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   .app-shell :is(.context-sidebar, .workspace-sidebar):has(.sidebar-section-picker) nav { display: none; }
   .panel { padding: 16px; }
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .staging-banner { max-height: min(180px, 26dvh); overflow-y: auto; }
+  .app-shell .next-action { flex-flow: column nowrap; align-items: stretch; }
+  .app-shell .next-action > :is(span, div) { flex: none; width: 100%; min-width: 0; }
+  .app-shell .server-file-row { flex-flow: column nowrap; align-items: stretch; }
+  .app-shell .server-file-row > div { flex: none; width: 100%; min-width: 0; }
+  .app-shell .server-file-row .actions { display: flex; flex-wrap: wrap; }
+  .app-shell .server-file-row .actions .ui-button { flex: 1 1 10rem; min-width: 0; }
+  .app-shell .server-files-panel > * { min-width: 0; }
   .app-shell .section-heading { flex-wrap: wrap; gap: 8px 12px; align-items: flex-start; }
   .app-shell .section-heading > :is(h2, h3, h4, div) { flex: none; width: 100%; min-width: 0; }
   .settings-dialog-header, .settings-dialog-body, .settings-dialog-footer { padding: 16px; }

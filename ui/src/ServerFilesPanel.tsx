@@ -317,17 +317,18 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
   return <section className="server-files-panel" aria-label="Server files and settings">
     <div className="section-heading"><div><h3>Files &amp; settings</h3><p>Open the folders and edit the files this server actually uses.</p></div></div>
     {notice && <div className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</div>}
-    <section aria-label="Prepare for editing"><ol>
-      <li>{maintenance ? 'Friend lifecycle controls are paused.' : 'Pause Friend lifecycle controls with Prepare changes.'}</li>
-      <li>{state === 'Offline' ? 'Server is offline. Prepare changes still verifies the setup checkpoint.' : 'Prepare changes needs a fresh exact zero-player count before graceful Stop. Positive or Unknown counts block it.'}</li>
-      <li>Create a complete setup checkpoint, review edits, and save with the matching file version.</li>
-      <li>Start, join from a real game client, then confirm Finish maintenance.</li>
-    </ol></section>
     <div className="next-action"><span>{editAllowed ? 'Ready to review and save guarded edits.' : recoveryBlocked ? 'Resolve local recovery before preparing changes.' : 'Prepare changes creates the offline checkpoint required for safe editing.'}</span>
       <div className="actions"><Button className="secondary" disabled={busy || !!pending || recoveryBlocked}
         onClick={() => void prepareChanges()}>Prepare changes</Button>
         {maintenance && state === 'Ready' && <Button className="secondary" disabled={busy || !!pending || !!changed || recoveryBlocked}
           onClick={() => void finishChanges()}>Finish maintenance</Button>}</div></div>
+    {!editAllowed && state !== 'Offline' && <p className="warning-text">Preparing changes needs a fresh zero-player count. Positive or Unknown counts block a graceful Stop.</p>}
+    <details className="server-support-disclosure"><summary>Editing safely</summary><section aria-label="Prepare for editing"><ol>
+      <li>{maintenance ? 'Friend lifecycle controls are paused.' : 'Pause Friend lifecycle controls with Prepare changes.'}</li>
+      <li>{state === 'Offline' ? 'Server is offline. Prepare changes still verifies the setup checkpoint.' : 'Prepare changes needs a fresh exact zero-player count before graceful Stop. Positive or Unknown counts block it.'}</li>
+      <li>Create a complete setup checkpoint, review edits, and save with the matching file version.</li>
+      <li>Start, join from a real game client, then confirm Finish maintenance.</li>
+    </ol></section></details>
     {!view && !notice && <p className="helper-text">Loading server files…</p>}
     {view && <>
       <div className="server-file-locations">{view.locations.map(location =>

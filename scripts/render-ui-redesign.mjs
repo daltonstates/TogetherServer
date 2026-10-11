@@ -465,5 +465,5 @@ try {
   manifest.skippedCases = manifest.inventory.filter(entry => !attempted.has(entry.id)).map(entry => ({ ...entry, status: 'skipped', reason: 'Run ended before this case; see fatalErrors. No screen assertion or capture performed.' }));
   manifest.status = manifest.fatalErrors.length || manifest.summary.failed || manifest.summary.skipped ? 'failed' : manifest.summary.layoutFindings ? 'captured-with-layout-findings' : 'captured-awaiting-visual-inspection';
   await saveManifest();
-  if (manifest.status === 'failed') process.exitCode = 1;
+  if (manifest.status === 'failed' || manifest.summary.layoutFindings > 0) process.exitCode = 1;
 }
