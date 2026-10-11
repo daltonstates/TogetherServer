@@ -26,9 +26,22 @@ The integrated alert pass initially passed 331/335 focused cases. Three old test
 
 The corrected Attention/Connection Doctor rerun passed all 102 cases. The final full UI suite passed **956/956 tests across 79 files**; its passing JSON is separate at `local-data/alerts-final-ui-tests-pass-20261011.json`. `scripts/verify-code-only.ps1` passed TypeScript, lint, locked restores, the .NET solution build with zero warnings/errors, all 20 source/synthetic groups, whitespace and desktop diagnostic isolation. Symlink subcases were skipped because this user cannot create symbolic links. The 17 pure renderer checks also passed. `npm run build` succeeded; Vite retained its existing advisory about a JavaScript chunk exceeding 500 kB. All checks preserved the owner's active desktop.
 
-Production-publish evidence is added after the implementation commit. The inventory and CLI review are retained under ignored `local-data/alert-dismissal-inventory-20261011.json` and `local-data/alert-dismissal-review-20261011/`.
+The inventory and CLI review are retained under ignored `local-data/alert-dismissal-inventory-20261011.json` and `local-data/alert-dismissal-review-20261011/`.
 
 Two bounded `gpt-6.1-sol` workers owned disjoint Host and Friend component/test files. A `gpt-6.1-sol` Codex CLI worker performed a read-only full-UI review, and the Host worker reviewed shared CSS/shell integration. Reviews caught displaced banner controls, padding overlap, leading-X focus, changed-warning identity, busy update dismissal and a remaining suspended-recovery warning. The coordinator integrated corrections and serializes all builds, validation, packaging and commits.
+
+## Executable handoff
+
+The settings/recovery correction is committed as `d416f623a032670f7b5163a85ee015a27c2cfce1`. The complete alert audit is committed as `6951b60de9368b8b25a97a1d96e8fcade8042837`. The final production executable was published from that clean implementation commit after the passing checks and fresh UI build:
+
+- Path: `local-data/alerts-settings-production-20261011-6951b60/TogetherServer.exe`.
+- Size: 65,696,573 bytes.
+- Numeric file version: `0.3.2.0`; product version: `0.3.2+6951b60de9368b8b25a97a1d96e8fcade8042837`.
+- SHA-256: `16816006e5a43e60853960249f2289470b35c49843602870b8efc127131ceece`.
+- Adjacent evidence: `TogetherServer.exe.sha256` and `ui-asset-evidence.json`. Static comparison confirms all four current UI assets are embedded byte-for-byte in the published assembly without loading the app.
+- Authenticode status: `NotSigned`, consistent with the existing owner-distributed builds.
+
+The production filename is preserved. The executable has not been launched or installed. PID 30860 still references the original `settings-flow-production-20261010/TogetherServer.exe`; no automatic replacement or restart was performed. The owner should exit that app before opening the fresh executable.
 
 ## Acceptance boundaries
 
