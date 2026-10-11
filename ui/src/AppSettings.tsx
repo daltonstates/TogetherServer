@@ -1,6 +1,6 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Button, Input } from './Controls'
-import { DesktopPreferencesPanel, UpdateDetailsPanel, type DesktopNotificationServer } from './DesktopPreferencesPanel'
+import { DesktopPreferencesPanel, UpdateDetailsPanel } from './DesktopPreferencesPanel'
 import type { AppInstanceView, DesktopPreferences } from './contracts'
 import type { DesktopUpdateDetails } from './desktopPreferencesWire'
 import { Icon } from './Icon'
@@ -18,7 +18,6 @@ export type AppSettingsProps = {
   onBusyChange?: (busy: boolean) => void
   preferences: UiPreferences
   onPreferencesChange: Dispatch<SetStateAction<UiPreferences>>
-  servers: DesktopNotificationServer[]
   desktop: DesktopPreferences | null
   instance: AppInstanceView | null
   update: DesktopUpdateDetails | null
@@ -26,8 +25,6 @@ export type AppSettingsProps = {
   desktopBusy: boolean
   updateBusy: boolean
   onDesktopChange: (patch: { launchAtLogin: boolean } | { closeToTray: boolean }) => void
-  // Retained for existing callers; the Host Stop & timer page owns this preference.
-  keepAwake?: { enabled: boolean; detail?: string; onChange: (enabled: boolean) => void }
   notice: { good: boolean; text: string } | null
   onClearNotice: () => void
   onCheckUpdate: () => Promise<boolean>

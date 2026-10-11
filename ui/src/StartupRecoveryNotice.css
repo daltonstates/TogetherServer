@@ -1,0 +1,12 @@
+.startup-recovery .section-heading { justify-content: space-between; flex-wrap: wrap; gap: .75rem; }
+.startup-recovery-heading { flex: 1 1 15rem; min-width: 0; }
+.startup-recovery .startup-recovery-dismiss { flex: none; min-height: 44px; }
+.startup-recovery .startup-recovery-details { color: var(--color-text-muted); font-size: .875rem; }
+.startup-recovery-details summary, .startup-recovery-review > summary { cursor: pointer; min-height: 44px; align-content: center; }
+.startup-recovery-details p { margin: .5rem 0 0; line-height: 1.5; }
+.startup-recovery-review > summary { color: var(--color-text-secondary); }
+.startup-recovery-review > summary .icon { margin-inline-end: .5rem; vertical-align: middle; }
+.startup-recovery-review > .startup-recovery { margin-block: .75rem; }
+@media (max-width: 480px) {
+  .startup-recovery .startup-recovery-dismiss { min-height: 56px; }
+}

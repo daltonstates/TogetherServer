@@ -12,7 +12,7 @@ vi.mock('./DesktopPreferencesPanel', () => ({
 }))
 
 function props(): ComponentProps<typeof AppSettings> {
-  return { preferences: { ...defaultUiPreferences }, onPreferencesChange: vi.fn(), servers: [{ id: 'saved', name: 'Saved server' }],
+  return { preferences: { ...defaultUiPreferences }, onPreferencesChange: vi.fn(),
     desktop: { available: true, launchAtLogin: false, closeToTray: false, startupAvailable: true },
     instance: null, update: null, busy: false, desktopBusy: false, updateBusy: false,
     onDesktopChange: vi.fn(), notice: null, onClearNotice: vi.fn(), onCheckUpdate: vi.fn(async () => false),
@@ -71,8 +71,7 @@ describe('App Settings pages', () => {
 
   it('keeps Windows failures visible, preserves unavailable controls and excludes hosting power settings', () => {
     const input = props()
-    const keepAwake = { enabled: true, onChange: vi.fn() }
-    const view = render(<AppSettings {...input} section="windows" keepAwake={keepAwake} />)
+    const view = render(<AppSettings {...input} section="windows" />)
     fireEvent.click(screen.getByRole('checkbox', { name: /Close to tray/ }))
     expect(input.onDesktopChange).toHaveBeenCalledWith({ closeToTray: true })
     expect(screen.queryByText('Keep Windows awake while hosting')).not.toBeInTheDocument()
@@ -81,7 +80,6 @@ describe('App Settings pages', () => {
     expect(screen.getByText('Windows preference could not be saved.')).toHaveAttribute('role', 'status')
     expect(screen.getByRole('checkbox', { name: /Close to tray/ })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Quit TogetherServer' })).toBeDisabled()
-    expect(keepAwake.onChange).not.toHaveBeenCalled()
   })
 
   it('hands an available update to the review dialog while retaining the settings page', async () => {

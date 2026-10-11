@@ -33,6 +33,7 @@ import { WeeklySummary } from './WeeklySummary'
 import { MaintenanceGuide } from './MaintenanceGuide'
 import { TemporaryHelperAccess } from './TemporaryHelperAccess'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
+import { StartupRecoveryNotice } from './StartupRecoveryNotice'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { PlayersPanel, playerCountAvailability } from './PlayersPanel'
@@ -95,7 +96,6 @@ import './settings-integration.css'
 import './friend-access.css'
 import './redesign.css'
 
-type HostSettingsSection = 'app' | 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
 type HostServerTab = 'overview' | 'chat' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
 const hostServerTabLabels: Record<HostServerTab, string> = {
   overview: 'Overview', chat: 'Chat', players: 'Players', logs: 'Logs', sessions: 'Sessions',
@@ -428,7 +428,7 @@ export function App() {
   const [removeDeviceConfirm, setRemoveDeviceConfirm] = useState(false)
   const [deadlineDraftState, setDeadlineDraftState] = useState({ dirty: false, saving: false })
   const [hostSettingsDraftDirty, setHostSettingsDraftDirty] = useState(false)
-  const [hostSettingsSection, setHostSettingsSection] = useState<HostSettingsSection>('app')
+  const [hostSettingsSection, setHostSettingsSection] = useState<HostPcSection>('access')
   const [revealedConnections, setRevealedConnections] = useState<Record<string, boolean>>({})
   const [revealedGamePasswords, setRevealedGamePasswords] = useState<Record<string, string>>({})
   const [connectionActivity, setConnectionActivity] = useState<ConnectionActivity>({})
@@ -1514,12 +1514,12 @@ export function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const openHostSettings = (section: HostSettingsSection = 'access') => {
+  const openHostSettings = (section: HostPcSection = 'access') => {
     void changeScope(() => {
       setNotice(null)
       setHostSettingsSection(section)
-      if (section === 'app') { setAppSection('appearance'); setWorkspacePage('settings') }
-      else { setHostScope('pc'); setWorkspacePage('host') }
+      setHostScope('pc')
+      setWorkspacePage('host')
     })
     if (!routeDiscovery) void getJson('/api/local/network/routes', parseRouteDiscovery)
       .then(setRouteDiscovery)
@@ -1816,7 +1816,12 @@ export function App() {
     ? savedProfiles.length === 0 ? 'Create a server to play with friends.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server to start hosting.'
     : workspacePage === 'join' ? 'Connect to a friend’s server and get ready to play.'
       : workspacePage === 'attention' ? 'Updates, notices, and recent Host or Friend activity in one place.'
-        : 'Appearance and preferences for this PC.'
+        : 'App preferences for hosting and joining on this PC.'
+
+  const resumeHosting = async (profileId: string) => {
+    if (await confirm({ title: 'Resume hosting?', confirmLabel: 'Resume hosting', description: 'TogetherServer uses the normal Start checks and will never start a second copy of a process it reattached to.' }))
+      void run(`resume-${profileId}`, `/api/local/profiles/${profileId}/resume-hosting`, 'POST')
+  }
 
   return <div className={appInstance?.isStaging ? 'shell app-shell staging-shell' : 'shell app-shell'}>
     <header className="topbar">
@@ -1870,18 +1875,9 @@ export function App() {
         onStopRecordedRun={profileId => void run(`recovery-stop-${profileId}`, `/api/local/profiles/${profileId}/stop`, 'POST')}
         onForgetRecordedRun={profileId => void run(`recovery-forget-${profileId}`, `/api/local/profiles/${profileId}/forget`, 'POST')} /></PaneErrorBoundary>}
 
-      {snapshot?.mode === 'Host' && snapshot.startupRecovery?.previousSessionInterrupted &&
-        <section className="panel startup-recovery" aria-labelledby="startup-recovery-title"><div className="section-heading"><div><h2 id="startup-recovery-title">Recovered app session</h2><p>{snapshot.startupRecovery.message}</p></div></div>
-          <div className="choices">{snapshot.startupRecovery.items.map(item => {
-            const profile = snapshot.settings.profiles.find(candidate => candidate.id === item.profileId)
-            return <div className="choice" key={item.profileId}><span><strong>{profile?.name ?? 'Saved server'} · {item.state}</strong><small>{item.detail}</small></span>
-              {item.canResume && <Button disabled={!!pending || dirty} onClick={async () => {
-                if (await confirm({ title: 'Resume hosting?', confirmLabel: 'Resume hosting', description: 'TogetherServer uses the normal Start checks and will never start a second copy of a process it reattached to.' }))
-                  void run(`resume-${item.profileId}`, `/api/local/profiles/${item.profileId}/resume-hosting`, 'POST')
-              }}>{pending === `resume-${item.profileId}` ? 'Resuming…' : 'Resume hosting'}</Button>}</div>
-          })}</div>
-          <small>{snapshot.startupRecovery.windowsRestartRegistered ? 'Windows can reopen this app after an application failure.' : 'Windows application-restart registration is unavailable in this build.'} Reopening the app never starts a game automatically.</small>
-        </section>}
+      {workspacePage === 'host' && snapshot?.mode === 'Host' && snapshot.startupRecovery &&
+        <StartupRecoveryNotice recovery={snapshot.startupRecovery} profiles={savedProfiles} busy={!!pending || dirty}
+          pendingProfileId={pending.startsWith('resume-') ? pending.slice('resume-'.length) : undefined} onResume={profileId => void resumeHosting(profileId)} />}
 
       {workspacePage === 'attention' && snapshot && <PaneErrorBoundary title="Attention Center" resetKey={activitySource}><AttentionWorkspace
         mode={snapshot.mode} activitySource={activitySource} activity={retainedActivity} nowMs={nowMs} onHistoryChange={updateAttentionHistory}
@@ -1890,6 +1886,9 @@ export function App() {
         onOpen={openActivityDestination} onOpenFriendServer={openFriendServer}>
         <div className="attention-toolbar-actions">{snapshot.mode === 'Host' && <Button className="secondary" onClick={() => openHostSettings('diagnostics')}>Preflight & diagnostics</Button>}
           {visibleActivity.length > 0 && <Button className="secondary" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
+        {snapshot.mode === 'Host' && snapshot.startupRecovery && <StartupRecoveryNotice review recovery={snapshot.startupRecovery}
+          profiles={savedProfiles} busy={!!pending || dirty} pendingProfileId={pending.startsWith('resume-') ? pending.slice('resume-'.length) : undefined}
+          onResume={profileId => void resumeHosting(profileId)} />}
         <div className="attention-list">
           {snapshot?.mode === 'Host' && storageWarnings.map((warning, index) => <article className="notification-item bad" role="status" key={`storage-${index}`}><span><Icon name="warning" /></span><div><strong>Storage health</strong><p>{warning}</p></div></article>)}
           {update?.state === 'Available' && <article className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available - v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update...</> : 'Update and restart'}</Button></div></article>}
@@ -1906,7 +1905,7 @@ export function App() {
           sections={appSections} section={appSection} onSelect={section => void changeScope(() => setAppSection(section))} /></aside>
         <div className="context-content settings-content"><AppSettings preferences={uiPreferences} onPreferencesChange={setUiPreferences}
           section={appSection} onSectionChange={section => void changeScope(() => setAppSection(section))} onBusyChange={setAppSettingsBusy}
-          servers={[]} desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
+          desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
           onDesktopChange={patch => void saveDesktopPreference(patch)} notice={notice} onClearNotice={() => setNotice(null)}
           onCheckUpdate={async () => (await checkUpdate(false))?.state === 'Available'} onReviewUpdate={() => setShowUpdatePrompt(true)} onReloadUpdate={reloadUpdate} onQuit={() => void quitApp()} /></div>
       </section>}
@@ -2098,7 +2097,7 @@ export function App() {
             sections={(Object.keys(hostServerTabLabels) as HostServerTab[]).map(id => ({ id, label: hostServerTabLabels[id], icon: hostServerTabIcons[id] }))}
             section={hostScope === 'server' ? hostServerTab : undefined} onSelect={selectHostTab} />}
           <SectionSidebar title="This Host PC" label="This Host PC sections" sections={hostPcSections}
-            section={hostScope === 'pc' ? hostSettingsSection as HostPcSection : undefined} onSelect={openHostSettings} />
+            section={hostScope === 'pc' ? hostSettingsSection : undefined} onSelect={openHostSettings} />
         </aside><div className="context-content">
         {hostScope === 'server' && <>
         {savedProfiles.length > 0 && <>

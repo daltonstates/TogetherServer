@@ -113,6 +113,7 @@ const host = () => state as HostSnapshot
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   vi.mocked(readProtectedDraft).mockReset().mockResolvedValue({ ok: true, text: null, revision: 1, message: '' })
   recoveryBlocked = false
   transport.failures.logs = transport.failures.sessions = transport.failures.files = false
@@ -206,6 +207,57 @@ function nativeNotifications() {
 }
 
 describe('Task-first app and Host PC navigation', () => {
+  it('keeps dismissed recovery off Host and global Settings while retaining an Attention review', async () => {
+    host().startupRecovery = { previousSessionInterrupted: true, previousStartedUtc: '2026-10-10T12:00:00Z',
+      items: [], message: 'No previously active saved server needs action.', windowsRestartRegistered: true }
+    await openHost()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss recovered app session' }))
+    expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
+    fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
+    await screen.findByRole('region', { name: 'App Settings' })
+    expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
+    fireEvent.click(workspaces().getByRole('button', { name: 'Host' }))
+    await screen.findByRole('region', { name: 'Contract fixture workspace' })
+    expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
+    fireEvent.click(workspaces().getByRole('button', { name: 'Attention' }))
+    fireEvent.click(await screen.findByText('Session recovery'))
+    expect(screen.getByRole('region', { name: 'Recovered app session' })).toBeVisible()
+    expectNoMutation()
+  })
+
+  it('uses the same global Settings after switching from Host to Join and back', async () => {
+    const savedHost = structuredClone(host())
+    transport.change.mockImplementation(async (path: string) => {
+      if (path === '/api/local/mode/friend') state = friend()
+      if (path === '/api/local/mode/host') state = savedHost
+      return { ok: true, code: 'Requested', message: 'Mode changed.', snapshot: state }
+    })
+    await openHost()
+    for (const mode of ['Host', 'Join', 'Host']) {
+      if (mode === 'Join') {
+        fireEvent.click(workspaces().getByRole('button', { name: 'Join' }))
+        await screen.findByRole('region', { name: 'Play' })
+      } else if (state.mode === 'Friend') {
+        fireEvent.click(workspaces().getByRole('button', { name: 'Host' }))
+        await screen.findByRole('region', { name: 'Contract fixture workspace' })
+      }
+      fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
+      const settings = await screen.findByRole('region', { name: 'App Settings' })
+      expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
+      const sections = within(within(settings).getByRole('navigation', { name: 'App settings sections' }))
+      expect(sections.getAllByRole('button').map(button => button.textContent)).toEqual([
+        'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+      ])
+      fireEvent.click(sections.getByRole('button', { name: 'Windows behavior' }))
+      expect(await within(settings).findByRole('heading', { name: 'Windows behavior' })).toBeVisible()
+      expect(within(settings).queryByRole('checkbox', { name: /awake/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('navigation', { name: 'This Host PC sections' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'This Host PC' })).not.toBeInTheDocument()
+    }
+    expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/mode/friend', '/api/local/mode/host'])
+    expectNoServerAction()
+  })
+
   it.each(['Host', 'Friend'] as const)('opens Appearance from the header settings gear in %s without changing mode', async mode => {
     if (mode === 'Friend') state = friend()
     render(<App />)
