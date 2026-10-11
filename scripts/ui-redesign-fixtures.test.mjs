@@ -217,6 +217,14 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   ]) assert.throws(() => check(argv, env, platform), /Refusing browser execution/);
 });
 
+test('renderer uses the CommonJS Playwright export with a Chromium launcher', () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  assert.match(source, /const \{ chromium \} = requireUI\('playwright'\);/u);
+  const requireUI = createRequire(new URL('../ui/package.json', import.meta.url));
+  const { chromium } = requireUI('playwright');
+  assert.equal(typeof chromium?.launch, 'function', 'CommonJS export exposes chromium.launch without launching a browser');
+});
+
 test('pure renderer inventory covers every required workspace and fixture scenario', () => {
   const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('const heading ='), end = source.indexOf('manifest.inventory =');
