@@ -11,7 +11,7 @@ if (!args.includes('--allow-isolated-browser-tests') ||
 // Implementation below intentionally uses dynamic imports after authorization.
 const { readFile, writeFile, mkdir, realpath, stat } = await import('node:fs/promises');
 const { resolve, dirname, extname, relative, isAbsolute } = await import('node:path');
-const { fileURLToPath, pathToFileURL } = await import('node:url');
+const { fileURLToPath } = await import('node:url');
 const { createServer } = await import('node:http');
 const { createRequire } = await import('node:module');
 const { createHash } = await import('node:crypto');
@@ -254,7 +254,7 @@ try {
   const origin = `http://127.0.0.1:${server.address().port}`;
   // Resolve exclusively from existing locked ui dependencies; no npx/install in the renderer.
   const requireUI = createRequire(resolve(root, 'ui/package.json'));
-  const { chromium } = await import(pathToFileURL(requireUI.resolve('playwright')).href);
+  const { chromium } = requireUI('playwright');
   browser = await chromium.launch({ headless: true });
   for (const { testCase, variant } of plans) {
     const record = { id: `${testCase.id}--${variant.id}`, scenario: testCase.scenario, workspace: testCase.workspace,
