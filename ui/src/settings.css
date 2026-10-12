@@ -174,7 +174,7 @@
 .settings-dialog::backdrop { background: var(--color-overlay); }
 .settings-dialog-header, .settings-dialog-footer {
   position: sticky;
-  z-index: 1;
+  z-index: var(--z-raised);
   flex: none;
   background: var(--color-surface);
 }

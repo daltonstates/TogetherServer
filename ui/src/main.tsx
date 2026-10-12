@@ -96,6 +96,7 @@ import './settings.css'
 import './settings-integration.css'
 import './friend-access.css'
 import './redesign.css'
+import './layers.css'
 
 type HostServerTab = 'overview' | 'chat' | 'players' | 'logs' | 'sessions' | 'backups' | 'files' | 'setup'
 const hostServerTabLabels: Record<HostServerTab, string> = {

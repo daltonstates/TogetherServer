@@ -1,0 +1,50 @@
+/* Containers own these layers; child values cannot outrank another container. */
+:root {
+  --z-surface: 0;
+  --z-raised: 1;
+  --z-popover: 2;
+  --z-header: 3;
+  --z-modal: 4;
+  --z-tooltip: 5;
+}
+
+/* The header owns its menus; the workspace owns navigation and content. */
+.shell { isolation: isolate; }
+.app-body, .workspace-main {
+  position: relative;
+  z-index: var(--z-surface);
+  isolation: isolate;
+}
+.workspace-nav {
+  position: relative;
+  z-index: var(--z-raised);
+  isolation: isolate;
+}
+.app-shell :is(.context-workspace, .workspace-layout, .context-layout, .host-master-detail),
+.settings-workspace { isolation: isolate; }
+.app-shell :is(.context-sidebar, .workspace-sidebar, .server-master),
+.settings-workspace > .settings-layout > .settings-tabs {
+  z-index: var(--z-raised);
+  isolation: isolate;
+}
+.app-shell :is(.context-content, .workspace-content, .server-detail) {
+  position: relative;
+  z-index: var(--z-surface);
+  isolation: isolate;
+}
+
+/* Sticky controls and alerts stay inside their owning surface. */
+.setup-progress { isolation: isolate; }
+.sticky-save { z-index: var(--z-raised); }
+.settings-dialog-body {
+  position: relative;
+  z-index: var(--z-surface);
+  isolation: isolate;
+}
+
+/* showModal also supplies the browser's top layer, including nested dialogs.
+   Tooltips portal into their open dialog so they share its top layer. */
+:is(.settings-dialog, .modal-dialog, .command-palette) {
+  z-index: var(--z-modal);
+  isolation: isolate;
+}
