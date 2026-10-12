@@ -30,4 +30,17 @@ Native `showModal()` continues to place dialogs above ordinary document content 
 
 ## Acceptance boundaries
 
-JSDOM does not perform browser painting or hit testing. Browser/viewport and native WebView/packaged-app visual acceptance remain unrun; they require an approved separate PC or unattended Windows session under the repository's foreground-safety rules. No app, browser, game, fixture process, installer or native window was launched. No running installation was replaced or restarted, and no production data, game worlds, credentials or network configuration was changed. No executable handoff, tag or public release is part of this correction.
+JSDOM does not perform browser painting or hit testing. Browser/viewport and native WebView/packaged-app visual acceptance remain unrun; they require an approved separate PC or unattended Windows session under the repository's foreground-safety rules. No app, browser, game, fixture process, installer or native window was launched. No running installation was replaced or restarted, and no production data, game worlds, credentials or network configuration was changed. No tag or public release was created.
+
+## Production executable handoff
+
+After the implementation was committed as `660e3d8d7f0467b45354673bb54c90795d0c622e`, the owner requested a production build. A fresh production UI build and self-contained Windows x64 publish completed into a new output directory:
+
+- Path: `local-data/layering-production-20261012-660e3d8/TogetherServer.exe`.
+- Size: 65,696,772 bytes.
+- Numeric file version: `0.3.2.0`; product version: `0.3.2+660e3d8d7f0467b45354673bb54c90795d0c622e`.
+- SHA-256: `d4b7154531caaf126dd1b810ccde2daf5b32a0c7254f81b2a01457731b2c8d7c`.
+- Authenticode status: `NotSigned`, consistent with the existing owner-distributed builds.
+- Adjacent evidence: `TogetherServer.exe.sha256`, `production-build-evidence.json` and `ui-asset-evidence.json`. Static comparison confirms all four current UI assets are embedded byte-for-byte in the published assembly, including the same CSS bundle used for the 21 layer checks.
+
+The executable retains its production filename and has not been launched or installed. The owner should exit the existing app before opening this build. The visual acceptance boundaries above remain unchanged.
