@@ -4,6 +4,7 @@ import { DismissibleNotice } from './DismissibleNotice'
 import { ConnectionDoctor } from './ConnectionDoctor'
 import type { CompanionInfo, HostSnapshot, HostMoveKitResult, RouteDiscovery, Settings } from './contracts'
 import { gameLabel } from './GameProfile'
+import { orderProfiles } from './profileLists'
 import { Icon } from './Icon'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { HostRemoteRehearsal } from './RemoteRehearsal'
@@ -16,12 +17,12 @@ export type HostSettingsPatch = Partial<Pick<Settings, 'idleMinutes' | 'friendTi
   'friendTimerExtensionMaximumMinutes' | 'maxConcurrentServers' | 'companionPort' |
   'companionEndpoint' | 'companionBindAddress' | 'connectionRoute'>>
 type Tool = 'countdown' | 'extensions' | 'safety' | 'doctor' | 'route' | 'tcp' |
-  'limits' | 'listener' | 'identity' | 'move' | 'revoked' | 'rehearsal' | 'notifications'
+  'limits' | 'listener' | 'identity' | 'move' | 'rehearsal' | 'notifications'
 const titles: Record<Tool, string> = {
   countdown: 'Empty-server countdown', extensions: 'Friend timer extensions', safety: 'Remote Stop safety',
   doctor: 'Connection Doctor', route: 'Friend connection route', tcp: 'Internet and local connection checks',
   limits: 'Hosting limits', listener: 'Advanced network settings', identity: 'Secure Host identity',
-  move: 'Move hosting to another PC', revoked: 'Revoked Friend PCs', rehearsal: 'Test with another owned PC', notifications: 'Server notifications'
+  move: 'Move hosting to another PC', rehearsal: 'Test with another owned PC', notifications: 'Server notifications'
 }
 const routeLabels: Record<Settings['connectionRoute']['mode'], string> = {
   DirectInternet: 'Direct Internet', PrivateMesh: 'Private mesh', AdvancedAddress: 'Advanced address'
@@ -143,8 +144,6 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
           actionLabel="Review Host identity" onOpen={() => open('identity')} />
         <SettingsCard icon="archive" title="Move hosting to another PC" description="Inspect a verified world move kit and set up the new Host."
           actionLabel="Open move guide" onOpen={() => open('move')} />
-        {!!companion?.devices.some(device => device.revoked) && <SettingsCard icon="users" title="Revoked Friend PCs" description="PCs whose saved access has been removed."
-          summary={`${companion.devices.filter(device => device.revoked).length} removed`} actionLabel="View removed PCs" onOpen={() => open('revoked')} />}
       </div>
     </>}
     {tool && <SettingsDialog title={titles[tool]} busy={modalBusy} onClose={() => setTool(null)} wide={tool === 'doctor' || tool === 'rehearsal'}
@@ -159,7 +158,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
         <p className="helper-text">Grant Add shutdown time separately for each PC. Friends can add only the fixed increment, including while players are online.</p></div>}
       {tool === 'safety' && <div className="settings-dialog-stack"><p className="helper-text">A Friend Stop requires Ready, exactly zero reported players, and a second fresh count immediately before graceful Stop. Unknown or positive counts block the request. The Host owner's local Stop remains available.</p>
         <p>Remote controls are <strong>{settings.remoteControlsEnabled ? 'on' : 'paused'}</strong>.</p>
-        {settings.profiles.map(profile => <div className="settings-detail-row" key={profile.id}><strong>{profile.name}</strong><span>{companion?.stopSafety[profile.id]?.reason ?? 'Player safety check unavailable.'}</span></div>)}</div>}
+        {orderProfiles(settings.profiles, snapshot.runs).map(profile => <div className="settings-detail-row" key={profile.id}><strong>{profile.name}</strong><span>{companion?.stopSafety[profile.id]?.reason ?? 'Player safety check unavailable.'}</span></div>)}</div>}
       {tool === 'doctor' && <PaneErrorBoundary title="Connection Doctor" resetKey={selectedProfileId}><ConnectionDoctor profile={selectedProfile}
         run={snapshot.runs.find(run => run.profileId === selectedProfile?.id)} ports={ports} routeCheck={routeCheck} devices={companion?.devices ?? []}
         busy={modalBusy} routeMode={settings.connectionRoute.mode} onRefresh={onRefresh} onTestRoute={onTestRoute}
@@ -199,7 +198,6 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
           <ol><li>Install the same game server version and create a fresh server on this PC.</li><li>While it is offline, copy the kit's payload into the new save location. Keep existing saves separate.</li><li>Choose the locally installed executable, recreate settings and passwords, and test a real join and saved change.</li><li>Pair Friend PCs again. Retire the old Host after the new one passes those checks.</li></ol>
           <div className="actions"><Button className="secondary" disabled={busy || dirty} onClick={() => { setTool(null); onNewHost() }}>Set up new Host</Button></div></>}
         <p className="helper-text">The kit contains world files and basic setup, with no game binaries, Friend credentials, private keys, or passwords.</p></div>}
-      {tool === 'revoked' && <div className="settings-dialog-stack">{companion?.devices.filter(device => device.revoked).map(device => <div className="settings-detail-row" key={device.id}><strong>{device.name}</strong><span>Access removed</span></div>)}</div>}
       {tool === 'rehearsal' && <HostRemoteRehearsal />}
       {tool === 'notifications' && selectedProfile && <ServerNotificationPreferences
         server={{ id: selectedProfile.id, name: selectedProfile.name }} onBusyChange={setChildBusy} />}

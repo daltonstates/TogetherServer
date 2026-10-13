@@ -1,6 +1,7 @@
 import { Button } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import type { HostSnapshot } from './contracts'
+import { isActiveProfile } from './profileLists'
 import { activityDestination, type ActivityDestination } from './notificationState'
 
 type OverviewRow = {
@@ -71,7 +72,7 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
       }
     }
     return {
-      id: profile.id, name: profile.name, state, index, priority, destination, warning,
+      id: profile.id, name: profile.name, state, index, priority, destination, warning, active: isActiveProfile(run?.state),
       players: trusted ? `${run!.onlinePlayers} online` : 'Unknown',
       source: sourceLabels[run?.playerObservationSource ?? ''] ?? (trusted ? 'Game server report' : 'No trusted source'),
       freshness: observedAge === null ? 'Observation unavailable' : stale ? `Stale · ${elapsed(observedAge)}` : `Observed ${elapsed(observedAge)}`,
@@ -79,7 +80,7 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
       backup: profile.kind === 'Custom' ? 'Backup unsupported' : !backup ? 'Status unavailable' :
         backup.completedCount === 0 ? 'No completed backup' : backupAge === null ? 'Completed · age unavailable' : `Completed ${elapsed(backupAge)}`
     }
-  }).sort((a, b) => b.priority - a.priority || a.index - b.index)
+  }).sort((a, b) => Number(b.active) - Number(a.active) || b.priority - a.priority || a.index - b.index)
 }
 
 export function AllServerOverview({ snapshot, selectedProfileId, nowMs, error = '', onOpen }: {

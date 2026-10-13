@@ -25,6 +25,18 @@ function props(section: 'stop' | 'network' | 'advanced' = 'stop'): ComponentProp
 }
 
 describe('Host settings cards and editors', () => {
+  it('does not advertise removed PCs or their count in Host settings', () => {
+    const input = props('advanced')
+    input.companion = { listenerActive: false, listenerState: 'Off', listenerWarning: null,
+      endpoint: '', fingerprint: null, certificates: null, route: { mode: 'DirectInternet', address: '' }, stopSafety: {},
+      devices: [{ id: 'removed', profileId: 'one', assignedProfileIds: [], name: 'Removed laptop',
+        canStart: false, canStop: false, canExtendTimer: false, canViewLogs: false, revoked: true, paired: true,
+        approvalPending: false, credentialExpiresUtc: null, accessExpiresUtc: null, accessExpired: false,
+        lastHeartbeatUtc: null, serverPermissions: [] }] }
+    render(<HostSettingsTools {...input} />)
+    expect(screen.queryByText(/Revoked Friend PCs|Removed laptop|1 removed/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /View removed PCs/ })).not.toBeInTheDocument()
+  })
   it('opens notifications for the selected Host server and keeps its dialog open while the scoped save is pending', async () => {
     const input = props('advanced')
     const notificationPreferences = { quietMode: false, allowedEvents: ['Backup'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true }

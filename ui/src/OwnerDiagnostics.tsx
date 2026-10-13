@@ -94,10 +94,11 @@ function DiagnosticCard({ check, onCopy, copyStatus, scope }: {
   </article>
 }
 
-export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdChange,
+export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdChange, profileOrder = [],
   diagnosticsLoader = defaultDiagnosticsLoader, supportReportLoader = defaultSupportReportLoader }: {
   selectedProfileId?: string
   onSelectedProfileIdChange?: (profileId: string) => void
+  profileOrder?: readonly string[]
   diagnosticsLoader?: OwnerDiagnosticsLoader
   supportReportLoader?: SupportReportLoader
 }) {
@@ -209,7 +210,10 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
       {diagnostics.servers.length > 0 ? <>
         <label className="owner-diagnostics-server">Selected server<Select aria-label="Diagnostics server"
           value={selected?.profileId ?? ''} onChange={event => onSelectedProfileIdChange?.(event.target.value)}>
-          {diagnostics.servers.map(server => <option key={server.profileId} value={server.profileId}>{server.label} · {server.kind}</option>)}
+          {[...diagnostics.servers].sort((a, b) =>
+            (profileOrder.includes(a.profileId) ? profileOrder.indexOf(a.profileId) : profileOrder.length) -
+            (profileOrder.includes(b.profileId) ? profileOrder.indexOf(b.profileId) : profileOrder.length))
+            .map(server => <option key={server.profileId} value={server.profileId}>{server.label} · {server.kind}</option>)}
         </Select></label>
         {selected && <div className="owner-diagnostics-grid" aria-label={`${selected.label} diagnostic checks`}>
           {selected.checks.map(check => <DiagnosticCard key={check.id} check={check} onCopy={check => void copyExplanation(check)}

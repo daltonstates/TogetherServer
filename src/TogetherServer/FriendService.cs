@@ -20,6 +20,8 @@ public sealed class FriendConfiguration
     public Guid DeviceId { get; set; }
     public string Credential { get; set; } = "";
     public DateTimeOffset CredentialExpiresUtc { get; set; }
+    // Learned only from an explicit denial over this saved pinned transport.
+    public bool KnownRevoked { get; set; }
     public DateTimeOffset? CertificateExpiresUtc { get; set; }
     public Guid? PendingRenewalRequestId { get; set; }
     public ConnectionRoute? Route { get; set; }
@@ -215,6 +217,7 @@ internal sealed partial class FriendLink : IDisposable
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
                 null, false, false, false, [], [], ConnectionName: config.DisplayName,
                 ChatProfiles: CachedChatProfiles());
+        if (config?.KnownRevoked == true) ApplyKnownRevocation();
     }
 
     public FriendView View() => view;
@@ -383,6 +386,11 @@ internal sealed partial class FriendLink : IDisposable
         try
         {
             if (config is null) return view;
+            if (config.KnownRevoked)
+            {
+                ApplyKnownRevocation();
+                return view;
+            }
             if (config.CredentialExpiresUtc <= DateTimeOffset.UtcNow)
             {
                 view = view with
@@ -423,7 +431,14 @@ internal sealed partial class FriendLink : IDisposable
                     PairingDecision? denial = null;
                     try { denial = JsonSerializer.Deserialize<PairingDecision>(await response.Content.ReadAsStringAsync(), Json); }
                     catch (JsonException) { /* A generic 403 is not evidence of revocation. */ }
-                    var revoked = denial?.Code == "Revoked";
+                    var revoked = denial is { Ok: false, Code: "Revoked" };
+                    if (revoked)
+                    {
+                        config.KnownRevoked = true;
+                        ApplyKnownRevocation();
+                        SaveConfig();
+                        return view;
+                    }
                     var approvalPending = denial?.Code == "ApprovalPending";
                     var accessExpired = denial?.Code == "AccessExpired";
                     view = view with
@@ -486,6 +501,11 @@ internal sealed partial class FriendLink : IDisposable
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
             {
+                if (config?.KnownRevoked == true)
+                {
+                    ApplyKnownRevocation();
+                    return view;
+                }
                 var issue = ConnectionFailure(ex);
                 deliveredAuthority.Clear();
                 ObserveSharedHost(issue.Code is "HostPortClosed" or "HostPortTimedOut" or
@@ -854,6 +874,11 @@ internal sealed partial class FriendLink : IDisposable
 
     private void ApplyActionConnectionState(HttpStatusCode statusCode, FriendActionResult result)
     {
+        if (config?.KnownRevoked == true)
+        {
+            ApplyKnownRevocation();
+            return;
+        }
         if (statusCode == HttpStatusCode.Forbidden && result.Code == "AccessExpired")
             ApplyAccessExpired();
         else if (statusCode == HttpStatusCode.Forbidden && result.Code == "Revoked")
@@ -919,6 +944,11 @@ internal sealed partial class FriendLink : IDisposable
     private void ApplyStatus(CompanionStatus status)
     {
         if (config is null) throw new InvalidOperationException("Connect to a Host first.");
+        if (config.KnownRevoked)
+        {
+            ApplyKnownRevocation();
+            return;
+        }
         config.CachedProfiles = status.Profiles.ToList();
         ApplyHostMetadata(status.Certificates, status.Route);
         var compatible = CompanionProtocol.Supports(status.Protocol);
@@ -938,6 +968,17 @@ internal sealed partial class FriendLink : IDisposable
             RouteAddress: config.Route?.Address, HostId: config.HostId,
             ConnectionName: config.DisplayName, Activity: status.Activity);
         view = view with { ChatProfiles = CachedChatProfiles() };
+    }
+
+    private void ApplyKnownRevocation()
+    {
+        view = view with
+        {
+            State = "Revoked", ConnectionCode = "Revoked",
+            Detail = "The Host replaced this server code or removed this PC's access. Ask for the current code.",
+            RemoteControlsEnabled = false, CanStart = false, CanStop = false,
+            Profiles = [], ChatProfiles = [], Activity = []
+        };
     }
 
     private IReadOnlyList<ChatProfile> CachedChatProfiles() =>

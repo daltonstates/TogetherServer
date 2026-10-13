@@ -13,6 +13,7 @@ export type FriendPcCardProps = {
   busy: boolean
   onManage: () => void
   onApprove: () => void
+  onDelete?: () => void
   feedback?: ReactNode
 }
 
@@ -40,9 +41,19 @@ function heartbeatAge(value: string | null, nowMs: number) {
   return `Last heartbeat ${Math.floor(seconds / 86_400)}d ago`
 }
 
-export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove, feedback }: FriendPcCardProps) {
+export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove, onDelete, feedback }: FriendPcCardProps) {
   const headingId = useId()
   const view = effectiveDeviceAccess(device, servers, nowMs)
+  if (device.revoked) return <article className="friend-pc-card" data-access-state="Revoked" aria-labelledby={headingId}>
+    <header className="friend-pc-card-heading">
+      <div className="friend-pc-identity"><span className="friend-pc-icon"><Icon name="monitor" size={22} /></span>
+        <div><h3 id={headingId}>{device.name}</h3><span className="friend-pc-kind">Friend PC</span></div></div>
+      <span className="friend-access-badge friend-pc-access-state">Access removed</span>
+    </header>
+    <p className="friend-pc-quiet">This PC no longer has access. Delete its saved record to remove it from this list.</p>
+    {onDelete && <footer className="friend-pc-card-actions"><Button className="danger-outline" disabled={busy} onClick={onDelete}><Icon name="trash" />Delete PC</Button></footer>}
+    {feedback && <div className="friend-pc-feedback">{feedback}</div>}
+  </article>
   const preset = matchingPermissionPreset(device)
   const configured = view.state !== 'Available' && view.helper === 'Inactive'
   const permissionsKnown = view.state !== 'Unknown' && view.state !== 'RefreshNeeded' && view.helper !== 'RefreshNeeded' &&

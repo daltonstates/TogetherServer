@@ -558,7 +558,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     finally { setBusy(false) }
   }
   const eligible = devices.filter(device => device.paired && !device.revoked && !device.approvalPending &&
-    device.assignedProfileIds.includes(profileId))
+    device.assignedProfileIds.includes(profileId)).sort((a, b) => Number(a.accessExpired) - Number(b.accessExpired))
   const successors = eligible.filter(device => !device.accessExpired && device.sharedWorldKeyEnrolled &&
     device.sharedWorldGrants?.[profileId]?.receive && device.sharedWorldGrants[profileId].eligibleHost)
   const runHandoff = async (action: 'prepare' | 'complete' | 'cancel') => {
@@ -687,7 +687,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       checked={roster?.ownerOverride ?? true} onChange={event => void changeOverride(event.target.checked)} />
       Owner has final say on save conflicts</label>
     {roster && <p role="status">Owner's final say: {roster.ownerOverride ? 'On' : 'Off'}.</p>}
-    {status?.enabled && <p className="helper-text">Verified sharing list: {roster ? `${roster.members.filter(member => !member.revoked && (member.accessExpiresUtc === null || Date.parse(member.accessExpiresUtc) > Date.now())).length} active PCs, revision ${roster.revision}` : 'pending'}.
+    {status?.enabled && <p className="helper-text">Verified sharing list: {roster ? `${roster.members.filter(member => !member.revoked &&
+      !devices.some(device => device.id === member.deviceId && device.revoked) &&
+      (member.accessExpiresUtc === null || Date.parse(member.accessExpiresUtc) > Date.now())).length} active PCs, revision ${roster.revision}` : 'pending'}.
       These grants are separate from Start, Stop, and logs.</p>}
     {status?.enabled && eligible.map(device => {
       const signedMember = roster?.members.find(member => member.deviceId === device.id)
@@ -725,7 +727,10 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
         {liveOrphanError && <DismissibleNotice as="p" scope={noticeScope} role="alert">{liveOrphanError}</DismissibleNotice>}
         <Button className="text-button" disabled={busy} onClick={() => void refreshLiveOrphan()}>Refresh interrupted copy</Button>
       </section>
-      {roster?.members.map(member => <p key={member.deviceId}>PC {member.deviceId} - {member.revoked ? 'revoked' : 'active'} - Receive {member.grants.receive ? 'yes' : 'no'} - host {member.grants.eligibleHost ? 'yes' : 'no'} - vote {member.grants.recoveryVoter ? 'yes' : 'no'} - manage {member.grants.manageSharing ? 'yes' : 'no'}</p>)}
+      {roster?.members.filter(member => !member.revoked && !devices.some(device => device.id === member.deviceId && device.revoked))
+        .sort((a, b) => Number(a.accessExpiresUtc !== null && Date.parse(a.accessExpiresUtc) <= Date.now()) -
+          Number(b.accessExpiresUtc !== null && Date.parse(b.accessExpiresUtc) <= Date.now()))
+        .map(member => <p key={member.deviceId}>PC {member.deviceId} - active - Receive {member.grants.receive ? 'yes' : 'no'} - host {member.grants.eligibleHost ? 'yes' : 'no'} - vote {member.grants.recoveryVoter ? 'yes' : 'no'} - manage {member.grants.manageSharing ? 'yes' : 'no'}</p>)}
       <details><summary>Signed hosting history</summary>
         {authority?.head && <p>Verified head: epoch {authority.head.epoch} · PC {authority.head.hostDeviceId} · address {authority.head.hostAddress} · decision hash {authority.head.recordHash} · save hash {authority.head.versionHash}</p>}
         {authority?.competingHeads.map(head => <p key={head.recordHash}>Competing head: epoch {head.epoch} · PC {head.hostDeviceId} · address {head.hostAddress} · decision hash {head.recordHash} · save hash {head.versionHash}</p>)}
@@ -1380,7 +1385,9 @@ function FriendSharingManager({ profileId, available, noticeScope }: { profileId
     {view && !view.canManage && <DismissibleNotice as="p" scope={noticeScope} noticeKey={JSON.stringify([view.code, view.message])} role="alert">{view.message}</DismissibleNotice>}
     {view?.canManage && <>
       <p>Sharing permissions verified for this PC. Check the PC code with the owner before changing another member.</p>
-      {view.members.filter(member => !member.isSelf).map(member => {
+      {view.members.filter(member => !member.isSelf && !member.revoked).sort((a, b) =>
+        Number(a.accessExpiresUtc !== null && Date.parse(a.accessExpiresUtc) <= Date.now()) -
+        Number(b.accessExpiresUtc !== null && Date.parse(b.accessExpiresUtc) <= Date.now())).map(member => {
         const label = `PC ending ${member.deviceId.slice(-6).toUpperCase()}`
         const expired = member.accessExpiresUtc !== null && Date.parse(member.accessExpiresUtc) <= Date.now()
         return <div key={member.deviceId}><p><strong>{label}</strong> · {member.revoked ? 'Removed from sharing' :
@@ -1395,7 +1402,7 @@ function FriendSharingManager({ profileId, available, noticeScope }: { profileId
           {member.grants.manageSharing && <p className="helper-text">Only the owner can change this PC's Manage sharing grant.</p>}
         </div>
       })}
-      {view.members.filter(member => !member.isSelf).length === 0 &&
+      {view.members.filter(member => !member.isSelf && !member.revoked).length === 0 &&
         <p>No other approved PCs are in this world yet.</p>}
       <p className="helper-text">Only the owner can grant Manage sharing or change the owner's conflict override.</p>
     </>}
@@ -1403,7 +1410,7 @@ function FriendSharingManager({ profileId, available, noticeScope }: { profileId
     <Button className="text-button" disabled={!available || busy} onClick={() => void open()}>Refresh sharing list</Button>
     <details><summary>Technical details</summary><p>Verified roster revision: {view?.revision ?? 'not checked'}.
       The signed list identifies PCs by device ID; a changed or expired grant is checked again by the Host.</p>
-      {view?.members.map(member => <p key={member.deviceId}>{member.deviceId} · {member.isSelf ? 'this PC' : 'another PC'}</p>)}
+      {view?.members.filter(member => !member.revoked).map(member => <p key={member.deviceId}>{member.deviceId} · {member.isSelf ? 'this PC' : 'another PC'}</p>)}
     </details>
   </details>
 }

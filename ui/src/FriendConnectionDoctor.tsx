@@ -4,6 +4,7 @@ import { DismissibleNotice } from './DismissibleNotice'
 import type { FriendSnapshot, GameEndpointResult, PublicProfile } from './contracts'
 import { splitJoinAddress } from './ConnectionDetails'
 import { Icon } from './Icon'
+import { orderProfiles } from './profileLists'
 
 export type FriendDoctorStage = {
   id: string
@@ -234,7 +235,7 @@ function FriendDoctorContent(props: FriendConnectionDoctorProps) {
         setSelection(id); props.onSelectProfile?.(id)
       }}>
       <option value="">Choose a server</option>
-      {snapshot.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+      {orderProfiles(snapshot.profiles).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
     </Select></label>
     <div className="doctor-stages">{stages.map((stage, index) => <article className={`doctor-stage ${stage.tone}`} key={stage.id}>
       <span className="doctor-step">{index + 1}</span>

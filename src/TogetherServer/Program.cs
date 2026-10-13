@@ -1799,6 +1799,23 @@ app.MapPost("/api/local/devices/{id:guid}/revoke", async (Guid id) =>
     }
     finally { modeGate.Release(); }
 });
+app.MapDelete("/api/local/devices/{id:guid}", async (Guid id, HttpContext context) =>
+{
+    if (context.Request.Query.Count != 0 || context.Request.ContentLength is > 0 ||
+        context.Request.Headers.ContainsKey("Transfer-Encoding") ||
+        await context.Request.Body.ReadAsync(new byte[1], context.RequestAborted) != 0)
+        return Results.BadRequest(new PairingDecision(false, "InvalidDeviceDeletion",
+            "Delete a revoked PC using only its record ID."));
+    await modeGate.WaitAsync();
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.DeleteRevokedDevice(id);
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
+    }
+    finally { modeGate.Release(); }
+});
 app.MapPost("/api/local/devices/{id:guid}/approve", async (Guid id) =>
 {
     await modeGate.WaitAsync();

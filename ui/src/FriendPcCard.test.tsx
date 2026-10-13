@@ -77,8 +77,26 @@ describe('Friend PC overview card', () => {
     expect(screen.getByRole('button', { name: 'Approve this PC' })).toBeDisabled()
     rerender(<FriendPcCard device={{ ...pendingDevice, revoked: true }} servers={servers} nowMs={nowMs} busy={false} {...actions} />)
     expect(screen.getByText('Access removed')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Manage access' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve this PC' })).not.toBeInTheDocument()
+  })
+
+  it('offers deletion only for removed PCs, hides former grants and blocks deletion while busy', () => {
+    const onDelete = vi.fn()
+    const input = { device: { ...device, revoked: true }, servers, nowMs, busy: false, onDelete, ...callbacks() }
+    const { rerender } = render(<FriendPcCard {...input} />)
+    expect(screen.queryByRole('group', { name: 'Assigned servers' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Configured permissions' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Recent authenticated heartbeat')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete PC' }))
+    expect(onDelete).toHaveBeenCalledOnce()
+    rerender(<FriendPcCard {...input} busy />)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete PC' }))
+    expect(screen.getByRole('button', { name: 'Delete PC' })).toBeDisabled()
+    expect(onDelete).toHaveBeenCalledOnce()
+    rerender(<FriendPcCard {...input} device={device} />)
+    expect(screen.queryByRole('button', { name: 'Delete PC' })).not.toBeInTheDocument()
   })
 
   it('shows blocked grants as configured access and preserves the exact owner deadline boundary', () => {

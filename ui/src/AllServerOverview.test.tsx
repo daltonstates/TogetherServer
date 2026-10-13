@@ -50,8 +50,8 @@ describe('all-server overview', () => {
     data.backups!['stale-server'] = { ...data.backups![selected], profileId: 'stale-server' }
     const open = vi.fn()
     const { container, rerender } = render(<AllServerOverview snapshot={data} selectedProfileId={selected} nowMs={now} onOpen={open} />)
-    expect(allServerRows(data, now).map(row => row.id)).toEqual(['stale-server', selected])
-    expect(allServerRows(data, now)[0]).toMatchObject({ state: 'Unknown', players: 'Unknown', deadline: null,
+    expect(allServerRows(data, now).map(row => row.id)).toEqual([selected, 'stale-server'])
+    expect(allServerRows(data, now).find(row => row.id === 'stale-server')).toMatchObject({ state: 'Unknown', players: 'Unknown', deadline: null,
       warning: 'Player observation is stale', priority: 50,
       destination: { workspace: 'host', section: 'players', profileId: 'stale-server', label: 'Review players' } })
     expect(container.querySelector('.selected')).toHaveTextContent('Contract fixture')
@@ -93,13 +93,13 @@ describe('all-server overview', () => {
     data.backups![id].lastFailureUtc = '2026-09-29T12:00:00Z'
     expect(allServerRows(data, now)[0].warning).toBe('Latest backup attempt failed')
   })
-  it('sorts attention first, retains selection and navigates only to reviewed actions', () => {
+  it('sorts active servers first, retains attention and selection, and navigates only to reviewed actions', () => {
     const data = snapshot(); const selected = data.settings.profiles[0].id
     data.settings.profiles.push({ ...data.settings.profiles[0], id: 'server-2', name: 'Needs review' })
     data.runs.push({ ...data.runs[0], profileId: 'server-2', state: 'Unknown', detail: 'C:\\private\\world' })
     const open = vi.fn()
     const { container, rerender } = render(<AllServerOverview snapshot={data} selectedProfileId={selected} nowMs={now} onOpen={open} />)
-    expect(allServerRows(data, now).map(row => row.id)).toEqual(['server-2', selected])
+    expect(allServerRows(data, now).map(row => row.id)).toEqual([selected, 'server-2'])
     expect(container.querySelector('.selected')).toHaveTextContent('Contract fixture')
     fireEvent.click(screen.getByRole('button', { name: 'Review server: Needs review' }))
     expect(open).toHaveBeenCalledWith({ workspace: 'host', section: 'overview', profileId: 'server-2', label: 'Review server' })

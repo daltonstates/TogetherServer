@@ -25,6 +25,8 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Local QoL endpoint scopes and run identity", () => { QolLocalEndpointInputChecks.Run(); return Task.CompletedTask; }),
     ("Canonical tray projection", () => { DesktopTrayProjectionChecks.Run(root); return Task.CompletedTask; }),
     ("Bundled desktop icon assets", () => { DesktopIconChecks.Run(); return Task.CompletedTask; }),
+    ("Revoked PC deletion", () => { RevokedDeviceDeletionChecks.Run(root); return Task.CompletedTask; }),
+    ("Remembered Friend revocation", () => FriendRevocationVisibilityChecks.RunAsync(root)),
     ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
     ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root))
 };

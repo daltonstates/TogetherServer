@@ -286,6 +286,7 @@ export function filterFriendPcs(devices: readonly Device[], servers: readonly Fr
   filters: FriendPcFiltersValue, nowMs: number): Device[] {
   const search = filters.search.trim().toLocaleLowerCase()
   return devices.filter(device => {
+    if (device.revoked && filters.status !== 'revoked') return false
     const view = effectiveDeviceAccess(device, servers, nowMs)
     if (filters.serverId !== 'all' && !device.assignedProfileIds.includes(filters.serverId)) return false
     const statusMatches = filters.status === 'all' ||
@@ -299,6 +300,12 @@ export function filterFriendPcs(devices: readonly Device[], servers: readonly Fr
     if (!statusMatches) return false
     const searchable = [device.name, view.label, ...view.rows.map(row => row.name)].join(' ').toLocaleLowerCase()
     return !search || searchable.includes(search)
+  }).sort((left, right) => {
+    const rank = (device: Device) => {
+      const view = effectiveDeviceAccess(device, servers, nowMs)
+      return view.state === 'Available' ? view.connected ? 0 : 1 : 2
+    }
+    return rank(left) - rank(right)
   })
 }
 
@@ -314,9 +321,9 @@ export function FriendPcFilters({ value, servers, resultCount, totalCount, onCha
   return <div className="friend-pc-filters" role="group" aria-label="Filter Friend PCs">
     <label><span className="friend-filter-label"><Icon name="search" size={15} />Search Friend PCs</span><Input type="search" maxLength={200} value={value.search} placeholder="PC or assigned server name" onChange={event => onChange({ ...value, search: event.target.value })} /></label>
     <label><span className="friend-filter-label"><Icon name="monitor" size={15} />PC status</span><Select value={value.status} onChange={event => onChange({ ...value, status: event.target.value as FriendPcFiltersValue['status'] })}>
-      <option value="all">All PCs</option><option value="connected">Connected</option><option value="unknown">Connection Unknown or refresh needed</option>
+      <option value="all">Current PCs</option><option value="connected">Connected</option><option value="unknown">Connection Unknown or refresh needed</option>
       <option value="approval">Waiting for approval</option><option value="expired">Access expired</option><option value="helper">Temporary helper</option>
-      <option value="revoked">Access removed</option><option value="unassigned">No assigned servers</option>
+      <option value="revoked">Show removed PCs</option><option value="unassigned">No assigned servers</option>
     </Select></label>
     <label><span className="friend-filter-label"><Icon name="server" size={15} />Assigned server</span><Select value={value.serverId} onChange={event => onChange({ ...value, serverId: event.target.value })}>
       <option value="all">All servers</option>{servers.map(server => <option key={server.id} value={server.id}>{server.name}</option>)}

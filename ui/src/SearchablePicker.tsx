@@ -17,7 +17,7 @@ export function SearchablePicker({ label, items, selectedId, onSelect, actions, 
     document.addEventListener('pointerdown', dismissOutside)
     return () => document.removeEventListener('pointerdown', dismissOutside)
   }, [])
-  const selected = items.find(item => item.id === selectedId) ?? items[0]
+  const selected = items.find(item => item.id === selectedId)
   const filtered = items.filter(item => `${item.name} ${item.detail ?? ''} ${item.keywords ?? ''}`
     .toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   return <details ref={ref} className="context-picker" onKeyDown={event => {

@@ -3,6 +3,7 @@ import { changeJson, errorMessage } from './api'
 import { Button, Select } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError, type Decoder, type FriendSnapshot } from './contracts'
+import { orderProfiles } from './profileLists'
 
 export type RehearsalReport = {
   schema: 1; generatedUtc: string
@@ -62,7 +63,7 @@ export function HostRemoteRehearsal() {
 }
 
 export function FriendRemoteRehearsal({ snapshot }: { snapshot: FriendSnapshot }) {
-  const candidates = snapshot.profiles.filter(profile => profile.kind === 'Fixture')
+  const candidates = orderProfiles(snapshot.profiles.filter(profile => profile.kind === 'Fixture'))
   const [profileId, setProfileId] = useState('')
   const [context, setContext] = useState('Unspecified')
   const [busy, setBusy] = useState(false)

@@ -153,7 +153,7 @@ describe('Friend access summary and review', () => {
     expect(screen.queryByRole('list', { name: 'Server access before and after' })).not.toBeInTheDocument()
   })
 
-  it('filters PCs by name, assigned server and actual expiry/connection state without reordering them', () => {
+  it('filters PCs by name, assigned server and actual expiry/connection state', () => {
     const expired = { ...device, id: 'pc-2', name: 'Spare PC', accessExpiresUtc: '2026-10-08T12:00:00Z' }
     const unknown = { ...device, id: 'pc-3', name: 'Laptop', lastHeartbeatUtc: null, assignedProfileIds: ['one'] }
     const all = [device, expired, unknown]
@@ -161,6 +161,29 @@ describe('Friend access summary and review', () => {
     expect(filterFriendPcs(all, servers, { ...defaultFriendPcFilters, status: 'expired' }, nowMs).map(pc => pc.id)).toEqual(['pc-2'])
     expect(filterFriendPcs(all, servers, { ...defaultFriendPcFilters, status: 'unknown', serverId: 'one' }, nowMs).map(pc => pc.id)).toEqual(['pc-3'])
     expect(filterFriendPcs(all, servers, { ...defaultFriendPcFilters, status: 'connected' }, nowMs).map(pc => pc.id)).toEqual(['pc-1'])
+  })
+
+  it('hides removed PCs across ordinary statuses and searches until explicitly requested', () => {
+    const removed = { ...device, revoked: true, name: 'Removed laptop', lastHeartbeatUtc: null, assignedProfileIds: [] }
+    const statuses = ['all', 'connected', 'unknown', 'approval', 'expired', 'helper', 'unassigned'] as const
+    for (const status of statuses) {
+      for (const search of ['', 'Removed', 'Access removed']) {
+        expect(filterFriendPcs([removed], servers, { ...defaultFriendPcFilters, status, search }, nowMs)).toEqual([])
+      }
+    }
+    expect(filterFriendPcs([removed, device], servers, { ...defaultFriendPcFilters, status: 'revoked', search: 'Removed' }, nowMs)).toEqual([removed])
+  })
+
+  it('orders usable connected PCs first, usable Unknown next, and preserves ties and source order', () => {
+    const expired = { ...device, id: 'expired', accessExpired: true }
+    const unknown = { ...device, id: 'unknown', lastHeartbeatUtc: null }
+    const connected = { ...device, id: 'connected' }
+    const connectedSecond = { ...device, id: 'connected-second' }
+    const pending = { ...device, id: 'pending', approvalPending: true }
+    const source = [expired, unknown, connected, pending, connectedSecond]
+    expect(filterFriendPcs(source, servers, defaultFriendPcFilters, nowMs).map(pc => pc.id))
+      .toEqual(['connected', 'connected-second', 'unknown', 'expired', 'pending'])
+    expect(source.map(pc => pc.id)).toEqual(['expired', 'unknown', 'connected', 'pending', 'connected-second'])
   })
 
   it('offers controlled search/filter input and announces result counts politely', () => {

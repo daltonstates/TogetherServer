@@ -65,7 +65,7 @@ export function getLocalJson<T>(path: string, decoder: Decoder<T>, signal?: Abor
   return requestJson(path, decoder, { cache: 'no-store', headers: localGetHeaders, signal })
 }
 
-export function changeJson<T>(path: string, method: 'POST' | 'PUT', decoder: Decoder<T>, body?: unknown,
+export function changeJson<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', decoder: Decoder<T>, body?: unknown,
   signal?: AbortSignal): Promise<T> {
   return requestJson(path, decoder, {
     method,

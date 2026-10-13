@@ -944,7 +944,7 @@ function withPcs(devices: Device[]) {
   const info = { ...companion, devices }
   const read = transport.read.getMockImplementation()!
   transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/companion' ? info : read(path, ...args))
-  transport.change.mockImplementation(async (path: string, _method: string, _parse: unknown, rawBody: unknown) => {
+  transport.change.mockImplementation(async (path: string, method: string, _parse: unknown, rawBody: unknown) => {
     const device = info.devices.find(device => path.includes(device.id))
     if (device && path.endsWith('/servers')) {
       const request = rawBody as { profileIds: string[]; permissions: Device['serverPermissions'] }
@@ -964,6 +964,8 @@ function withPcs(devices: Device[]) {
       return { ok: true, code: 'Saved', message: 'Deadline saved.', accessExpiresUtc: device.accessExpiresUtc, accessExpired: false }
     }
     if (device && path.endsWith('/revoke')) device.revoked = true
+    if (device && method === 'DELETE' && path === `/api/local/devices/${device.id}`)
+      info.devices = info.devices.filter(item => item.id !== device.id)
     return { ok: true, code: 'Saved', message: 'Access saved.', snapshot: state }
   })
   return info
@@ -1395,5 +1397,89 @@ describe('Friend task structure', () => {
     expect(await screen.findByText('Connection identity and recovery')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: /^Saved connection name/ })).toHaveValue('Evening Host')
     expectNoMutation()
+  })
+})
+
+describe('current profiles and removed access', () => {
+  it('hides removed PCs and their totals until requested, and deletes only after confirmation', async () => {
+    const info = withPcs([{ ...testPc(pcId, 'Old PC'), revoked: true }, testPc(secondPcId, 'Current PC')])
+    await openAccess()
+    expect(screen.queryByRole('article', { name: 'Old PC' })).not.toBeInTheDocument()
+    expect(screen.getByText('1 of 1 Friend PCs shown.')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'PC status' }), { target: { value: 'revoked' } })
+    fireEvent.click(within(screen.getByRole('article', { name: 'Old PC' })).getByRole('button', { name: 'Delete PC' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Delete Old PC?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(transport.change.mock.calls.some(([, method]) => method === 'DELETE')).toBe(false)
+    expect(info.devices.some(device => device.id === pcId)).toBe(true)
+    fireEvent.click(within(screen.getByRole('article', { name: 'Old PC' })).getByRole('button', { name: 'Delete PC' }))
+    dialog = await screen.findByRole('dialog', { name: 'Delete Old PC?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete PC' }))
+    await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/devices/${pcId}`, 'DELETE', expect.any(Function), undefined, undefined))
+    await waitFor(() => expect(screen.queryByText('Old PC')).not.toBeInTheDocument())
+    expect(info.devices.map(device => device.id)).toEqual([secondPcId])
+    fireEvent.change(screen.getByRole('combobox', { name: 'PC status' }), { target: { value: 'all' } })
+    expect(await screen.findByRole('article', { name: 'Current PC' })).toBeInTheDocument()
+    expectNoServerAction()
+  })
+
+  it('keeps a removed record and shows a failed delete so it can be retried', async () => {
+    withPcs([{ ...testPc(pcId, 'Old PC'), revoked: true }])
+    const change = transport.change.getMockImplementation()!
+    transport.change.mockImplementation(async (path: string, method: string, ...args: unknown[]) =>
+      method === 'DELETE' ? { ok: false, code: 'SuccessorRosterReadOnly', message: 'Signed membership needs owner review.' } :
+        change(path, method, ...args))
+    await openAccess()
+    expect(screen.getByText('0 of 0 Friend PCs shown.')).toBeInTheDocument()
+    expect(screen.getByText(/No current Friend PCs/)).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'PC status' }), { target: { value: 'revoked' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete PC' }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete Old PC?' })).getByRole('button', { name: 'Delete PC' }))
+    await waitFor(() => expect(screen.getByRole('article', { name: 'Old PC' })).toHaveTextContent('Signed membership needs owner review.'))
+    expect(within(screen.getByRole('article', { name: 'Old PC' })).getByRole('button', { name: 'Delete PC' })).toBeEnabled()
+    expectNoServerAction()
+  })
+
+  it('puts running servers ahead of a pinned offline selection without changing the selected workspace', async () => {
+    const activeId = '33333333-3333-4333-8333-333333333333'
+    host().settings.profiles.push({ ...host().settings.profiles[0], id: activeId, name: 'Running world' })
+    host().runs.push({ ...host().runs[0], profileId: activeId, state: 'Ready' })
+    localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ selectedServer: id,
+      favoriteServers: [id], serverOrder: [id, activeId] }))
+    await openHost()
+    const picker = screen.getByLabelText('Selected server: Contract fixture').closest('details')!
+    picker.open = true
+    const choices = within(screen.getByLabelText('Selected server choices')).getAllByRole('button')
+      .filter(button => button.querySelector('strong'))
+    expect(choices[0]).toHaveTextContent('Running world')
+    expect(choices[1]).toHaveTextContent('Contract fixture')
+    expect(screen.getByRole('region', { name: 'Contract fixture workspace' })).toBeInTheDocument()
+    expect(host().settings.profiles.map(profile => profile.id)).toEqual([id, activeId])
+    expectNoServerAction()
+  })
+
+  it('hides a selected revoked Host and its cached servers until requested, then deletes that exact saved Host', async () => {
+    const removed = { ...friend(), state: 'Revoked', connectionCode: 'Revoked', connectionName: 'Old Host' }
+    const active = { ...friend(), connectionId: secondPcId, connectionName: 'Current Host' }
+    state = { ...removed, connections: [structuredClone(removed), structuredClone(active)] }
+    transport.change.mockImplementation(async (path: string) => {
+      if (path.endsWith('/forget')) state = { ...active, connections: [structuredClone(active)] }
+      return { ok: true, code: 'ConnectionForgottenLocally', message: 'Saved connection deleted.' }
+    })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Join a server' })
+    expect(screen.queryByText('Old Host')).not.toBeInTheDocument()
+    expect(screen.queryByText('Revoked')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Synthetic world' })).not.toBeInTheDocument()
+    const picker = screen.getByLabelText('Selected Host: None selected').closest('details')!
+    picker.open = true
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show removed Hosts' }))
+    expect(await screen.findByRole('button', { name: 'Delete saved Host Old Host' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete saved Host Old Host' }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete this saved Host?' })).getByRole('button', { name: 'Delete Host' }))
+    await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/friend/connections/${removed.connectionId}/forget`, 'POST', expect.any(Function), undefined, undefined))
+    await waitFor(() => expect(screen.queryByText('Old Host')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Selected Host: Current Host')).toBeInTheDocument()
+    expectNoServerAction()
   })
 })

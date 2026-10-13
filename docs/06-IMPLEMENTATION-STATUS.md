@@ -1333,3 +1333,9 @@ The production app, its worlds, credentials, listener, and network settings were
 | Visual and external acceptance | Browser discovery returned no session, so no rendered click-through. No owner-installed game binary, real mod load, Friend PC/WAN route, real game join, recognizable save after restart, valued-world restore, or different-PC complete setup transfer was exercised. Fixture and loopback evidence do not establish those outcomes. |
 
 The running production app, worlds, credentials, listener, router, firewall, and DNS were not changed. The same-Windows-user protected setup sidecar is not a cross-account Host migration mechanism.
+
+## 2026-10-13 - Current profiles and revoked-PC deletion
+
+Friend access, saved Host selection and sharing-member lists hide revoked accounts by default. Explicit Show removed controls expose confirmed deletion of revoked pairing records or saved Host connections. Current usable PCs and active server/Host profiles lead their lists without changing settings or selection. Protected learned revocation survives restart; old credentials remain denied after deletion. Signed lineage and inherited authority retain their existing safety restrictions.
+
+PASS 970 JSDOM tests across 81 files, the code-only gate with 22 source/synthetic groups, production UI bundle, final app compilation with zero .NET warnings/errors, and byte-for-byte embedding of all four current UI assets. The existing Vite chunk-size warning remains. Symbolic-link subcases and native/browser/process/Friend-PC/game/save acceptance remain explicitly skipped under the owner's foreground constraint. See [delivery and remaining checks](25-REVOKED-PROFILES-AND-DELETION.md).

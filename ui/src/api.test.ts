@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { errorMessage, getLocalJson, requestJson } from './api'
+import { changeJson, errorMessage, getLocalJson, requestJson } from './api'
 import { parseBasicResult } from './contracts'
 
 function jsonResponse(status: number, payload: unknown): Response {
@@ -11,6 +11,14 @@ function jsonResponse(status: number, payload: unknown): Response {
 }
 
 describe('requestJson', () => {
+  it('deletes a saved record through the local owner API with the local header and an empty body', async () => {
+    const fetch = vi.fn(async () => jsonResponse(200, { ok: true, code: 'DeviceDeleted', message: 'Deleted' }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(changeJson('/api/local/devices/test', 'DELETE', parseBasicResult)).resolves.toMatchObject({ ok: true, code: 'DeviceDeleted' })
+    expect(fetch).toHaveBeenCalledWith('/api/local/devices/test', expect.objectContaining({
+      method: 'DELETE', headers: expect.objectContaining({ 'X-TogetherServer-Local': '1' }), body: undefined
+    }))
+  })
   it('preserves structured server errors', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(409,
       { code: 'FriendMode', message: 'Switch to My server first.' })))

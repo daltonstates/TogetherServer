@@ -10,6 +10,8 @@ import { useConfirmation } from './Confirmation'
 import { Tooltip } from './Tooltip'
 import { HostSettingsTools, type HostSettingsPatch } from './HostSettingsTools'
 import { FriendPcCard } from './FriendPcCard'
+import { FriendHostPicker } from './FriendHostPicker'
+import { isRemovedHost, orderProfiles } from './profileLists'
 import { SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
 import { Button, Input, Select } from './Controls'
@@ -260,7 +262,7 @@ function readSnapshot(signal?: AbortSignal): Promise<Snapshot> {
   return getJson('/api/local/snapshot', parseSnapshot, signal)
 }
 
-function change(path: string, method: 'POST' | 'PUT', body?: unknown, signal?: AbortSignal): Promise<BasicResult> {
+function change(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown, signal?: AbortSignal): Promise<BasicResult> {
   return changeJson(path, method, parseBasicResult, body, signal)
 }
 
@@ -418,6 +420,8 @@ export function App() {
   const [moveKit, setMoveKit] = useState<HostMoveKitResult | null>(null)
   const [pairIssue, setPairIssue] = useState<FriendIssue | null>(null)
   const [showPairing, setShowPairing] = useState(false)
+  const [showRemovedHosts, setShowRemovedHosts] = useState(false)
+  const friendConnectionHidden = snapshot?.mode === 'Friend' && isRemovedHost(snapshot) && !showRemovedHosts
   const [countdownExtensions, setCountdownExtensions] = useState<Record<string, string>>({})
   const [dataRecovery, setDataRecovery] = useState<DataRecoveryView | null>(null)
   const [recoveryConfirmed, setRecoveryConfirmed] = useState(false)
@@ -552,7 +556,7 @@ export function App() {
   const currentFriendConnectionName = snapshot?.mode === 'Friend' ? snapshot.connectionName : null
   const activitySource = snapshot?.mode === 'Host' ? 'host' :
     snapshot?.mode === 'Friend' ? `friend:${snapshot.connectionId || 'unpaired'}` : 'loading'
-  const recentActivity = snapshot?.activity ?? []
+  const recentActivity = friendConnectionHidden ? [] : snapshot?.activity ?? []
   const retainedActivity = activityAfterMarker(recentActivity, activityClearMarkers[activitySource])
   const activityHistory = attentionHistory.sources.find(source => source.source === activitySource)
   const visibleActivity = retainedActivity.filter(item => !activityHistory?.dismissedIds.includes(item.id))
@@ -568,7 +572,7 @@ export function App() {
     if (snapshot?.mode !== 'Host') return
     const profiles = snapshot.settings.profiles
     if (!profiles.some(profile => profile.id === selectedHostProfileId)) {
-      setSelectedHostProfileId(profiles[0]?.id ?? '')
+      setSelectedHostProfileId(orderProfiles(profiles, snapshot.runs)[0]?.id ?? '')
       setHostServerTab('overview')
       setHostMobileDetail(false)
     }
@@ -965,6 +969,26 @@ export function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }); setActionNotices(current => ({ ...current, [id]: { good: false, text: errorMessage(error) } })) }
     finally { setPending('') }
   }
+  const deleteDevice = async (device: Device) => {
+    if (!companion?.devices.some(current => current.id === device.id && current.revoked) ||
+        !await confirm({ title: `Delete ${device.name}?`, confirmLabel: 'Delete PC', destructive: true,
+          description: 'Delete this saved PC record. It will need a server code to connect again.' })) return
+    setPending(device.id)
+    try {
+      const result = await change(`/api/local/devices/${device.id}`, 'DELETE')
+      setNotice({ good: result.ok, text: result.message })
+      if (result.ok) {
+        setCompanion(current => current ? { ...current, devices: current.devices.filter(item => item.id !== device.id) } : current)
+        setDeviceNames(current => { const next = { ...current }; delete next[device.id]; return next })
+        setPermissionPresetDraft(current => { const next = { ...current }; delete next[device.id]; return next })
+        setActionNotices(current => { const next = { ...current }; delete next[device.id]; return next })
+      } else setActionNotices(current => ({ ...current, [device.id]: { good: false, text: result.message } }))
+      await refreshCompanion()
+    } catch (error) {
+      setNotice({ good: false, text: errorMessage(error) })
+      setActionNotices(current => ({ ...current, [device.id]: { good: false, text: errorMessage(error) } }))
+    } finally { setPending('') }
+  }
   const approveDevice = async (id: string) => {
     setPending(id)
     try {
@@ -1133,14 +1157,19 @@ export function App() {
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const forgetFriendConnection = async () => {
-    if (snapshot?.mode !== 'Friend' || !snapshot.connectionId ||
-        !await confirm({ title: 'Forget this saved Host?', confirmLabel: 'Forget Host', destructive: true,
-          description: 'TogetherServer will first try to revoke this PC on the Host.' })) return
+  const forgetFriendConnection = async (connectionId?: string) => {
+    if (snapshot?.mode !== 'Friend') return
+    const id = connectionId ?? snapshot.connectionId
+    const connection = snapshot.connections?.find(item => item.connectionId === id) ?? (snapshot.connectionId === id ? snapshot : null)
+    if (!id || !connection ||
+        !await confirm({ title: isRemovedHost(connection) ? 'Delete this saved Host?' : 'Forget this saved Host?',
+          confirmLabel: isRemovedHost(connection) ? 'Delete Host' : 'Forget Host', destructive: true,
+          description: isRemovedHost(connection) ? 'Remove this saved connection from this PC. Connecting again requires a server code.' :
+            'TogetherServer will first try to revoke this PC on the Host.' })) return
     if (!await beforeChangingScope()) return
     setPending('forget-connection')
     try {
-      const result = await change(`/api/local/friend/connections/${snapshot.connectionId}/forget`, 'POST')
+      const result = await change(`/api/local/friend/connections/${id}/forget`, 'POST')
       setNotice({ good: result.ok, text: result.message })
       if (result.ok) { setShowPairing(false); applySnapshot(await readSnapshot()) }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
@@ -1686,7 +1715,9 @@ export function App() {
     ? snapshot.settings.publicGameIp : ''
   const friendAppAddress = hostAddress(draft?.companionEndpoint ?? '') ||
     (detectedGameIp ? `${detectedGameIp}${draft?.companionPort === 5131 ? '' : `:${draft?.companionPort}`}` : '')
-  const savedProfiles = snapshot?.mode === 'Host' ? snapshot.settings.profiles : []
+  const savedProfiles = snapshot?.mode === 'Host' ? orderProfiles(snapshot.settings.profiles, snapshot.runs,
+    uiPreferences.favoriteServers, uiPreferences.serverOrder) : []
+  const friendProfiles = snapshot?.mode === 'Friend' && !friendConnectionHidden ? orderProfiles(snapshot.profiles) : []
   const liveConnectionKeySignature = JSON.stringify((snapshot?.mode === 'Host'
     ? snapshot.runs.filter(run => run.state === 'Ready' && detectedGameIp)
       .flatMap(run => [`host-${run.profileId}-address`, `host-${run.profileId}-password`])
@@ -1738,16 +1769,13 @@ export function App() {
   const updateBlockedReason = dirty ? 'Save setup changes before updating.' :
     activeRuns > 0 ? 'Stop hosted servers before updating.' : undefined
   const selectedHostProfile = savedProfiles.find(profile => profile.id === selectedHostProfileId) ?? savedProfiles[0]
-  const selectedFriendProfile = snapshot?.mode === 'Friend' ? snapshot.profiles.find(profile => profile.id === selectedFriendProfileId) ?? snapshot.profiles[0] : undefined
+  const selectedFriendProfile = friendProfiles.find(profile => profile.id === selectedFriendProfileId) ?? friendProfiles[0]
   const selectedHostRun = snapshot?.mode === 'Host' && selectedHostProfile
     ? snapshot.runs.find(run => run.profileId === selectedHostProfile.id) : undefined
   const storageWarnings = snapshot?.mode === 'Host' ? snapshot.storageHealth?.warnings ?? [] : []
   const hostOverviewRows = snapshot?.mode === 'Host' ? allServerRows(snapshot, nowMs) : []
   const currentProblems = hostOverviewRows.filter(row => row.priority > 20)
-  const visibleHostProfiles = [...savedProfiles]
-    .sort((a, b) => Number(uiPreferences.favoriteServers.includes(b.id)) - Number(uiPreferences.favoriteServers.includes(a.id)) ||
-      (uiPreferences.serverOrder.includes(a.id) ? uiPreferences.serverOrder.indexOf(a.id) : savedProfiles.indexOf(a) + 100) -
-      (uiPreferences.serverOrder.includes(b.id) ? uiPreferences.serverOrder.indexOf(b.id) : savedProfiles.indexOf(b) + 100))
+  const visibleHostProfiles = savedProfiles
   const visibleDevices = filterFriendPcs(companion?.devices ?? [], savedProfiles, deviceFilters, nowMs)
   const attentionCount = visibleActivity.length + storageWarnings.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
   const groupedActivity = collapseRepeatedActivity(visibleActivity)
@@ -1916,28 +1944,24 @@ export function App() {
 
       {workspacePage === 'join' && snapshot?.mode === 'Friend' && <section className="context-workspace join-context-workspace">
         <aside className="context-sidebar" aria-label="Join navigation">
-          {(snapshot.connections?.length ?? 0) > 0 && <SearchablePicker label="Selected Host" selectedId={snapshot.connectionId}
-            items={[...(snapshot.connections ?? [])].sort((a,b) => Number(uiPreferences.favoriteHosts.includes(b.connectionId)) - Number(uiPreferences.favoriteHosts.includes(a.connectionId)))
-              .map(connection => ({ id: connection.connectionId, name: connection.connectionName ?? connection.profiles[0]?.name ?? 'Saved Host',
-                detail: connection.profiles.map(profile => profile.name).join(', '), state: connection.state }))}
-            onSelect={id => void selectFriendConnection(id)}
-            actions={item => <Button className="secondary icon-button" aria-pressed={uiPreferences.favoriteHosts.includes(item.id)}
-              aria-label={`${uiPreferences.favoriteHosts.includes(item.id) ? 'Unpin' : 'Pin'} saved Host`} title={`${uiPreferences.favoriteHosts.includes(item.id) ? 'Unpin' : 'Pin'} saved Host`}
-              onClick={() => toggleFavorite('favoriteHosts', item.id)}>{uiPreferences.favoriteHosts.includes(item.id) ? '★' : '☆'}</Button>} />}
-          {snapshot.profiles.length > 0 && <label className="context-server-select">Selected server
+          {(snapshot.connections?.length ?? 0) > 0 && <FriendHostPicker connections={snapshot.connections ?? []}
+            selectedId={snapshot.connectionId} showRemoved={showRemovedHosts} favorites={uiPreferences.favoriteHosts} busy={!!pending}
+            onShowRemoved={setShowRemovedHosts} onSelect={id => void selectFriendConnection(id)}
+            onFavorite={id => toggleFavorite('favoriteHosts', id)} onForget={id => void forgetFriendConnection(id)} />}
+          {friendProfiles.length > 0 && <label className="context-server-select">Selected server
             <Select value={selectedFriendProfile?.id ?? ''} onChange={event => {
               const profileId = event.target.value
               void changeScope(() => { setSelectedFriendProfileId(profileId); setFriendChatProfileId(profileId); setFriendLogProfileId(profileId) })
             }}>
-              {snapshot.profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+              {friendProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
             </Select></label>}
-          <SectionSidebar title="Join" label="Join sections" sections={joinSections.filter(section => section.id !== 'logs' ||
+          <SectionSidebar title="Join" label="Join sections" sections={joinSections.filter(section => friendConnectionHidden ? section.id === 'pairing' : section.id !== 'logs' ||
             !!selectedFriendProfile && friendLogAvailability(selectedFriendProfile.canViewLogs, snapshot.hostCapabilities).visible)}
-            section={showPairing || !snapshot.endpoint ? 'pairing' : joinSection} onSelect={selectJoinSection} />
+            section={showPairing || !snapshot.endpoint || friendConnectionHidden ? 'pairing' : joinSection} onSelect={selectJoinSection} />
         </aside><div className="context-content">
         <section className="panel friend-panel friend-primary">
-          {(showPairing || !snapshot.endpoint) && <div className="section-heading"><div><h2>{snapshot.endpoint ? 'Add another Host' : 'Join a server'}</h2><p>Ask the Host for the current server code.</p></div></div>}
-          {snapshot.endpoint && !showPairing ? <>
+          {(showPairing || !snapshot.endpoint || friendConnectionHidden) && <div className="section-heading"><div><h2>{snapshot.endpoint && !friendConnectionHidden ? 'Add another Host' : 'Join a server'}</h2><p>Ask the Host for the current server code.</p></div></div>}
+          {snapshot.endpoint && !showPairing && !friendConnectionHidden ? <>
             <div className="join-host-caption"><Icon name="monitor" /><span>Host: <strong>{snapshot.connectionName || 'Saved Host'}</strong></span></div>
             <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state === 'Disabled' ? 'Connected · controls paused' : snapshot.state}</span>
               {(joinSection === 'network' || joinSection === 'connection') && <span>{snapshot.lastConnectedUtc ? `Last reached ${Math.max(0, Math.floor((nowMs - Date.parse(snapshot.lastConnectedUtc)) / 60000))} min ago · ${new Date(snapshot.lastConnectedUtc).toLocaleString()}` : 'Waiting for a reply from the Host'}</span>}</div>
@@ -1955,11 +1979,11 @@ export function App() {
             {pairIssue && <DismissibleNotice className="connection-warning" role="alert"><strong>{pairIssue.message}</strong><FriendConnectionHelp code={pairIssue.code} /></DismissibleNotice>}
             <details className="advanced-block"><summary>Using an older invite?</summary><label>Host IP<Input value={friendHostAddress} onChange={event => setFriendHostAddress(event.target.value.trim())} placeholder="123.45.67.89" /><small>Older TS1 invites need the Host IP. New invites already include it.</small></label></details>
           </>}
-          {snapshot.endpoint && showPairing && <Button className="secondary" disabled={pending === 'pair'} onClick={() => { setShowPairing(false); setJoinSection('play'); setPairIssue(null); setFriendInvite('') }}>Cancel and return to saved Host</Button>}
+          {snapshot.endpoint && showPairing && !friendConnectionHidden && <Button className="secondary" disabled={pending === 'pair'} onClick={() => { setShowPairing(false); setJoinSection('play'); setPairIssue(null); setFriendInvite('') }}>Cancel and return to saved Host</Button>}
 
 
-          {snapshot.endpoint && !showPairing && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
-          {snapshot.endpoint && !showPairing && snapshot.profiles.length > 0 && <div className="friend-server-list">
+          {snapshot.endpoint && !showPairing && !friendConnectionHidden && snapshot.profiles.length === 0 && (snapshot.state === 'Connected' || snapshot.state === 'Disabled') && <div className="empty compact-empty"><p>The Host has not assigned any servers to this PC. Ask the Host to open Friend access and choose the servers you can control.</p></div>}
+          {snapshot.endpoint && !showPairing && !friendConnectionHidden && snapshot.profiles.length > 0 && <div className="friend-server-list">
           {snapshot.profiles.filter(profile => profile.id === selectedFriendProfile?.id).map(profile => {
             const connectionKey = `friend-${snapshot.connectionId}-${profile.id}`
             const logAvailability = friendLogAvailability(profile.canViewLogs, snapshot.hostCapabilities)
@@ -2050,7 +2074,7 @@ export function App() {
             </article>
           })}
           </div>}
-          {joinSection === 'chat' && snapshot.endpoint && !showPairing && snapshot.state === 'Disconnected/Unknown' &&
+          {joinSection === 'chat' && snapshot.endpoint && !showPairing && !friendConnectionHidden && snapshot.state === 'Disconnected/Unknown' &&
             !!snapshot.chatProfiles?.some(profile => profile.supported) &&
             <div className="friend-server-list"><h3>Chats saved on this PC</h3>
               <p className="helper-text">The Host connection is unavailable. You can write a message now; it will wait on this PC until the Host reconnects.</p>
@@ -2064,7 +2088,7 @@ export function App() {
                       onDraftStateChange={keepChatGuard}
                       visible={workspacePage === 'join' && friendChatProfileId === profile.id} />
                   </PaneErrorBoundary>}</article>)}</div>}
-          {(joinSection === 'network' || joinSection === 'connection') && snapshot.endpoint && !showPairing && <section className="friend-connection-tools" aria-labelledby="friend-tools-title">
+          {(joinSection === 'network' || joinSection === 'connection') && snapshot.endpoint && !showPairing && !friendConnectionHidden && <section className="friend-connection-tools" aria-labelledby="friend-tools-title">
             <h3 id="friend-tools-title">{joinSection === 'network' ? 'Connection help' : 'Connection settings'}</h3>
             {joinSection === 'connection' && selectedFriendProfile && <Button className="secondary" onClick={() => setServerNotification({ id: selectedFriendProfile.id, name: selectedFriendProfile.name, connectionId: snapshot.connectionId })}><Icon name="bell" />Server notifications</Button>}
             {joinSection === 'connection' && <details className="advanced-block" ref={addressRecoveryRef} open><summary>Connection identity and recovery</summary>
@@ -2075,10 +2099,10 @@ export function App() {
               <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Checking...' : 'Check and update address'}</Button>
               <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
             </details>}
-          {joinSection === 'network' && snapshot.endpoint && !showPairing && <FriendConnectionDoctor snapshot={snapshot}
+          {joinSection === 'network' && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendConnectionDoctor snapshot={snapshot}
             gameResults={gameEndpointResults} gameResultIdentities={gameResultIdentities} nowMs={nowMs} busy={!!pending}
             onRefresh={() => void checkFriendConnection()} onProbe={profileId => void probeGameEndpoint(profileId)} />}
-          {joinSection === 'network' && appInstance?.isStaging && snapshot.endpoint && !showPairing && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
+          {joinSection === 'network' && appInstance?.isStaging && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
           </section>}
         </section>
         </div></section>}
@@ -2397,13 +2421,14 @@ export function App() {
               <SettingsSectionHeading icon="users" title="Friend access" description="Choose a PC to manage its servers, permissions, and access time." />
               <div className="access-toggles settings-controls"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Connections stay available while this Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
                 <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Each PC's permissions and server safety checks still apply.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
-              <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length} totalCount={companion?.devices.length ?? 0} onChange={setDeviceFilters} />
+              <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length}
+                totalCount={companion?.devices.filter(device => deviceFilters.status === 'revoked' ? device.revoked : !device.revoked).length ?? 0} onChange={setDeviceFilters} />
               {!companion ? <p role="status">Loading Friend access...</p> : visibleDevices.length ? <div className="friend-pc-grid" aria-label="Friend PCs">
                 {visibleDevices.map(device => <FriendPcCard key={device.id} device={device} servers={savedProfiles} nowMs={nowMs} busy={!!pending}
-                  onManage={() => openDeviceServerAccess(device)} onApprove={() => void approveDevice(device.id)}
+                  onManage={() => openDeviceServerAccess(device)} onApprove={() => void approveDevice(device.id)} onDelete={() => void deleteDevice(device)}
                   feedback={<ActionFeedback notice={currentActionNotice(actionNotices[device.id], snapshot, feedbackNowMs)} />} />)}
-              </div> : <div className="empty compact-empty">{companion.devices.length ? <><p>No Friend PCs match these filters.</p><Button className="secondary" onClick={() => setDeviceFilters(defaultFriendPcFilters)}>Clear filters</Button></> :
-                <p>No Friend PCs have connected yet. Choose Invite friends on a server to copy its private code.</p>}</div>}
+              </div> : <div className="empty compact-empty">{deviceFilters.search || deviceFilters.status !== 'all' || deviceFilters.serverId !== 'all' ? <><p>No Friend PCs match these filters.</p><Button className="secondary" onClick={() => setDeviceFilters(defaultFriendPcFilters)}>Clear filters</Button></> :
+                <p>No current Friend PCs. Choose Invite friends on a server to copy its private code.</p>}</div>}
             </section>}
             {(hostSettingsSection === 'stop' || hostSettingsSection === 'network' || hostSettingsSection === 'advanced') && <HostSettingsTools key={hostSettingsSection}
               section={hostSettingsSection} snapshot={snapshot} companion={companion} ports={portDiagnostics} routeCheck={internetRouteCheck}
@@ -2418,7 +2443,7 @@ export function App() {
               onOpenAccess={() => openHostSettings('access')} onOpenDiagnostics={() => openHostSettings('diagnostics')}
               onCertificate={action => void certificateAction(action)} onInspectMoveKit={() => void inspectMoveKit()} onNewHost={addProfile} />}
             {hostSettingsSection === 'diagnostics' && <PaneErrorBoundary title="Preflight & diagnostics" resetKey={selectedHostProfileId}><OwnerDiagnostics
-              selectedProfileId={selectedHostProfileId} onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
+              selectedProfileId={selectedHostProfileId} profileOrder={savedProfiles.map(profile => profile.id)} onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
           </div>
         </section>}
         {workspacePage === 'host' && hostScope === 'pc' && serverAccessDevice && <SettingsDialog title={`Manage access for ${serverAccessDevice.name}`} wide busy={!!pending || deadlineDraftState.saving}
@@ -2514,7 +2539,7 @@ export function App() {
     </SettingsDialog>}
     {confirmationDialog}
     <StatusStrip hostText={snapshot?.mode === 'Host' ? activeRuns ? `${activeRuns} server${activeRuns === 1 ? '' : 's'} running` : 'Host idle' : 'Host capability available'}
-      friendText={snapshot?.mode === 'Friend' ? snapshot.state : friendAppStatus} pending={pendingDescription(pending, snapshot?.mode === 'Friend' ? snapshot.profiles : savedProfiles, currentOperationProfile.current[pending])}
+      friendText={snapshot?.mode === 'Friend' ? friendConnectionHidden ? 'Choose a Host' : snapshot.state : friendAppStatus} pending={pendingDescription(pending, snapshot?.mode === 'Friend' ? friendProfiles : savedProfiles, currentOperationProfile.current[pending])}
       version={update?.currentVersion ?? '...'} />
   </div>
 }

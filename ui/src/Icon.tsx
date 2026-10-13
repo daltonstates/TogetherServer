@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 export type IconName = 'play' | 'stop' | 'copy' | 'invite' | 'refresh' | 'server' |
   'game' | 'plug' | 'check' | 'warning' | 'settings' | 'search' | 'link' |
   'eye' | 'eyeOff' | 'bell' | 'loader' | 'plus' | 'users' | 'chat' | 'logs' | 'clock' | 'archive' |
-  'close' | 'chevronRight' | 'chevronDown' | 'more' | 'monitor' | 'shield' | 'palette' | 'power' | 'keyboard'
+  'close' | 'chevronRight' | 'chevronDown' | 'more' | 'monitor' | 'shield' | 'palette' | 'power' | 'keyboard' | 'trash'
 
 const paths: Record<IconName, ReactNode> = {
   play: <path d="m6 4 8 6-8 6V4Z" />,
@@ -30,6 +30,7 @@ const paths: Record<IconName, ReactNode> = {
   clock: <><circle cx="10" cy="10" r="7" /><path d="M10 6v4l3 2" /></>,
   archive: <><rect x="3" y="3" width="14" height="4" rx="1" /><path d="M4 7v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7M8 10h4" /></>,
   close: <path d="m5 5 10 10M15 5 5 15" />,
+  trash: <><path d="M3 5h14M7 5V3h6v2M5 5l1 12h8l1-12M8 8v6M12 8v6" /></>,
   chevronRight: <path d="m8 5 5 5-5 5" />,
   chevronDown: <path d="m5 8 5 5 5-5" />,
   more: <><circle cx="4" cy="10" r=".7" /><circle cx="10" cy="10" r=".7" /><circle cx="16" cy="10" r=".7" /></>,

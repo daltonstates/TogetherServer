@@ -482,6 +482,20 @@ describe('Shared saves controls', () => {
     expect(screen.getByLabelText('Owner has final say on save conflicts')).not.toBeChecked()
   })
 
+  it('hides a locally revoked PC and its count while a signed roster update is pending', async () => {
+    const grants = { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/governance') ?
+      reply({ revision: 7, ownerOverride: true, members: [{ deviceId: device.id, grants, revoked: false, accessExpiresUtc: null }] }) :
+      reply({ enabled: true, latest: null, error: null })))
+    render(<HostSharedSaves profileId={profile} devices={[{ ...device, revoked: true }]}
+      rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
+    expect(await screen.findByText(/Verified sharing list: 0 active PCs, revision 7/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Receive for Friend PC')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Receipts and diagnostics'))
+    expect(screen.queryByText(new RegExp(device.id))).not.toBeInTheDocument()
+  })
+
   it('uses the current signed roster before the owner changes one grant', async () => {
     const bodies: unknown[] = []
     const signedGrants = { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false }
@@ -509,6 +523,7 @@ describe('Shared saves controls', () => {
 
   it('lets a Manage sharing Friend edit another PC without Receive consent', async () => {
     const otherId = '33333333-3333-4333-8333-333333333333'
+    const removedId = '44444444-4444-4444-8444-444444444444'
     const calls: { path: string; body?: unknown }[] = []
     const sharing = { available: true, canManage: true, selfDeviceId: device.id,
       revision: 5, code: 'SharingReady', message: 'Sharing verified.',
@@ -516,7 +531,9 @@ describe('Shared saves controls', () => {
         { deviceId: device.id, isSelf: true, grants: { receive: false, eligibleHost: false,
           recoveryVoter: false, manageSharing: true }, revoked: false, accessExpiresUtc: null, name: null },
         { deviceId: otherId, isSelf: false, grants: { receive: true, eligibleHost: true,
-          recoveryVoter: false, manageSharing: false }, revoked: false, accessExpiresUtc: null, name: null }
+          recoveryVoter: false, manageSharing: false }, revoked: false, accessExpiresUtc: null, name: null },
+        { deviceId: removedId, isSelf: false, grants: { receive: false, eligibleHost: false,
+          recoveryVoter: false, manageSharing: false }, revoked: true, accessExpiresUtc: null, name: null }
       ] }
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ path: url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
@@ -529,6 +546,10 @@ describe('Shared saves controls', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     fireEvent.click(screen.getByText('Member permissions'))
     const vote = await screen.findByLabelText('Recovery voter for PC ending 333333')
+    expect(screen.queryByText(/PC ending 444444/)).not.toBeInTheDocument()
+    const technical = screen.getByText('Member permissions').closest('details')!.querySelector('details')!
+    technical.open = true
+    expect(screen.queryByText(new RegExp(removedId))).not.toBeInTheDocument()
     fireEvent.click(vote)
     await waitFor(() => expect(calls).toContainEqual({
       path: `/api/local/friend/${profile}/shared-world/sharing`,
