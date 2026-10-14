@@ -26,3 +26,9 @@ Deletion removes the saved access record, not immutable signed lineage or privat
 - SKIPPED native window/browser/viewport, packaged HTTP/process/installer, real Friend-PC/network, game join and save/restart checks. No app, fixture, game, listener or native dialog was launched. Those checks require an explicitly approved separate PC or unattended Windows session; code-only evidence does not certify them.
 
 Safe verification logs are in ignored `local-data/revoked-access-20261013`. No production data or installation, terms, credentials, public route, release or tag is changed by this slice.
+
+## Local executable handoff
+
+Source commit: `ed70143ec31655ae8587942d975c07484d2013d3`. A fresh self-contained production-named build is in `local-data/revoked-access-20261013/app/TogetherServer.exe`, with its adjacent SHA-256 file and `artifact-evidence.json` in the parent folder. Numeric PE version is `0.3.2.0`; informational version is `0.3.2+ed70143ec31655ae8587942d975c07484d2013d3`. The file is 65,698,576 bytes and Authenticode reports NotSigned.
+
+SHA-256: `bbe2b97d8f4ea67c631c93047b2dc464a259ff6c1e2eb42e42cf6e31cde7fa87`. The publish succeeded and its compiled assembly includes all four current UI assets byte-for-byte. The executable was not launched or installed; native/HTTP/Friend-PC acceptance remains skipped as above. No version tag or public release was created.
