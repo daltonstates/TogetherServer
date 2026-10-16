@@ -31,7 +31,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             try
             {
-                if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                     !view.Profiles.Any(item => item.Id == profileId) ||
                     config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) is not { } group ||
                     config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) is not { } pinned ||
@@ -108,7 +108,7 @@ internal sealed partial class FriendLink
                         return config is not null && config.DeviceId == deviceId &&
                             config.Endpoint == endpoint && config.Credential == credential &&
                             AcceptedPins().SequenceEqual(pins) &&
-                            config.ConsentedSharedWorldProfiles.Contains(profileId) &&
+                            HasSharedWorldReceiveConsent(profileId) &&
                             config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) == groupId &&
                             config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) == ownerKey &&
                             !withdrawnSharedConsent.ContainsKey(profileId);

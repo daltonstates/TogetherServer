@@ -40,6 +40,9 @@ public sealed class FriendConfiguration
     public Dictionary<Guid, Guid> PendingSharedWorldGroups { get; set; } = [];
     public Dictionary<Guid, Guid> ApprovedSharedWorldGroups { get; set; } = [];
     public Dictionary<Guid, SharedRosterFloor> SharedRosterFloors { get; set; } = [];
+    public SharedWorldPeerRoot? PeerWorld { get; set; }
+    public Guid? PeerWorldMemberDeviceId { get; set; }
+    public string? PeerWorldBranchHash { get; set; }
 }
 
 public sealed record SharedRosterFloor(Guid GroupId, long Epoch, long Revision, string Signature);
@@ -106,7 +109,7 @@ internal sealed partial class FriendLink : IDisposable
     {
         var connection = config;
         if (connection?.ApprovedSharedWorldGroups?.TryGetValue(profileId, out var groupId) != true ||
-            !connection.ConsentedSharedWorldProfiles.Contains(profileId) || !sharedHostLoss.MayPropose)
+            !HasSharedWorldReceiveConsent(profileId) || !sharedHostLoss.MayPropose)
             return false;
         try
         {
@@ -169,7 +172,7 @@ internal sealed partial class FriendLink : IDisposable
                 var resolution = inbox.Armed(profileId);
                 var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
                 if (resolution?.Proposal.Schema != 3 ||
-                    config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
+                    !HasSharedWorldReceiveConsent(profileId) ||
                     config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) !=
                         resolution.Roster.GroupId ||
                     config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) !=

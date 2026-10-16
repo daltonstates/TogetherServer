@@ -19,7 +19,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             try
             {
-                if (config is null || config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
+                if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                     withdrawnSharedConsent.ContainsKey(profileId))
                     return new(false, "ConsentRequired", "Allow saves on this PC before rehearsing a received copy.");
                 if (config.SharedWorldConflicts?.Contains(profileId) == true ||

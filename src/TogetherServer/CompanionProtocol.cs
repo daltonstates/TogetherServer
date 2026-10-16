@@ -13,6 +13,7 @@ public static class CompanionProtocol
     public const string PinnedServerNoticeCapability = "server-notices-v1";
     public const string RemoteRehearsalCapability = "remote-rehearsal-v1";
     public const string SharedWorldsCapability = "shared-worlds-v2";
+    public const string SharedWorldPeersCapability = "shared-world-peers-v1";
     public const int Current = 3;
     public const int Minimum = 3;
     public static readonly IReadOnlyList<string> Capabilities =
@@ -32,7 +33,8 @@ public static class CompanionProtocol
         GameRequirementsCapability,
         PinnedServerNoticeCapability,
         RemoteRehearsalCapability,
-        SharedWorldsCapability
+        SharedWorldsCapability,
+        SharedWorldPeersCapability
     ];
 
     public static string AppVersion => typeof(CompanionProtocol).Assembly.GetName().Version?.ToString(3) ?? "unknown";

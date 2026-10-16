@@ -388,7 +388,7 @@ internal sealed partial class FriendLink
         gate.Wait();
         try
         {
-            if (config?.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
+            if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                 config.ApprovedSharedWorldGroups?.ContainsKey(profileId) != true) return [];
             var records = new WorldAuthorityStore(data).Read(profileId);
             var heads = WorldAuthorityTrust.EffectiveHeads(records);
@@ -454,7 +454,7 @@ internal sealed partial class FriendLink
         await gate.WaitAsync();
         try
         {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+            if (config is null || !HasSharedWorldReceiveConsent(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
             if (!CurrentRecoveryHostLoss(profileId))
                 return new(false, "HostLossNotConfirmed",
@@ -507,7 +507,7 @@ internal sealed partial class FriendLink
         await gate.WaitAsync();
         try
         {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+            if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                 selectedHeadHash.Length != 64 || !selectedHeadHash.All(Uri.IsHexDigit))
                 return new(false, "ResolutionUnavailable", "Choose a verified saved branch on this PC.");
             var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
@@ -551,7 +551,7 @@ internal sealed partial class FriendLink
         {
             await gate.WaitAsync(cancellationToken);
             entered = true;
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+            if (config is null || !HasSharedWorldReceiveConsent(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
             if (!CurrentRecoveryHostLoss(profileId) && offer.Proposal.Schema != 3)
                 return new(false, "HostLossNotConfirmed",
@@ -576,7 +576,7 @@ internal sealed partial class FriendLink
             {
                 if (config is null || config.DeviceId != voterId || config.HostId != hostId ||
                     config.Endpoint != hostEndpoint ||
-                    !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                    !HasSharedWorldReceiveConsent(profileId) ||
                     config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
                     config.SharedWorldSigningKeys?.GetValueOrDefault(profileId) != ownerKey ||
                     config.SharedRosterFloors?.GetValueOrDefault(profileId) != floor ||
@@ -677,7 +677,7 @@ internal sealed partial class FriendLink
         await gate.WaitAsync();
         try
         {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+            if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                 offer.Proposal.Kind != "ResolutionQuorum" ||
                 offer.Proposal.ProfileId != profileId || !SharedWorldElection.VerifyOffer(offer) ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != offer.Roster.GroupId ||
@@ -746,7 +746,7 @@ internal sealed partial class FriendLink
         await gate.WaitAsync();
         try
         {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+            if (config is null || !HasSharedWorldReceiveConsent(profileId))
                 return new(false, "ConsentRequired", "Allow shared saves on this PC first.");
             if (!acceptSplitWarning)
                 return new(false, "SplitWarningRequired",
@@ -790,7 +790,7 @@ internal sealed partial class FriendLink
             gate.Wait();
             try
             {
-                if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                if (config is null || !HasSharedWorldReceiveConsent(profileId))
                     return new(false, ["Allow saves on this PC and receive a verified copy first."], null, null);
                 vault = ReceivedRoot(profileId);
                 pinned = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
@@ -840,6 +840,8 @@ internal sealed partial class FriendLink
     // original and successor connections must not copy or prune it concurrently.
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SharedReceiveGates =
         new(StringComparer.OrdinalIgnoreCase);
+    internal static SemaphoreSlim ReceiveGateFor(string root) => SharedReceiveGates.GetOrAdd(
+        Path.GetFullPath(root), _ => new SemaphoreSlim(1, 1));
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> sharedProfileCancellation = new();
     private CancellationTokenSource sharedLinkCancellation = new();
     private readonly object sharedScheduleSync = new();
@@ -874,7 +876,15 @@ internal sealed partial class FriendLink
     {
         if (config is null)
             return (null, SharingFailure(Guid.Empty, "NotPaired", "Connect to a Host first."));
-        var selfId = config.DeviceId;
+        var selfId = SharedWorldDeviceId;
+        if (config.PeerWorld is not null)
+        {
+            var cached = CachedPeerRoster(profileId);
+            using var peerKey = LoadPcSigningKey();
+            return cached is null ? (null, SharingFailure(selfId, "RosterUnavailable", "Sync approved peers to verify this world's current sharing list.")) :
+                (cached, SharedWorldSharingProjection.Build(cached, selfId,
+                    Convert.ToBase64String(peerKey.ExportSubjectPublicKeyInfo()), DateTimeOffset.UtcNow));
+        }
         if (!view.Profiles.Any(item => item.Id == profileId))
             return (null, SharingFailure(selfId, "UnknownProfile", "This server is not assigned to this PC."));
         if (!view.HostCapabilities.Contains(CompanionProtocol.SharedWorldsCapability, StringComparer.Ordinal))
@@ -921,6 +931,15 @@ internal sealed partial class FriendLink
         config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
         config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch,
             roster.Revision, roster.Signature);
+        // Following signed hosting information is independent of storing saves.
+        // A changed source group still requires the existing explicit review.
+        config.ApprovedSharedWorldGroups ??= [];
+        if (!config.ApprovedSharedWorldGroups.ContainsKey(profileId) &&
+            (floor is null || floor.GroupId == roster.GroupId) &&
+            config.PendingSharedWorldGroups?.ContainsKey(profileId) != true)
+            config.ApprovedSharedWorldGroups[profileId] = roster.GroupId;
+        data.SaveProtected($"shared-world-roster-{selfId:N}-{profileId:N}.protected",
+            JsonSerializer.SerializeToUtf8Bytes(roster, Json));
         SaveConfig();
         return (roster, SharedWorldSharingProjection.Build(roster, selfId, publicKey,
             DateTimeOffset.UtcNow));
@@ -1017,9 +1036,14 @@ internal sealed partial class FriendLink
             Guid next;
             try
             {
-                next = config?.ConsentedSharedWorldProfiles.FirstOrDefault(id =>
-                    view.Profiles.Any(profile => profile.Id == id && profile.Kind != GameKinds.Custom) &&
-                    (!sharedRetryAfter.TryGetValue(id, out var after) || after <= DateTimeOffset.UtcNow)) ?? Guid.Empty;
+                // Peer-world connections use the stable source member/profile
+                // and the peer protocol for replication, not Host-local IDs.
+                if (config?.PeerWorld is not null) return;
+                next = config is null ? Guid.Empty : config.ConsentedSharedWorldProfiles
+                    .Concat(config.ApprovedSharedWorldGroups.Keys).Distinct().FirstOrDefault(id =>
+                        HasSharedWorldReceiveConsent(id) &&
+                        view.Profiles.Any(profile => profile.Id == id && profile.Kind != GameKinds.Custom) &&
+                        (!sharedRetryAfter.TryGetValue(id, out var after) || after <= DateTimeOffset.UtcNow));
             }
             finally { gate.Release(); }
             if (next == Guid.Empty) return;
@@ -1252,8 +1276,7 @@ internal sealed partial class FriendLink
         {
             if (config is null || config.DeviceId != deviceId || config.HostId != hostId ||
                 config.Endpoint != endpoint || !AcceptedPins().SequenceEqual(pins) ||
-                config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
-                withdrawnSharedConsent.ContainsKey(profileId))
+                !HasSharedWorldReceiveConsent(profileId))
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed while checking the roster.");
             config.SharedWorldSigningKeys ??= [];
             config.SharedRosterFloors ??= [];
@@ -1355,7 +1378,7 @@ internal sealed partial class FriendLink
     private string ReceivedRoot(Guid profileId)
     {
         var path = Path.Combine(data.RootPath, "received-shared-worlds",
-            config!.DeviceId.ToString("N"), profileId.ToString("N"));
+            SharedWorldDeviceId.ToString("N"), profileId.ToString("N"));
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
         return path;
     }
@@ -1363,15 +1386,21 @@ internal sealed partial class FriendLink
     public async Task<ReceivedSharedWorldResult> SetSharedWorldConsentAsync(Guid profileId, bool enabled)
     {
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
-        if (!enabled)
-        {
-            WithdrawSharedConsent(profileId);
-            new SharedWorldVoteInbox(data).Retire(profileId);
-        }
-        await gate.WaitAsync();
+        var entered = false;
         try
         {
+            var before = enabled ? CaptureWorldConsentChange(profileId) : null;
+            if (!enabled)
+            {
+                // Persist the root/member deny before an in-flight transfer's
+                // link gate can delay the user's withdrawal.
+                WithdrawSharedConsent(profileId);
+                new SharedWorldVoteInbox(data).Retire(profileId);
+            }
+            await gate.WaitAsync();
+            entered = true;
             if (config is null) return SharedFailure("NotPaired", "Connect to a Host first.");
+            if (!enabled) WithdrawSharedConsent(profileId);
             config.ConsentedSharedWorldProfiles ??= [];
             var previouslyConsented = config.ConsentedSharedWorldProfiles.Contains(profileId);
             Guid? priorApproval = config.ApprovedSharedWorldGroups?.TryGetValue(profileId,
@@ -1399,15 +1428,10 @@ internal sealed partial class FriendLink
                 if (priorApproval is Guid approved) config.ApprovedSharedWorldGroups![profileId] = approved;
                 else config.ApprovedSharedWorldGroups?.Remove(profileId);
                 if (priorPending is Guid pending) config.PendingSharedWorldGroups![profileId] = pending;
-                if (previouslyConsented) lock (sharedReceiptSync)
-                    withdrawnSharedConsent.TryRemove(profileId, out _);
                 throw;
             }
-            if (enabled) lock (sharedReceiptSync)
-            {
-                withdrawnSharedConsent.TryRemove(profileId, out _);
-                if (sharedProfileCancellation.TryRemove(profileId, out var previous)) previous.Dispose();
-            }
+            if (enabled && !AllowWorldReceiveConsent(profileId, before))
+                return SharedFailure("ConsentChanged", "Receiving was withdrawn while this change was waiting. Review the current decision before enabling it again.");
             lock (sharedScheduleSync)
             {
                 sharedRetryAfter.Remove(profileId);
@@ -1418,7 +1442,7 @@ internal sealed partial class FriendLink
             return new(true, "ConsentSaved", enabled ? "This PC may pull approved completed saves." :
                 "This PC will no longer pull shared saves.");
         }
-        finally { gate.Release(); ReleaseRetained(); }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
     public ReceivedSharedWorldStatus SharedWorldStatus(Guid profileId)
@@ -1431,7 +1455,7 @@ internal sealed partial class FriendLink
             {
                 if (config is null) return new(false, null, null, "Not paired");
                 if (sharedTransfers.TryGetValue(profileId, out var active) &&
-                    config.ConsentedSharedWorldProfiles?.Contains(profileId) == true) return active;
+                    HasSharedWorldReceiveConsent(profileId)) return active;
             }
             finally { gate.Release(); }
             var local = LocalSharedWorldStatus(profileId);
@@ -1460,7 +1484,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             entered = true;
             if (config is null) return SharedFailure("NotPaired", "Connect to a Host first.");
-            if (config.ConsentedSharedWorldProfiles?.Contains(profileId) != true)
+            if (!HasSharedWorldReceiveConsent(profileId))
                 return SharedFailure("ConsentRequired", "Allow shared saves on this PC first.");
             var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return SharedFailure("UnknownProfile", "This server is not assigned to this PC.");
@@ -1485,7 +1509,7 @@ internal sealed partial class FriendLink
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             var bytes = await ReadBoundedSharedAsync(response.Content,
                 SharedWorldService.MaximumManifestBytes, cancellationToken);
-            if (withdrawnSharedConsent.ContainsKey(profileId))
+            if (!HasSharedWorldReceiveConsent(profileId))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             if (!response.IsSuccessStatusCode || bytes is null)
                 return RemoteSharedDenial(bytes);
@@ -1507,8 +1531,8 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             entered = true;
             if (config is null || config.Endpoint != endpoint || config.HostId != hostId ||
-                config.DeviceId != deviceId || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
-                !AcceptedPins().SequenceEqual(pins) || withdrawnSharedConsent.ContainsKey(profileId))
+                config.DeviceId != deviceId || !HasSharedWorldReceiveConsent(profileId) ||
+                !AcceptedPins().SequenceEqual(pins))
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed while checking.");
             if (config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != version.GroupId)
                 return SharedFailure("GroupMismatch", "The save version does not match the verified shared roster.");
@@ -1576,14 +1600,14 @@ internal sealed partial class FriendLink
         gate.Wait();
         try
         {
-            consent = config?.ConsentedSharedWorldProfiles?.Contains(profileId) == true;
+            consent = HasSharedWorldReceiveConsent(profileId);
             review = config?.PendingSharedWorldGroups?.ContainsKey(profileId) == true;
             conflict = config?.SharedWorldConflicts?.Contains(profileId) == true;
             hostVersion = config?.LastSharedHostVersions?.GetValueOrDefault(profileId);
             hostHash = config?.LastSharedHostHashes?.GetValueOrDefault(profileId);
             floor = config?.SharedRosterFloors?.GetValueOrDefault(profileId);
             root = config is null ? null : ReceivedRoot(profileId);
-            deviceId = config?.DeviceId;
+            deviceId = config is null ? null : SharedWorldDeviceId;
         }
         finally { gate.Release(); }
         if (root is null) return new(false, null, null, "Not paired");
@@ -1838,7 +1862,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             entered = true;
             if (config is null) return SharedFailure("NotPaired", "Connect to a Host first.");
-            if (config.ConsentedSharedWorldProfiles?.Contains(profileId) != true)
+            if (!HasSharedWorldReceiveConsent(profileId))
                 return SharedFailure("ConsentRequired", "Allow shared saves on this PC first.");
             var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return SharedFailure("UnknownProfile", "This server is not assigned to this PC.");
@@ -1877,7 +1901,7 @@ internal sealed partial class FriendLink
                 HttpCompletionOption.ResponseHeadersRead, transferToken);
             var manifestBytes = await ReadBoundedSharedAsync(response.Content,
                 SharedWorldService.MaximumManifestBytes, transferToken);
-            if (withdrawnSharedConsent.ContainsKey(profileId))
+            if (!HasSharedWorldReceiveConsent(profileId))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             if (manifestBytes is null) return SharedFailure("InvalidManifest", "The Host sent an oversized manifest.");
             if (!response.IsSuccessStatusCode)
@@ -1905,7 +1929,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(transferToken);
             entered = true;
             if (config is null || config.Endpoint != endpoint || config.HostId != hostId ||
-                config.DeviceId != deviceId || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                config.DeviceId != deviceId || !HasSharedWorldReceiveConsent(profileId) ||
                 !AcceptedPins().SequenceEqual(pins))
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed during transfer.");
             if (config.SharedRosterFloors?.GetValueOrDefault(profileId)?.GroupId != version.GroupId)
@@ -2031,14 +2055,14 @@ internal sealed partial class FriendLink
                         int.TryParse(Environment.GetEnvironmentVariable("TOGETHERSERVER_FIXTURE_BEFORE_CHUNK_DELAY_MS"),
                             out var fixtureBeforeChunkDelay) && fixtureBeforeChunkDelay is > 0 and <= 5000)
                         await Task.Delay(fixtureBeforeChunkDelay, transferToken);
-                    if (withdrawnSharedConsent.ContainsKey(profileId))
+                    if (!HasSharedWorldReceiveConsent(profileId))
                         return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
                     using var chunkResponse = await transferClient.GetAsync(
                         $"api/companion/servers/{profileId}/shared-world/{version.VersionHash}/files/{index}/chunks/{offset}",
                         HttpCompletionOption.ResponseHeadersRead, transferToken);
                     var chunk = await ReadBoundedSharedAsync(chunkResponse.Content,
                         SharedWorldService.ChunkBytes, transferToken);
-                    if (withdrawnSharedConsent.ContainsKey(profileId))
+                    if (!HasSharedWorldReceiveConsent(profileId))
                         return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
                     var expected = (int)Math.Min(SharedWorldService.ChunkBytes, file.Length - offset);
                     if (!chunkResponse.IsSuccessStatusCode || chunk is null || chunk.Length != expected)
@@ -2090,7 +2114,7 @@ internal sealed partial class FriendLink
             if (currentGrant is not null) return currentGrant;
             if (!AuthorizedVersionSigner(profileId, version))
                 return SharedFailure("AuthorityRejected", "Authority changed during save transfer.");
-            if (withdrawnSharedConsent.ContainsKey(profileId))
+            if (!HasSharedWorldReceiveConsent(profileId))
                 return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
             File.WriteAllBytes(Path.Combine(stage, "version.json"), manifestBytes);
             var destination = Path.Combine(root, version.VersionHash);
@@ -2104,7 +2128,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(transferToken);
             entered = true;
             if (config is null || config.Endpoint != endpoint || config.HostId != hostId ||
-                config.DeviceId != deviceId || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                config.DeviceId != deviceId || !HasSharedWorldReceiveConsent(profileId) ||
                 !AcceptedPins().SequenceEqual(pins) ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != approvedGroup)
                 return SharedFailure("ConnectionChanged", "The saved Host connection changed during transfer.");
@@ -2167,6 +2191,10 @@ internal sealed partial class FriendLink
         {
             withdrawnSharedConsent[profileId] = 1;
             if (sharedProfileCancellation.TryGetValue(profileId, out var cancellation)) cancellation.Cancel();
+            var root = ReceiveConsentRoot(profileId);
+            if (root is not null && config is { } current)
+                new WorldPeerReceiveConsentStore(data).Set(root,
+                    current.PeerWorldMemberDeviceId ?? current.DeviceId, false);
         }
     }
 
@@ -2175,8 +2203,9 @@ internal sealed partial class FriendLink
         bool retainedCopy = false)
     {
         lock (sharedReceiptSync)
+        lock (SharedWorldMutationGate.For(data.RootPath))
         {
-            if (cancellationToken.IsCancellationRequested || withdrawnSharedConsent.ContainsKey(profileId)) return false;
+            if (cancellationToken.IsCancellationRequested || !HasSharedWorldReceiveConsent(profileId)) return false;
             // A prior receipt may have moved its verified payload before the
             // latest pointer was written. Its retry uses the same final gate
             // and Host confirmation as a newly received payload.
@@ -2203,7 +2232,7 @@ internal sealed partial class FriendLink
         var pending = new Dictionary<long, SharedWorldVersion>();
         async Task<SharedWorldVersion?> Fetch(long number, CancellationToken token)
         {
-            if (withdrawnSharedConsent.ContainsKey(profileId)) return null;
+            if (!HasSharedWorldReceiveConsent(profileId)) return null;
             if (!pending.TryGetValue(number, out var item))
             {
                 var count = checked((int)Math.Min(WorldAuthorityTrust.ChainVersionsPerCheck,
@@ -2445,8 +2474,7 @@ internal sealed partial class FriendLink
         try
         {
             if (config is null || config.DeviceId != deviceId ||
-                config.ConsentedSharedWorldProfiles?.Contains(profileId) != true ||
-                withdrawnSharedConsent.ContainsKey(profileId)) return false;
+                !HasSharedWorldReceiveConsent(profileId)) return false;
             floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
             root = ReceivedRoot(profileId);
         }
@@ -2509,7 +2537,7 @@ internal sealed partial class FriendLink
         {
             using var response = await client.PostAsJsonAsync(
                 $"api/companion/servers/{profileId}/shared-world/receipts", receipt, Json, cancellationToken);
-            var confirmed = response.IsSuccessStatusCode && !withdrawnSharedConsent.ContainsKey(profileId);
+            var confirmed = response.IsSuccessStatusCode && HasSharedWorldReceiveConsent(profileId);
             if (confirmed)
             {
                 observation = TrySignReceiptObservation(receipt, observation?.ReceivedUtc ?? signedUtc, true, key);
@@ -2643,8 +2671,23 @@ internal sealed partial class FriendLink
 
     private ECDsa LoadPcSigningKey() => LoadPcSigningKey(config!.DeviceId);
 
+    private Guid SharedWorldDeviceId => config?.PeerWorldMemberDeviceId ?? config!.DeviceId;
+
     private ECDsa LoadPcSigningKey(Guid deviceId)
     {
+        if (config?.PeerWorldMemberDeviceId is { } memberId && deviceId == config.DeviceId)
+            deviceId = memberId;
+        if (deviceId == Guid.Empty && config?.PeerWorld is { } ownerRoot)
+        {
+            var ownerBytes = data.LoadProtected("shared-world-signing-key.protected") ??
+                throw new InvalidDataException("The world owner's signing identity is unavailable.");
+            var ownerKey = ECDsa.Create();
+            ownerKey.ImportPkcs8PrivateKey(ownerBytes, out _);
+            if (Convert.ToBase64String(ownerKey.ExportSubjectPublicKeyInfo()) == ownerRoot.OwnerPublicKey)
+                return ownerKey;
+            ownerKey.Dispose();
+            throw new InvalidDataException("The world owner's signing identity changed.");
+        }
         var path = $"shared-world-pc-signing-{deviceId:N}.protected";
         var bytes = data.LoadProtected(path);
         if (bytes is null)

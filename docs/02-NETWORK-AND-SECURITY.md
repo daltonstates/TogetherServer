@@ -1,5 +1,24 @@
 # Public connection and pairing
 
+Peer capability `shared-world-peers-v1` adds only fixed challenge/exchange routes
+under a known world key. Transport requires literal-IP HTTPS, the exact TLS pin,
+bounded strict JSON, no redirects or proxy, and a single-use signed proof bound
+to responder, root, operation, arguments and payload. Valid owner-rooted roster
+catchup may precede membership authentication; an unproved requester receives no
+world metadata, payload or credential. Metadata following does not require save
+consent. Chunks require current Receive, source consent and Reshare for forwarded
+copies; remote execution/path/command arguments are never accepted. Each
+successor issues a distinct local credential for the proved source member.
+Local removals, deadlines and newly learned signed revocations fail closed.
+
+Peer contact codes bootstrap only an already pinned world and contain signed
+addresses/identities, never bearer credentials. App invitation codes and direct
+app addresses use the same membership path. A game's friend/join code alone
+does not create app membership. There is no directory service, NAT traversal or
+cloud relay; at least one remembered approved peer must be reachable to learn
+new remote information. Solo recovery may use already stored verified bytes
+when no other PC is reachable.
+
 The owner may use direct public-IP access, an owner-installed private mesh, or an owner-managed advanced address. The companion API can request actions on the owner's PC, so every route uses the same strict controls. Keep the exposed surface to a small HTTPS API; keep the Host GUI and local owner settings on loopback.
 
 ## Connections

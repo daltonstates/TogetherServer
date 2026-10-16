@@ -5,7 +5,8 @@ using System.Text.Json;
 namespace TogetherServer;
 
 // Only a trusted, exact managed-run adapter may construct this evidence. No
-// HTTP or UI surface accepts one, and no production adapter is accepted yet.
+// HTTP or UI surface accepts one. Real adapters require protected exact-scope
+// acceptance after an explicit private candidate test.
 internal sealed record LiveSaveCompletionEvidence(Guid ProfileId, Guid OperationId,
     int ProcessId, long StartTimeUtcTicks, LiveSaveEvidence Kind,
     DateTimeOffset CompletedUtc, bool Complete);
@@ -26,7 +27,7 @@ internal sealed partial class SharedWorldService
     private const string QuarantinedLiveDirectory = ".quarantined-live";
     private const int MaximumQuarantinedLiveVersions = 8;
     // The only test override is for the synthetic fixture game. Real games
-    // still require their adapter's LiveCaptureAccepted gate to turn true.
+    // require the protected profile/installation predicate at publication.
     internal bool FixtureLiveCaptureAcceptedForChecks { get; set; }
     internal GameServerRegistry? LiveGameRegistryForChecks { get; set; }
     internal Action? AfterLiveSourceScanForChecks { get; set; }
@@ -35,12 +36,197 @@ internal sealed partial class SharedWorldService
     internal Action? AfterLiveSignedDirectoryForChecks { get; set; }
     private GameServerRegistry? stagingFixtureRegistry;
     private GameServerRegistry? managedLiveSnapshotRegistry;
+    private Func<ServerProfile, bool>? protectedLiveSaveAcceptance;
     internal void EnableStagingLiveFixture(GameServerRegistry registry) => stagingFixtureRegistry = registry;
     internal void ConfigureManagedLiveSnapshots(GameServerRegistry registry) => managedLiveSnapshotRegistry = registry;
+    internal void ConfigureManagedLiveSnapshots(GameServerRegistry registry, Func<ServerProfile, bool> acceptance)
+    {
+        managedLiveSnapshotRegistry = registry;
+        protectedLiveSaveAcceptance = acceptance;
+    }
 
-    private bool LiveCaptureAccepted(string game) =>
-        SharedWorldLiveSaveAdapters.ForGame(game)?.LiveCaptureAccepted == true ||
-        game == GameKinds.Fixture && (FixtureLiveCaptureAcceptedForChecks || stagingFixtureRegistry is not null);
+    private bool LiveCaptureAccepted(ServerProfile profile) =>
+        profile.Kind == GameKinds.Fixture ? FixtureLiveCaptureAcceptedForChecks || stagingFixtureRegistry is not null :
+            SharedWorldLiveSaveAdapters.ForGame(profile.Kind) is not null && protectedLiveSaveAcceptance?.Invoke(profile) == true;
+
+    // A test is deliberately outside normal signed publication. Its kind is
+    // covered by both signatures and VerifySignature rejects it categorically,
+    // even if a caller strips the descriptor's TestOnly flag.
+    internal static SharedWorldVersion SignAcceptanceTestVersion(SharedWorldVersion draft, ECDsa key)
+    {
+        var unsigned = draft with
+        {
+            Schema = 5, Number = 1, ParentHash = null,
+            CaptureKind = LiveSaveAcceptanceTrust.TestCaptureKind,
+            SigningPublicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), VersionHash = "", Signature = ""
+        };
+        var hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(VersionBasis(unsigned.GroupId,
+            unsigned.Number, unsigned.ParentHash, unsigned.ProfileId, unsigned.Game, unsigned.WorldId,
+            unsigned.CreatedUtc, unsigned.CaptureKind, unsigned.BackupId, unsigned.PortableSetup,
+            unsigned.Files, unsigned.SigningPublicKey, unsigned.Schema)));
+        var signed = unsigned with { VersionHash = Convert.ToHexString(hash), Signature = Convert.ToBase64String(key.SignHash(hash)) };
+        if (!VerifyAcceptanceTestVersion(signed)) throw new InvalidDataException("The private test manifest could not be signed.");
+        return signed;
+    }
+
+    internal static bool VerifyAcceptanceTestVersion(SharedWorldVersion version)
+    {
+        try
+        {
+            if (version.Schema != 5 || version.CaptureKind != LiveSaveAcceptanceTrust.TestCaptureKind ||
+                version.Number != 1 || version.ParentHash is not null || version.BackupId == Guid.Empty ||
+                version.GroupId == Guid.Empty || version.ProfileId == Guid.Empty || version.CreatedUtc == default ||
+                version.WorldId is not { Length: > 0 and <= 160 } ||
+                SharedWorldLiveSaveAdapters.ForGame(version.Game) is null ||
+                version.Files is null || version.Files.Count is < 1 or > MaximumFiles ||
+                version.PortableSetup is null || !SharedWorldPortableSetupReader.Valid(version.Game, version.PortableSetup, 5) ||
+                version.Files.Any(file => file is null || !SafePath(file.Path) || file.Length < 0 ||
+                    file.Sha256 is not { Length: 64 } || !file.Sha256.All(char.IsAsciiHexDigit)) ||
+                version.Files.Select(file => file.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != version.Files.Count)
+                return false;
+            _ = BoundedTotalBytes(version.Files);
+            var hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(VersionBasis(version.GroupId,
+                version.Number, version.ParentHash, version.ProfileId, version.Game, version.WorldId,
+                version.CreatedUtc, version.CaptureKind, version.BackupId, version.PortableSetup,
+                version.Files, version.SigningPublicKey, version.Schema)));
+            using var key = ECDsa.Create();
+            var publicKey = Convert.FromBase64String(version.SigningPublicKey);
+            key.ImportSubjectPublicKeyInfo(publicKey, out var consumed);
+            return consumed == publicKey.Length && key.KeySize == 256 &&
+                version.VersionHash == Convert.ToHexString(hash) && key.VerifyHash(hash, Convert.FromBase64String(version.Signature));
+        }
+        catch (Exception ex) when (LiveSaveAcceptanceTrust.ExpectedFailure(ex)) { return false; }
+    }
+
+    internal (LiveSaveTestArtifact Artifact, string SealedPayload) PrepareAcceptanceTestArtifact(
+        ServerProfile profile, ManagedRun run, ImmutableLiveSaveSnapshot snapshot, LiveSaveAcceptanceScope scope, CancellationToken token)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+            lock (sync)
+            {
+                if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+                    return PrepareBranchAcceptanceTestArtifact(profile, run, snapshot, scope, token);
+                var captureId = snapshot.SnapshotId;
+                if (!SharedWorldLiveSaveAdapters.SameRealInstallation(scope, scope) ||
+                    scope.ProfileId != profile.Id || scope.Game != profile.Kind ||
+                    Authority.GovernanceUnresolved(profile.Id) ||
+                    Authority.HasState(profile.Id) && Authority.LocalAuthorizedHead(profile.Id) is null ||
+                    !AuthorizedPublishedLineage(profile) ||
+                    !new ManagedLiveSnapshotStore(data, managedLiveSnapshotRegistry ?? new GameServerRegistry(data))
+                        .Verify(profile, run, snapshot, token)) throw new InvalidDataException("Review this test's installed scope, immutable seal and source authority.");
+                var binding = ReadBinding(profile.Id);
+                var roster = ReadRoster(profile);
+                if (!profile.SharedSavesEnabled || binding is null || !BindingMatches(binding, profile) || roster is null)
+                    throw new InvalidDataException("The signed shared source changed before the private test.");
+                var (capture, setup, payload) = ReadVerifiedLiveCapture(profile, captureId, token);
+                if (capture.OperationId != run.OperationId ||
+                    !RecordedExactLiveRun(profile, capture.OperationId, capture.ProcessId, capture.StartTimeUtcTicks, requireReady: false))
+                    throw new InvalidDataException("The exact test run changed.");
+                using var key = LoadPublishingKey(profile.Id);
+                var version = SignAcceptanceTestVersion(new(5, binding.GroupId, 1, null, profile.Id,
+                    profile.Kind, profile.WorldId, capture.CapturedUtc, LiveSaveAcceptanceTrust.TestCaptureKind,
+                    captureId, SharedWorldPortableSetupReader.Capture(setup), capture.Files, "", "", ""), key);
+                var sourceHead = Authority.LocalAuthorizedHead(profile.Id);
+                var sourceDevice = version.SigningPublicKey == roster.OwnerPublicKey ? Guid.Empty :
+                    sourceHead?.Proposal.SuccessorBinding?.DeviceId ?? sourceHead?.SuccessorReceipt?.DeviceId ??
+                    roster.Members.SingleOrDefault(member => member.PublicKey == version.SigningPublicKey)?.DeviceId ??
+                    throw new InvalidDataException("The private test's source hosting key has no enrolled device binding.");
+                var unsigned = new LiveSaveTestArtifact(1, true, captureId, scope, run.OperationId,
+                    sourceDevice, capture.CapturedUtc, snapshot.CapturedUtc,
+                    LiveSaveAcceptanceTrust.PayloadHash(version.Files), LiveSaveAcceptanceTrust.TotalBytes(version.Files),
+                    ChunkBytes, LiveSaveAcceptanceTrust.ChunkCount(version.Files), version, "");
+                var artifact = unsigned with { Signature = Convert.ToBase64String(key.SignData(
+                    LiveSaveAcceptanceTrust.ArtifactBasis(unsigned), HashAlgorithmName.SHA256)) };
+                if (!LiveSaveAcceptanceTrust.VerifyArtifact(artifact)) throw new InvalidDataException();
+                return (artifact, payload);
+            }
+    }
+
+    internal bool LiveAcceptanceSourceMatches(ServerProfile profile)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+          lock (sync)
+        {
+            if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+            {
+                _ = SharedWorldBranchLiveSource.Resolve(data, profile);
+                return true;
+            }
+            var binding = ReadBinding(profile.Id);
+            return binding is not null && BindingMatches(binding, profile) && ReadRoster(profile) is not null;
+        }
+    }
+
+    internal bool AcceptanceTestSourceMatches(ServerProfile profile, LiveSaveTestArtifact artifact, DateTimeOffset? now = null)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+          lock (sync)
+        {
+            return LiveSaveAcceptanceTrust.MatchesSource(artifact, ResolveLiveSaveSource(profile, now), profile, now ?? DateTimeOffset.UtcNow);
+        }
+    }
+
+    internal LiveSaveSourceContext ResolveLiveSaveSource(ServerProfile profile, DateTimeOffset? now = null,
+        bool requireStarted = false)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+          lock (sync)
+        {
+            if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+                return SharedWorldBranchLiveSource.Resolve(data, profile, now, requireStarted);
+            var binding = ReadBinding(profile.Id);
+            var roster = ReadRoster(profile);
+            if (!profile.SharedSavesEnabled || binding is null || !BindingMatches(binding, profile) || roster is null ||
+                roster.ProfileId != profile.Id || roster.GroupId != binding.GroupId)
+                throw new InvalidDataException("The signed shared source is missing or changed.");
+            using var key = LoadPublishingKey(profile.Id);
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            var head = Authority.LocalAuthorizedHead(profile.Id);
+            var deviceId = publicKey == roster.OwnerPublicKey ? Guid.Empty :
+                head?.Proposal.SuccessorBinding?.DeviceId ?? head?.SuccessorReceipt?.DeviceId ??
+                roster.Members.SingleOrDefault(member => member.PublicKey == publicKey)?.DeviceId ??
+                throw new InvalidDataException("The current hosting key has no enrolled source device binding.");
+            return new(profile.Id, new(roster.OwnerPublicKey, profile.Id, binding.GroupId), null,
+                deviceId, publicKey, roster);
+        }
+    }
+
+    private (LiveSaveTestArtifact Artifact, string SealedPayload) PrepareBranchAcceptanceTestArtifact(
+        ServerProfile profile, ManagedRun run, ImmutableLiveSaveSnapshot snapshot,
+        LiveSaveAcceptanceScope scope, CancellationToken token)
+    {
+        var source = ResolveLiveSaveSource(profile, requireStarted: true);
+        var snapshots = new ManagedLiveSnapshotStore(data, managedLiveSnapshotRegistry ?? new GameServerRegistry(data));
+        if (!SharedWorldLiveSaveAdapters.SameRealInstallation(scope, scope) || scope.ProfileId != profile.Id ||
+            scope.Game != profile.Kind || !snapshots.Verify(profile, run, snapshot, token) ||
+            !OwnsRecoveryLiveSource(profile, ReviewedLiveSource(profile, run)))
+            throw new InvalidDataException("The recovery test requires its exact installed run and protected immutable snapshot.");
+        var setup = ServerSetupSnapshots.Read(profile, ServerSetupSnapshots.Capture(profile, data));
+        var bytes = data.LoadProtected(WorldAuthorityStore.HostingKeyName(source.Root.ProfileId)) ??
+            throw new InvalidDataException("The recovery publishing key is missing.");
+        using var key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(bytes, out var consumed);
+        if (consumed != bytes.Length || Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) != source.PublishingPublicKey)
+            throw new InvalidDataException("The recovery publishing key changed.");
+        var version = SignAcceptanceTestVersion(new(5, source.Root.GroupId, 1, null, source.Root.ProfileId,
+            profile.Kind, profile.WorldId, snapshot.Completion.CompletedUtc, LiveSaveAcceptanceTrust.TestCaptureKind,
+            snapshot.SnapshotId, SharedWorldPortableSetupReader.Capture(setup), snapshot.Files, "", "", ""), key);
+        var draft = new LiveSaveTestArtifact(2, true, snapshot.SnapshotId, scope, run.OperationId,
+            source.SourceDeviceId, snapshot.Completion.CompletedUtc, snapshot.CapturedUtc,
+            LiveSaveAcceptanceTrust.PayloadHash(version.Files), LiveSaveAcceptanceTrust.TotalBytes(version.Files),
+            ChunkBytes, LiveSaveAcceptanceTrust.ChunkCount(version.Files), version, "", source.Branch);
+        var artifact = draft with { Signature = Convert.ToBase64String(key.SignData(
+            LiveSaveAcceptanceTrust.ArtifactBasis(draft), HashAlgorithmName.SHA256)) };
+        token.ThrowIfCancellationRequested();
+        if (!LiveSaveAcceptanceTrust.MatchesSource(artifact, source, profile, DateTimeOffset.UtcNow) ||
+            !SharedWorldBranchLiveSource.SameSource(source, ResolveLiveSaveSource(profile, requireStarted: true)) ||
+            !snapshots.Verify(profile, run, snapshot, token))
+            throw new InvalidDataException("The sealed recovery test or its current signed source changed.");
+        return (artifact, snapshot.SnapshotDirectory);
+    }
+
+    internal bool OwnsRecoveryLiveSource(ServerProfile profile, string source) =>
+        SharedWorldBranchLiveSource.IsOwnedSaveSource(data, profile, source);
 
     private string LiveCaptureProfileRoot(Guid profileId)
     {
@@ -72,7 +258,7 @@ internal sealed partial class SharedWorldService
         if (!managedRoots.Any(root => Inside(root, source) &&
             !Path.GetFullPath(root).Equals(source, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("The live save source is outside reviewed managed storage.");
-        var owned = profile.Kind switch
+        var owned = LiveSaveAcceptanceTrust.IsRecoveryProfile(profile) ? OwnsRecoveryLiveSource(profile, source) : profile.Kind switch
         {
             GameKinds.Valheim => profile.WorldSource == "New" &&
                 world.Equals(data.NewWorldDirectory(profile.Id), StringComparison.OrdinalIgnoreCase) &&
@@ -406,7 +592,7 @@ internal sealed partial class SharedWorldService
                 string? stage = null;
                 try
                 {
-                    if (!LiveCaptureAccepted(profile.Kind))
+                    if (!LiveCaptureAccepted(profile))
                         throw new InvalidDataException("Live save publication has not passed game acceptance.");
                     if (!approval.Approved || approval.CaptureId != captureId)
                         throw new InvalidDataException("The exact live capture has no publication approval.");
@@ -484,6 +670,8 @@ internal sealed partial class SharedWorldService
                     if (!RecordedExactLiveRun(profile, capture.OperationId,
                             capture.ProcessId, capture.StartTimeUtcTicks, requireReady: profile.Kind == GameKinds.Fixture))
                         throw new InvalidDataException("The exact managed process changed before publication. Keep the signed interrupted copy for review.");
+                    if (!LiveCaptureAccepted(profile))
+                        throw new InvalidDataException("The protected installed acceptance scope changed before publication. Keep the signed interrupted copy for review.");
                     cancellationToken.ThrowIfCancellationRequested();
                     File.Move(latestStage, LatestPath(profile.Id), true);
                     // The published payload is verified and now has its own

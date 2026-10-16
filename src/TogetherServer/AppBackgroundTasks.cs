@@ -5,13 +5,14 @@ namespace TogetherServer;
 internal sealed class AppBackgroundTasks(
     FriendService friend, HostManager manager, CompanionServer companionServer,
     AppUpdater updater, AppInstance instance, LocalData data, DesktopWindow? desktop,
-    Func<bool> friendMode, TimeProvider? clock = null) : IAsyncDisposable
+    Func<bool> friendMode, TimeProvider? clock = null, WorldPeerService? worldPeers = null) : IAsyncDisposable
 {
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
     private readonly CancellationTokenSource stop = new();
     private readonly HashSet<Guid> notifiedActivity = [];
     private Task[] tasks = [];
     private DateTimeOffset notificationStartedUtc;
+    private Task freshness = Task.CompletedTask;
 
     public void Start()
     {
@@ -24,7 +25,13 @@ internal sealed class AppBackgroundTasks(
     public async ValueTask DisposeAsync()
     {
         stop.Cancel();
-        try { await Task.WhenAll(tasks); await friend.WaitForSharedCatchUpAsync(); }
+        try
+        {
+            await Task.WhenAll(tasks);
+            await Task.WhenAll(friend.WaitForSharedCatchUpAsync(),
+                worldPeers?.WaitForSyncAsync() ?? Task.CompletedTask, freshness);
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         finally { stop.Dispose(); }
     }
 
@@ -32,7 +39,11 @@ internal sealed class AppBackgroundTasks(
     {
         while (!stop.IsCancellationRequested)
         {
-            try { await friend.PollAsync(); friend.ScheduleSharedCatchUp(stop.Token); }
+            try
+            {
+                await friend.PollAsync(); friend.ScheduleSharedCatchUp(stop.Token);
+                worldPeers?.ScheduleSync(stop.Token);
+            }
             catch (Exception ex) { DiagnosticOutput.WriteError("Friend poll failed: " + ex.GetType().Name); }
             if (!await Delay(TimeSpan.FromSeconds(5))) break;
         }
@@ -61,6 +72,7 @@ internal sealed class AppBackgroundTasks(
             catch (Exception ex) { DiagnosticOutput.WriteError("Empty-server timer failed: " + ex.GetType().Name); }
             try { await manager.MaintainCrashRecoveryAsync(); }
             catch (Exception ex) { DiagnosticOutput.WriteError("Crash recovery failed: " + ex.GetType().Name); }
+            freshness = manager.ScheduleSharedFreshness(stop.Token);
             if (!await Delay(TimeSpan.FromSeconds(3))) break;
         }
     }

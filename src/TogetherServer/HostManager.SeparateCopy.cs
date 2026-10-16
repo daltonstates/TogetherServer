@@ -9,7 +9,7 @@ public sealed record SeparateCopyHostStatus(bool Recorded, bool Restored,
     Guid? LocalProfileId = null, string? BranchHash = null,
     string? PreparedServerRoot = null,
     IReadOnlyList<SharedWorldPortableAddOn>? RequiredAddOns = null,
-    bool Running = false);
+    bool Running = false, bool ControlRouteVerified = false);
 public sealed record SeparateCopyHostRestoreRequest(string BranchHash,
     TakeoverLocalSetup Setup, string Name, string ServerName,
     string? GamePassword = null, string? ExecutablePath = null,
@@ -27,6 +27,68 @@ internal sealed record SeparateCopyHostState(int Schema, Guid SourceProfileId,
 
 public sealed partial class HostManager
 {
+    // Called only after the lifecycle gate proved exact graceful exit and
+    // completed its rolling backup. It never scans a running world.
+    internal SharedWorldResult PublishSeparateCopyAfterStopUnderGate(ServerProfile profile,
+        Guid backupId)
+    {
+        try
+        {
+            if (profile.SeparateCopySourceProfileId is not { } source ||
+                profile.SeparateCopyBranchHash is not { } hash)
+                return new(false, "SeparateCopyMissing", "Choose a recorded local recovery branch.");
+            var branch = CurrentSeparateBranch(source, hash);
+            if (branch is null)
+                return new(false, "RecoverySnapshotPublishFailed",
+                    "The completed backup remains local; the recovery branch identity needs review.");
+            return new SharedWorldSeparateCopyStore(data).PublishAfterStop(branch, profile, backupId, backups);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+            CryptographicException or UnauthorizedAccessException or ArgumentException)
+        {
+            return new(false, "RecoverySnapshotPublishFailed",
+                "The completed backup remains local; the recovery branch identity needs review.");
+        }
+    }
+
+    internal async Task<WorldSeparateCopySnapshot?> ReadSeparateCopySnapshotAsync(
+        Guid sourceProfileId, string branchHash)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var branch = CurrentSeparateBranch(sourceProfileId, branchHash);
+            return branch is null ? null : new SharedWorldSeparateCopyStore(data).ReadLatestSnapshot(branch);
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<SharedWorldVersion?> ReadSeparateCopyManifestAsync(Guid sourceProfileId,
+        string branchHash, long number, string versionHash)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var branch = CurrentSeparateBranch(sourceProfileId, branchHash);
+            return branch is null ? null : new SharedWorldSeparateCopyStore(data)
+                .ReadPublishedManifest(branch, number, versionHash);
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<byte[]?> ReadSeparateCopyChunkAsync(Guid sourceProfileId,
+        string branchHash, long number, string versionHash, int fileIndex, long offset)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var branch = CurrentSeparateBranch(sourceProfileId, branchHash);
+            return branch is null ? null : new SharedWorldSeparateCopyStore(data)
+                .ReadPublishedChunk(branch, number, versionHash, fileIndex, offset);
+        }
+        finally { gate.Release(); }
+    }
+
     internal Func<string, int, string, string, bool>? CompanionListenerOwnershipProbe { get; set; }
 
     private bool OwnsSeparateControlListener(WorldSeparateCopyBranch branch) =>
@@ -36,31 +98,11 @@ public sealed partial class HostManager
             settings.CompanionPort, branch.Offer.CandidateTlsFingerprint,
             settings.CompanionBindAddress) == true;
 
-    private static string SeparateHostName(Guid localProfileId) =>
-        $"separate-host-{localProfileId:N}.protected";
+    private static string SeparateHostName(Guid localProfileId) => SharedWorldBranchLiveSource.StateName(localProfileId);
     private static string SeparateRouteName(Guid sourceProfileId, string branchHash) =>
         $"separate-route-{sourceProfileId:N}-{branchHash}.protected";
 
-    private SeparateCopyHostState? ReadSeparateHost(Guid localProfileId)
-    {
-        var name = SeparateHostName(localProfileId);
-        var bytes = data.LoadProtected(name);
-        if (bytes is null)
-        {
-            if (data.HasProtected(name))
-                throw new InvalidDataException("Separate-copy hosting state could not be read.");
-            return null;
-        }
-        if (bytes.Length > 16 * 1024) throw new InvalidDataException("Separate-copy hosting state is oversized.");
-        var state = JsonSerializer.Deserialize<SeparateCopyHostState>(bytes);
-        if (state is not { Schema: 1 } || state.LocalProfileId != localProfileId ||
-            state.SourceProfileId == Guid.Empty || state.SourceProfileId == localProfileId ||
-            state.GroupId == Guid.Empty || state.BranchHash.Length != 64 ||
-            !state.BranchHash.All(Uri.IsHexDigit) || state.VersionHash.Length != 64 ||
-            !state.VersionHash.All(Uri.IsHexDigit) || !Path.IsPathFullyQualified(state.WorldDirectory))
-            throw new InvalidDataException("Separate-copy hosting state is invalid.");
-        return state;
-    }
+    private SeparateCopyHostState? ReadSeparateHost(Guid localProfileId) => SharedWorldBranchLiveSource.ReadState(data, localProfileId);
 
     private void SaveSeparateHost(SeparateCopyHostState state) =>
         data.SaveProtected(SeparateHostName(state.LocalProfileId),
@@ -69,29 +111,8 @@ public sealed partial class HostManager
     private WorldSeparateCopyBranch? CurrentSeparateBranch(Guid sourceProfileId,
         string branchHash)
     {
-        var store = new SharedWorldSeparateCopyStore(data);
-        var branch = store.Read(sourceProfileId).SingleOrDefault(item =>
-            item.BranchHash == branchHash);
-        if (branch is null || store.HostReturned(sourceProfileId, branchHash) ||
-            !SharedWorldSeparateCopyStore.Verify(branch) ||
-            !SharedWorldRouteTrust.DirectIpAddress(branch.Offer.Proposal.CandidateAddress))
-            return null;
-        var records = authority.Read(sourceProfileId);
-        var heads = records.Where(item => !records.Any(child =>
-            child.Proposal.ParentAuthorityHash == item.RecordHash)).ToArray();
-        var proposal = branch.Offer.Proposal;
-        var parent = heads.SingleOrDefault();
-        if (heads.Length > 1 || proposal.ParentAuthorityHash != parent?.RecordHash ||
-            proposal.Epoch != (parent?.Proposal.Epoch ?? 0) + 1)
-            return null;
-        var candidate = branch.Offer.Roster.Members.SingleOrDefault(item =>
-            item.DeviceId == proposal.ProposerDeviceId &&
-            item.PublicKey == branch.CandidatePublicKey);
-        if (candidate is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
-            candidate.AccessExpiresUtc is { } end && end <= clock.GetUtcNow() ||
-            !authority.HasLocalSuccessorKeys(sourceProfileId, proposal,
-                proposal.ProposerDeviceId)) return null;
-        return branch;
+        try { return SharedWorldBranchLiveSource.RequireCurrentBranch(data, sourceProfileId, branchHash, clock.GetUtcNow()); }
+        catch (Exception ex) when (SharedWorldBranchLiveSource.ExpectedFailure(ex)) { return null; }
     }
 
     internal async Task<SeparateCopyRouteProof?> SignSeparateRouteProofAsync(
@@ -109,8 +130,7 @@ public sealed partial class HostManager
                 !SharedWorldSeparateRoute.VerifyChallenge(challenge, branch, clock.GetUtcNow()) ||
                 data.HasProtected($"shared-world-pc-signing-{challenge.ObserverDeviceId:N}.protected"))
                 return null;
-            var keyBytes = data.LoadProtected(
-                $"shared-world-pc-signing-{branch.Offer.Proposal.ProposerDeviceId:N}.protected");
+            var keyBytes = data.LoadProtected(SharedWorldSeparateCopyStore.CandidateSigningKeyName(branch));
             if (keyBytes is null) return null;
             using var key = ECDsa.Create();
             key.ImportPkcs8PrivateKey(keyBytes, out _);
@@ -164,12 +184,18 @@ public sealed partial class HostManager
 
     private bool RecentSeparateRoute(WorldSeparateCopyBranch branch)
     {
-        var bytes = data.LoadProtected(SeparateRouteName(branch.Offer.Proposal.ProfileId,
-            branch.BranchHash));
-        if (bytes is null || bytes.Length > 32 * 1024) return false;
-        var observation = JsonSerializer.Deserialize<SeparateCopyRouteObservation>(bytes);
-        return ValidSeparateRouteObservation(observation, branch, clock.GetUtcNow()) &&
-            clock.GetUtcNow() - observation!.ObservedUtc <= TimeSpan.FromHours(1);
+        try
+        {
+            var bytes = data.LoadProtected(SeparateRouteName(branch.Offer.Proposal.ProfileId,
+                branch.BranchHash));
+            if (bytes is null || bytes.Length > 32 * 1024) return false;
+            var observation = JsonSerializer.Deserialize<SeparateCopyRouteObservation>(bytes);
+            return ValidSeparateRouteObservation(observation, branch, clock.GetUtcNow()) &&
+                clock.GetUtcNow() - observation!.ObservedUtc <= TimeSpan.FromHours(1);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+            CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return false; }
     }
 
     private static bool ValidSeparateRouteObservation(SeparateCopyRouteObservation? observation,
@@ -190,58 +216,24 @@ public sealed partial class HostManager
             branch, observation.ObservedUtc);
     }
 
-    private static Guid SeparateLocalProfileId(string branchHash)
-    {
-        if (branchHash.Length != 64 || !branchHash.All(Uri.IsHexDigit))
-            throw new InvalidDataException("Separate-copy branch hash is invalid.");
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(
-            "TogetherServer separate local profile v1\n" + branchHash));
-        return new Guid(bytes.AsSpan(0, 16));
-    }
+    private static Guid SeparateLocalProfileId(string branchHash) => SharedWorldBranchLiveSource.LocalProfileId(branchHash);
 
     private static string SeparateWorldRoot(LocalData data, SharedWorldVersion version,
-        Guid localProfileId) => version.Game switch
-        {
-            GameKinds.Valheim => Path.Combine(data.WorldImportsRoot, localProfileId.ToString("N")),
-            GameKinds.Factorio => Path.Combine(data.FactorioServersRoot,
-                localProfileId.ToString("N"), version.WorldId),
-            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock =>
-                Path.Combine(data.MinecraftInstallRoot, localProfileId.ToString("N")),
-            _ => data.NewWorldDirectory(localProfileId)
-        };
+        Guid localProfileId) => SharedWorldBranchLiveSource.WorldRoot(data, version, localProfileId);
 
-    private static string SeparateSetupHash(ServerProfile profile, TakeoverLocalSetup setup) =>
-        Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            profile.Id,
-            profile.Kind,
-            profile.WorldId,
-            profile.WorldDirectory,
-            ProfileGamePort = profile.GamePort,
-            profile.ExecutablePath,
-            profile.ServerName,
-            profile.SeparateCopySourceProfileId,
-            profile.SeparateCopyBranchHash,
-            profile.Minecraft?.ServerJarPath,
-            profile.Factorio?.RconPort,
-            setup.ServerFile,
-            setup.GameVersion,
-            setup.EnabledAddOns,
-            setup.ControlPort,
-            setup.GamePort
-        })));
+    private static string SeparateSetupHash(ServerProfile profile, TakeoverLocalSetup setup) => SharedWorldBranchLiveSource.SetupHash(profile, setup);
 
     private string VerifySeparateVault(WorldSeparateCopyBranch branch)
     {
         var proposal = branch.Offer.Proposal;
-        var vault = Path.Combine(data.RootPath, "received-shared-worlds",
-            proposal.ProposerDeviceId.ToString("N"), proposal.ProfileId.ToString("N"));
+        var retained = new SharedWorldSeparateCopyStore(data).RetainedRoot(branch);
+        var vault = Directory.Exists(retained) ? retained :
+            Path.Combine(data.RootPath, "received-shared-worlds",
+                proposal.ProposerDeviceId.ToString("N"), proposal.ProfileId.ToString("N"));
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);
         var version = FriendLink.ReadReceivedLatest(vault);
         if (version?.VersionHash != branch.Offer.Version.VersionHash ||
-            version.GroupId != proposal.GroupId ||
-            !FriendLink.AuthorizedVersionSignerForRecords(branch.Offer.Roster.OwnerPublicKey,
-                version, authority.Read(proposal.ProfileId)))
+            version.GroupId != proposal.GroupId || !SharedWorldSeparateCopyStore.Verify(branch))
             throw new InvalidDataException("The exact signed save is missing from this PC's vault.");
         var payload = Path.Combine(vault, version.VersionHash,
             SharedWorldService.PayloadDirectory);
@@ -275,22 +267,19 @@ public sealed partial class HostManager
                 Identity(item) == "Matched");
             var issue = !review && !running && state is { Ready: true } && profile is not null ?
                 SeparateCopyStartIssue(localId, profile, branchHash) : null;
-            var ready = state?.Ready == true && !review && !running &&
-                issue is null && hostLossCurrent;
+            var ready = state?.Ready == true && !review && !running && issue is null;
             return new(true, profile is not null, ready,
                 review, review ?
-                    "The old Host returned or signed authority changed. Keep both histories, gracefully stop any running separate server, and ask the group to review." :
+                    "The recovery branch's signed identity or local setup needs review. Keep every history; a returning Host does not stop this server." :
                     running ? "This warned separate copy is running. Another server may also be running; keep both histories for group review." :
                     issue is not null ? "Separate-copy checks need attention: " + issue :
-                    state?.Ready == true && !hostLossCurrent ?
-                        "Local checks passed earlier. Confirm two minutes without reaching the old Host before another manual Start." :
-                    ready ? "Manual separate-copy Start is available while the old Host remains unreachable. This is not the group's authoritative world." :
-                    profile is not null ? "The separate world is restored. Finish the second-PC route and local setup checks." :
+                    ready ? "Manual recovery Start is available on this PC. Another server may still be running; this branch is not the group's default world." :
+                    profile is not null ? "The recovery world is restored. Finish the local setup checks; a second-PC route check is optional evidence." :
                     "The signed separate copy is recorded. Restore it into a fresh local managed world.",
                 localId, branchHash,
                 branch.Offer.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock ?
                     SeparateWorldRoot(data, branch.Offer.Version, localId) : null,
-                branch.Offer.Version.PortableSetup.AddOns, running);
+                branch.Offer.Version.PortableSetup.AddOns, running, RecentSeparateRoute(branch));
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
             CryptographicException or UnauthorizedAccessException or ArgumentException)
@@ -315,7 +304,7 @@ public sealed partial class HostManager
             var branch = CurrentSeparateBranch(sourceProfileId, request.BranchHash);
             if (branch is null)
                 return new(false, "SeparateHistoryReviewRequired",
-                    "The old Host returned, authority changed, or this signed copy is no longer current. Keep both histories for review.");
+                    "The recovery branch's signed identity or local hosting keys need review. Keep both histories.");
             var version = branch.Offer.Version;
             if (!ValheimSetup.ValidWorldId(version.WorldId))
                 return new(false, "InvalidSeparateRestore", "The signed world name is invalid.");
@@ -337,7 +326,7 @@ public sealed partial class HostManager
                 return retry && existingProfile.SeparateCopySourceProfileId == sourceProfileId &&
                     existingProfile.SeparateCopyBranchHash == branch.BranchHash &&
                     existingProfile.WorldDirectory == worldRoot ?
-                    new(true, "SeparateRestored", "This separate world is preserved. Finish the local and second-PC route checks before manual Start.",
+                    new(true, "SeparateRestored", "This recovery world is preserved. Finish the local setup checks before manual Start.",
                         localId, version.VersionHash) :
                     new(false, "WorldAlreadyManaged", "Another local server already uses this managed profile ID.");
             var minecraft = version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock;
@@ -350,15 +339,11 @@ public sealed partial class HostManager
                 setup.GamePort is < 1024 or > 65535 ||
                 version.Game == GameKinds.Valheim && setup.GamePort == 65535)
                 return new(false, "SeparatePortsInvalid", "Choose this PC's current control port and a valid game port.");
-            if (!OwnsSeparateControlListener(branch))
-                return new(false, "LocalSetupIncomplete",
-                    "This app's pinned HTTPS control listener is not running on the reviewed port.",
-                    PendingChecks: ["Start this app's pinned HTTPS control listener on the reviewed port."]);
             var local = SharedWorldReadiness.Check(vault, worldRoot, setup,
                 new TakeoverAuthority(true, true, true, true, true, true),
-                branch.Offer.Roster.OwnerPublicKey, version.GroupId, freeBytes,
+                version.SigningPublicKey, version.GroupId, freeBytes,
                 ownedControlListener: OwnsSeparateControlListener(branch),
-                authorityRecords: authority.Read(branch.Offer.Proposal.ProfileId));
+                authorityRecords: []);
             if (local.Reasons.Count > 0)
                 return new(false, "LocalSetupIncomplete", "Complete local game, add-on, password, port, and space checks.",
                     PendingChecks: local.Reasons);
@@ -463,10 +448,10 @@ public sealed partial class HostManager
             var saved = UpdateSettingsLocked(next);
             if (!saved.Ok) return new(false, "HostSetupRejected", saved.Message);
             return new(true, "SeparateRestored",
-                "The verified save is in a fresh managed location. It is a separate copy and cannot start until local and second-PC route checks pass.",
+                "The verified save is in a fresh managed location. Finish local setup and manually Start this separate recovery branch.",
                 localId, version.VersionHash,
-                ["Check the direct-IP control route from another approved PC.",
-                 "Start manually only after the two-minute Host-loss check; test the game join after Start."]);
+                ["Finish local game, add-on, password, port, and space checks.",
+                 "A second-PC control-route check is optional evidence. Test a real game join after Start."]);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         { return new(false, "SeparateRestoreInterrupted", "The copy was interrupted. Its staging files are kept for a safe retry."); }
@@ -490,28 +475,23 @@ public sealed partial class HostManager
             setup.ControlPort != settings.CompanionPort ||
             !setup.NewPasswordConfigured || profile.SharedSavesEnabled ||
             profile.CrashRecovery.Enabled ||
-            settings.CompanionEndpoint != branch.Offer.Proposal.CandidateAddress ||
-            !settings.CompanionListeningEnabled)
+            settings.CompanionEndpoint != branch.Offer.Proposal.CandidateAddress)
             return "The separate-copy profile, signed save, or direct-IP Host setup changed.";
         var localId = SeparateLocalProfileId(branch.BranchHash);
         if (profile.Id != localId ||
             state.WorldDirectory != SeparateWorldRoot(data, version, localId) ||
             CurrentSeparateBranch(state.SourceProfileId, branch.BranchHash) is null)
-            return "The old Host returned or signed authority changed. Keep both histories for review.";
+            return "The recovery branch's signed identity or local keys changed. Keep both histories for review.";
         using (var certificate = new HostIdentity(data).Load())
             if (certificate is null || !certificate.HasPrivateKey ||
                 HostIdentity.Fingerprint(certificate) != branch.Offer.CandidateTlsFingerprint)
                 return "This PC's pinned HTTPS certificate changed.";
-        if (!OwnsSeparateControlListener(branch))
-            return "This app's pinned HTTPS control listener is not running on the reviewed port.";
-        if (!RecentSeparateRoute(branch))
-            return "A recent signed control-route check from a different approved Friend PC is required.";
         var vault = VerifySeparateVault(branch);
         var readiness = SharedWorldReadiness.Check(vault, state.WorldDirectory, setup,
             new TakeoverAuthority(true, true, true, true, true, true),
-            branch.Offer.Roster.OwnerPublicKey, version.GroupId,
+            version.SigningPublicKey, version.GroupId,
             ownedControlListener: OwnsSeparateControlListener(branch),
-            authorityRecords: authority.Read(branch.Offer.Proposal.ProfileId));
+            authorityRecords: []);
         if (readiness.Reasons.Count > 0)
             return readiness.Reasons[0];
         var installed = ServerAddOns.List(data, profile);
@@ -584,7 +564,7 @@ public sealed partial class HostManager
                 SetupHash = SeparateSetupHash(profile, request.Setup)
             });
             return new(true, "SeparateReadyForManualStart",
-                "This warned separate copy is ready for an explicit manual Start while the old Host stays unreachable. It is not authoritative. Test a real game join and saved Stop after Start.",
+                "This recovery branch is ready for an explicit manual Start, including while the original Host responds. It does not select the group's default world. Test a real join and saved Stop after Start.",
                 localId, branch.Offer.Version.VersionHash);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or

@@ -1953,6 +1953,14 @@ public sealed partial class HostManager
                 backupResult = backup.Ok
                     ? ServerSessionBackupResult.Completed
                     : ServerSessionBackupResult.Failed;
+                if (backup.Ok && backup.Backup is not null && profile!.SeparateCopySourceProfileId is not null)
+                {
+                    var publishedBranch = PublishSeparateCopyAfterStopUnderGate(profile, backup.Backup.Id);
+                    Activity("Backup", publishedBranch.Ok ? "RecoverySavePublished" : "RecoverySavePublishFailed",
+                        publishedBranch.Ok ? "The recovery session's verified save is available to approved peers. Competing histories were kept." :
+                            "The recovery backup remains local; its signed publication needs review.",
+                        publishedBranch.Ok ? ActivitySeverity.Important : ActivitySeverity.Warning, profileId);
+                }
                 if (backup.Ok && backup.Backup is not null && profile!.SharedSavesEnabled)
                 {
                     var published = authority.Fenced(profile.Id, LocalAuthorityComparisonKey(profile.Id), out _)

@@ -24,8 +24,9 @@ internal sealed record SeparateCopyRouteObservation(int Schema, string BranchHas
     DateTimeOffset ObservedUtc,
     IReadOnlyList<SeparateCopyRouteNonce> UsedNonces);
 
-// These proofs attest only that a second approved PC reached the candidate's
-// pinned direct-IP listener. They never create a majority or authority record.
+// Optional observations attest only that a second approved PC reached the
+// candidate's pinned direct-IP listener. Solo recovery does not require this
+// evidence. It never creates a majority or selects the default world.
 internal static class SharedWorldSeparateRoute
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

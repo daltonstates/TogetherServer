@@ -70,6 +70,9 @@ import { ServerChat, ServerChatCardSummary, type ChatDraftState } from './Server
 import { ServerFilesPanel } from './ServerFilesPanel'
 import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
 import { SharedHostingIdentity } from './SharedHostingIdentity'
+import { WorldPeerPanel } from './WorldPeerPanel'
+import { LiveSaveAcceptancePanel } from './LiveSaveAcceptancePanel'
+import { OwnerPeerRecoveryPanel } from './OwnerPeerRecoveryPanel'
 import { gameLabel, profileGameLabel, type Profile } from './GameProfile'
 import { useSingleFlightPolling } from './hooks/useSingleFlightPolling'
 import {
@@ -292,6 +295,8 @@ export function App() {
     catch { return { ...defaultUiPreferences } }
   })
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [peerRecovery, setPeerRecovery] = useState<{ profileId: string; branchHash: string } | null>(null)
+  const [ownerPeerRecovery, setOwnerPeerRecovery] = useState<{ groupKey: string; profileId: string; branchHash: string } | null>(null)
   const [appInstance, setAppInstance] = useState<AppInstanceView | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const feedbackNowMs = Date.now()
@@ -1959,6 +1964,19 @@ export function App() {
             !!selectedFriendProfile && friendLogAvailability(selectedFriendProfile.canViewLogs, snapshot.hostCapabilities).visible)}
             section={showPairing || !snapshot.endpoint || friendConnectionHidden ? 'pairing' : joinSection} onSelect={selectJoinSection} />
         </aside><div className="context-content">
+        {(joinSection === 'play' || joinSection === 'shared-saves') && <WorldPeerPanel
+          onConnected={async () => { setPeerRecovery(null); applySnapshot(await readSnapshot()); setShowPairing(false); setJoinSection('play') }}
+          onChanged={async () => { applySnapshot(await readSnapshot()) }}
+          onRecoverBranch={(profileId, branchHash) => { setPeerRecovery({ profileId, branchHash }); setJoinSection('shared-saves'); setShowPairing(false) }} />}
+        {joinSection === 'shared-saves' && peerRecovery && <section className="panel">
+          <Button className="text-button" onClick={() => setPeerRecovery(null)}>Return to selected server saves</Button>
+          <FriendSharedWorlds profileId={peerRecovery.profileId} sourceBranchHash={peerRecovery.branchHash}
+            connectionId={snapshot.connectionId} worldName="Selected world history" available
+            onOpenHostControls={() => void openSharedHost(peerRecovery.profileId, false)}
+            onOpenSeparateHostControls={localProfileId => void openSharedHost(localProfileId, false)}
+            onBrowseServerFile={game => browseSharedServerFile(peerRecovery.profileId, game)}
+            onOpenHostSetup={() => void openSharedHost(peerRecovery.profileId, true)} />
+        </section>}
         <section className="panel friend-panel friend-primary">
           {(showPairing || !snapshot.endpoint || friendConnectionHidden) && <div className="section-heading"><div><h2>{snapshot.endpoint && !friendConnectionHidden ? 'Add another Host' : 'Join a server'}</h2><p>Ask the Host for the current server code.</p></div></div>}
           {snapshot.endpoint && !showPairing && !friendConnectionHidden ? <>
@@ -2057,10 +2075,11 @@ export function App() {
               {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
               {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</DismissibleNotice>}
               {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
-              {joinSection === 'shared-saves' && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} connectionId={snapshot.connectionId} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
+              {joinSection === 'shared-saves' && !peerRecovery && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} connectionId={snapshot.connectionId} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
                 serverState={profile.state} serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint}
                 connectedHostName={snapshot.connectionName || 'Saved Host'} onOpenPlay={() => selectJoinSection('play')} onPairHost={() => selectJoinSection('pairing')}
                 onOpenHostControls={() => void openSharedHost(profile.id, false)}
+                onOpenSeparateHostControls={localProfileId => void openSharedHost(localProfileId, false)}
                 onBrowseServerFile={game => browseSharedServerFile(profile.id, game)} onOpenHostSetup={() => void openSharedHost(profile.id, true)}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')}
                 onAddressChange={openFriendAddressRecovery} />}
@@ -2315,6 +2334,14 @@ export function App() {
                       currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
                         ? snapshot.settings.companionEndpoint : ''}
                       onGrantChanged={refreshCompanion} />
+                    <WorldPeerPanel visible={hostServerTab === 'backups'}
+                      onConnected={async () => { applySnapshot(await readSnapshot()) }} onChanged={refreshCompanion}
+                      onRecoverOwnerBranch={(groupKey, profileId, branchHash) => setOwnerPeerRecovery({ groupKey, profileId, branchHash })} />
+                    {ownerPeerRecovery && <OwnerPeerRecoveryPanel key={`${ownerPeerRecovery.groupKey}/${ownerPeerRecovery.branchHash}`}
+                      groupKey={ownerPeerRecovery.groupKey} profileId={ownerPeerRecovery.profileId} sourceBranchHash={ownerPeerRecovery.branchHash}
+                      onClose={() => setOwnerPeerRecovery(null)} onOpenHost={localProfileId => void openSharedHost(localProfileId, false)}
+                      onBrowseServerFile={game => browseSharedServerFile(ownerPeerRecovery.profileId, game)} />}
+                    <LiveSaveAcceptancePanel profileId={profile.id} visible={hostServerTab === 'backups'} />
                     {!profile.worldLoadRehearsalId && <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} />}
 
                   </div></PaneErrorBoundary></details>}

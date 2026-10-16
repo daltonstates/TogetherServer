@@ -282,7 +282,7 @@ internal static class SharedWorldElection
         roster.Signature == floor.Signature && roster.GroupId == version.GroupId &&
         roster.ProfileId == version.ProfileId && SharedWorldService.VerifySignature(version);
 
-    internal static bool VerifyOffer(WorldAuthorityOffer? offer)
+    internal static bool VerifyOffer(WorldAuthorityOffer? offer, bool requireCurrentAccess = true)
     {
         if (offer?.Proposal is null || offer.Roster is null || offer.Version is null ||
             offer.CandidateReceipt is null || offer.Ancestors is null ||
@@ -293,9 +293,7 @@ internal static class SharedWorldElection
             offer.Proposal.VersionHash != offer.Version.VersionHash ||
             WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal) !=
                 offer.CandidateReceipt.DeviceIdKey(offer.Roster) ||
-            !SharedWorldRosterTrust.HasRole(offer.Roster, offer.CandidateReceipt.DeviceId,
-                WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal),
-                grants => grants.EligibleHost && grants.Receive) ||
+            !OfferMemberAuthorized(offer, requireCurrentAccess) ||
             offer.CandidateReceipt.GroupId != offer.Roster.GroupId ||
             offer.CandidateReceipt.ProfileId != offer.Roster.ProfileId ||
             offer.CandidateReceipt.VersionHash != offer.Version.VersionHash ||
@@ -308,6 +306,20 @@ internal static class SharedWorldElection
             offer.Ancestors.Count > 64 || !SharedWorldService.VerifySignature(offer.Version))
             return false;
         return offer.Ancestors.All(SharedWorldService.VerifySignature);
+    }
+
+    private static bool OfferMemberAuthorized(WorldAuthorityOffer offer, bool requireCurrentAccess)
+    {
+        var key = WorldAuthorityTrust.CandidateDevicePublicKey(offer.Proposal);
+        if (requireCurrentAccess)
+            return SharedWorldRosterTrust.HasRole(offer.Roster, offer.CandidateReceipt.DeviceId,
+                key, grants => grants.EligibleHost && grants.Receive);
+        // An expired grant must not erase the cryptographic history of a saved
+        // branch. New hosting, reads and membership changes still check current access.
+        return offer.Roster.Members.SingleOrDefault(member =>
+            member.DeviceId == offer.CandidateReceipt.DeviceId) is
+            { Revoked: false, Grants: { Receive: true, EligibleHost: true } } member &&
+            member.PublicKey == key;
     }
 
     private static bool ValidFingerprint(string? fingerprint) =>

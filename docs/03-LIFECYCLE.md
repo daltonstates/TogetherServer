@@ -1,5 +1,21 @@
 # Process, heartbeat, and idle rules
 
+Manual solo world recovery has no Host-loss timer, quorum, second-PC observation
+or save-age limit. A responding companion with an inaccessible game does not
+prevent an eligible receiver from recovering a separate verified history.
+Restore uses a fresh local profile/world and Start remains explicit, with the
+normal exact process, setup, port and save checks. Peer sync never starts/stops
+a game or switches a running player's connection. A returning original Host
+does not displace a recovery Host. Later signed revocations/expiry block new
+hosting and payload exchange while preserving evidence and running histories.
+
+The existing supervisor schedules safe captures in one bounded flight, retries
+with backoff after failure and promptly offers completed versions to peers.
+Real capture requires protected acceptance of the exact installed binary and
+setup. Missing completion, partial payloads, interrupted transfers and private
+test artifacts cannot advance a playable save pointer. No wall-clock timestamp
+or branch-local version number resolves divergent histories.
+
 ## Server states
 
 Display `Offline`, `Starting`, `Ready`, `Stopping`, `Failed`, and `Unknown` based on observed behavior. A started process is not automatically Ready. A failed probe is not proof the process stopped. Do not report a join address as verified until real game networking has been checked.
@@ -55,9 +71,9 @@ The owner may copy a completed verified backup to a selected vault. TogetherServ
 
 ### Shared live save recovery gate
 
-Live save publication remains fixture-only. A completion response alone does not bind the bytes of a running game to an immutable snapshot, so every real-game staging adapter is blocked until it supplies a typed, verified snapshot source. If a schema-5 live version reaches its signed directory but the app exits before updating the latest pointer, later publication stops. Post-Stop publication must never promote that orphan automatically.
+Live save publication requires a typed immutable snapshot and private six-stage acceptance for the exact installed binary, profile and setup. A completion response alone cannot bind a running game's bytes to a consistent copy. Synthetic evidence never accepts a real installation. Recovery branches use their own protected source identity and acceptance, without changing the original world's authority pointer. If a live version reaches its signed directory but the app exits before updating its latest pointer, later publication stops. Post-Stop publication must never promote that orphan automatically.
 
-The Host can review a fully verified interrupted copy under Shared saves > Technical details and quarantine it by exact hash. This preserves its signed files without changing the latest pointer, so a later post-Stop copy can proceed. Damaged or ambiguous copies remain blocked for owner review. Friend requests cannot trigger quarantine or select a path. Real-game live sharing remains disabled.
+The Host can review a fully verified interrupted copy under Shared saves > Technical details and quarantine it by exact hash. This preserves its signed files without changing the latest pointer, so a later post-Stop copy can proceed. Damaged or ambiguous copies remain blocked for owner review. Friend requests cannot trigger quarantine or select a path. No real installation has been accepted by this implementation's source-only checks.
 
 Before an owner-approved in-app update closes the app, a bounded local-state recovery checkpoint is hashed and bound to the current/target versions, storage schema, and previous EXE. The replacement helper validates that checkpoint again before replacing the verified executable. This checkpoint is recovery material, not automatic schema rollback or evidence that a new version can load every world.
 

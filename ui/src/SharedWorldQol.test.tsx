@@ -70,7 +70,7 @@ describe('shared-save UX evidence', () => {
     render(<FriendSharedWorlds profileId={profileId} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     // Management is open.
-    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(await screen.findByText('Choose the default Host after confirmed loss'))
     fireEvent.click(await screen.findByRole('button', { name: 'Copy signed offer code' }))
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith(JSON.stringify(offer)))
     expect(mutations).toEqual([])

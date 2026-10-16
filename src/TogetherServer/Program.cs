@@ -118,6 +118,7 @@ var updateUi = new UpdateUiPreferences(data);
 var importSelections = new SetupImportSelections(data, instance.FreshWorldsOnly);
 var identity = new HostIdentity(data);
 using var friend = new FriendService(data);
+using var worldPeers = new WorldPeerService(data, manager, friend, pairing);
 using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 var appVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0);
 var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "", appVersion,
@@ -137,10 +138,14 @@ var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
     () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
     friend.CurrentRecoveryHostLoss, serverChat: serverChat);
+companionServer.PeerWorlds = worldPeers;
 manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
+try { await worldPeers.RefreshMembershipsAsync(false, app.Lifetime.ApplicationStopping); }
+catch (Exception error) when (error is IOException or InvalidDataException or JsonException)
+{ DiagnosticOutput.WriteError("World peer membership needs review: " + error.GetType().Name); }
 var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"), root,
     app.Lifetime.StopApplication, desktopPreferences.CloseToTray, startupLaunch,
     instance.DisplayName, instance.IsStaging, localPreferences: qolDesktop,
@@ -171,6 +176,16 @@ app.Use(async (context, next) =>
 
 static bool HasSensitiveLocalGetHeader(HttpContext context) =>
     context.Request.Headers["X-TogetherServer-Local"] == "1";
+
+WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
+    () => friendMode, () => updatePending || shutdownPending);
+// As with the existing save action, HostManager owns capture serialization.
+// Do not hold modeGate through a long adapter wait: safe Stop and exact-request
+// cancellation must remain able to enter their existing lifecycle paths.
+LiveSaveAcceptanceRoutes.Map(app, manager,
+    context => !friendMode && HasSensitiveLocalGetHeader(context),
+    context => !friendMode && !updatePending && !shutdownPending && HasSensitiveLocalGetHeader(context) &&
+        string.Equals(context.Request.Headers.Origin, $"http://127.0.0.1:{port}", StringComparison.OrdinalIgnoreCase));
 
 static IResult? FixedOwnerGetRejection(HttpContext context)
 {
@@ -1274,15 +1289,17 @@ app.MapPost("/api/local/valheim/browse-server", async () =>
     }
     catch (Exception ex) { return Results.Json(new { ok = false, code = "BrowseFailed", message = "Could not open the Windows file picker: " + ex.Message }); }
 });
-bool SharedServerScopeMatches(SharedServerBrowseRequest request, bool hostScope, Guid? connectionId)
+async Task<bool> SharedServerScopeMatches(SharedServerBrowseRequest request, bool hostScope,
+    Guid? connectionId, CancellationToken cancellationToken)
 {
     if (hostScope)
         return !friendMode && data.LoadSettings().Profiles.Any(profile =>
             profile.Id == request.ProfileId && profile.Kind == request.Kind);
     var view = friend.View();
-    return friendMode && connectionId is { } selected && selected != Guid.Empty &&
-        view.ConnectionId == selected && view.Profiles.Any(profile =>
-            QolLocalEndpointInputs.ProfileGameMatches(profile, request));
+    return friendMode && connectionId is { } selected &&
+        view.ConnectionId == selected && (view.Profiles.Any(profile =>
+            QolLocalEndpointInputs.ProfileGameMatches(profile, request)) ||
+            await worldPeers.MayBrowseRecoverySourceAsync(request.ProfileId, request.Kind, cancellationToken));
 }
 async Task<IResult> BrowseSharedServerFile(HttpContext context)
 {
@@ -1296,7 +1313,7 @@ async Task<IResult> BrowseSharedServerFile(HttpContext context)
             return Results.BadRequest(new SharedServerBrowseResult(false, "InvalidServerSelection",
                 "Choose a currently owned or assigned server and its supported game."));
         var connectionId = hostScope ? (Guid?)null : friend.View().ConnectionId;
-        if (!SharedServerScopeMatches(request!, hostScope, connectionId))
+        if (!await SharedServerScopeMatches(request!, hostScope, connectionId, context.RequestAborted))
             return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
                 "Open the current server and choose its game before browsing."));
         if (desktop is null)
@@ -1308,7 +1325,7 @@ async Task<IResult> BrowseSharedServerFile(HttpContext context)
             context.RequestAborted.ThrowIfCancellationRequested();
             var selected = await desktop.PickFileAsync(picker.Title, picker.Filter);
             context.RequestAborted.ThrowIfCancellationRequested();
-            if (shutdownPending || !SharedServerScopeMatches(request, hostScope, connectionId))
+            if (shutdownPending || !await SharedServerScopeMatches(request, hostScope, connectionId, context.RequestAborted))
                 return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
                     "The selected server changed. Open it and browse again."));
             if (selected is null)
@@ -1327,7 +1344,7 @@ async Task<IResult> BrowseSharedServerFile(HttpContext context)
                     return Results.Json(new SharedServerBrowseResult(false, "UnsupportedServerJar",
                         "Choose server.jar from a TogetherServer-installed official Minecraft Java server."));
             }
-            if (!SharedServerScopeMatches(request, hostScope, connectionId))
+            if (!await SharedServerScopeMatches(request, hostScope, connectionId, context.RequestAborted))
                 return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
                     "The selected server changed. Open it and browse again."));
             // This path is returned only by the owner's loopback GUI. Existing
@@ -2245,7 +2262,7 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/resolution/vote/{proposalH
         proposalHash, context.RequestAborted)) : Results.Conflict(new { code = "HostMode" }));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate",
     async (Guid id, WorldSeparateCopyConfirmation confirmation) =>
-    friendMode ? Results.Json(await friend.DeclareSeparateCopyAsync(id, confirmation.AcceptSplitWarning)) :
+    friendMode ? Results.Json(await friend.DeclareSoloRecoveryAsync(id, confirmation.AcceptSplitWarning)) :
     Results.Conflict(new { code = "HostMode" }));
 app.MapGet("/api/local/friend/{id:guid}/shared-world/recovery/separate",
     (HttpContext context, Guid id) =>
@@ -2266,9 +2283,6 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/restore"
     !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == request.BranchHash) ?
         Results.Json(new SuccessorRestoreResult(false, "SeparateProofRejected",
             "Choose this PC's recorded signed separate copy.")) :
-    !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
-        Results.Json(new SuccessorRestoreResult(false, "HostLossNotConfirmed",
-            "This PC must still confirm two minutes without reaching the old Host.")) :
         Results.Json(await manager.RestoreSeparateCopyAsync(id, request,
             context.RequestAborted)));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/finish",
@@ -2277,9 +2291,6 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/finish",
     !friend.SeparateCopyBranches(id).Any(item => item.BranchHash == request.BranchHash) ?
         Results.Json(new SuccessorRestoreResult(false, "SeparateProofRejected",
             "Choose this PC's recorded signed separate copy.")) :
-    !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
-        Results.Json(new SuccessorRestoreResult(false, "HostLossNotConfirmed",
-            "This PC must still confirm two minutes without reaching the old Host.")) :
         Results.Json(await manager.FinishSeparateCopyAsync(id, request)));
 app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/start",
     async (HttpContext context, Guid id, SeparateCopyHostStartRequest request) =>
@@ -2296,13 +2307,6 @@ app.MapPost("/api/local/friend/{id:guid}/shared-world/recovery/separate/start",
             ok = false,
             code = "SeparateProofRejected",
             message = "Choose this PC's recorded signed separate copy."
-        }) :
-    !await friend.ProbeRecoveryHostLossAsync(id, context.RequestAborted) ?
-        Results.Json(new
-        {
-            ok = false,
-            code = "HostLossNotConfirmed",
-            message = "This PC must still confirm two minutes without reaching the old Host."
         }) :
         Results.Json(await manager.StartSeparateCopyAsync(request.LocalProfileId,
             request.BranchHash)));
@@ -2355,7 +2359,7 @@ app.MapGet("/{**path}", async (HttpContext context, string? path) =>
 DiagnosticOutput.WriteLine($"{instance.DisplayName} {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
 await companionServer.SyncAsync();
 var background = new AppBackgroundTasks(friend, manager, companionServer, updater,
-    instance, data, desktop, () => friendMode);
+    instance, data, desktop, () => friendMode, worldPeers: worldPeers);
 background.Start();
 if (desktop is not null)
 {
@@ -2369,4 +2373,8 @@ catch (Exception ex) when (openWindow)
     DesktopLaunch.ShowError("TogetherServer could not start its local GUI.\n\n" + ex.Message);
     Environment.ExitCode = 1;
 }
-finally { await background.DisposeAsync(); await companionServer.StopAsync(); }
+finally
+{
+    try { await background.DisposeAsync(); }
+    finally { await companionServer.StopAsync(); }
+}

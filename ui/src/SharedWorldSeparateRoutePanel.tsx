@@ -3,9 +3,9 @@ import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { SharedWorldServerFile } from './SharedWorldServerFile'
-import { futureHostFields, normalizedDirectIpHttpsEndpoint, type SharedGame } from './sharedWorldUx'
+import { futureHostFields, sharedSaveAge, type SharedGame } from './sharedWorldUx'
 
-type Branch = { branchHash: string; offer: { version: { number: number };
+type Branch = { branchHash: string; offer: { version: { number: number; createdUtc?: string; game?: string };
   proposal: { profileId: string; candidateAddress: string } } }
 type RouteCheck = { controlRouteObserved: boolean; code: string; message: string }
 type RequiredAddOn = { name: string; version: string; requiredGameVersion: string;
@@ -13,8 +13,18 @@ type RequiredAddOn = { name: string; version: string; requiredGameVersion: strin
 type HostStatus = { recorded: boolean; restored: boolean; readyForManualStart: boolean;
   reviewRequired: boolean; running: boolean; message: string; localProfileId: string | null;
   branchHash: string | null; preparedServerRoot: string | null;
-  requiredAddOns: RequiredAddOn[] | null }
+  requiredAddOns: RequiredAddOn[] | null; controlRouteVerified?: boolean }
 type Action = { ok: boolean; code: string; message: string; pendingChecks?: string[] | null }
+
+function literalHttpsOrigin(value: string): boolean {
+  try {
+    const url = new URL(value)
+    const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(url.hostname) && url.hostname.split('.').every(part => Number(part) <= 255)
+    const ipv6 = /^\[[0-9a-f:]+\]$/i.test(url.hostname)
+    return url.protocol === 'https:' && (ipv4 || ipv6) && !url.username && !url.password &&
+      !url.search && !url.hash && url.pathname === '/' && url.origin === value.replace(/\/$/, '')
+  } catch { return false }
+}
 
 function branch(value: unknown, profileId: string): Branch {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Separate-copy proof is invalid.')
@@ -24,9 +34,10 @@ function branch(value: unknown, profileId: string): Branch {
   const version = offer?.version as Record<string, unknown> | undefined
   if (typeof item.branchHash !== 'string' || !/^[0-9A-F]{64}$/.test(item.branchHash) ||
     proposal?.profileId !== profileId || typeof proposal.candidateAddress !== 'string' ||
-    normalizedDirectIpHttpsEndpoint(proposal.candidateAddress) === null ||
+    !literalHttpsOrigin(proposal.candidateAddress) ||
     typeof version?.number !== 'number' || !Number.isSafeInteger(version.number) ||
-    version.number < 1) throw new Error('Separate-copy proof is invalid.')
+    version.number < 1 || version.createdUtc != null && (typeof version.createdUtc !== 'string' ||
+      !Number.isFinite(Date.parse(version.createdUtc)))) throw new Error('Separate-copy proof is invalid.')
   return value as Branch
 }
 
@@ -50,6 +61,7 @@ function hostStatus(value: unknown): HostStatus {
   if (typeof item.recorded !== 'boolean' || typeof item.restored !== 'boolean' ||
     typeof item.readyForManualStart !== 'boolean' || typeof item.reviewRequired !== 'boolean' ||
     typeof item.running !== 'boolean' ||
+    item.controlRouteVerified !== undefined && typeof item.controlRouteVerified !== 'boolean' ||
     typeof item.message !== 'string' ||
     (item.localProfileId !== null && typeof item.localProfileId !== 'string') ||
     (item.branchHash !== null && typeof item.branchHash !== 'string') ||
@@ -77,11 +89,11 @@ function action(value: unknown): Action {
   return item as Action
 }
 
-export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game, onBrowseServerFile }:
+export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game, onBrowseServerFile, expanded = false, onOpenHostControls, onOpenSeparateHostControls, apiBase }:
   { profileId: string; separateCopies: number; game?: SharedGame;
-    onBrowseServerFile?: (game: SharedGame) => Promise<string | null> }) {
-  const fields = futureHostFields(game)
-  const knownGame = ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(game ?? '')
+    onBrowseServerFile?: (game: SharedGame) => Promise<string | null>;
+    expanded?: boolean; onOpenHostControls?: () => void; onOpenSeparateHostControls?: (localProfileId: string) => void; apiBase?: string }) {
+  const base = apiBase ?? `/api/local/friend/${profileId}/shared-world/recovery/separate`
   const scope = useRef(profileId)
   scope.current = profileId
   const [ownBranches, setOwnBranches] = useState<Branch[]>([])
@@ -90,10 +102,10 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   const [serverFile, setServerFile] = useState('')
   const [gameVersion, setGameVersion] = useState('')
   const [controlPort, setControlPort] = useState('5131')
-  const [gamePort, setGamePort] = useState(fields.gamePort)
+  const [gamePort, setGamePort] = useState(futureHostFields(game).gamePort)
   const [newPasswordSet, setNewPasswordSet] = useState(false)
   const [gamePassword, setGamePassword] = useState('')
-  const [serverName, setServerName] = useState('Separate world')
+  const [serverName, setServerName] = useState('Recovery world')
   const [executable, setExecutable] = useState('')
   const [factorioRconPort, setFactorioRconPort] = useState('27015')
   const [splitAccepted, setSplitAccepted] = useState(false)
@@ -102,6 +114,10 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   const [result, setResult] = useState<RouteCheck | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const effectiveGame = game ?? shown?.offer.version.game
+  const fields = futureHostFields(effectiveGame)
+  const knownGame = ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(effectiveGame ?? '')
+  useEffect(() => { if (!game) setGamePort(futureHostFields(effectiveGame).gamePort) }, [effectiveGame, game])
   const noticeScope = JSON.stringify([profileId, game, shown?.branchHash])
   useEffect(() => {
     setOwnBranches([]); setShown(null); setHosting(null); setServerFile(''); setGameVersion('')
@@ -112,7 +128,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   const load = async () => {
     setBusy(true); setError('')
     try {
-      const value = await getLocalJson(`/api/local/friend/${profileId}/shared-world/recovery/separate`,
+      const value = await getLocalJson(base,
         value => branches(value, profileId))
       if (scope.current === profileId) setOwnBranches(value)
     } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
@@ -120,7 +136,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   }
   const refreshHost = async (selected: Branch) => {
     const next = await getLocalJson(
-      `/api/local/friend/${profileId}/shared-world/recovery/separate/hosting/${selected.branchHash}`,
+      `${base}/hosting/${selected.branchHash}`,
       hostStatus)
     if (scope.current === profileId) setHosting(next)
   }
@@ -147,7 +163,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
         { branchHash: shown.branchHash, localProfileId: hosting.localProfileId,
           acceptSplitWarning: splitAccepted }
       const next = await changeJson(
-        `/api/local/friend/${profileId}/shared-world/recovery/separate/${kind}`,
+        `${base}/${kind}`,
         'POST', action, body)
       setHostAction(next)
       await refreshHost(shown)
@@ -169,18 +185,18 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
     } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
     finally { if (scope.current === profileId) setBusy(false) }
   }
-  return <details><summary>Separate-copy route check</summary>
-    <p>A second approved Friend PC must check the candidate’s direct HTTPS address. This checks the control route only. It does not settle the split or prove the game route.</p>
+  return <details open={expanded || undefined}><summary>Recovery copies on this PC</summary>
+    <p>Restore a signed recovery branch into a fresh local world, finish local setup, then choose Start manually. A second-PC route check is optional evidence; it does not settle the split or prove the game route.</p>
     {separateCopies > 0 && <><Button className="secondary" disabled={busy}
-      onClick={() => void load()}>Show this PC’s signed separate-copy proofs</Button>
+      onClick={() => void load()}>Show recovery copies on this PC</Button>
       {ownBranches.map(item => <div key={item.branchHash}>
-        <p>Separate save version {item.offer.version.number} · {item.offer.proposal.candidateAddress}</p>
+        <p>Recovery save {item.offer.version.number} · captured {sharedSaveAge(item.offer.version.createdUtc)}. No age cutoff applies to a complete verified copy.</p>
         <Button className="text-button" disabled={busy}
-          onClick={() => void select(item)}>Review separate copy and show proof code</Button>
+          onClick={() => void select(item)}>Prepare this recovery copy</Button>
       </div>)}
-      {shown && <><Button className="secondary" disabled={busy} onClick={() => void navigator.clipboard.writeText(JSON.stringify(shown))
+      {shown && <details><summary>Signed recovery proof</summary><p>Reviewed local HTTPS identity: {shown.offer.proposal.candidateAddress}</p><Button className="secondary" disabled={busy} onClick={() => void navigator.clipboard.writeText(JSON.stringify(shown))
         .catch(() => setError('Could not copy this proof. Select the proof code below to copy it manually.'))}>Copy separate-copy proof</Button>
-        <TextArea aria-label="Signed separate-copy proof code" rows={3} readOnly value={JSON.stringify(shown)} /></>}</>}
+        <TextArea aria-label="Signed separate-copy proof code" rows={3} readOnly value={JSON.stringify(shown)} /></details>}</>}
     {shown && hosting && <section aria-label="Host this separate copy">
       {hosting.reviewRequired ? <DismissibleNotice as="p" scope={noticeScope} role="alert">{hosting.message}</DismissibleNotice> :
         <p role="status">{hosting.message}</p>}
@@ -191,13 +207,16 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
             {item.name} {item.version} ({item.type})</li>)}</ul>
           <p>Install these packages in this PC’s managed server folder before restoring.</p>
         </details> : null}
-        {!hosting.restored && <><SharedWorldServerFile key={profileId} profileId={profileId} game={game}
+        {!hosting.readyForManualStart && !hosting.running && <>
+          {hosting.restored && <p>Select the installed server file and matching game version to finish checking this restored copy.</p>}
+          <SharedWorldServerFile key={profileId} profileId={profileId} game={effectiveGame}
           value={serverFile} onChange={setServerFile} disabled={busy} onBrowseServerFile={onBrowseServerFile} />
           <label>Installed game version<Input value={gameVersion}
-            onChange={event => setGameVersion(event.target.value)} /></label>
+            onChange={event => setGameVersion(event.target.value)} /></label></>}
+        {!hosting.restored && <>
           <label>New server name<Input value={serverName}
             onChange={event => setServerName(event.target.value)} /></label>
-          {(game === 'MinecraftJava' || !knownGame) && <label>{game === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different'}<Input value={executable}
+          {(effectiveGame === 'MinecraftJava' || !knownGame) && <label>{effectiveGame === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different'}<Input value={executable}
             onChange={event => setExecutable(event.target.value)} /></label>}
           {hosting.preparedServerRoot && <p>Prepare the matching Minecraft server and add-ons in this managed folder: {hosting.preparedServerRoot}. Match its server.properties settings and player allowlist to the signed source; a mismatch blocks restore and Start.</p>}
           {(fields.factorio || !knownGame) && <label>Factorio local RCON port, if used<Input inputMode="numeric"
@@ -214,12 +233,17 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
               'I set a new game password on this PC' : 'I reviewed local game access and set a new password where this game supports one'}</label>
           <Button className="secondary" disabled={busy} onClick={() => void hostChange(
             hosting.restored ? 'finish' : 'restore')}>
-            {hosting.restored ? 'Finish local and route checks' : 'Restore into a fresh managed world'}</Button></>}
-        {hosting.readyForManualStart && <><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this separate copy</strong><p>Local game ports passed the setup check. Incoming game traffic and a real join are still unverified; test both after Start. This separate copy is not the authoritative world.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
+            {hosting.restored ? 'Finish local setup checks' : 'Restore into a fresh managed world'}</Button></>}
+        {hosting.readyForManualStart && <><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Local setup passed. A real game load, game connection, and saved restart remain unverified. Another session may still run; this recovery branch does not select the group's default history.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
           onChange={event => setSplitAccepted(event.target.checked)} /> I understand another server may still be running</label>
           <Button disabled={busy || !splitAccepted} onClick={() => void hostChange('start')}>
-            Start warned separate copy</Button></>}
-        {hosting.running && <DismissibleNotice as="p" scope={noticeScope} role="alert">This separate server is running. Use Host mode to stop the exact managed game process before group review.</DismissibleNotice>}
+            Start recovery copy</Button></>}
+        {hosting.running && <DismissibleNotice scope={noticeScope} role="note"><p>This recovery session is running. A returning Host does not stop it or replace its history.</p>
+          {(onOpenHostControls || onOpenSeparateHostControls) && <Button className="secondary" onClick={() =>
+            hosting.localProfileId && onOpenSeparateHostControls ? onOpenSeparateHostControls(hosting.localProfileId) : onOpenHostControls?.()
+          }>Open this PC's Host controls</Button>}</DismissibleNotice>}
+        <p className="helper-text">{hosting.controlRouteVerified ? 'Another approved PC observed the pinned control route. A real game join remains unverified.' :
+          'No second-PC control-route observation is recorded. It is optional for solo recovery.'}</p>
       </>}
       {hostAction && <DismissibleNotice as="p" scope={noticeScope} role={hostAction.ok ? 'status' : 'alert'}>{hostAction.message}</DismissibleNotice>}
       {hostAction?.pendingChecks?.length ? <ul>{hostAction.pendingChecks.map(reason =>
@@ -227,11 +251,14 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
       <Button className="text-button" disabled={busy} onClick={() => void select(shown)}>
         Refresh separate-copy status</Button>
     </section>}
+    <details hidden={!!apiBase}><summary>Optional check from another PC</summary>
+    <p>This checks a deliberately enabled pinned control listener. It is separate from solo recovery and game reachability.</p>
     <label>Proof code from candidate PC<TextArea rows={3}
       maxLength={512 * 1024} value={pasted} onChange={event => setPasted(event.target.value)} /></label>
     <Button className="secondary" disabled={busy || !pasted.trim()}
       onClick={() => void check()}>Check candidate control route from this PC</Button>
     {result && <DismissibleNotice as="p" scope={noticeScope} role={result.controlRouteObserved ? 'status' : 'alert'}>{result.message}</DismissibleNotice>}
+    </details>
     {error && <DismissibleNotice as="p" scope={noticeScope} role="alert">{error}</DismissibleNotice>}
   </details>
 }

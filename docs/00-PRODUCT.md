@@ -1,6 +1,17 @@
 # Product scope: TogetherServer v1
 
-Live save sharing has an owner-only staging fixture action, bounded durable attempts, fixed completion requests and a separate six-stage acceptance matrix per game. Game-specific candidates now connect completion to sealed immutable copies, but Valheim, Java, Bedrock, Factorio and Terraria remain disabled until each passes its own real completion/copy/transfer/load/change/restart checks. Post-Stop sharing and manual guarded takeover continue unchanged. A pending Bedrock hold automatically attempts exact-run resume after app restart, stays visible until a fresh acknowledgement, and blocks another capture; the owner can retry the fixed resume action.
+The approved 2026-10-16 peer-world direction supersedes earlier requirements for
+Host-loss waits or quorum approval of a separate recovery. An eligible receiver
+may explicitly recover alone from its newest complete verified available copy,
+regardless of age. Concurrent Hosts preserve separate histories. Signed peer
+exchange tells app members about addresses and sessions while the owner is
+offline. Following metadata, receiving saves, forwarding received bytes, hosting
+and selecting a group default remain distinct. A default choice never starts,
+stops, merges or moves an active game. A returning owner has no automatic
+priority. Exact implementation and acceptance status is recorded in
+[delivery document 26](26-PEER-SHARED-WORLDS-DELIVERY.md).
+
+Live save sharing uses bounded durable attempts, fixed completion requests and private six-stage acceptance for each exact installation and profile. Valheim, Java, Bedrock, Factorio and Terraria candidates connect completion to sealed immutable copies. Real publication remains disabled until that installation passes completion/copy/transfer/load/change/restart checks; load, recognizable change and graceful restart are explicitly owner-reported. Synthetic checks never accept a real installation. Accepted recovery branches publish within their own history. A pending Bedrock hold attempts exact-run resume after app restart, stays visible until a fresh acknowledgement, and blocks another capture; the owner can retry the fixed resume action.
 
 The owner-only **Test a copy in the game** guide can prepare a completed backup or currently verified received save into fresh disposable storage. It records exact copy identity and preparation app/installed game versions, with separate optional owner-reported game version and load/change/restart results. Valheim can use its reviewed driver with a fresh password, isolated save root and new ports; fixture trials exercise process control only. Other games or missing binaries use manual steps. Nothing grants takeover authority or certifies real-game support.
 

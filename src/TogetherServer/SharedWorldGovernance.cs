@@ -7,7 +7,9 @@ using System.Text.Json.Serialization;
 namespace TogetherServer;
 
 public sealed record SharedWorldGrants(bool Receive = false, bool EligibleHost = false,
-    bool RecoveryVoter = false, bool ManageSharing = false);
+    bool RecoveryVoter = false, bool ManageSharing = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool Reshare = false);
 public sealed record SharedWorldRosterMember(Guid DeviceId, string PublicKey,
     SharedWorldGrants Grants, bool Revoked, DateTimeOffset? AccessExpiresUtc = null);
 public sealed record SharedWorldRoster(int Schema, Guid GroupId, Guid ProfileId,

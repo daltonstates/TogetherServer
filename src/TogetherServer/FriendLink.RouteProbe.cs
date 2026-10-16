@@ -17,7 +17,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             try
             {
-                if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                     recordHash.Length != 64 || !recordHash.All(Uri.IsHexDigit) ||
                     !ValidFingerprint(tlsFingerprint))
                     return Fail("RouteCheckUnavailable", "Choose a trusted shared world and its successor certificate fingerprint.");

@@ -32,7 +32,7 @@ internal sealed partial class FriendLink
             Guid oldHostId;
             try
             {
-                if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId))
+                if (config is null || !HasSharedWorldReceiveConsent(profileId))
                     return Fail("ConsentRequired", "Allow shared saves on this PC first.");
                 deviceId = config.DeviceId;
                 groupId = config.ApprovedSharedWorldGroups.GetValueOrDefault(profileId);
@@ -89,7 +89,7 @@ internal sealed partial class FriendLink
                     config.Endpoint != oldEndpoint ||
                     config.ApprovedSharedWorldGroups.GetValueOrDefault(profileId) != groupId ||
                     config.SharedWorldSigningKeys.GetValueOrDefault(profileId) != ownerKey ||
-                    !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                    !HasSharedWorldReceiveConsent(profileId) ||
                     new WorldAuthorityStore(data).ReadUniqueHead(profileId)?.RecordHash != recordHash)
                     return Fail("ConnectionChanged", "The trusted Host or takeover changed during enrollment.");
                 // Keep the old Host connection and all received vault/history files.

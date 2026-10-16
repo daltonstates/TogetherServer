@@ -263,6 +263,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
   return <details ref={panel} open={expanded || undefined}><summary>Check this PC for future hosting</summary>
+    <p className="helper-text">These are the checks for transferring the group's default Host. Manual solo recovery uses its separate recovery-copy controls and does not require a majority or a second-PC route check.</p>
     <p>Restore the exact signed planned handoff or recovery majority into a fresh managed world. Finish local and control route checks, then switch to Host for manual Start.</p>
     {(!currentHandoff || observationReason) && <p role="status">{verifiedScope !== scopeToken && !observationReason ?
       'Rechecking signed hosting readiness. Start readiness is Unknown.' : observationReason}</p>}

@@ -348,10 +348,14 @@ describe('Task-first app and Host PC navigation', () => {
     await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'light'))
     expect(JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1')!)).toMatchObject({ theme: 'light', density: 'compact' })
     expectNoMutation()
-    fireEvent.click(workspaces().getByRole('button', { name: mode === 'Host' ? 'Host' : 'Join' }))
+    await act(async () => {
+      fireEvent.click(workspaces().getByRole('button', { name: mode === 'Host' ? 'Host' : 'Join' }))
+    })
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
     expect(state.mode).toBe(mode)
-    fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
+    await act(async () => {
+      fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
+    })
     expect(await screen.findByRole('combobox', { name: 'Theme' })).toHaveValue('light')
     expect(screen.getByRole('combobox', { name: 'Layout' })).toHaveValue('compact')
     expectNoMutation()

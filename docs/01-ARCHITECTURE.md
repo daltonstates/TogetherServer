@@ -1,6 +1,29 @@
 # Small v1 architecture
 
-`HostManager.LiveSaves` serializes the owner-only fixed save request with lifecycle, backup, handoff and signed authority. The surfaced route accepts only the staging fixture; the empty per-game acceptance set keeps all real games disabled. A fresh fixture nonce reply comes from the recorded PID and matches profile, operation and start ticks. Each real candidate instead combines its fixed control and fresh owned-log completion with `ManagedLiveSnapshotStore`, which leases all reviewed source files against writes/deletes and supplies a bounded Windows-protected immutable seal. The publisher consumes that sealed payload and never scans a real running world. Typed real capture supplies no readiness or occupancy authority.
+`WorldPeerService` identifies a world by its pinned original owner key, profile
+and group, independent of endpoint or successor-local credential ID. Protected
+membership and append-only signed announcements retain directory, session,
+branch and copy claims. Fixed pinned HTTPS challenge/exchange requests prove
+possession of an enrolled member key; owner-rooted roster pages allow a peer to
+learn missed enrollments before authenticating a new member. Bounded pages and
+durable cursors catch up metadata, authority proofs and save ancestry. Every
+save payload remains separately consented, hash verified and subject to current
+Receive/Reshare grants. A signed claim is never a verified transfer receipt.
+
+Default choices form a separate signed history, authorized by the owner or a
+current sharing manager. Concurrent choices remain visible until an explicit
+choice names their heads. They do not change canonical quorum authority, grant
+hosting/Stop permissions or overwrite another history. Solo recovery retains a
+verified parent in fresh local storage; later recovery snapshots and descendants
+can be seeded independently. Private live-save acceptance artifacts have a
+distinct signed capture kind rejected by production/recovery verification.
+
+The current storage marker is schema 5; schema 1-4 directories migrate marker
+first. Pairing state stays schema 3 and preserves existing credentials and
+assignments. The optional Reshare grant defaults off; omitting its false default
+preserves older signed roster bytes. Old binaries reject the newer storage marker.
+
+`HostManager.LiveSaves` serializes the owner-only fixed save request with lifecycle, backup, handoff and signed authority. Real capture requires protected six-stage acceptance bound to the exact installation and profile; private fixed acceptance routes cannot accept a game through synthetic evidence. A fresh fixture nonce reply comes from the recorded PID and matches profile, operation and start ticks. Each real candidate instead combines its fixed control and fresh owned-log completion with `ManagedLiveSnapshotStore`, which leases all reviewed source files against writes/deletes and supplies a bounded Windows-protected immutable seal. The publisher consumes that sealed payload and never scans a real running world. Typed real capture supplies no readiness or occupancy authority.
 
 Capture identity is journaled before staging. Cancellation and exact recorded/native identity are checked through copying and immediately before current-pointer commit. A signed directory without its pointer remains an orphan requiring review. Sixty-four protected attempts bound retry history; duplicate IDs return the same outcome, withdrawal cancels only the matching current request, and status/retry/withdraw durably repair an already-current publication without replay. Explicit withdrawal can discard that request's sealed private copy and interrupted incomplete intents; Published attempts can clean their own redundant private snapshot after restart. Other requests' complete private copies and all signed interrupted versions remain reviewable. No companion capture or arbitrary command/path input exists. Bedrock holds always attempt resume, including on failure; startup and owner retry retain the durable marker unless fresh exact-run captured output acknowledges resumed writes. A refused dispatch returns a review state rather than claiming the command was sent. Every real adapter still requires its own external save/transfer/load/change/restart acceptance.
 

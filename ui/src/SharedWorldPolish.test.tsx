@@ -41,6 +41,8 @@ describe('Shared saves task presentation', () => {
     expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Get latest save' })).toHaveClass('secondary')
     fireEvent.click(screen.getByRole('button', { name: 'Host this save' }))
+    expect(screen.getByRole('button', { name: 'Prepare solo recovery' })).toBeDisabled()
+    fireEvent.click(screen.getByText("Transfer the group's default hosting"))
     expect(screen.getByRole('button', { name: 'Get hosting save' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Get hosting save' })).toHaveClass('secondary')
     expect(screen.getByLabelText('Allow this PC to receive the hosting save')).not.toBeChecked()
@@ -117,6 +119,7 @@ describe('Shared saves task presentation', () => {
       onOpenPlay={join} onOpenHostControls={navigate} />)
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: 'Host this save' }))
+    fireEvent.click(screen.getByText("Transfer the group's default hosting"))
     await act(async () => {})
     expect(primaryActions()).toEqual([screen.getByRole('button', { name: 'Review Start server' })])
     expect(screen.getByRole('button', { name: 'Join connected Host' })).toHaveClass('secondary')
@@ -154,7 +157,7 @@ describe('Shared saves task presentation', () => {
     const warning = within(screen.getByRole('dialog', { name: 'Manage sharing' })).getByText(/Competing authority histories need review/)
     expect(warning).toHaveAttribute('role', 'alert')
     expect(warning.closest('details')).toBeNull()
-    expect(screen.queryByText('Recover after Host loss')).not.toBeInTheDocument()
+    expect(screen.queryByText('Choose the default Host after confirmed loss')).not.toBeInTheDocument()
   })
 
   it.each([

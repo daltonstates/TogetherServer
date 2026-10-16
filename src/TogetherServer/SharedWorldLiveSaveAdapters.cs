@@ -1,8 +1,13 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace TogetherServer;
 
 // Candidate protocols only. A real in-game change must be saved while running,
 // transferred, loaded on another PC, and survive another graceful restart before
-// a game may publish a LiveSave version. No such game has passed that gate yet.
+// an exact protected installation may publish a LiveSave version. No game-wide
+// acceptance is inferred from these candidate definitions.
 internal enum LiveSaveChannel { None, ExactManagedConsole, AuthenticatedLocalRcon }
 internal enum LiveSaveEvidence { None, RunScopedCompletion, FrozenSnapshotQuery, ClosedSaveArchive }
 
@@ -19,10 +24,40 @@ internal sealed record LiveSaveCandidate(string Game, IReadOnlyList<LiveSaveStep
 
 internal static class SharedWorldLiveSaveAdapters
 {
-    // Add an individual game only after its reviewed, version-specific external
-    // acceptance record exists. There is no flag that enables all candidates.
-    private static readonly IReadOnlySet<string> AcceptedGames = new HashSet<string>(StringComparer.Ordinal);
-    internal static bool IsGameAccepted(string game) => AcceptedGames.Contains(game);
+    // A game name never grants acceptance. The owner workflow enables an exact
+    // protected installation scope through a Host-created adapter wrapper.
+    internal static bool IsGameAccepted(string game) => false;
+
+    // An unverified checklist is informational. Only the protected owner test
+    // workflow can complete the six stages for an exact installed scope.
+    internal static LiveSaveInstallationAcceptance InstallationChecklist(LiveSaveAcceptanceScope? scope,
+        string? game) => new(false, scope is null ? "LiveSaveScopeUnavailable" :
+            scope.Synthetic ? "SyntheticEvidenceOnly" : "GameAcceptanceRequired",
+        scope is null ? "The exact installed binary and reviewed configuration could not be bound. All real-game stages remain unverified." :
+            scope.Synthetic ? "Fixture evidence never accepts a real game installation." :
+            "Request a private candidate test for this exact installation, transfer its signed copy to another authorized PC, then confirm actual game load, recognizable change and graceful restart.",
+        scope, AcceptanceStages(game));
+
+    internal static LiveSaveAcceptanceScope BindInstallation(Guid profileId, string game,
+        string installationIdentity, string binarySha256, string configurationSha256, bool synthetic)
+    {
+        if (profileId == Guid.Empty || string.IsNullOrWhiteSpace(installationIdentity) ||
+            !ScopeHash(binarySha256) || !ScopeHash(configurationSha256) ||
+            ForGame(game) is null && game != GameKinds.Fixture)
+            throw new InvalidDataException("The live-save acceptance scope is incomplete.");
+        var installation = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
+            new { Contract = 1, Profile = profileId, Game = game, Installation = installationIdentity })));
+        return new(1, profileId, game, installation, binarySha256, configurationSha256,
+            synthetic || game == GameKinds.Fixture);
+    }
+
+    internal static bool SameRealInstallation(LiveSaveAcceptanceScope expected, LiveSaveAcceptanceScope actual) =>
+        expected.ContractVersion == 1 && !expected.Synthetic && !actual.Synthetic &&
+        expected.ProfileId != Guid.Empty && ForGame(expected.Game) is not null &&
+        ScopeHash(expected.InstallationId) && ScopeHash(expected.BinarySha256) &&
+        ScopeHash(expected.ConfigurationSha256) && expected == actual;
+
+    private static bool ScopeHash(string value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
 
     internal static IManagedLiveSnapshotAdapter? CreateSnapshotAdapter(LocalData data,
         GameServerRegistry games, string game) => game switch
@@ -91,7 +126,16 @@ internal static class SharedWorldLiveSaveAdapters
     ];
 }
 
-public sealed record LiveSaveAcceptanceStage(string Id, string State, string Detail);
+public sealed record LiveSaveAcceptanceStage(string Id, string State, string Detail,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Source = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? ObservedUtc = null);
+// Hashes identify an installation and setup without exporting paths or binary data.
+// An external record for one scope can never certify another binary, profile or setup.
+public sealed record LiveSaveAcceptanceScope(int ContractVersion, Guid ProfileId, string Game,
+    string InstallationId, string BinarySha256, string ConfigurationSha256, bool Synthetic,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? BinaryVersion = null);
+public sealed record LiveSaveInstallationAcceptance(bool Accepted, string Code, string Message,
+    LiveSaveAcceptanceScope? Scope, IReadOnlyList<LiveSaveAcceptanceStage> Stages);
 public sealed record SharedWorldLiveSaveStatus(bool Available, string Message, string? Game = null,
     string? Code = null, IReadOnlyList<LiveSaveAcceptanceStage>? Stages = null, bool ResumePending = false,
     LiveSaveAttemptView? LastAttempt = null);

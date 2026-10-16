@@ -19,7 +19,7 @@ public static class CompanionListenerStates
 // The public HTTPS listener is a second listener in the same Windows process.
 // It starts only after the owner enables Friend connections and pairing/TLS
 // material is ready; the local GUI remains bound to loopback.
-public sealed class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
+public sealed partial class CompanionServer(LocalData data, HostManager manager, PairingService pairing,
     GameServerRegistry games, ServerLogService serverLogs, SemaphoreSlim modeGate, int localPort, Func<bool>? isUpdating = null,
     Func<bool>? isShuttingDown = null,
     Func<Guid, CancellationToken, Task<bool>>? recoveryLossProbe = null,
@@ -102,7 +102,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                 throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
             if (!pairing.HasInviteOrCredential() &&
                 !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint) &&
-                !manager.HasSuccessorRouteCandidate(settings))
+                !manager.HasSuccessorRouteCandidate(settings) && PeerWorlds?.HasEnabledGroups != true)
             {
                 await StopCoreAsync();
                 Warning = null;
@@ -216,7 +216,8 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     "/shared-world/resolution/owner-offer", StringComparison.Ordinal) == true;
             var chatSync = context.Request.Path.Value?.EndsWith(
                 "/chat/sync", StringComparison.Ordinal) == true;
-            var maximumBody = authorityIngest ? 2 * 1024 * 1024 :
+            var peerExchange = context.Request.Path.StartsWithSegments("/api/companion/world-peers");
+            var maximumBody = authorityIngest || peerExchange ? 2 * 1024 * 1024 :
                 chatSync ? ServerChat.MaximumWireBytes : 4096;
             if (!manager.CompanionListeningEnabled || !context.Request.IsHttps ||
                 context.Connection.LocalPort != settings.CompanionPort ||
@@ -236,6 +237,7 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
         });
         app.UseRateLimiter();
         MapRoutes(app);
+        MapPeerRoutes(app);
         return app;
     }
 
@@ -316,10 +318,6 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
                     roster.Members.SingleOrDefault(item => item.DeviceId == refreshed.Id) is
                     { Revoked: false } member &&
                     member.PublicKey == refreshed.SharedWorldPublicKey &&
-                    (member.Grants.Receive &&
-                        refreshed.SharedWorldGrants?.GetValueOrDefault(profileId)?.Receive == true ||
-                     member.Grants.RecoveryVoter &&
-                        refreshed.SharedWorldGrants?.GetValueOrDefault(profileId)?.RecoveryVoter == true) &&
                     (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow))
                     return (decision, refreshed);
             }
@@ -780,12 +778,12 @@ public sealed class CompanionServer(LocalData data, HostManager manager, Pairing
             if (!await manager.SharedRosterManagementAvailableAsync(profileId))
             {
                 var inherited = await manager.SharedWorldRosterAsync(profileId);
-                var current = pairing.AuthorizeReceiveSaves(device, profileId, out var enrolled);
+                var current = pairing.AuthorizeSharedHistory(device, profileId, out var enrolled);
                 return current.Ok && !pairing.SharedRosterDirty(profileId) &&
                     SharedWorldRosterTrust.VerifyEnrollment(device.Id, request) &&
                     enrolled?.SharedWorldPublicKey == request.PublicKey &&
                     inherited?.Members.SingleOrDefault(item => item.DeviceId == device.Id) is
-                    { Revoked: false, Grants.Receive: true } member &&
+                    { Revoked: false } member &&
                     member.PublicKey == request.PublicKey &&
                     (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow)
                     ? Results.Json(new PairingDecision(true, "IdentityAlreadyEnrolled",

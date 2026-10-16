@@ -294,6 +294,7 @@ public sealed partial class HostManager
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
             if (profile is null) return new(false, null, "Server not found.");
+            if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile)) return RecoverySharedWorldStatusUnderGate(profile);
             var authorityStatus = SharedAuthorityStatusUnderGate(profile);
             var status = sharedWorlds.Status(profile);
             return status with
@@ -301,9 +302,7 @@ public sealed partial class HostManager
                 LiveSave = LiveSaveStatusUnderGate(profile),
                 CanManageSharing = profile.SeparateCopySourceProfileId is null &&
                     authorityStatus.State == "NoTakeover",
-                Error = profile.SeparateCopySourceProfileId is not null ?
-                    "This is a warned separate copy. Sharing awaits group conflict review." :
-                    authorityStatus.State == "ReviewRequired" ? authorityStatus.Message : status.Error,
+                Error = authorityStatus.State == "ReviewRequired" ? authorityStatus.Message : status.Error,
                 Authority = authorityStatus
             };
         }

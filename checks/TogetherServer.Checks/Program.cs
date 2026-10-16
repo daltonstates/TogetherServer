@@ -520,8 +520,8 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
             migrated.ServerInvites[0].Generation == generation && migrated.CredentialRenewals.Count == 1,
             "v1 pairing devices, assignment, permissions, invite lineage, or renewal receipt were lost");
         using var marker = JsonDocument.Parse(File.ReadAllText(Path.Combine(migrationRoot, "storage-schema.json")));
-        Require(marker.RootElement.GetProperty("version").GetInt32() == 4,
-            "the directory schema marker did not advance to v4");
+        Require(marker.RootElement.GetProperty("version").GetInt32() == 5,
+            "the directory schema marker did not advance to v5");
         var migratedBytes = migratedData.LoadProtected("pairing-state.protected")!;
         var migratedSnapshot = JsonSerializer.Deserialize<PairingPersistentState>(migratedBytes, json);
         Require(migratedSnapshot?.SchemaVersion == 3,
@@ -549,6 +549,10 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
     {
         using var _ = new LocalData(migrationRoot, 5131, supportedStorageSchemaVersion: 3);
     }, "a simulated v3 binary opened v4 authority fencing state");
+    RequireThrows<InvalidDataException>(() =>
+    {
+        using var _ = new LocalData(migrationRoot, 5131, supportedStorageSchemaVersion: 4);
+    }, "a simulated v4 binary opened v5 peer authorization state");
 
     var interruptedRoot = Path.Combine(root, "storage-v3-interrupted-pairing-v1");
     Directory.CreateDirectory(interruptedRoot);
@@ -564,12 +568,12 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
 
     var newerRoot = Path.Combine(root, "storage-newer-schema");
     Directory.CreateDirectory(newerRoot);
-    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":5}");
+    File.WriteAllText(Path.Combine(newerRoot, "storage-schema.json"), "{\"version\":6}");
     RequireThrows<InvalidDataException>(() =>
     {
         using var _ = new LocalData(newerRoot);
     }, "the current binary opened an unknown newer storage schema");
-    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("5", StringComparison.Ordinal),
+    Require(File.ReadAllText(Path.Combine(newerRoot, "storage-schema.json")).Contains("6", StringComparison.Ordinal),
         "newer-schema rejection rewrote the unsupported marker");
     return Task.CompletedTask;
 });
@@ -7250,11 +7254,25 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 separateSetup, "Warned fixture", "Warned fixture");
             try
             {
+                // Check failures before the first successful restore creates an
+                // idempotent local profile. Recovery verifies its retained copy.
+                var separateFile = SharedWorldService.SafeChild(Path.Combine(
+                    new SharedWorldSeparateCopyStore(separatePc).RetainedRoot(separateFork),
+                    version.VersionHash, SharedWorldService.PayloadDirectory), version.Files[0].Path);
+                var preservedBytes = File.ReadAllBytes(separateFile);
+                File.WriteAllText(separateFile, "tampered separate vault");
+                Require(!(await separateManager.RestoreSeparateCopyAsync(profile.Id,
+                    separateRequest)).Ok, "a warned copy restored tampered retained save files");
+                File.WriteAllBytes(separateFile, preservedBytes);
+                Require((await separateManager.RestoreSeparateCopyAsync(profile.Id,
+                    separateRequest, freeBytes: _ => 0)).Code == "LocalSetupIncomplete",
+                    "a warned copy ignored the 1 GiB space reserve");
                 var noListenerRestore = await separateManager.RestoreSeparateCopyAsync(
                     profile.Id, separateRequest);
-                Require(noListenerRestore.Code == "LocalSetupIncomplete" &&
-                    noListenerRestore.PendingChecks?.Any(check => check.Contains("pinned HTTPS control listener")) == true,
-                    $"restore passed without this app's listener: {noListenerRestore.Code}; " +
+                Require(noListenerRestore.Ok && noListenerRestore.ProfileId is not null &&
+                    !(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ControlRouteVerified,
+                    $"local recovery required a listener or claimed outside route proof: {noListenerRestore.Code}; " +
                     $"pending: {string.Join(", ", noListenerRestore.PendingChecks ?? [])}");
                 await separateListener.SyncAsync();
                 Require(separateListener.ListenerState == CompanionListenerStates.Listening &&
@@ -7266,23 +7284,14 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                     separateListener.OwnsListener(endpoint, port, new string('A', 64), bind);
                 var wrongPinRestore = await wrongPinManager.RestoreSeparateCopyAsync(
                     profile.Id, separateRequest);
-                Require(wrongPinRestore.Code == "LocalSetupIncomplete" &&
-                    wrongPinRestore.PendingChecks?.Any(check => check.Contains("pinned HTTPS control listener")) == true,
-                    $"restore passed with a wrong listener pin: {wrongPinRestore.Code}; " +
+                Require(wrongPinRestore.Ok &&
+                    !(await wrongPinManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ControlRouteVerified,
+                    $"local recovery depended on optional listener ownership or claimed route proof: {wrongPinRestore.Code}; " +
                     $"pending: {string.Join(", ", wrongPinRestore.PendingChecks ?? [])}");
                 Require(!separateListener.OwnsListener(separateAddress, separatePort,
                         new string('A', 64), "127.0.0.1"),
                     "a wrongly pinned control listener was treated as owned");
-                var separateFile = SharedWorldService.SafeChild(Path.Combine(separateVault,
-                    version.VersionHash, SharedWorldService.PayloadDirectory), version.Files[0].Path);
-                var preservedBytes = File.ReadAllBytes(separateFile);
-                File.WriteAllText(separateFile, "tampered separate vault");
-                Require(!(await separateManager.RestoreSeparateCopyAsync(profile.Id,
-                    separateRequest)).Ok, "a warned copy restored tampered save files");
-                File.WriteAllBytes(separateFile, preservedBytes);
-                Require((await separateManager.RestoreSeparateCopyAsync(profile.Id,
-                    separateRequest, freeBytes: _ => 0)).Code == "LocalSetupIncomplete",
-                    "a warned copy ignored the 1 GiB space reserve");
                 var separateRestored = await separateManager.RestoreSeparateCopyAsync(profile.Id,
                     separateRequest);
                 Require(separateRestored.Ok && separateRestored.ProfileId is { } separateLocalId &&
@@ -7297,8 +7306,12 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                     "warned copy gained authority sharing or accepted the wrong signed branch");
                 Require((await separateManager.FinishSeparateCopyAsync(profile.Id,
                     new SeparateCopyHostFinishRequest(separateFork.BranchHash,
-                        separateSetup))).Code == "SeparateChecksPending",
-                    "warned copy finished without a second-PC route round trip");
+                        separateSetup))).Code == "SeparateReadyForManualStart" &&
+                    (await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ReadyForManualStart &&
+                    !(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ControlRouteVerified,
+                    "local recovery required second-PC proof or treated local readiness as route evidence");
                 pcs[1].SaveProtected($"shared-world-pc-signing-{ids[1]:N}.protected",
                     keys[1].ExportPkcs8PrivateKey());
                 using var observerKey = ECDsa.Create();
@@ -7321,8 +7334,10 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                     separateChallenge, separateFork) &&
                     (await separateManager.FinishSeparateCopyAsync(profile.Id,
                         new SeparateCopyHostFinishRequest(separateFork.BranchHash,
-                            separateSetup))).Code == "SeparateChecksPending",
-                    "the observer PC did not receive a valid pinned HTTPS route proof");
+                            separateSetup))).Code == "SeparateReadyForManualStart" &&
+                    !(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ControlRouteVerified,
+                    "the optional pinned proof failed or was treated as a confirmed observer receipt");
                 RequireThrows<InvalidDataException>(() =>
                     SharedWorldSeparateRoute.SignConfirmation(separateFork,
                         separateChallenge, separateProof!, keys[0]),
@@ -7383,22 +7398,24 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 var separateFinished = await separateManager.FinishSeparateCopyAsync(profile.Id,
                     new SeparateCopyHostFinishRequest(separateFork.BranchHash, separateSetup));
                 Require(separateFinished.Code == "SeparateReadyForManualStart" &&
-                    new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0,
+                    new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0 &&
+                    (await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ControlRouteVerified,
                     $"warned copy became authoritative or could not finish: {separateFinished.Code} {separateFinished.Message}");
                 var restartedSeparateManager = new HostManager(separatePc,
                     Games(separatePc), separateClock)
                 { CompanionListenerOwnershipProbe = separateListener.OwnsListener };
-                Require(!(await restartedSeparateManager.SeparateCopyHostStatusAsync(profile.Id,
+                Require((await restartedSeparateManager.SeparateCopyHostStatusAsync(profile.Id,
                         separateFork.BranchHash)).ReadyForManualStart &&
                     (await restartedSeparateManager.SeparateCopyHostStatusAsync(profile.Id,
                         separateFork.BranchHash, hostLossCurrent: true)).ReadyForManualStart,
-                    "separate-copy readiness after restart omitted current Host-loss evidence");
+                    "local recovery readiness after restart depended on current Host-loss evidence");
                 separateClock.Advance(TimeSpan.FromHours(1) + TimeSpan.FromMinutes(1));
-                Require(!(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
-                        separateFork.BranchHash, hostLossCurrent: true)).ReadyForManualStart &&
-                    !(await separateManager.StartSeparateCopyAsync(restoredId,
-                        separateFork.BranchHash)).Ok,
-                    "an expired second-PC route proof still enabled manual Start");
+                Require((await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ReadyForManualStart &&
+                    !(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ControlRouteVerified,
+                    "expired optional route evidence blocked local recovery or remained current");
                 separateClock.Advance(-TimeSpan.FromHours(1) - TimeSpan.FromMinutes(1));
                 var separateStarted = await separateManager.StartSeparateCopyAsync(restoredId,
                     separateFork.BranchHash);
@@ -7413,13 +7430,36 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 Require((await separateManager.StopAsync(restoredId)).Ok,
                     "warned copy could not stop after a later manual Start");
                 new SharedWorldSeparateCopyStore(separatePc).MarkHostReturned(profile.Id);
-                Require((await separateManager.StartSeparateCopyAsync(restoredId,
-                        separateFork.BranchHash)).Code == "SeparateCopyReviewRequired" &&
-                    (await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                Require((await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ReadyForManualStart &&
+                    !(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
                         separateFork.BranchHash)).ReviewRequired &&
                     new SharedWorldSeparateCopyStore(separatePc).Read(profile.Id).Count == 2 &&
                     new WorldAuthorityStore(separatePc).Read(profile.Id).Count == 0,
-                    "returning Host did not fence the warned branch or preserve both signed forks");
+                    "returning Host preempted local recovery or removed a preserved signed fork");
+                // Preserve independently signed competing decisions without
+                // another fixture Start; only inspect the readiness projection.
+                var separateAuthority = new WorldAuthorityStore(separatePc);
+                foreach (var competingOffer in new[] { offer, separateOffer })
+                {
+                    var competingVotes = Enumerable.Range(0, 2).Select(index =>
+                    {
+                        var draft = new WorldAuthorityVote(1,
+                            WorldAuthorityTrust.ProposalHash(competingOffer.Proposal), ids[index],
+                            Convert.ToBase64String(keys[index].ExportSubjectPublicKeyInfo()), "");
+                        return draft with { Signature = Convert.ToBase64String(keys[index].SignData(
+                            WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+                    }).ToArray();
+                    SharedWorldElection.ConfirmQuorum(competingOffer, competingVotes,
+                        separateAuthority, separateVault);
+                }
+                Require(WorldAuthorityTrust.EffectiveHeads(separateAuthority.Read(profile.Id)).Length == 2 &&
+                    (await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ReadyForManualStart &&
+                    !(await separateManager.SeparateCopyHostStatusAsync(profile.Id,
+                        separateFork.BranchHash)).ReviewRequired &&
+                    new SharedWorldSeparateCopyStore(separatePc).Read(profile.Id).Count == 2,
+                    "competing default authorities preempted recovery or erased a preserved branch");
             }
             finally { await separateListener.StopAsync(); }
         }
@@ -7434,11 +7474,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
         separate.MarkHostReturned(profile.Id);
         Require(separate.HostReturned(profile.Id, separateBranch.BranchHash) &&
             separate.Read(profile.Id).Single().BranchHash == separateBranch.BranchHash,
-            "Host return removed the signed separate history or did not fence it");
+            "Host return removed the signed separate history or lost its durable observation");
         var returnedBytes = pcs[0].LoadProtected(branchName)!;
         pcs[0].SaveProtected(branchName, branchBytes);
         RequireThrows<InvalidDataException>(() => separate.Read(profile.Id),
-            "rolling back the Host-return fence was accepted");
+            "rolling back the durable Host-return observation was accepted");
         pcs[0].SaveProtected(branchName, returnedBytes);
         var vote0 = SharedWorldElection.Vote(losses[0], vaults[0], floor, roster.OwnerPublicKey,
             offer, ids[0], keys[0], new WorldAuthorityStore(pcs[0]));

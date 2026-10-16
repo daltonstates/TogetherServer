@@ -18,7 +18,7 @@ internal sealed partial class FriendLink
             try
             {
                 if (config is null || branch is null ||
-                    !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+                    !HasSharedWorldReceiveConsent(profileId) ||
                     !SharedWorldSeparateCopyStore.Verify(branch) ||
                     branch.Offer.Proposal.ProfileId != profileId ||
                     config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) !=

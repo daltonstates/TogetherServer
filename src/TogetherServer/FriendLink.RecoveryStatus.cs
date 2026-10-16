@@ -12,7 +12,7 @@ internal sealed partial class FriendLink
         gate.Wait();
         try
         {
-            if (config is null || !config.ConsentedSharedWorldProfiles.Contains(profileId) ||
+            if (config is null || !HasSharedWorldReceiveConsent(profileId) ||
                 config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) is not { } group)
                 return [];
             return new SharedWorldSeparateCopyStore(data).Read(profileId)

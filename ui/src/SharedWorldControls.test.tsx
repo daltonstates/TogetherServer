@@ -45,7 +45,7 @@ describe('Shared saves controls', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     expect(await screen.findByText(/Your verified copy remains available for guarded recovery below/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
-    fireEvent.click(screen.getByText('Recover after Host loss'))
+    fireEvent.click(screen.getByText('Choose the default Host after confirmed loss'))
     const prepare = screen.getByRole('button', { name: 'Prepare signed offer' })
     expect(prepare).toBeEnabled()
     fireEvent.click(prepare)
@@ -375,6 +375,7 @@ describe('Shared saves controls', () => {
     expect(screen.getByRole('region', { name: 'Shared worlds' }))
       .not.toHaveTextContent('Ready for manual Start')
     fireEvent.click(await screen.findByRole('button', { name: 'Host this save' }))
+    fireEvent.click(screen.getByText("Transfer the group's default hosting"))
     fireEvent.click(await screen.findByRole('button', { name: 'Finish setup and checks' }))
     await waitFor(() => expect(screen.getByRole('region', { name: 'Shared worlds' }))
       .toHaveTextContent('Ready for manual Start; game load untested'))
@@ -517,8 +518,34 @@ describe('Shared saves controls', () => {
     expect(screen.getByLabelText('Eligible host for Friend PC')).toBeChecked()
     fireEvent.click(screen.getByLabelText('Manage sharing for Friend PC'))
     await waitFor(() => expect(bodies).toEqual([{ grants: {
-      receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: true
+      receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: true, reshare: false
     } }]))
+  })
+
+  it('keeps forwarding off for older rosters and changes only its owner-controlled grant', async () => {
+    let forwarding: boolean | undefined
+    const bodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/governance')) return reply({ revision: 7, ownerOverride: true,
+        members: [{ deviceId: device.id, grants: { receive: true, eligibleHost: false,
+          recoveryVoter: true, manageSharing: false, ...(forwarding === undefined ? {} : { reshare: forwarding }) },
+          revoked: false, accessExpiresUtc: null }] })
+      if (url.endsWith('/grants')) {
+        const body = JSON.parse(String(init?.body)) as { grants: { reshare: boolean } }
+        bodies.push(body); forwarding = body.grants.reshare
+        return reply({ ok: true, code: 'Saved', message: 'Forwarding grant saved.' })
+      }
+      return reply({ enabled: true, latest: null, error: null })
+    }))
+    render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled onGrantChanged={async () => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
+    fireEvent.click(screen.getByText('Sharing permissions and owner choice'))
+    const grant = await screen.findByLabelText('Forward verified saves for Friend PC')
+    expect(grant).not.toBeChecked()
+    fireEvent.click(grant)
+    await waitFor(() => expect(grant).toBeChecked())
+    expect(bodies).toEqual([{ grants: { receive: true, eligibleHost: false, recoveryVoter: true, manageSharing: false, reshare: true } }])
+    expect(screen.getByLabelText('Eligible host for Friend PC')).not.toBeChecked()
   })
 
   it('lets a Manage sharing Friend edit another PC without Receive consent', async () => {
@@ -664,6 +691,7 @@ describe('Shared saves controls', () => {
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Host this save' }))
+    fireEvent.click(screen.getByText("Transfer the group's default hosting"))
     expect(await screen.findByText('Verified copy on this PC')).toBeInTheDocument()
     expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check signed offer and stage copy' }))
@@ -819,8 +847,8 @@ describe('Shared saves controls', () => {
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     expect(await screen.findByText(/Votes 1\/2/)).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Recover after Host loss'))
-    fireEvent.click(screen.getByText('Recover after Host loss').closest('details')!.querySelector('details > summary')!)
+    fireEvent.click(screen.getByText('Choose the default Host after confirmed loss'))
+    fireEvent.click(screen.getByText('Choose the default Host after confirmed loss').closest('details')!.querySelector('details > summary')!)
     fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
     expect(await screen.findByLabelText('Signed offer code')).toHaveValue(JSON.stringify(offer))
     fireEvent.change(screen.getByLabelText('Offer code from candidate PC'), { target: { value: '{broken' } })
@@ -853,34 +881,61 @@ describe('Shared saves controls', () => {
     expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
   })
 
-  it('shows recovery errors and requires an explicit split warning before recording a separate history', async () => {
-    const calls: string[] = []
+  it('allows manual solo recovery while the original Host is Ready and requires its explicit branch warning', async () => {
+    const calls: { url: string; body: unknown }[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
-        calls.push(url)
-        if (url.endsWith('/offer')) return reply({ ok: false, code: 'HostLossNotConfirmed',
-          message: 'Wait for two minutes of failed secure Host checks.' })
+        calls.push({ url, body: JSON.parse(String(init.body)) })
+        if (url.endsWith('/solo/prepare')) return reply({ ok: true, code: 'SoloRecoveryPrepared',
+          message: 'Review the complete recovery copy.', offer: { ...offer,
+            version: { ...offer.version, createdUtc: '2020-01-01T00:00:00Z' } } })
         return reply({ ok: true, code: 'SeparateCopyRecorded', message: 'A separate history was recorded.' })
       }
-      if (url.endsWith('/recovery')) return reply({ ...noRecovery, state: 'OfferArmed', votes: 0, required: 2,
-        version: 3, versionHash: 'A'.repeat(64), candidateAddress: offer.proposal.candidateAddress,
-        candidateDeviceId: device.id, proposalHash: 'B'.repeat(64) })
-      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null })
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/handoff/restore')) return reply({ staged: false })
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null,
+        completedUtc: '2020-01-01T00:00:00Z' })
     }))
-    render(<FriendSharedWorlds profileId={profile} available />)
+    render(<FriendSharedWorlds profileId={profile} available serverState="Ready" serverStatusFresh />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    fireEvent.click(await screen.findByText('Recover after Host loss'))
-    const separateButton = await screen.findByRole('button', { name: 'Record separate history' })
+    const solo = screen.getByRole('region', { name: 'Manual solo recovery' })
+    expect(within(solo).getByText(/Older complete copies remain usable/)).toBeInTheDocument()
+    expect(within(solo).queryByRole('button', { name: 'Record recovery branch' })).not.toBeInTheDocument()
+    fireEvent.click(within(solo).getByRole('button', { name: 'Prepare solo recovery' }))
+    const separateButton = await within(solo).findByRole('button', { name: 'Record recovery branch' })
     expect(separateButton).toBeDisabled()
-    expect(screen.getByText(/another game server may still be running/i)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Prepare signed offer' }))
-    expect(await screen.findByText(/Wait for two minutes/)).toBeInTheDocument()
-    expect(calls).not.toContain(`/api/local/friend/${profile}/shared-world/recovery/separate`)
-    fireEvent.click(screen.getByLabelText('I understand this world may split into separate histories'))
+    expect(calls).toEqual([{ url: `/api/local/friend/${profile}/shared-world/recovery/solo/prepare`, body: { sourceBranchHash: null } }])
+    fireEvent.click(within(solo).getByLabelText('I understand another server may still be running and both histories will be kept'))
     fireEvent.click(separateButton)
-    await waitFor(() => expect(calls).toContain(`/api/local/friend/${profile}/shared-world/recovery/separate`))
+    await waitFor(() => expect(calls).toContainEqual({ url: `/api/local/friend/${profile}/shared-world/recovery/separate`, body: { acceptSplitWarning: true } }))
     expect(await screen.findByText('A separate history was recorded.')).toBeInTheDocument()
-    expect(separateButton).toBeDisabled()
+    expect(within(solo).queryByRole('button', { name: 'Record recovery branch' })).not.toBeInTheDocument()
+    expect(calls).toHaveLength(2)
+  })
+
+  it('prepares the explicitly selected branch while offline without borrowing the default copy date', async () => {
+    const bodies: unknown[] = []
+    const selectedBranch = 'C'.repeat(64)
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/solo/prepare')) {
+        bodies.push(JSON.parse(String(init?.body)))
+        return reply({ ok: true, code: 'SoloRecoveryPrepared', message: 'Selected history verified.',
+          offer: { ...offer, version: { ...offer.version, createdUtc: '2021-01-01T00:00:00Z' } } })
+      }
+      if (url.endsWith('/recovery')) return reply({ ...noRecovery, state: 'HistoryReviewRequired' })
+      if (url.endsWith('/handoff/restore')) return reply({ staged: false })
+      return reply({ consented: true, hostVersion: null, thisPcVersion: null, state: 'Host unavailable', error: null,
+        completedUtc: '2026-01-01T00:00:00Z' })
+    }))
+    render(<FriendSharedWorlds profileId={profile} available={false} sourceBranchHash={selectedBranch} />)
+    const solo = await screen.findByRole('region', { name: 'Manual solo recovery' })
+    const prepare = within(solo).getByRole('button', { name: 'Prepare solo recovery' })
+    await waitFor(() => expect(prepare).toBeEnabled())
+    expect(solo.querySelector('time')).toBeNull()
+    fireEvent.click(prepare)
+    await within(solo).findByRole('button', { name: 'Record recovery branch' })
+    expect(bodies).toEqual([{ sourceBranchHash: selectedBranch }])
+    expect(solo.querySelector('time')).toHaveAttribute('datetime', '2021-01-01T00:00:00Z')
   })
 
   it('labels another PC’s current majority and superseded history without keeping an old offer code', async () => {
@@ -902,9 +957,9 @@ describe('Shared saves controls', () => {
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(await screen.findByText('Choose the default Host after confirmed loss'))
     await screen.findByText(/Votes 0\/2/)
-    fireEvent.click(screen.getByText('Recover after Host loss').closest('details')!.querySelector('details > summary')!)
+    fireEvent.click(screen.getByText('Choose the default Host after confirmed loss').closest('details')!.querySelector('details > summary')!)
     fireEvent.click(await screen.findByRole('button', { name: 'Show signed offer code' }))
     expect(await screen.findByLabelText('Signed offer code')).toBeInTheDocument()
     state = 'ObservedMajority'
@@ -924,7 +979,7 @@ describe('Shared saves controls', () => {
     expect(screen.queryByText(/Current candidate PC/)).not.toBeInTheDocument()
   })
 
-  it('drops an armed code and split action when the authority head changes while open', async () => {
+  it('drops an obsolete default offer code while retaining independent manual solo recovery', async () => {
     let changed = false
     let reads = 0
     let codeReads = 0
@@ -943,25 +998,24 @@ describe('Shared saves controls', () => {
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(await screen.findByText('Choose the default Host after confirmed loss'))
     // The section is available before its independent recovery poll commits.
     // Wait for the armed proposal before choosing its conditional details.
     await screen.findByText(/Votes 1\/2/)
-    fireEvent.click(screen.getByText('Recover after Host loss').closest('details')!.querySelector('details > summary')!)
+    fireEvent.click(screen.getByText('Choose the default Host after confirmed loss').closest('details')!.querySelector('details > summary')!)
     fireEvent.click(await screen.findByRole('button', { name: 'Show signed offer code' }))
     await waitFor(() => expect(codeReads).toBe(1))
     expect(screen.queryByLabelText('Signed offer code')).not.toBeInTheDocument()
     codeHash = 'B'.repeat(64)
     fireEvent.click(screen.getByRole('button', { name: 'Show signed offer code' }))
     expect(await screen.findByLabelText('Signed offer code')).toBeInTheDocument()
-    fireEvent.click(screen.getByLabelText('I understand this world may split into separate histories'))
-    expect(screen.getByRole('button', { name: 'Record separate history' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Prepare solo recovery' })).toBeEnabled()
     const readsBeforeChange = reads
     changed = true
     await waitFor(() => expect(reads).toBeGreaterThan(readsBeforeChange), { timeout: 3500 })
     await waitFor(() => expect(screen.getByText(/Competing authority histories need review/)).toBeInTheDocument())
     expect(screen.queryByLabelText('Signed offer code')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Record separate history' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Prepare solo recovery' })).toBeEnabled()
     expect(screen.queryByText(/Votes 1\/2/)).not.toBeInTheDocument()
   })
 
@@ -977,7 +1031,7 @@ describe('Shared saves controls', () => {
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    fireEvent.click(await screen.findByText('Recover after Host loss'))
+    fireEvent.click(await screen.findByText('Choose the default Host after confirmed loss'))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh recovery' }))
     expect(reads).toBe(1)
     finishRead?.(reply(noRecovery))

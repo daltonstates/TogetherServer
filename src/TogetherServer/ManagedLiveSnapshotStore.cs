@@ -360,7 +360,9 @@ internal sealed class ManagedLiveSnapshotStore(LocalData data, GameServerRegistr
         var world = Path.TrimEndingDirectorySeparator(Path.GetFullPath(profile.WorldDirectory));
         if (!SamePath(run.WorldDirectory, world) || !Inside(world, source))
             throw new InvalidDataException("The reviewed save source escaped the recorded world.");
-        var owned = profile.Kind switch
+        var owned = profile.SeparateCopySourceProfileId is not null
+            ? SharedWorldBranchLiveSource.IsOwnedSaveSource(data, profile, source)
+            : profile.Kind switch
         {
             GameKinds.Valheim => profile.WorldSource == "New" && SamePath(world, data.NewWorldDirectory(profile.Id)) && data.OwnsNewWorld(profile) ||
                 profile.WorldSource == "Existing" && ValheimSetup.IsImportedWorld(data, profile.Id, world),

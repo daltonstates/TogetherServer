@@ -28,6 +28,10 @@ public sealed class PairedDevice
     public string? SharedWorldPublicKey { get; set; }
     // This credential follows one signed takeover, not a server-code generation.
     public string? SuccessorAuthorityHash { get; set; }
+    public string? PeerWorldGroupKey { get; set; }
+    public Guid? PeerWorldSourceProfileId { get; set; }
+    public Guid? PeerWorldSourceDeviceId { get; set; }
+    public string? PeerWorldBranchHash { get; set; }
     // Global permissions remain the default. Entries are stored only when an
     // assigned server differs from that default, so the owner can see and edit
     // explicit per-server exceptions without duplicating the access list.
@@ -435,12 +439,14 @@ public sealed partial class PairingService
         {
             if (!HasSuccessorSharedProfile())
             {
-                var normalized = NormalizeAssignments() | NormalizeServerCodes();
+                var normalized = NormalizeAssignments(out var rosterChanged);
+                var codesChanged = NormalizeServerCodes();
+                normalized |= codesChanged;
                 normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
                     devices.All(device => device.Id != receipt.DeviceId)) > 0;
                 if (normalized)
                 {
-                    MarkSharedRostersDirty();
+                    if (rosterChanged || codesChanged) MarkSharedRostersDirty();
                     SaveState();
                 }
             }
@@ -461,12 +467,14 @@ public sealed partial class PairingService
         !data.LoadSettings().Profiles.Any(profile =>
             affected.Contains(profile.Id) && AuthorityStateOrDamaged(profile.Id));
     private static IEnumerable<Guid> AffectedProfiles(PairedDevice device) =>
+        device.PeerWorldGroupKey is not null ? [] :
         (device.AssignedProfileIds ?? []).Concat(device.SharedWorldGrants?.Keys.AsEnumerable() ??
             Enumerable.Empty<Guid>()).Append(device.ProfileId).Where(id => id != Guid.Empty);
     // Transport assignment alone is not signed membership. In particular,
     // Activate creates an assigned PC without a shared-world signing key.
     private IReadOnlyCollection<Guid> SignedRosterProfiles(PairedDevice device)
     {
+        if (device.PeerWorldGroupKey is not null) return [];
         var assigned = AffectedProfiles(device).ToHashSet();
         var affected = new HashSet<Guid>();
         var authority = new WorldAuthorityStore(data);
@@ -667,8 +675,9 @@ public sealed partial class PairingService
         return changed;
     }
 
-    private bool NormalizeAssignments()
+    private bool NormalizeAssignments(out bool rosterChanged)
     {
+        var canonicalBefore = JsonSerializer.SerializeToUtf8Bytes(devices.Where(item => item.PeerWorldGroupKey is null).ToArray());
         var changed = false;
         foreach (var device in devices)
         {
@@ -737,7 +746,8 @@ public sealed partial class PairingService
         }
         foreach (var duplicate in devices.Where(item => item.SharedWorldPublicKey is not null)
                      .GroupBy(item => item.SharedWorldPublicKey, StringComparer.Ordinal)
-                     .Where(group => group.Count() > 1))
+                     .Where(group => group.Select(item => item.PeerWorldSourceDeviceId ?? item.Id).Distinct().Count() > 1 ||
+                         group.Count(item => item.PeerWorldGroupKey is null) > 1))
             foreach (var device in duplicate)
             {
                 device.SharedWorldPublicKey = null;
@@ -745,12 +755,16 @@ public sealed partial class PairingService
                 device.SaveReceiveProfileIds?.Clear();
                 changed = true;
             }
+        rosterChanged = !canonicalBefore.AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(
+            devices.Where(item => item.PeerWorldGroupKey is null).ToArray()));
         return changed;
     }
 
     private bool IsRevoked(PairedDevice device)
     {
         if (device.Revoked) return true;
+        if (device.PeerWorldGroupKey is not null)
+            return PeerMembershipDecision(device, UtcNow).Code == "Revoked";
         if (device.SuccessorAuthorityHash is { } authorityHash)
         {
             try { return new WorldAuthorityStore(data).LocalAuthorizedHead(device.ProfileId)?.RecordHash != authorityHash; }
@@ -768,8 +782,13 @@ public sealed partial class PairingService
 
     private PairingDecision AuthorizationDecision(PairedDevice device, DateTimeOffset now)
     {
-        if (IsRevoked(device))
+        if (device.Revoked || device.PeerWorldGroupKey is null && IsRevoked(device))
             return new(false, "Revoked", "This server code was replaced or this PC's access was removed.");
+        if (device.PeerWorldGroupKey is not null)
+        {
+            var membership = PeerMembershipDecision(device, now);
+            if (!membership.Ok) return membership;
+        }
         if (device.ApprovalPending)
             return new(false, "ApprovalPending", "The Host must approve this PC locally before it can connect.");
         if (device.CredentialExpiresUtc <= now)
@@ -1670,10 +1689,8 @@ public sealed partial class PairingService
             if (current is null) return new(false, "Unauthorized", "This PC's saved access was not accepted.");
             var decision = AuthorizationDecision(current, UtcNow);
             if (!decision.Ok) return decision;
-            var grants = current.SharedWorldGrants?.GetValueOrDefault(profileId);
             return current.AssignedProfileIds?.Contains(profileId) == true &&
-                current.SharedWorldPublicKey is not null &&
-                grants is not null && (grants.Receive || grants.RecoveryVoter)
+                current.SharedWorldPublicKey is not null
                 ? new(true, "HistoryReviewAllowed", "Shared world history review is allowed.")
                 : new(false, "PermissionDenied", "History review is not granted to this PC for this server.");
         }
@@ -1683,6 +1700,8 @@ public sealed partial class PairingService
     {
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
+            if (devices.Any(item => item.Id == deviceId && item.PeerWorldGroupKey is not null))
+                return new(false, "PeerMembershipReadOnly", "Change shared world grants on the original signed member, not a session credential.");
             if (!CanChangeSharedRoster([profileId])) return SuccessorRosterDenied();
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
                 item.CredentialHash is not null);
@@ -1712,6 +1731,8 @@ public sealed partial class PairingService
         if (grants is null) return new(false, "InvalidGrants", "Choose the reviewed shared world grants.");
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
+            if (devices.Any(item => item.Id == deviceId && item.PeerWorldGroupKey is not null))
+                return new(false, "PeerMembershipReadOnly", "Change shared world grants on the original signed member, not a session credential.");
             if (!CanChangeSharedRoster([profileId])) return SuccessorRosterDenied();
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
                 item.CredentialHash is not null && !item.ApprovalPending &&
@@ -1739,10 +1760,10 @@ public sealed partial class PairingService
             if (!CanChangeSharedRoster(AffectedProfiles(device))) return SuccessorRosterDenied();
             if (device.SharedWorldPublicKey is not null && device.SharedWorldPublicKey != request.PublicKey)
                 return new(false, "KeyReviewRequired", "The owner must reset this PC's shared world identity first.");
-            if (devices.Any(item => item.Id != deviceId && item.SharedWorldPublicKey == request.PublicKey))
-                return new(false, "KeyAlreadyBound", "This signing identity is already bound to another PC.");
             if (device.SharedWorldPublicKey == request.PublicKey)
                 return new(true, "IdentityAlreadyEnrolled", "This PC's signing identity is already bound.");
+            if (devices.Any(item => item.Id != deviceId && item.SharedWorldPublicKey == request.PublicKey))
+                return new(false, "KeyAlreadyBound", "This signing identity is already bound to another PC.");
             device.SharedWorldPublicKey = request.PublicKey;
             MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
@@ -1770,7 +1791,7 @@ public sealed partial class PairingService
 
     public IReadOnlyList<SharedWorldRosterMember> SharedRosterMembers(Guid profileId)
     {
-        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync) return devices.Where(item => item.SharedWorldPublicKey is not null &&
+        lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync) return devices.Where(item => item.PeerWorldGroupKey is null && item.SharedWorldPublicKey is not null &&
                 (item.AssignedProfileIds?.Contains(profileId) == true ||
                  item.SharedWorldGrants?.ContainsKey(profileId) == true))
             .Select(item => new SharedWorldRosterMember(item.Id, item.SharedWorldPublicKey!,

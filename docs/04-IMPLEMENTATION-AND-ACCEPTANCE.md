@@ -1,5 +1,15 @@
 # Implementation order and acceptance
 
+The 2026-10-16 peer-world implementation and its current verification results
+are tracked in [delivery document 26](26-PEER-SHARED-WORLDS-DELIVERY.md).
+Source/synthetic checks cover solo/descendant recovery, signed directory and
+default conflicts, owner-offline catchup, permission boundaries, resumable
+ancestry, partial/tampered copies and installation-scoped acceptance. Component
+checks exercise explicit user actions with mocked APIs. These checks do not
+prove real peer networking, game availability, separate-PC transfer or actual
+game load/change/restart. Those checks require separately approved test PCs or
+an unattended Windows session. No real installed game is accepted by a fixture.
+
 Foreground safety takes precedence over local process acceptance. Automated work must preserve the owner's foreground window and keyboard focus. Use `scripts/verify-code-only.ps1` on the active desktop; direct process runners and full release, desktop or installer checks require an explicitly approved separate PC or dedicated unattended Windows session. Hidden/tray mode and `-SkipDesktop` do not establish focus safety. Guarded scripts require `-AllowInteractiveTests` and refuse before launch without it. The 2026-10-05 full gate was stopped after the owner reported game interference; remaining stages are incomplete, not passed. Six early-refusal cases and PowerShell parsing passed without launching an app or fixture.
 
 Live-save slice validation on 2026-10-04 through 2026-10-05: PASS source fixed-action group covering duplicate requests, storage exhaustion, source mutation, cancellation, concurrent owner Stop, interrupted signed directory, guarded quarantine/withdrawal/retry, and invalid Bedrock resume preservation. Follow-up source checks pass for typed immutable snapshots, native Windows directory/file leases, actual attribute-only reparse substitutions, exact request cleanup and cancellation during the final native process check. PASS 43 focused live-save UI trust-decoder/action cases, 12 Minecraft fixture groups, five Factorio fixture groups and two Terraria fixture groups. Bedrock changes its disposable source at resume to prove copy-before-resume; a refused console dispatch returns review-required and preserves the hold. The earlier staging slice passed three packaged groups for exact-process completion, signed publication, pinned multi-chunk Receive/hash/receipt, both app restarts without replay, and concurrent Stop with post-Stop continuity. Final packaged verification of the integrated game candidates is pending. The symbolic-link subcase skips because this Windows user cannot create that link; junction and native reparse checks have separate coverage. All network results are loopback/synthetic. Real completion, immutable snapshot consistency, separate-PC transfer, game load/change/restart and browser/viewport acceptance remain unverified or unavailable; every real game's live action stays disabled.

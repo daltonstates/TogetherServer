@@ -28,7 +28,26 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Revoked PC deletion", () => { RevokedDeviceDeletionChecks.Run(root); return Task.CompletedTask; }),
     ("Remembered Friend revocation", () => FriendRevocationVisibilityChecks.RunAsync(root)),
     ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
-    ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root))
+    ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root)),
+    ("Solo and descendant world recovery", () => SoloRecoveryChecks.RunAsync(root)),
+    ("Signed peer world directory", () => { SharedWorldPeerChecks.Run(root); return Task.CompletedTask; }),
+    ("Fixed signed peer protocol", () => { WorldPeerProtocolChecks.Run(); return Task.CompletedTask; }),
+    ("Offline-owner peer catchup", () => WorldPeerTransportChecks.RunAsync(root)),
+    ("Explicit concurrent world defaults", () => { WorldPeerDefaultChecks.Run(); return Task.CompletedTask; }),
+    ("Freshest verified world copies", () => SharedWorldFreshnessChecks.RunAsync(root)),
+    ("Installed live-save acceptance", () => LiveSaveAcceptanceChecks.RunAsync(root)),
+    ("Resumable verified peer files", () => WorldPeerFilesChecks.RunAsync(root)),
+    ("Owner recovery of peer histories", () => OwnerPeerRecoveryChecks.RunAsync(root)),
+    ("Private owner receipt isolation", () => { OwnerTestReceiptChecks.Run(); return Task.CompletedTask; }),
+    ("Private peer test completion", () => { WorldPeerLiveTestChecks.Run(root); return Task.CompletedTask; }),
+    ("Peer enrollment credential boundaries", () => { WorldPeerEnrollmentChecks.Run(root); return Task.CompletedTask; }),
+    ("Verified saved peer connections", () => WorldPeerSavedConnectionChecks.RunAsync(root)),
+    ("Completed peer reads during capture", () => WorldPeerBusyReadChecks.RunAsync(root)),
+    ("World receiving consent across Hosts", () => WorldPeerConsentChecks.RunAsync(root)),
+    ("Recovery source live capture ownership", () => BranchLiveSourceChecks.RunAsync(root)),
+    ("Verified recovery head selection", () => WorldPeerRecoverySelectionChecks.RunAsync(root)),
+    ("Recovery branch live-save integration", () => BranchLiveIntegrationChecks.RunAsync(root)),
+    ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root))
 };
 foreach (var group in groups)
 {
