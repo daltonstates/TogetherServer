@@ -80,6 +80,21 @@ cannot create symbolic links. Vite retains its chunk-size advisory (main minifie
 JavaScript about 1,046 kB / 284 kB gzip). No runtime performance or rendered-layout
 claim follows from these source/component results.
 
+## Production build for review
+
+Implementation commit: `5809a99a17716d63cf6c41042ca71f8b19ec68c2`.
+Release publish passed to the ignored
+`local-data/world-protection-ux-production-20261017-5809a99/TogetherServer.exe`.
+The production Windows x64 self-contained single-file app is 65,938,430 bytes,
+file version `0.3.2.0`, with the exact implementation commit in its product version.
+Authenticode reports `NotSigned`. Static inspection verified the x64 GUI header
+and all four current UI assets byte-for-byte in the publish input assembly.
+
+SHA-256: `ae56ff1789bd6eaa7d39f01c7c0a621ccd45b85bdd25604ac8ae9e04fcceb5a0`.
+Checksum and JSON build/UI evidence are beside the EXE. The app was not loaded,
+launched, installed or replaced. Quit the existing app, including its tray process,
+before manually opening the new production executable.
+
 The owner's active desktop is protected. Workers do not build or run checks.
 Coordinator validation uses TypeScript, lint, JSDOM components, production bundle,
 static file inspection and the code-only gate. No application, browser automation,
