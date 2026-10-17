@@ -43,6 +43,7 @@ describe('BackupCatalog', () => {
     render(<BackupCatalog profileId={profileId} visible loader={loader} onVerify={verify} onRestore={vi.fn()} offline currentWorld="SyntheticWorld" currentGame="Valheim" />)
     const article = (await screen.findByText('Before update')).closest('article')!
     const view = within(article)
+    fireEvent.click(view.getByText('Name and retention'))
     fireEvent.change(view.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'Unsaved name' } })
     const toggle = view.getByRole('button', { name: 'Review backup' })
     fireEvent.click(toggle)
@@ -113,7 +114,13 @@ describe('BackupCatalog', () => {
     fireEvent.click(within(article).getByRole('button', { name: 'Review backup' }))
     expect(within(article).getByText(`Failed · ${new Date('2026-10-08T13:00:00Z').toLocaleString()}`)).toBeInTheDocument()
     expect(within(article).getByText(`Passed · ${new Date('2026-10-08T14:00:00Z').toLocaleString()}`)).toBeInTheDocument()
-    expect(screen.getByLabelText('Protection summary')).toHaveTextContent('0 local integrity, 0 vault transfers, 1 hash restore tests, 0 owner-reported game rehearsals')
+    expect(screen.getByLabelText('Protection summary')).toBeVisible()
+    const protection = screen.getByText('Protection and retention details').closest('details')!
+    expect(protection).not.toHaveAttribute('open')
+    fireEvent.click(within(protection).getByText('Protection and retention details'))
+    const recordedPasses = within(protection).getByText(/Latest recorded passes across 2 shown copies:/)
+    expect(recordedPasses).toBeVisible()
+    expect(recordedPasses).toHaveTextContent('0 local integrity, 0 vault transfers, 1 hash restore tests, 0 owner-reported game rehearsals')
     expect(within(article).getByText(/does not establish game save health/)).toBeInTheDocument()
   })
 
@@ -167,6 +174,7 @@ describe('BackupCatalog', () => {
     render(<BackupCatalog profileId={profileId} visible loader={loader} updater={updater} />)
     const article = (await screen.findByText('Weekly copy')).closest('article')!
     const view = within(article)
+    fireEvent.click(view.getByText('Name and retention'))
     expect(view.getByRole('textbox', { name: 'Backup name' })).toHaveValue('Weekly copy')
     fireEvent.change(view.getByRole('combobox', { name: 'Suggested name' }), { target: { value: 'After Stop 2026-10-07' } })
     expect(view.getByRole('textbox', { name: 'Backup name' })).toHaveValue('After Stop 2026-10-07')
@@ -180,6 +188,7 @@ describe('BackupCatalog', () => {
     render(<BackupCatalog profileId={profileId} visible loader={async () => ({ ...catalog, pinnedCount: 20, moreBackupsAvailable: true })} updater={updater} />)
     await screen.findByText('Weekly copy')
     const unpinned = within(screen.getByText('Weekly copy').closest('article')!)
+    fireEvent.click(unpinned.getByText('Name and retention'))
     fireEvent.click(unpinned.getByRole('checkbox', { name: 'Pin this backup' }))
     expect(unpinned.getByRole('button', { name: 'Save name and pin' })).toBeDisabled()
     expect(unpinned.getByText(/Unpin another backup/)).toBeInTheDocument()
@@ -187,6 +196,7 @@ describe('BackupCatalog', () => {
     expect(unpinned.queryByText(/Unpin another backup/)).not.toBeInTheDocument()
     expect(unpinned.getByRole('button', { name: 'Save name and pin' })).toBeDisabled()
     const pinned = within(screen.getByText('Before update').closest('article')!)
+    fireEvent.click(pinned.getByText('Name and retention'))
     fireEvent.change(pinned.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'New name' } })
     expect(pinned.getByRole('button', { name: 'Save name and pin' })).toBeEnabled()
     expect(updater).not.toHaveBeenCalled()
@@ -195,7 +205,10 @@ describe('BackupCatalog', () => {
   it('shows retention preview as an estimate and withholds candidates for a partial catalog', async () => {
     render(<BackupCatalog profileId={profileId} visible loader={async () => ({ ...catalog, moreBackupsAvailable: true })} />)
     await screen.findByText('Before update')
-    expect(screen.getByText(/Exact retention candidates are unknown/)).toBeInTheDocument()
+    const retention = screen.getByText('Retention preview').closest('details')!
+    expect(retention).not.toHaveAttribute('open')
+    fireEvent.click(within(retention).getByText('Retention preview'))
+    expect(screen.getByText(/Exact retention candidates are unknown/)).toBeVisible()
     expect(screen.getByText(/Filters and comparisons cover these rows/)).toBeInTheDocument()
     expect(screen.queryByText(/current copies could become eligible/)).not.toBeInTheDocument()
   })

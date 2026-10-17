@@ -7,6 +7,7 @@ var root = Path.Combine(Directory.GetCurrentDirectory(), "local-data", "feature-
 Directory.CreateDirectory(root);
 var groups = new (string Name, Func<Task> Run)[]
 {
+    ("Atomic world protection settings", () => ProtectionSettingsChecks.RunAsync(root)),
     ("Compatibility requirements", () => { GameCompatibilityChecks.Run(root); return Task.CompletedTask; }),
     ("Fixed game launch and pinned Friend checks", () => GameClientFriendChecks.RunAsync(root)),
     ("Fixed local feature inputs", () => { FeatureInputChecks.Run(); return Task.CompletedTask; }),

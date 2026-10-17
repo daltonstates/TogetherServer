@@ -354,6 +354,7 @@ describe('Shared saves guided workflow', () => {
     expect(screen.queryByRole('button', { name: 'Stop and prepare file copy' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Close Move hosting' }))
     fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Manage sharing' })).getByRole('button', { name: 'History & recovery' }))
     expect(screen.getByRole('button', { name: 'Check owner decisions' })).toBeEnabled()
     expect(calls).toEqual([])
   })

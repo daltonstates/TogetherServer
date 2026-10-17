@@ -130,6 +130,7 @@ describe('BackupBookmarks', () => {
     const loader = async () => named
     const { rerender } = render(<BackupBookmarks profileId={profileId} visible loader={loader} updater={updater} onChanged={onChanged} />)
     await screen.findByText('Before a game update')
+    fireEvent.click(screen.getByText('Name and retention'))
     fireEvent.change(screen.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'Unsaved name' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save name and pin' }))
     expect(signal?.aborted).toBe(false)
@@ -147,6 +148,7 @@ describe('BackupBookmarks', () => {
       backup: { ...named.backups[0], sizeBytes: 9999 } }))
     render(<BackupBookmarks profileId={profileId} visible loader={async () => named} updater={updater} onChanged={onChanged} />)
     await screen.findByText('Before a game update')
+    fireEvent.click(screen.getByText('Name and retention'))
     fireEvent.change(screen.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'Changed' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save name and pin' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('The completed backup changed')

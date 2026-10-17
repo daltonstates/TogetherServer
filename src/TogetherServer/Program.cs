@@ -179,6 +179,8 @@ static bool HasSensitiveLocalGetHeader(HttpContext context) =>
 
 WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
     () => friendMode, () => updatePending || shutdownPending);
+ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
+    () => !friendMode && !updatePending && !shutdownPending);
 // As with the existing save action, HostManager owns capture serialization.
 // Do not hold modeGate through a long adapter wait: safe Stop and exact-request
 // cancellation must remain able to enter their existing lifecycle paths.

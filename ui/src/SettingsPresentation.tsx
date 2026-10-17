@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { Button } from './Controls'
 import { Icon, type IconName } from './Icon'
 
-const focusableSelector = 'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'
+const focusableSelector = 'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])'
 
 function focusableElements(root: HTMLElement) {
   return Array.from(root.querySelectorAll<HTMLElement>(focusableSelector)).filter(element => {
@@ -20,7 +20,7 @@ function focusMeaningfulAction(dialog: HTMLDialogElement) {
   const body = dialog.querySelector<HTMLElement>('.settings-dialog-body')
   const footer = dialog.querySelector<HTMLElement>('.settings-dialog-footer')
   const bodyControls = body ? focusableElements(body) : []
-  const target = bodyControls.find(element => !element.classList.contains('notice-dismiss'))
+  const target = bodyControls.find(element => element.tagName !== 'SUMMARY' && !element.classList.contains('notice-dismiss'))
     || (footer && focusableElements(footer)[0]) || bodyControls[0] || dialog
   target.focus({ preventScroll: true })
 }

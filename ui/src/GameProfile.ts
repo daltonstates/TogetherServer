@@ -24,6 +24,8 @@ export type Profile = {
   worldId: string
   sharedSavesEnabled?: boolean
   worldLoadRehearsalId?: string | null
+  separateCopySourceProfileId?: string | null
+  separateCopyBranchHash?: string | null
   worldSource: 'Existing' | 'New'
   worldDirectory: string
   gamePort: number

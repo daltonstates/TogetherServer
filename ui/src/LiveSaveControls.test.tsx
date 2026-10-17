@@ -54,27 +54,39 @@ describe('live-save attempt decoder', () => {
   ])('rejects Published with $name', ({ fields }) => {
     expect(() => parseLiveSaveStatus({ ...status(), lastAttempt: { ...publishedAttempt, ...fields } })).toThrow()
   })
-  it.each(['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'])('keeps %s live capture disabled', game => {
+  it.each(['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'])('keeps %s live capture disabled without installed evidence', game => {
     expect(parseLiveSaveStatus({ ...status(), game }).available).toBe(false)
     expect(() => parseLiveSaveStatus({ ...status(true), game })).toThrow()
   })
 })
 describe('live capture gates', () => {
-  it('rejects a real game enable, a partial matrix and an invented acceptance pass', () => {
+  it('rejects a fixture capability for a real game, a partial matrix and an invented acceptance pass', () => {
     expect(() => parseLiveSaveStatus({ ...status(true), game: 'MinecraftJava' })).toThrow()
     expect(() => parseLiveSaveStatus({ ...status(true), stages: [] })).toThrow()
     const input = status(); input.stages[2].state = 'Passed'
     expect(() => parseLiveSaveStatus(input)).toThrow()
   })
-  it('shows a disabled real-game action with concrete independent checks', () => {
+  it('opens real-game requirements without offering an unavailable save action or weakening its checks on dismissal', () => {
     render(<LiveSaveControls profileId="test" status={parseLiveSaveStatus(status())} onUpdated={vi.fn()} />)
-    expect(screen.getByRole('button', { name: 'Save and share now' })).toBeDisabled()
-    expect(screen.getByText(/Other-PC transfer and receipt:/)).toBeInTheDocument()
-    expect(screen.getByText(/Owner load confirmations do not enable/)).toBeInTheDocument()
-    fireEvent.click(within(screen.getByText(status().message)).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.getByText('Needs setup')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save and share now' })).not.toBeInTheDocument()
+    const requirements = screen.getByRole('button', { name: 'Review requirements' })
+    expect(requirements).toBeEnabled()
+    const details = screen.getByText('Game acceptance checks and save details').closest('details')!
+    expect(details).not.toHaveAttribute('open')
+    fireEvent.click(requirements)
+    expect(details).toHaveAttribute('open')
+    expect(within(details).getAllByRole('listitem')).toHaveLength(6)
+    const transfer = within(details).getByText('Other-PC transfer and receipt').closest('li')!
+    expect(within(transfer).getByText('Unverified')).toBeVisible()
+    expect(within(transfer).getByText('Owner-controlled game check required.')).toBeVisible()
+    expect(within(details).getByText(/Owner reports require separate app evidence/)).toBeVisible()
+    fireEvent.click(within(within(details).getByText(status().message)).getByRole('button', { name: 'Dismiss notification' }))
     expect(screen.queryByText(status().message)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Save and share now' })).toBeDisabled()
-    expect(screen.getByText(/Other-PC transfer and receipt:/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save and share now' })).not.toBeInTheDocument()
+    expect(requirements).toBeEnabled()
+    expect(within(transfer).getByText('Unverified')).toBeVisible()
+    expect(within(details).getAllByRole('listitem')).toHaveLength(6)
   })
   it('uses a fixed scoped request and retains its identity after a lost reply', async () => {
     const fetch = vi.fn().mockRejectedValueOnce(new Error('lost reply')).mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, code: 'LiveSavePublished', message: 'Synthetic copy published.', attempt: null })))

@@ -172,6 +172,17 @@ describe('SettingsDialog', () => {
     expect(screen.getByRole('textbox', { name: 'Visible field' })).toHaveFocus()
   })
 
+  it('keeps expandable summaries in the dialog keyboard order', () => {
+    render(<SettingsDialog title="Keyboard details" onClose={vi.fn()} footer={<Button>Save</Button>}>
+      <Input aria-label="Name" /><details><summary>More options</summary><Input aria-label="Optional field" /></details>
+    </SettingsDialog>)
+    const summary = screen.getByText('More options')
+    summary.focus()
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    fireEvent(summary, event)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
   it('contains Tab and outside focus in the fallback environment and cancels Escape', () => {
     Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: undefined })
     const onClose = vi.fn()

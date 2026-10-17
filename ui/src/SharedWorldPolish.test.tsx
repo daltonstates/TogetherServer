@@ -144,6 +144,10 @@ describe('Shared saves task presentation', () => {
     expect(screen.getByRole('button', { name: 'Manage sharing' })).toBeEnabled()
     view.rerender(<HostSharedSaves {...props} />)
     expect(screen.getByRole('heading', { name: 'Alderheim' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
+    const management = screen.getByRole('dialog', { name: 'Manage sharing' })
+    expect(within(management).getByRole('button', { name: 'People' })).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(within(management).getByRole('button', { name: 'Done' }))
   })
 
   it('keeps conflicting authority visible in Manage sharing even without receiving consent or a local copy', async () => {

@@ -1,0 +1,46 @@
+.host-backups-page { display: grid; gap: 24px; min-width: 0; isolation: isolate; }
+.host-backups-page :is(h2,h3,p) { margin: 0; }
+.host-protection-heading, .protection-section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+.host-protection-heading > div:first-child, .protection-section-heading > div:first-child { display: grid; gap: 8px; min-width: 0; }
+.host-protection-heading h2 { font-size: clamp(1.4rem, 2vw, 1.8rem); letter-spacing: -.035em; }
+.host-protection-heading p, .protection-section-heading p { color: var(--color-text-muted); line-height: 1.5; }
+.protection-eyebrow { display: flex; align-items: center; gap: 7px; font-size: .68rem; font-weight: 700; letter-spacing: .12em; color: var(--color-accent-text); }
+.protection-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 12px; }
+.protection-overview article { display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--color-border-subtle); border-radius: 14px; padding: 18px; background: var(--color-surface); min-width: 0; }
+.protection-card-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 36px; height: 36px; border-radius: 10px; background: var(--color-accent-soft); color: var(--color-accent-text); }
+.protection-overview article > div { display: grid; gap: 7px; min-width: 0; }
+.protection-overview small { color: var(--color-text-muted); font-size: .75rem; }
+.protection-overview strong { font-size: .93rem; line-height: 1.45; overflow-wrap: anywhere; }
+.protection-overview article > div > span { color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
+.protection-status-note { display: flex; align-items: flex-start; gap: 9px; color: var(--color-text-muted); font-size: .8125rem; line-height: 1.6; }
+.protection-status-note > .icon { flex-shrink: 0; margin-top: 3px; }
+.protection-navigation { display: flex; gap: 6px; padding: 5px; width: fit-content; max-width: 100%; border-radius: 12px; border: 1px solid var(--color-border-subtle); background: var(--color-field); flex-wrap: wrap; }
+.protection-navigation > .ui-button { min-height: 40px; border-color: transparent; color: var(--color-text-muted); background: transparent; padding: 9px 14px; border-radius: 8px; }
+.protection-navigation > .ui-button[aria-current="page"] { color: var(--color-accent-text); border-color: var(--color-accent-border); background: var(--color-accent-soft); }
+.protection-content, .protection-settings-panel, .protection-editor { display: grid; gap: 20px; min-width: 0; }
+.protection-content:empty { display: none; }
+.host-backups-page [hidden] { display: none !important; }
+.protection-setting-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.protection-setting-card { display: grid; align-content: start; gap: 18px; min-width: 0; padding: 20px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 14px; }
+.protection-setting-card header { display: flex; gap: 12px; align-items: flex-start; }
+.protection-setting-card header > div { display: grid; gap: 7px; min-width: 0; }
+.protection-setting-card h3 { font-size: 1rem; margin: 0; }
+.protection-setting-card p { color: var(--color-text-muted); font-size: .8125rem; line-height: 1.6; margin: 0; }
+.protection-setting-card dl { display: grid; gap: 12px; margin: 0; }
+.protection-setting-card dl > div { display: flex; gap: 12px; justify-content: space-between; border-top: 1px solid var(--color-border-subtle); padding-top: 12px; }
+.protection-setting-card dt { color: var(--color-text-muted); font-size: .8125rem; }
+.protection-setting-card dd { margin: 0; font-weight: 600; font-size: .8125rem; }
+.protection-toggle { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 52px; cursor: pointer; }
+.protection-toggle > span { display: grid; gap: 7px; }
+.protection-toggle strong { font-size: .875rem; }
+.protection-toggle small, .protection-number-fields small { color: var(--color-text-muted); line-height: 1.5; font-size: .75rem; }
+.protection-toggle .ui-input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--color-accent); }
+.protection-number-fields { display: grid; gap: 16px; grid-template-columns: repeat(2,minmax(0,1fr)); }
+.protection-number-fields label { display: grid; gap: 8px; font-size: .8125rem; }
+.protection-number-fields .ui-input { width: 100%; min-width: 0; box-sizing: border-box; }
+.protection-help { border: 1px solid var(--color-border-subtle); border-radius: 12px; padding: 16px; color: var(--color-text-muted); font-size: .8125rem; line-height: 1.65; }
+.protection-help summary { cursor: pointer; color: var(--color-text-secondary); }
+.protection-help p { margin-top: 12px; }
+.protection-failure { display: flex; align-items: flex-start; gap: 10px; }
+@media (max-width: 1050px) { .protection-overview article { padding: 14px 16px; } }
+@media (max-width: 680px) { .host-backups-page { gap: 18px; } .protection-setting-grid, .protection-number-fields { grid-template-columns: 1fr; } .protection-navigation { width: 100%; box-sizing: border-box; } .protection-navigation > .ui-button { flex: 1 1 auto; } .protection-setting-card { padding: 16px; } }

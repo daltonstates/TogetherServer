@@ -22,6 +22,7 @@ import { ConnectionDetails } from './ConnectionDetails'
 import { GameCompatibilityPanel } from './GameCompatibilityPanel'
 import { GameSettingsPanel } from './GameSettingsPanel'
 import { BackupCatalog } from './BackupCatalog'
+import { HostBackupsPage, applyProtectionPolicy, type ProtectionPolicy } from './HostBackupsPage'
 import { ServerNotificationSettings, UpdateDetailsPanel } from './DesktopPreferencesPanel'
 import { parseDesktopUpdateDetails, type DesktopUpdateDetails } from './desktopPreferencesWire'
 import { parseNotificationPreferences } from './desktopPreferencesWire'
@@ -1543,6 +1544,24 @@ export function App() {
     finally { setPending('') }
     return false
   }
+  const saveWorldProtection = async (profileId: string, expected: ProtectionPolicy, next: ProtectionPolicy): Promise<boolean> => {
+    if (snapshot?.mode !== 'Host' || pending || dirty || dataRecovery?.lifecycleBlocked ||
+        snapshot.runs.find(run => run.profileId === profileId)?.state !== 'Offline') return false
+    const settings = applyProtectionPolicy(snapshot.settings, profileId, expected, next)
+    if (!settings) {
+      setNotice({ good: false, text: 'Protection settings changed. Reopen this editor to review the latest values.' })
+      return false
+    }
+    setPending(`protection-${profileId}`)
+    try {
+      const result = await changeAction(`/api/local/profiles/${profileId}/protection`, 'PUT', { expected, next })
+      applySnapshot(result.snapshot)
+      setNotice({ good: result.ok, text: result.ok ? 'Protection settings saved.' : result.message })
+      if (result.ok) acceptSavedSettings(result.snapshot.settings)
+      return result.ok
+    } catch (error) { setNotice({ good: false, text: errorMessage(error) }); return false }
+    finally { setPending('') }
+  }
   const certificateAction = async (action: 'stage' | 'activate' | 'retire-previous') => {
     setPending(`certificate-${action}`)
     try {
@@ -2257,11 +2276,16 @@ export function App() {
                   visible={workspacePage === 'host' && hostServerTab === 'sessions'} /></PaneErrorBoundary>
                 {hostServerTab === 'sessions' && <PaneErrorBoundary title="Seven-day summary" resetKey={profile.id}><WeeklySummary
                   key={profile.id} profileId={profile.id} visible={workspacePage === 'host'} /></PaneErrorBoundary>}
-                {hostServerTab === 'backups' && <div className="backups-primary-task"><div className="section-heading"><div><h2>Backups</h2><p>Create a save copy or review a backup to restore.</p></div>
-                  <Button disabled={!!pending || dirty || status?.state !== 'Offline'} onClick={() => void createManualBackup(profile.id)}><Icon name={pending === `manual-backup-${profile.id}` ? 'loader' : 'archive'} />{pending === `manual-backup-${profile.id}` ? 'Backing up…' : 'Back up now'}</Button></div>
-                  {status?.state !== 'Offline' && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Stop the server and confirm it is Offline before creating or restoring a backup.</DismissibleNotice>}</div>}
-                {hostServerTab === 'backups' && <PaneErrorBoundary title="Backups" resetKey={profile.id}><BackupCatalog
-                  key={profile.id} profileId={profile.id} visible={workspacePage === 'host'}
+                {hostServerTab === 'backups' && <HostBackupsPage key={profile.id} profile={profile}
+                  status={shownBackupStatus} state={status?.state ?? 'Unknown'} busy={!!pending}
+                  editDisabled={dirty || !!dataRecovery?.lifecycleBlocked} backingUp={pending === `manual-backup-${profile.id}`}
+                  onBackup={() => void createManualBackup(profile.id)} onRefresh={() => void loadBackups(profile.id)}
+                  onSafeRestart={status?.state === 'Ready' ? () => void safeRestart(profile.id) : undefined}
+                  onSaveProtection={(expected, next) => saveWorldProtection(profile.id, expected, next)}>
+                  {section => <>
+                    <div hidden={section !== 'backups'} className="protection-backup-library">
+                      <PaneErrorBoundary title="Backups" resetKey={profile.id}><BackupCatalog
+                  key={profile.id} profileId={profile.id} visible={workspacePage === 'host'} showOverview={false}
                   refreshKey={backupCatalogRevisions[profile.id] ?? 0} currentWorld={profile.worldId} currentGame={profile.kind}
                   offline={status?.state === 'Offline'} onChanged={() => void loadBackups(profile.id)}
                   onVerify={backup => verifyBackup(profile.id, backup.backupId)}
@@ -2275,7 +2299,32 @@ export function App() {
                     ownerGameRehearsal: 'Finish the current action or resolve the setup and recovery warning first.', restore: 'Finish the current action or resolve the setup and recovery warning first.'
                   } : undefined}
                   renderActions={backup => <Button className="secondary" disabled={!!pending || dirty || status?.state !== 'Offline'}
-                    onClick={() => void prepareMoveKit(profile.id, backup.backupId)}>Prepare move kit</Button>} /></PaneErrorBoundary>}
+                    onClick={() => void prepareMoveKit(profile.id, backup.backupId)}>Prepare move kit</Button>} /></PaneErrorBoundary>
+                      {!profile.worldLoadRehearsalId && profile.kind !== 'Custom' && <details className="protection-help"><summary>Test a copy in the game</summary>
+                        <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} /></details>}
+                    </div>
+                    {profile.kind !== 'Custom' && <div hidden={section !== 'sharing'} className="protection-sharing-panel">
+                      <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []} worldName={profile.worldId}
+                      serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} onOpenHostControls={() => selectHostServer(profile.id, 'overview')}
+                      rollingBackupEnabled={profile.backups?.enabled === true}
+                      currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
+                        ? snapshot.settings.companionEndpoint : ''}
+                      onGrantChanged={refreshCompanion} />
+                    <details className="protection-help"><summary>Peer sessions & connections</summary>
+                    <WorldPeerPanel visible={section === 'sharing'} profileId={profile.id}
+                      onConnected={async () => { applySnapshot(await readSnapshot()) }} onChanged={refreshCompanion}
+                      onRecoverOwnerBranch={(groupKey, profileId, branchHash) => setOwnerPeerRecovery({ groupKey, profileId, branchHash })} />
+                    </details>
+                    {ownerPeerRecovery && <OwnerPeerRecoveryPanel key={`${ownerPeerRecovery.groupKey}/${ownerPeerRecovery.branchHash}`}
+                      groupKey={ownerPeerRecovery.groupKey} profileId={ownerPeerRecovery.profileId} sourceBranchHash={ownerPeerRecovery.branchHash}
+                      onClose={() => setOwnerPeerRecovery(null)} onOpenHost={localProfileId => void openSharedHost(localProfileId, false)}
+                      onBrowseServerFile={game => browseSharedServerFile(ownerPeerRecovery.profileId, game)} />}
+                      <details className="protection-help"><summary>Live-save setup & acceptance</summary>
+                        <LiveSaveAcceptancePanel profileId={profile.id} visible={section === 'sharing'} /></details>
+                    </div>}
+                    {profile.kind === 'Custom' && section === 'sharing' && <p className="helper-text">Shared world hosting requires a supported built-in game. Your Custom server's controls remain in its setup.</p>}
+                  </>}
+                </HostBackupsPage>}
                 {hostServerTab === 'players' && status && <PaneErrorBoundary title="Players workspace" resetKey={profile.id}><PlayersPanel run={status} activity={snapshot.activity} nowMs={nowMs}
                   profile={profile} onOpenLogs={() => selectHostTab('logs')} onOpenHelp={() => openHostSettings('network')}
                   onCheckHealth={() => void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST')}
@@ -2322,29 +2371,6 @@ export function App() {
                     <strong>Crash recovery: Suspended</strong><p>Suspended after {recovery.attempts} failed attempts.</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}
                   </DismissibleNotice>
                   : <div className="safety-status"><strong>Crash recovery: {recovery.state}</strong><p>{recovery.state === 'Pending' && recovery.nextAttemptUtc ? `Attempt ${recovery.attempts + 1} of 3 after ${new Date(recovery.nextAttemptUtc).toLocaleString()}.` : recovery.state === 'Starting' ? `Recovery attempt ${recovery.attempts} of 3 is starting.` : recovery.state === 'Recovered' ? `Ready again after ${recovery.attempts} attempt${recovery.attempts === 1 ? '' : 's'}.` : `Suspended after ${recovery.attempts} failed attempts.`}</p>{recovery.lastFailure && <small>{recovery.lastFailure}</small>}</div>)}
-                  {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <details hidden={hostServerTab !== 'backups'} className="backups-support server-support-disclosure"><summary><Icon name="shield" />Protection & sharing</summary><PaneErrorBoundary title="World Safety Center" resetKey={profile.id}><div className="world-protection-summary"><div className="world-safety-heading"><div><strong>World Safety Center</strong><p>{profile.kind === 'Factorio' || profile.kind === 'Terraria' ? 'Automatic crash recovery is unavailable in this preview' : `Crash recovery is ${profile.crashRecovery?.enabled ? 'on' : 'off'}`} · rolling backup after graceful Stop is {profile.backups?.enabled ? 'on' : 'off'}.</p></div><span className={`pill ${status?.state === 'Offline' ? 'certified' : ''}`}>{status?.state === 'Offline' ? 'Safe for offline backup' : 'Server must be offline'}</span></div>
-                    {shownBackupStatus?.lastSuccessfulUtc && <small>Last successful backup {new Date(shownBackupStatus.lastSuccessfulUtc).toLocaleString()} · {shownBackupStatus.completedCount} retained · {formatBytes(shownBackupStatus.retainedSizeBytes)} used.</small>}
-                    {shownBackupStatus?.availableSpaceBytes != null && <small>{formatBytes(shownBackupStatus.availableSpaceBytes)} available on the backup drive.</small>}
-                    {shownBackupStatus?.lastFailureUtc && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Last backup issue {new Date(shownBackupStatus.lastFailureUtc).toLocaleString()}: {shownBackupStatus.lastFailure}</DismissibleNotice>}
-                    <div className="actions"><Button className="secondary" disabled={pending === `backups-${profile.id}`} onClick={() => void loadBackups(profile.id)}>{pending === `backups-${profile.id}` ? 'Loading backups…' : backupList ? 'Refresh backups' : 'Show backups'}</Button>{status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}>{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart'}</Button>}<Button className="text-button" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}>Change protection settings</Button></div>
-                    <small>Safe restart stops gracefully, makes an offline checkpoint, and starts only after that checkpoint succeeds. “Copy to vault” uses a Windows folder picker, verifies every hash after transfer, and keeps the local backup. Choose an external or network location when you want another-device protection. “Test restore” uses disposable scratch storage and never swaps the live world.</small>
-                    <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []} worldName={profile.worldId}
-                      serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} onOpenHostControls={() => selectHostServer(profile.id, 'overview')}
-                      rollingBackupEnabled={profile.backups?.enabled === true}
-                      currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
-                        ? snapshot.settings.companionEndpoint : ''}
-                      onGrantChanged={refreshCompanion} />
-                    <WorldPeerPanel visible={hostServerTab === 'backups'}
-                      onConnected={async () => { applySnapshot(await readSnapshot()) }} onChanged={refreshCompanion}
-                      onRecoverOwnerBranch={(groupKey, profileId, branchHash) => setOwnerPeerRecovery({ groupKey, profileId, branchHash })} />
-                    {ownerPeerRecovery && <OwnerPeerRecoveryPanel key={`${ownerPeerRecovery.groupKey}/${ownerPeerRecovery.branchHash}`}
-                      groupKey={ownerPeerRecovery.groupKey} profileId={ownerPeerRecovery.profileId} sourceBranchHash={ownerPeerRecovery.branchHash}
-                      onClose={() => setOwnerPeerRecovery(null)} onOpenHost={localProfileId => void openSharedHost(localProfileId, false)}
-                      onBrowseServerFile={game => browseSharedServerFile(ownerPeerRecovery.profileId, game)} />}
-                    <LiveSaveAcceptancePanel profileId={profile.id} visible={hostServerTab === 'backups'} />
-                    {!profile.worldLoadRehearsalId && <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} />}
-
-                  </div></PaneErrorBoundary></details>}
                 {serverToolsProfileId === profile.id && <SettingsDialog title="Server tools" description={`Actions for ${profile.name}.`} busy={!!pending}
                   onClose={() => setServerToolsProfileId('')} footer={<Button className="secondary" disabled={!!pending} onClick={() => setServerToolsProfileId('')}>Done</Button>}>
 

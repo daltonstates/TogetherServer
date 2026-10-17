@@ -597,6 +597,8 @@ export function parseProfile(value: unknown, context = 'profile'): Profile {
     publicListing: flag(source.publicListing, `${context}.publicListing`), worldId: text(source.worldId, `${context}.worldId`),
     sharedSavesEnabled: source.sharedSavesEnabled === undefined ? false : flag(source.sharedSavesEnabled, `${context}.sharedSavesEnabled`),
     worldLoadRehearsalId: source.worldLoadRehearsalId == null ? null : text(source.worldLoadRehearsalId, `${context}.worldLoadRehearsalId`),
+    ...(source.separateCopySourceProfileId === undefined ? {} : { separateCopySourceProfileId: nullableText(source.separateCopySourceProfileId, `${context}.separateCopySourceProfileId`) }),
+    ...(source.separateCopyBranchHash === undefined ? {} : { separateCopyBranchHash: nullableText(source.separateCopyBranchHash, `${context}.separateCopyBranchHash`) }),
     worldSource, worldDirectory: text(source.worldDirectory, `${context}.worldDirectory`),
     gamePort: numeric(source.gamePort, `${context}.gamePort`), executablePath: text(source.executablePath, `${context}.executablePath`),
     minecraft, factorio, custom, crashRecovery, backups, maintenance

@@ -30,6 +30,15 @@ function acceptance(passed: readonly StageId[] = ['completion', 'snapshot']) {
         signature: 'synthetic-ui-response' } }] }
 }
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
+const installationSummary = () => screen.getByText('Automatic recovery copies').closest('summary')!
+const openInstallation = () => fireEvent.click(installationSummary())
+function openEvidence() {
+  const details = screen.getByText('Evidence and installation details').closest('details')!
+  expect(details).not.toHaveAttribute('open')
+  fireEvent.click(within(details).getByText('Evidence and installation details'))
+  expect(details).toHaveAttribute('open')
+  return details
+}
 type Mutation = { path: string; method: string; body: unknown }
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -80,11 +89,20 @@ describe('Installed live-save acceptance controls', () => {
       return reply(acceptance())
     }))
     await act(async () => { render(<LiveSaveAcceptancePanel profileId={profileId} />) })
-    fireEvent.click(screen.getByText(/Automatic recovery copies/))
-    expect(screen.getByText('This installation still needs its private test.')).toBeInTheDocument()
-    expect(screen.getAllByText(/OwnerReported/)).toHaveLength(3)
-    expect(screen.getByText(/transfer: Unverified/)).toBeInTheDocument()
-    expect(screen.getByText(/Test copies stay private and separate/)).toBeInTheDocument()
+    openInstallation()
+    const steps = screen.getByRole('list', { name: 'Installation test steps' })
+    expect(within(steps).getAllByRole('listitem')).toHaveLength(3)
+    expect(within(steps).getByText('2 of 2 · App checks')).toBeVisible()
+    expect(within(steps).getByText('0 of 1 · App check')).toBeVisible()
+    expect(within(steps).getByText('0 of 3 · Your observations')).toBeVisible()
+    const evidence = openEvidence()
+    expect(within(evidence).getByText('This installation still needs its private test.')).toBeVisible()
+    expect(within(evidence).getAllByText('OwnerReported')).toHaveLength(3)
+    expect(within(evidence).getAllByRole('listitem')).toHaveLength(6)
+    const transfer = within(evidence).getByText('Transfer to another PC').closest('li')!
+    expect(within(transfer).getByText('Unverified')).toBeVisible()
+    expect(within(transfer).getByText('SignedSeparateDeviceReceipt')).toBeVisible()
+    expect(within(evidence).getByText(/Test copies stay private and separate/)).toBeVisible()
     expect(screen.queryByRole('button', { name: /I verified/ })).not.toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(29999) })
     expect(reads).toBe(1)
@@ -105,8 +123,8 @@ describe('Installed live-save acceptance controls', () => {
       return reply(acceptance())
     }))
     render(<LiveSaveAcceptancePanel profileId={profileId} />)
-    await screen.findByText('This installation still needs its private test.')
-    fireEvent.click(screen.getByText(/Automatic recovery copies/))
+    await screen.findByText('Needs setup')
+    openInstallation()
     fireEvent.click(screen.getByRole('button', { name: 'Capture private test save' }))
     const firstReview = screen.getByRole('dialog', { name: 'Capture a private test save?' })
     expect(firstReview).toHaveAccessibleDescription(/distinct approved receiving PC must verify the transfer/)
@@ -141,7 +159,7 @@ describe('Installed live-save acceptance controls', () => {
       return reply(current)
     }))
     await act(async () => { render(<LiveSaveAcceptancePanel profileId={profileId} />) })
-    fireEvent.click(screen.getByText(/Automatic recovery copies/))
+    openInstallation()
     expect(screen.queryByRole('button', { name: /I verified/ })).not.toBeInTheDocument()
     current = acceptance(['completion', 'snapshot', 'transfer'])
     await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
@@ -159,8 +177,9 @@ describe('Installed live-save acceptance controls', () => {
       path: `${base}/tests/${testId}/confirm`, method: 'POST',
       body: { versionHash, payloadSha256, stage, confirmed: true },
     })))
-    expect(screen.getAllByText(/OwnerReported/)).toHaveLength(3)
-    expect(screen.getByText(/Automatic recovery copies/)).toHaveTextContent('accepted for this installation')
+    const evidence = openEvidence()
+    expect(within(evidence).getAllByText('OwnerReported')).toHaveLength(3)
+    expect(installationSummary()).toHaveTextContent('accepted for this installation')
     expect(screen.queryByRole('button', { name: /I verified/ })).not.toBeInTheDocument()
   })
 
@@ -181,15 +200,15 @@ describe('Installed live-save acceptance controls', () => {
       return reply(current)
     }))
     render(<LiveSaveAcceptancePanel profileId={profileId} />)
-    await screen.findByText('This installation still needs its private test.')
-    fireEvent.click(screen.getByText(/Automatic recovery copies/))
+    await screen.findByText('Needs setup')
+    openInstallation()
     expect(screen.getByRole('button', { name: 'I verified load in the game' })).toBeInTheDocument()
     expect(mutations).toEqual([])
     const history = screen.getByText('Private test history').closest('details')!
     expect(history).not.toHaveAttribute('open')
     fireEvent.click(within(history).getByText('Private test history'))
-    expect(within(history).getByText(/Test 22222222 · ArtifactReady/)).toHaveTextContent(versionHash.slice(0, 12))
-    expect(within(history).getByText(/Test 44444444 · Stale/)).toHaveTextContent(staleVersionHash.slice(0, 12))
+    expect(within(history).getByText(/Test 22222222 · ArtifactReady/).closest('li')).toHaveTextContent(versionHash.slice(0, 12))
+    expect(within(history).getByText(/Test 44444444 · Stale/).closest('li')).toHaveTextContent(staleVersionHash.slice(0, 12))
     expect(within(history).getByText(/Retained tests do not establish acceptance/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'I verified load in the game' }))
     const review = screen.getByRole('dialog', { name: 'Confirm actual game load?' })
@@ -198,7 +217,7 @@ describe('Installed live-save acceptance controls', () => {
     expect(mutations).toEqual([{ path: `${base}/tests/${testId}/confirm`, method: 'POST',
       body: { versionHash, payloadSha256, stage: 'load', confirmed: true } }])
     expect(await screen.findByRole('button', { name: 'I verified change in the game' })).toBeInTheDocument()
-    expect(screen.getByText(/Automatic recovery copies/)).toHaveTextContent('installation test required')
+    expect(installationSummary()).toHaveTextContent('installation test required')
   })
 
   it.each(['Stale', 'Failed', 'Interrupted'] as const)(
@@ -211,13 +230,13 @@ describe('Installed live-save acceptance controls', () => {
         return reply(current)
       }))
       render(<LiveSaveAcceptancePanel profileId={profileId} />)
-      await screen.findByText('This installation still needs its private test.')
-      fireEvent.click(screen.getByText(/Automatic recovery copies/))
+      await screen.findByText(state === 'Stale' ? 'Needs setup' : 'Review needed')
+      openInstallation()
       expect(screen.queryByRole('button', { name: /I verified/ })).not.toBeInTheDocument()
-      expect(screen.getByText(/Automatic recovery copies/)).toHaveTextContent('installation test required')
+      expect(installationSummary()).toHaveTextContent('installation test required')
       fireEvent.click(screen.getByText('Private test history'))
       const history = screen.getByText('Private test history').closest('details')!
-      expect(within(history).getByText(`Test 22222222 · ${state}`)).toHaveTextContent(versionHash.slice(0, 12))
+      expect(within(history).getByText(`Test 22222222 · ${state}`).closest('li')).toHaveTextContent(versionHash.slice(0, 12))
       expect(mutations).toEqual([])
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
@@ -231,7 +250,7 @@ describe('Installed live-save acceptance controls', () => {
       return reply(current)
     }))
     await act(async () => { render(<LiveSaveAcceptancePanel profileId={profileId} />) })
-    fireEvent.click(screen.getByText(/Automatic recovery copies/))
+    openInstallation()
     expect(screen.getByRole('button', { name: 'I verified load in the game' })).toBeInTheDocument()
     current.tests[0].state = 'Stale'
     await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
@@ -239,7 +258,7 @@ describe('Installed live-save acceptance controls', () => {
     fireEvent.click(screen.getByText('Private test history'))
     const history = screen.getByText('Private test history').closest('details')!
     expect(within(history).getByText('Test 22222222 · Stale')).toBeInTheDocument()
-    expect(screen.getByText(/Automatic recovery copies/)).toHaveTextContent('installation test required')
+    expect(installationSummary()).toHaveTextContent('installation test required')
     expect(mutations).toEqual([])
   })
 
@@ -252,8 +271,8 @@ describe('Installed live-save acceptance controls', () => {
       return reply(value)
     }))
     render(<LiveSaveAcceptancePanel profileId={profileId} />)
-    await screen.findByText('This installation still needs its private test.')
-    fireEvent.click(screen.getByText(/Automatic recovery copies/))
+    await screen.findByText('Needs setup')
+    openInstallation()
     expect(screen.getByRole('button', { name: 'Capture private test save' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /I verified/ })).not.toBeInTheDocument()
     expect(mutations).toEqual([])
