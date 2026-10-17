@@ -155,6 +155,22 @@ The final `dotnet build src/TogetherServer/TogetherServer.csproj -c Release
 errors. This is a build, not a packaged installation, app launch or release.
 Production app data and the owner's running application were not used for testing.
 
+## Production build handoff: 2026-10-17
+
+At the owner's request, published the production Windows x64 self-contained,
+compressed single-file app from `70613a0c0c85b9988523cd31f175cf6a2b26dbc2` to the
+ignored `local-data/peer-worlds-production-20261017-70613a0/TogetherServer.exe`.
+Locked UI install with install scripts disabled, UI build, locked .NET restore
+and Release publish passed. Static inspection verified all four current UI files
+embedded byte-for-byte in the publish input assembly and the executable's x64 GUI
+header. Numeric file version is `0.3.2.0`; product version contains the exact source
+commit. The artifact is 65,921,911 bytes and Authenticode reports `NotSigned`.
+
+SHA-256: `6514d81fe46d74362f5be494ef84fe24d8c249bbf241b31033f4fbba46f40ad3`.
+The artifact folder includes its checksum and JSON build/UI evidence. No app was
+loaded or launched, installed, or replaced; production data stayed untouched.
+Real-game, Friend-PC/network and rendered/native acceptance remain pending.
+
 ## Operational limits
 
 Peer routes require a reachable pinned literal-IP HTTPS origin. The app does not
