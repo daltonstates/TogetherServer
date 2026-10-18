@@ -100,6 +100,7 @@ internal static class LiveSaveActionChecks
             var restartedAfterCancellation = await manager.StartAsync(profile.Id);
             Require(restartedAfterCancellation.Ok,
                 $"fixture could not restart after failed/canceled saves: Code={restartedAfterCancellation.Code}; Message={restartedAfterCancellation.Message}");
+            File.WriteAllText(file, "distinct synthetic change for signed-directory crash");
             var reachedSignedDirectory = false;
             manager.LiveAfterSignedDirectoryForChecks = () =>
             {
@@ -132,6 +133,7 @@ internal static class LiveSaveActionChecks
             manager.LiveAfterSignedDirectoryForChecks = null;
             var savedAfterReview = await manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid()));
             Require(savedAfterReview.Ok, $"new request could not save again after withdrawal/review: {Describe(savedAfterReview)}");
+            File.WriteAllText(file, "distinct synthetic change for publishing-journal crash");
             byte[]? publishingJournal = null;
             manager.LiveAfterSignedDirectoryForChecks = () => publishingJournal = data.LoadProtected("live-save-attempts.protected");
             var interruptedRequestId = Guid.NewGuid();
@@ -175,6 +177,7 @@ internal static class LiveSaveActionChecks
                     .Single(item => item.RequestId == interruptedRequestId).State == "Published" &&
                 recoveredStatus.Latest?.VersionHash == publishedBeforeRecovery.VersionHash,
                 "status after restart did not durably reconcile the current capture without replay");
+            File.WriteAllText(file, "distinct synthetic change after publication recovery");
             Require((await manager.SaveAndShareAsync(profile.Id, new(Guid.NewGuid()))).Ok &&
                 shares.Status(profile).Latest?.Number == publishedBeforeRecovery.Number + 1,
                 "reconciled publication left later fixed requests permanently blocked");

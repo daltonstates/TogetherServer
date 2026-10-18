@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -15,7 +16,10 @@ public sealed record UpdateView(string State, string CurrentVersion, string? Lat
     UpdatePreparationView? Preparation = null, bool IncludePrereleases = false, bool LatestIsPrerelease = false);
 public sealed record UpdateResult(bool Ok, string Code, string Message);
 public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256,
-    string ReleaseNotes = "", Uri? ReleaseNotesUrl = null, bool IsPrerelease = false);
+    string ReleaseNotes = "", Uri? ReleaseNotesUrl = null, bool IsPrerelease = false)
+{
+    internal string VersionText => Tag[1..];
+}
 public sealed record UpdatePreparationView(string Stage, string Message, long DownloadedBytes = 0,
     long? TotalBytes = null, string? Blocker = null);
 public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message, bool IsUnsigned = false);
@@ -39,8 +43,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
     private readonly IAuthenticodeVerifier signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
     private readonly UpdateUiPreferences preferences = uiPreferences ?? new UpdateUiPreferences();
     private volatile UpdateView view = enabled
-        ? new("Checking", currentVersion.ToString(3), null, "Checking for updates.")
-        : new("Unsupported", currentVersion.ToString(3), null, disabledMessage, "Development build");
+        ? new("Checking", FormatVersion(currentVersion), null, "Checking for updates.")
+        : new("Unsupported", FormatVersion(currentVersion), null, disabledMessage, "Development build");
     private UpdateRelease? available;
     private string? preparedPath;
     private string? publisherKey;
@@ -80,7 +84,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         await gate.WaitAsync();
         try
         {
-            if (available is null || request.Version != available.Version.ToString(3))
+            if (available is null || request.Version != available.VersionText)
                 return new(false, "VersionChanged", "Check the currently available version before changing its reminder.");
             var until = preferences.Snooze(request);
             return new(true, "ReminderSaved", request.Duration == "SkipVersion" ? "This version's reminder is skipped. A different release will be shown." :
@@ -110,14 +114,14 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 preparedPath = null;
                 checkedUtc = default;
                 preparation = new("Idle", "An update starts only when you choose Update and restart.");
-                SetView(new("Checking", currentVersion.ToString(3), null, "Checking for updates.", view.PublisherTrust));
+                SetView(new("Checking", FormatVersion(currentVersion), null, "Checking for updates.", view.PublisherTrust));
             }
             return new(true, "UpdatePreferencesSaved", "Update preference saved on this PC.");
         }
         finally { gate.Release(); }
     }
     public string? PreparedVersion => available is not null && preparedPath is not null && File.Exists(preparedPath)
-        ? available.Version.ToString(3) : null;
+        ? available.VersionText : null;
     public bool IsStandalone => File.Exists(executablePath) &&
         Path.GetExtension(executablePath).Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
         !File.Exists(Path.ChangeExtension(executablePath, ".deps.json"));
@@ -131,7 +135,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (!force && checkedUtc != default && DateTimeOffset.UtcNow - checkedUtc < AutomaticCheckInterval) return View;
             checkedUtc = DateTimeOffset.UtcNow;
             if (!IsStandalone)
-                return SetView(new("Unsupported", currentVersion.ToString(3), null, "Updates apply to the published Windows EXE.",
+                return SetView(new("Unsupported", FormatVersion(currentVersion), null, "Updates apply to the published Windows EXE.",
                     "Development build"));
             var installedSignature = signatureVerifier.Verify(executablePath);
             var signed = installedSignature.Valid && !string.IsNullOrWhiteSpace(installedSignature.PublisherKey);
@@ -140,7 +144,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 available = null;
                 preparedPath = null;
                 publisherKey = null;
-                return SetView(new("Unsupported", currentVersion.ToString(3), null,
+                return SetView(new("Unsupported", FormatVersion(currentVersion), null,
                     "Automatic updates are disabled because Windows found an invalid or unverifiable signature on this EXE.",
                     "Signature rejected"));
             }
@@ -153,14 +157,14 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             {
                 var includePrereleases = preferences.IncludePrereleases;
                 using var request = new HttpRequestMessage(HttpMethod.Get, includePrereleases ? ReleasesUrl : LatestUrl);
-                request.Headers.UserAgent.ParseAdd("TogetherServer/" + currentVersion.ToString(3));
+                request.Headers.UserAgent.ParseAdd("TogetherServer/" + FormatVersion(currentVersion));
                 request.Headers.Accept.ParseAdd("application/vnd.github+json");
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
                 if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
                     available = null;
                     preparedPath = null;
-                    return SetView(new("NoRelease", currentVersion.ToString(3), null, "No published TogetherServer release yet.",
+                    return SetView(new("NoRelease", FormatVersion(currentVersion), null, "No published TogetherServer release yet.",
                         signed ? "Verified publisher" : "GitHub digest only"));
                 }
                 response.EnsureSuccessStatusCode();
@@ -180,7 +184,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 {
                     available = null;
                     preparedPath = null;
-                    return SetView(new("Unavailable", currentVersion.ToString(3), null,
+                    return SetView(new("Unavailable", FormatVersion(currentVersion), null,
                         "No eligible release has a valid Windows EXE and SHA-256 digest.",
                         signed ? "Verified publisher" : "GitHub digest only"));
                 }
@@ -189,19 +193,19 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 {
                     available = null;
                     preparedPath = null;
-                    return SetView(new("Current", currentVersion.ToString(3), release.Version.ToString(3), "TogetherServer is up to date.",
+                    return SetView(new("Current", FormatVersion(currentVersion), release.VersionText, "TogetherServer is up to date.",
                         signed ? "Verified publisher" : "GitHub digest only", LatestIsPrerelease: release.IsPrerelease));
                 }
                 if (available?.Tag != release.Tag || available.Sha256 != release.Sha256) preparedPath = null;
                 available = release;
-                return SetView(new("Available", currentVersion.ToString(3), release.Version.ToString(3),
-                    $"TogetherServer {release.Version.ToString(3)}{(release.IsPrerelease ? " (prerelease)" : "")} is available.",
+                return SetView(new("Available", FormatVersion(currentVersion), release.VersionText,
+                    $"TogetherServer {release.VersionText}{(release.IsPrerelease ? " (prerelease)" : "")} is available.",
                     signed ? "Verified publisher" : "GitHub digest only", LatestIsPrerelease: release.IsPrerelease));
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException or
                                       InvalidDataException or UnauthorizedAccessException)
             {
-                return SetView(new("Unavailable", currentVersion.ToString(3), available?.Version.ToString(3),
+                return SetView(new("Unavailable", FormatVersion(currentVersion), available?.VersionText,
                     "Could not check GitHub Releases. Your current app keeps working.",
                     signed ? "Verified publisher" : "GitHub digest only", LatestIsPrerelease: available?.IsPrerelease ?? false));
             }
@@ -231,7 +235,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             {
                 preparation = new("Downloading", "Downloading the reviewed Windows update.", 0, available.Size);
                 using var request = new HttpRequestMessage(HttpMethod.Get, available.DownloadUrl);
-                request.Headers.UserAgent.ParseAdd("TogetherServer/" + currentVersion.ToString(3));
+                request.Headers.UserAgent.ParseAdd("TogetherServer/" + FormatVersion(currentVersion));
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
                 if (response.Content.Headers.ContentLength is > MaximumBytes or < 1 ||
@@ -260,7 +264,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 if (!Version.TryParse(fileVersion, out var packagedVersion) ||
                     packagedVersion.Major != available.Version.Major ||
                     packagedVersion.Minor != available.Version.Minor ||
-                    packagedVersion.Build != available.Version.Build)
+                    packagedVersion.Build != available.Version.Build ||
+                    Math.Max(0, packagedVersion.Revision) != Math.Max(0, available.Version.Revision))
                     return PreparationResult(false, "InvalidDownload", "The release EXE version does not match its tag.");
                 if (!HasRequiredPublisher(path))
                     return PreparationResult(false, "InvalidSignature",
@@ -376,8 +381,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             prerelease.ValueKind == JsonValueKind.True && !includePrereleases ||
             !release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return null;
         var tag = tagValue.GetString()!;
-        if (!Regex.IsMatch(tag, @"^v\d+\.\d+\.\d+$", RegexOptions.CultureInvariant) ||
-            !Version.TryParse(tag[1..], out var version)) return null;
+        if (!tag.StartsWith('v') || !TryParseVersion(tag[1..], out var version)) return null;
         foreach (var asset in assets.EnumerateArray())
         {
             if (asset.ValueKind != JsonValueKind.Object ||
@@ -409,8 +413,18 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         .Take(MaximumReleaseNotesCharacters).ToArray());
 
     public static bool ValidReleaseNotesLink(string? value, string tag) => value is null ||
-        (Regex.IsMatch(tag, @"^v\d+\.\d+\.\d+$", RegexOptions.CultureInvariant) &&
+        (tag.StartsWith('v') && TryParseVersion(tag[1..], out _) &&
          string.Equals(value, $"https://github.com/daltonstates/TogetherServer/releases/tag/{tag}", StringComparison.Ordinal));
+
+    internal static string FormatVersion(Version version) => version.ToString(version.Revision > 0 ? 4 : 3);
+
+    internal static bool TryParseVersion(string? value, [NotNullWhen(true)] out Version? version)
+    {
+        version = null;
+        return value is { Length: > 0 and <= 32 } &&
+            Regex.IsMatch(value, @"\A[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?\z", RegexOptions.CultureInvariant) &&
+            Version.TryParse(value, out version);
+    }
 
     public static async Task<bool> HasHashAsync(string path, string expected)
     {

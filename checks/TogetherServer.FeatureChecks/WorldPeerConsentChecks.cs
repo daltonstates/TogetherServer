@@ -153,9 +153,15 @@ internal static class WorldPeerConsentChecks
 
         using (var ownerData = new LocalData(Path.Combine(root, "peer-consent-owner-" + Guid.NewGuid().ToString("N"))))
         {
-            var profile = new ServerProfile { Id = Guid.NewGuid(), Kind = GameKinds.Fixture,
-                Name = "Synthetic owner consent", WorldId = "ConsentOwner", SharedSavesEnabled = true,
-                WorldDirectory = Path.Combine(ownerData.RootPath, "disposable-world") };
+            var profile = new ServerProfile
+            {
+                Id = Guid.NewGuid(),
+                Kind = GameKinds.Fixture,
+                Name = "Synthetic owner consent",
+                WorldId = "ConsentOwner",
+                SharedSavesEnabled = true,
+                WorldDirectory = Path.Combine(ownerData.RootPath, "disposable-world")
+            };
             Directory.CreateDirectory(profile.WorldDirectory);
             ownerData.SaveSettings(new HostSettings { Profiles = [profile], CompanionListeningEnabled = false });
             var roster = new SharedWorldService(ownerData,
@@ -197,8 +203,11 @@ internal static class WorldPeerConsentChecks
             var draft = new SharedWorldRoster(3, Root.GroupId, Root.ProfileId, 1, 1, true, Root.OwnerPublicKey,
                 [new(DeviceId, Public(member), new(Receive: receive, EligibleHost: receive), false)], "",
                 SignerDeviceId: Guid.Empty, SignerPublicKey: Root.OwnerPublicKey);
-            var roster = draft with { Signature = Convert.ToBase64String(owner.SignData(
-                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            var roster = draft with
+            {
+                Signature = Convert.ToBase64String(owner.SignData(
+                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+            };
             new SharedWorldRosterChainStore(Data).Append(roster, Root.OwnerPublicKey);
             Data.SaveProtected($"shared-world-pc-signing-{DeviceId:N}.protected", member.ExportPkcs8PrivateKey());
             Data.SaveProtected($"shared-world-roster-{DeviceId:N}-{Root.ProfileId:N}.protected",
@@ -209,10 +218,11 @@ internal static class WorldPeerConsentChecks
             SaveConnection(originalFile, roster, DeviceId, originalConsent, alias: false);
             SaveConnection(aliasFile, roster, Guid.NewGuid(), aliasConsent, alias: true);
             Data.SaveProtected("friend-connections.protected", JsonSerializer.SerializeToUtf8Bytes(new
-                { Ids = new[] { Guid.Empty, aliasId }, SelectedId = Guid.Empty }, Json));
+            { Ids = new[] { Guid.Empty, aliasId }, SelectedId = Guid.Empty }, Json));
             Data.SaveProtected("world-peer-memberships.protected", JsonSerializer.SerializeToUtf8Bytes(new
             {
-                Schema = 1, Groups = new[] { new { Root, Roster = roster, DeviceId,
+                Schema = 1,
+                Groups = new[] { new { Root, Roster = roster, DeviceId,
                     Name = "Synthetic consent", ReceiveConsented = originalConsent || aliasConsent,
                     SharingEnabled = false, Bootstrap = (SharedWorldPeerRoute?)null } }
             }, Json));
@@ -226,10 +236,13 @@ internal static class WorldPeerConsentChecks
         {
             Data.SaveProtected(file, JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
             {
-                DisplayName = alias ? "Synthetic successor B" : "Synthetic original A", DeviceId = authDeviceId,
+                DisplayName = alias ? "Synthetic successor B" : "Synthetic original A",
+                DeviceId = authDeviceId,
                 Endpoint = alias ? "https://192.0.2.92:5131" : "https://192.0.2.91:5131",
-                Fingerprint = new string(alias ? 'B' : 'A', 64), Credential = new string('C', 64),
-                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30), PeerWorld = alias ? Root : null,
+                Fingerprint = new string(alias ? 'B' : 'A', 64),
+                Credential = new string('C', 64),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(30),
+                PeerWorld = alias ? Root : null,
                 PeerWorldMemberDeviceId = alias ? DeviceId : null,
                 ConsentedSharedWorldProfiles = consent ? [Root.ProfileId] : [],
                 ApprovedSharedWorldGroups = new() { [Root.ProfileId] = Root.GroupId },

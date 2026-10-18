@@ -23,15 +23,22 @@ internal static class WorldPeerSavedConnectionChecks
         var roster = new SharedWorldRoster(3, root.GroupId, root.ProfileId, 1, 1, true, root.OwnerPublicKey,
             [new(memberId, Convert.ToBase64String(member.ExportSubjectPublicKeyInfo()), new(), false)], "",
             SignerDeviceId: Guid.Empty, SignerPublicKey: root.OwnerPublicKey);
-        roster = roster with { Signature = Convert.ToBase64String(owner.SignData(
-            SharedWorldRosterTrust.Basis(roster), HashAlgorithmName.SHA256)) };
+        roster = roster with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(roster), HashAlgorithmName.SHA256))
+        };
         using var data = new LocalData(Path.Combine(rootPath, "peer-saved-connection-" + Guid.NewGuid().ToString("N")));
         var config = new FriendConfiguration
         {
-            Endpoint = route.Address, Fingerprint = route.CertificateSha256,
-            DeviceId = Guid.NewGuid(), Credential = new string('C', 64),
+            Endpoint = route.Address,
+            Fingerprint = route.CertificateSha256,
+            DeviceId = Guid.NewGuid(),
+            Credential = new string('C', 64),
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(60),
-            PeerWorld = root, PeerWorldMemberDeviceId = memberId, PeerWorldBranchHash = branchHash,
+            PeerWorld = root,
+            PeerWorldMemberDeviceId = memberId,
+            PeerWorldBranchHash = branchHash,
             SharedWorldSigningKeys = new() { [root.ProfileId] = root.OwnerPublicKey },
             ApprovedSharedWorldGroups = new() { [root.ProfileId] = root.GroupId }
         };
@@ -82,8 +89,11 @@ internal static class WorldPeerSavedConnectionChecks
             Require(request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/companion/heartbeat" &&
                 request.Headers.Authorization?.Scheme == "Bearer", "peer reuse sent an unexpected fixed operation");
             return Task.FromResult(Accept
-                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new CompanionStatus(
-                    false, "Status only", [], false, false, DateTimeOffset.UtcNow, CompanionProtocol.Describe())) }
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new CompanionStatus(
+                    false, "Status only", [], false, false, DateTimeOffset.UtcNow, CompanionProtocol.Describe()))
+                }
                 : new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{}") });
         }
     }

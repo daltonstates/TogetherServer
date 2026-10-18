@@ -14,8 +14,15 @@ internal static class WorldPeerBusyReadChecks
     internal static async Task RunAsync(string root)
     {
         using var data = new LocalData(Path.Combine(root, "peer-busy-read-" + Guid.NewGuid().ToString("N")));
-        var profile = new ServerProfile { Kind = GameKinds.Fixture, Name = "Completed files only", SharedSavesEnabled = true,
-            WorldId = "synthetic-busy-copy", GamePort = 2468, WorldDirectory = Path.Combine(data.RootPath, "never-read-live-world") };
+        var profile = new ServerProfile
+        {
+            Kind = GameKinds.Fixture,
+            Name = "Completed files only",
+            SharedSavesEnabled = true,
+            WorldId = "synthetic-busy-copy",
+            GamePort = 2468,
+            WorldDirectory = Path.Combine(data.RootPath, "never-read-live-world")
+        };
         data.SaveSettings(new HostSettings { Profiles = [profile] });
         var capture = new CompletedFiles(data.RootPath);
         var shares = new SharedWorldService(data, capture);
@@ -110,8 +117,12 @@ internal static class WorldPeerBusyReadChecks
     private static async Task MissingRootAsync(string root, SharedWorldPeerRoot source)
     {
         using var data = new LocalData(root);
-        var local = new ServerProfile { Kind = GameKinds.Fixture, SeparateCopySourceProfileId = source.ProfileId,
-            WorldDirectory = Path.Combine(data.RootPath, "never-read-recovery-world") };
+        var local = new ServerProfile
+        {
+            Kind = GameKinds.Fixture,
+            SeparateCopySourceProfileId = source.ProfileId,
+            WorldDirectory = Path.Combine(data.RootPath, "never-read-recovery-world")
+        };
         data.SaveSettings(new HostSettings { Profiles = [local] });
         var manager = new HostManager(data, new GameServerRegistry(data, true, PortProbeMode.ObserveOnly));
         var lifecycle = Gate(manager); await lifecycle.WaitAsync();
@@ -137,7 +148,8 @@ internal static class WorldPeerBusyReadChecks
     {
         try { return await action().WaitAsync(TimeSpan.FromSeconds(2)) is null; }
         catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or
-            CryptographicException or JsonException) { return true; }
+            CryptographicException or JsonException)
+        { return true; }
     }
 
     private static string Public(ECDsa key) => Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());

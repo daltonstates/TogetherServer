@@ -578,8 +578,8 @@ internal sealed class StateCheckpointService(LocalData data, TimeProvider clock)
             }
             if (allowSupportedSourceSchema &&
                 (expectedPreviousExecutableSha256 is null ||
-                 !Version.TryParse(manifest.CurrentVersion, out var sourceVersion) ||
-                 !Version.TryParse(manifest.TargetVersion, out var targetVersion) || targetVersion <= sourceVersion ||
+                 !AppUpdater.TryParseVersion(manifest.CurrentVersion, out var sourceVersion) ||
+                 !AppUpdater.TryParseVersion(manifest.TargetVersion, out var targetVersion) || targetVersion <= sourceVersion ||
                  !manifest.Files.Any(file => file.Name.Equals("storage-schema.json", StringComparison.OrdinalIgnoreCase)) ||
                  !SchemaMatches(Path.Combine(full, "storage-schema.json"), manifest.StorageSchemaVersion) ||
                  !SchemaMatches(Path.Combine(dataRoot, "storage-schema.json"), manifest.StorageSchemaVersion))) return false;

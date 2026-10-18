@@ -14,8 +14,11 @@ internal static class FriendRevocationVisibilityChecks
         const string file = "revoked-friend.protected";
         var configuration = new FriendConfiguration
         {
-            Endpoint = "https://127.0.0.1:5131", Fingerprint = new string('A', 64),
-            Credential = new string('C', 64), DeviceId = Guid.NewGuid(), HostId = Guid.NewGuid(),
+            Endpoint = "https://127.0.0.1:5131",
+            Fingerprint = new string('A', 64),
+            Credential = new string('C', 64),
+            DeviceId = Guid.NewGuid(),
+            HostId = Guid.NewGuid(),
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90)
         };
         var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);

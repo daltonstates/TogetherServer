@@ -28,7 +28,8 @@ internal sealed partial class FriendLink
                         try { _ = await SyncSharingRosterAsync(profile.Id, cancellationToken); }
                         catch (Exception ex) when (ex is IOException or HttpRequestException or
                             JsonException or CryptographicException or InvalidDataException or
-                            UnauthorizedAccessException) { /* Keep the last verified membership. */ }
+                            UnauthorizedAccessException)
+                        { /* Keep the last verified membership. */ }
                     }
                 }
                 var result = new List<WorldPeerMembership>();
@@ -87,9 +88,12 @@ public sealed partial class FriendService
             .Select(group =>
             {
                 var latest = group.OrderByDescending(item => item.Roster.Revision).First();
-                return latest with { ReceiveConsented = new WorldPeerReceiveConsentStore(data).Effective(
+                return latest with
+                {
+                    ReceiveConsented = new WorldPeerReceiveConsentStore(data).Effective(
                     latest.Root, latest.DeviceId, group.Any(item => item.DeviceId == latest.DeviceId &&
-                        item.Roster.Signature == latest.Roster.Signature && item.ReceiveConsented)) };
+                        item.Roster.Signature == latest.Roster.Signature && item.ReceiveConsented))
+                };
             }).ToArray();
     }
 
@@ -167,21 +171,21 @@ internal sealed partial class FriendLink
             try
             {
                 lock (sharedReceiptSync)
-                lock (SharedWorldMutationGate.For(data.RootPath))
-                {
-                    if (config is null || config.KnownRevoked || SharedWorldDeviceId != deviceId ||
-                        !HasSharedWorldReceiveConsent(root.ProfileId) ||
-                        config.PendingSharedWorldGroups.ContainsKey(root.ProfileId) ||
-                        config.ApprovedSharedWorldGroups.GetValueOrDefault(root.ProfileId) != root.GroupId ||
-                        config.SharedWorldSigningKeys.GetValueOrDefault(root.ProfileId) != root.OwnerPublicKey)
-                        return false;
-                    cancellationToken.ThrowIfCancellationRequested();
-                    // All aliases share the consent decision under this lock.
-                    // Withdrawal takes receipt -> mutation before waiting for
-                    // a link gate, so no fallback alias can revive promotion.
-                    commit();
-                    return true;
-                }
+                    lock (SharedWorldMutationGate.For(data.RootPath))
+                    {
+                        if (config is null || config.KnownRevoked || SharedWorldDeviceId != deviceId ||
+                            !HasSharedWorldReceiveConsent(root.ProfileId) ||
+                            config.PendingSharedWorldGroups.ContainsKey(root.ProfileId) ||
+                            config.ApprovedSharedWorldGroups.GetValueOrDefault(root.ProfileId) != root.GroupId ||
+                            config.SharedWorldSigningKeys.GetValueOrDefault(root.ProfileId) != root.OwnerPublicKey)
+                            return false;
+                        cancellationToken.ThrowIfCancellationRequested();
+                        // All aliases share the consent decision under this lock.
+                        // Withdrawal takes receipt -> mutation before waiting for
+                        // a link gate, so no fallback alias can revive promotion.
+                        commit();
+                        return true;
+                    }
             }
             finally { gate.Release(); }
         }

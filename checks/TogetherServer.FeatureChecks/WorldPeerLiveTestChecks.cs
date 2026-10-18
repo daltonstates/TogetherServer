@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -13,6 +14,7 @@ internal static class WorldPeerLiveTestChecks
 
     internal static void Run(string rootPath)
     {
+        ResumeLongPath(rootPath);
         using var data = new LocalData(Path.Combine(rootPath, "peer-private-test-" + Guid.NewGuid().ToString("N")));
         using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var receiver = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -22,12 +24,16 @@ internal static class WorldPeerLiveTestChecks
         var artifact = Artifact(root, owner, payloadBytes);
         var rosterDraft = new SharedWorldRoster(2, root.GroupId, root.ProfileId, 1, 1, true,
             root.OwnerPublicKey, [new(receiverId, Public(receiver), new(Receive: true), false)], "");
-        var roster = rosterDraft with { Signature = Convert.ToBase64String(owner.SignData(
-            SharedWorldRosterTrust.Basis(rosterDraft), HashAlgorithmName.SHA256)) };
+        var roster = rosterDraft with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(rosterDraft), HashAlgorithmName.SHA256))
+        };
         data.SaveProtected($"shared-world-pc-signing-{receiverId:N}.protected", receiver.ExportPkcs8PrivateKey());
         data.SaveProtected("world-peer-memberships.protected", JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Schema = 1, Groups = new[] { new { Root = root, Roster = roster, DeviceId = receiverId,
+            Schema = 1,
+            Groups = new[] { new { Root = root, Roster = roster, DeviceId = receiverId,
                 Name = "Private test", ReceiveConsented = true, SharingEnabled = false, Bootstrap = (SharedWorldPeerRoute?)null } }
         }, Json));
         using var friends = new FriendService(data);
@@ -48,8 +54,11 @@ internal static class WorldPeerLiveTestChecks
             "a renamed uncommitted directory was exposed as a completed test");
         var receiptDraft = new SharedWorldReceipt(1, root.GroupId, root.ProfileId, artifact.Version.VersionHash,
             receiverId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        var receipt = receiptDraft with { Signature = Convert.ToBase64String(receiver.SignData(
-            SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256)) };
+        var receipt = receiptDraft with
+        {
+            Signature = Convert.ToBase64String(receiver.SignData(
+            SharedWorldReceiptTrust.Basis(receiptDraft), HashAlgorithmName.SHA256))
+        };
         var completion = new WorldPeerTestCompletion(1, root, artifact.TestId, artifact.Version.VersionHash,
             WorldPeerVerifiedTestCopy.HashArtifact(artifact), receiverId, Public(receiver), 1, 1, receipt);
         WorldPeerVerifiedTestCopy lease;
@@ -69,15 +78,20 @@ internal static class WorldPeerLiveTestChecks
             Require(journal.Read(artifact)?.Receipt == receipt && journal.Read(artifact)?.ReceiptRegistered == true,
                 "a successful registration lost its stable receipt identity");
             var ownerDraft = receiptDraft with { Schema = 2, DeviceId = Guid.Empty, ReceiptId = Guid.NewGuid() };
-            var ownerReceipt = ownerDraft with { Signature = Convert.ToBase64String(owner.SignData(
-                SharedWorldReceiptTrust.Basis(ownerDraft), HashAlgorithmName.SHA256)) };
+            var ownerReceipt = ownerDraft with
+            {
+                Signature = Convert.ToBase64String(owner.SignData(
+                SharedWorldReceiptTrust.Basis(ownerDraft), HashAlgorithmName.SHA256))
+            };
             Require(WorldPeerOwnerTestReceiptTrust.Verify(ownerReceipt, root) &&
                 !SharedWorldReceiptTrust.Verify(ownerReceipt, root.OwnerPublicKey),
                 "an owner-only private receipt relaxed the canonical member validator");
             journal.Save(artifact, completion with
             {
-                ReceiverDeviceId = Guid.Empty, ReceiverPublicKey = root.OwnerPublicKey,
-                Receipt = ownerReceipt, ReceiptRegistered = false
+                ReceiverDeviceId = Guid.Empty,
+                ReceiverPublicKey = root.OwnerPublicKey,
+                Receipt = ownerReceipt,
+                ReceiptRegistered = false
             }, lease);
             Require(journal.Read(artifact)?.Receipt == ownerReceipt,
                 "the private owner receiver receipt was not retained as separate evidence");
@@ -107,6 +121,58 @@ internal static class WorldPeerLiveTestChecks
             SharedWorldFreshness.SelectNewestCompleteVerified([new(artifact.Version, true, true)], root.ProfileId, root.GroupId) is null,
             "a private test was admitted into normal recovery/freshness");
     }
+
+    private static void ResumeLongPath(string rootPath)
+    {
+        var namespaceRoot = Path.Combine(rootPath, "resume-" + Guid.NewGuid().ToString("N"),
+            new string('a', 120), new string('b', 120));
+        const string relative = "payload/chunks/world.db";
+        var file = Path.Combine(namespaceRoot, relative.Replace('/', Path.DirectorySeparatorChar));
+        Require(file.Length > 260, "the resumed private-file regression did not exceed Win32 MAX_PATH");
+        using (var names = new WorldPeerTestNamespace(rootPath, namespaceRoot, create: true))
+        {
+            using (var output = names.Resume(relative))
+            {
+                output.Write([1, 2]); output.Flush(true);
+                Require(Refuses(() => { using var competing = names.Resume(relative); }) &&
+                    Refuses(() => File.WriteAllBytes(file, [9])) &&
+                    Refuses(() => Directory.Move(namespaceRoot, namespaceRoot + ".moved")),
+                    "a resumed private writer lost its exclusive file or ancestor leases");
+            }
+            using (var output = names.Resume(relative))
+            {
+                Require(output.Length == 2 && output.Position == 0 && output.ReadByte() == 1 && output.ReadByte() == 2,
+                    "resuming a long private file truncated or replaced the existing bytes");
+                output.Seek(0, SeekOrigin.End); output.WriteByte(3); output.Flush(true);
+            }
+            Require(File.ReadAllBytes(file).SequenceEqual(new byte[] { 1, 2, 3 }) &&
+                Refuses(() => { using var directory = names.Resume("payload/chunks"); }) &&
+                Refuses(() => { using var escaped = names.Resume("payload/../outside.dat"); }),
+                "a resumed private file lost bytes or accepted a directory/escaping child");
+            var source = Path.Combine(rootPath, "resume-source-" + Guid.NewGuid().ToString("N") + ".dat");
+            File.WriteAllBytes(source, [4, 5]);
+            var linked = Path.Combine(namespaceRoot, "payload", "linked.dat");
+            Require(CreateHardLink(NativePath(linked), NativePath(source), IntPtr.Zero),
+                "the private resume hard-link rejection fixture could not be created");
+            Require(Refuses(() => { using var rejected = names.Resume("payload/linked.dat"); }) &&
+                File.ReadAllBytes(source).SequenceEqual(new byte[] { 4, 5 }),
+                "a resumed hard-linked private file was accepted or changed the original bytes");
+        }
+        using var readOnly = new WorldPeerTestNamespace(rootPath, namespaceRoot, create: false);
+        Require(Refuses(() => { using var rejected = readOnly.Resume(relative); }),
+            "a read-only private namespace acquired a resumable writer");
+    }
+
+    private static string NativePath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        return full.StartsWith(@"\\?\", StringComparison.Ordinal) ? full :
+            full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr security);
 
     private static LiveSaveTestArtifact Artifact(SharedWorldPeerRoot root, ECDsa owner, byte[] bytes)
     {

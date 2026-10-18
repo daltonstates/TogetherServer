@@ -17,11 +17,11 @@ internal static partial class CoreRemoteJourney
         var currentVersion = MixedAppVersion(currentApp);
         var legacyVersion = MixedAppVersion(legacyApp);
         var compiledVersion = typeof(ServerProfile).Assembly.GetName().Version;
-        Require(compiledVersion is not null && compiledVersion.Revision == 0 &&
-            currentVersion == compiledVersion.ToString(3),
+        Require(compiledVersion is not null &&
+            currentVersion == AppUpdater.FormatVersion(compiledVersion),
             "The release candidate file version must match the compiled current TogetherServer assembly version.");
-        Require(legacyVersion is "0.3.0" or "0.3.1",
-            "The separately supplied legacy EXE must be a published 0.3.0 or 0.3.1 release.");
+        Require(legacyVersion is "0.3.0" or "0.3.1" or "0.3.2",
+            "The separately supplied legacy EXE must be a published 0.3.0, 0.3.1 or 0.3.2 release.");
         Require(Version.Parse(legacyVersion).CompareTo(Version.Parse(currentVersion)) < 0,
             "The legacy EXE version must be strictly older than the current release candidate.");
         await MixedRolesAsync(currentApp, legacyApp, fixture, currentVersion, legacyVersion, "new-host-old-friend");
@@ -32,8 +32,8 @@ internal static partial class CoreRemoteJourney
     private static string MixedAppVersion(string path)
     {
         var version = FileVersionInfo.GetVersionInfo(path);
-        Require(version.FilePrivatePart == 0, "Unexpected private file-version component.");
-        return $"{version.FileMajorPart}.{version.FileMinorPart}.{version.FileBuildPart}";
+        return AppUpdater.FormatVersion(new Version(version.FileMajorPart, version.FileMinorPart,
+            version.FileBuildPart, version.FilePrivatePart));
     }
 
     private static async Task MixedRolesAsync(string hostApp, string friendApp, string fixture,

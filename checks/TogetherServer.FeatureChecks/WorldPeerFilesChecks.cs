@@ -113,7 +113,9 @@ internal static class WorldPeerFilesChecks
         for (var number = 2; number <= WorldAuthorityTrust.ChainVersionsPerCheck * 3 + 7; number++)
             versions.Add(SharedWorldService.SignVersion(first with
             {
-                Number = number, ParentHash = versions[^1].VersionHash, BackupId = Guid.NewGuid()
+                Number = number,
+                ParentHash = versions[^1].VersionHash,
+                BackupId = Guid.NewGuid()
             }, owner));
         var byHash = versions.ToDictionary(version => version.VersionHash);
         var calls = new Dictionary<string, int>();
@@ -150,9 +152,13 @@ internal static class WorldPeerFilesChecks
         var deviceId = Guid.NewGuid();
         data.SaveProtected(saved, JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
         {
-            DeviceId = deviceId, Endpoint = "https://192.0.2.41:5131", Fingerprint = new string('A', 64),
-            Credential = new string('B', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
-            ConsentedSharedWorldProfiles = [source.ProfileId], ApprovedSharedWorldGroups = new() { [source.ProfileId] = source.GroupId },
+            DeviceId = deviceId,
+            Endpoint = "https://192.0.2.41:5131",
+            Fingerprint = new string('A', 64),
+            Credential = new string('B', 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            ConsentedSharedWorldProfiles = [source.ProfileId],
+            ApprovedSharedWorldGroups = new() { [source.ProfileId] = source.GroupId },
             SharedWorldSigningKeys = new() { [source.ProfileId] = source.OwnerPublicKey }
         }, Json));
         using var link = new FriendLink(data, saved, (_, _) => throw new InvalidOperationException("no HTTP is allowed in the consent check"));

@@ -220,7 +220,8 @@ internal static class WorldPeerEnrollmentChecks
 
         internal void SaveMembership() => Data.SaveProtected("world-peer-memberships.protected", JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Schema = 1, Groups = new[] { new { Root = Source, Roster, DeviceId = Guid.Empty, Name = "Synthetic world",
+            Schema = 1,
+            Groups = new[] { new { Root = Source, Roster, DeviceId = Guid.Empty, Name = "Synthetic world",
                 ReceiveConsented = true, SharingEnabled = true, Bootstrap = (SharedWorldPeerRoute?)null } }
         }, Json));
         internal PairingDecision Authenticate(out PairedDevice? device) => Pairing.Authenticate(Alias.DeviceId, Alias.Credential, out device);

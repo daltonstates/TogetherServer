@@ -46,6 +46,9 @@ internal static class NativeSnapshotDirectory
     internal static SafeFileHandle OpenReadFile(SafeFileHandle parent, string name) =>
         Open(parent, name, ReadData | ReadAttributes | Synchronize, ShareRead, FileOpen, NonDirectoryFile);
 
+    internal static SafeFileHandle ResumeFile(SafeFileHandle parent, string name) =>
+        Open(parent, name, GenericRead | GenericWrite | Synchronize, 0, FileOpenIf, NonDirectoryFile);
+
     internal static SafeFileHandle OpenGuard(SafeFileHandle parent, string name)
     {
         if (!string.Equals(name, GuardName, StringComparison.Ordinal))

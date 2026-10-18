@@ -36,7 +36,7 @@ const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
   journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], expectedModeCancellations: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatRecovery: [], chatDelivery: [],
-  dialogs: [], protectedReloads: [], cleanup: [], startedUtc: new Date().toISOString() }
+  dialogs: [], requiredSetup: [], protectedReloads: [], cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const protectedReloadTickets = new WeakMap()
 const pendingResponseClassifications = new Set()
@@ -486,15 +486,96 @@ async function rememberManagedProcesses(instance) {
     }
   }
 }
-async function selectServer(page, name, tab = 'Overview') {
+async function selectWorkspaceSection(page, label, name, value) {
+  const mobile = page.getByRole('combobox', { name: label, exact: true })
+  if (await mobile.isVisible()) {
+    await mobile.selectOption(value)
+    await eventually(() => mobile.inputValue(), selected => selected === value, `${name} section selection`)
+  } else {
+    const button = page.getByRole('navigation', { name: label, exact: true }).getByRole('button', { name, exact: true })
+    await button.click()
+    await eventually(() => button.getAttribute('aria-current'), current => current === 'page', `${name} section navigation`)
+  }
+}
+async function openHostServerPicker(page) {
+  const sidebar = page.getByRole('complementary', { name: 'Host navigation', exact: true })
+  await sidebar.waitFor({ state: 'visible' })
+  const picker = sidebar.locator('details.context-picker')
+  await picker.waitFor({ state: 'visible' })
+  assert.equal(await picker.count(), 1, 'The Host sidebar must expose one selected-server picker.')
+  if (!await picker.evaluate(element => element.open)) await picker.locator(':scope > summary').click()
+  await picker.getByRole('textbox', { name: 'Find selected server', exact: true }).waitFor({ state: 'visible' })
+  return picker
+}
+async function selectHostServer(page, name) {
   await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).getByRole('button', { name: 'Host', exact: true }).click()
-  await page.getByLabel('Find server', { exact: true }).fill('')
-  const list = page.getByRole('complementary', { name: 'Saved servers' })
-  await list.getByRole('button', { name: new RegExp(`^${name}`) }).click()
+  const picker = await openHostServerPicker(page)
+  await picker.getByRole('textbox', { name: 'Find selected server', exact: true }).fill('')
+  await picker.locator('.context-picker-options').getByRole('button', { name: new RegExp(`^${name}`) }).click()
   await page.getByRole('region', { name: `${name} workspace`, exact: true }).waitFor()
+}
+async function selectServer(page, name, tab = 'Overview') {
+  await selectHostServer(page, name)
   const label = ({ Files: 'Settings & files', Setup: 'Maintenance & setup' })[tab] ?? tab
-  await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: label, exact: true }).click()
+  const value = ({ Files: 'files', Setup: 'setup' })[tab] ?? tab.toLowerCase()
+  await selectWorkspaceSection(page, 'Selected server sections', label, value)
   return page.getByRole('region', { name: `${name} workspace`, exact: true })
+}
+async function acceptAppConfirmation(page, title, confirmLabel) {
+  const dialog = page.getByRole('dialog', { name: title, exact: true })
+  await dialog.waitFor({ state: 'visible' })
+  assert.equal(await dialog.getByRole('button', { name: 'Cancel', exact: true }).isVisible(), true,
+    'The owner must retain a visible way to cancel the reviewed action.')
+  report.dialogs.push({ type: 'app-confirmation', title, outcome: 'accepted-reviewed-confirm', confirmLabel })
+  await dialog.getByRole('button', { name: confirmLabel, exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+}
+async function completeRequiredProfileSetup(page, instance) {
+  await step(`required profile setup gates the fresh ${instance.name} before ordinary navigation`, async () => {
+    const setup = page.getByRole('region', { name: 'Required app setup', exact: true })
+    const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+    await setup.waitFor({ state: 'visible' })
+    const before = await api(instance, '/api/local/required-setup')
+    assert.deepEqual(before.features.map(feature => ({ id: feature.id, revision: feature.revision, completed: feature.completed })),
+      [{ id: 'profile-name', revision: 1, completed: false }], 'A fresh instance must report its actual missing profile step.')
+    assert.equal((await api(instance, '/api/local/profile')).displayName, '', 'Required setup must not invent a name.')
+    assert.equal(await navigation.count(), 0, 'Ordinary workspace navigation stays unavailable before required setup.')
+    await setup.getByRole('heading', { level: 1 }).click()
+    await page.keyboard.press('Alt+2')
+    await page.keyboard.press('Control+k')
+    assert.equal(await navigation.count(), 0, 'Workspace shortcuts cannot bypass required setup.')
+    assert.equal(await page.getByRole('dialog', { name: 'Command palette', exact: true }).count(), 0,
+      'Commands cannot bypass required setup.')
+    const profile = setup.getByRole('form', { name: 'Shared profile', exact: true })
+    const save = profile.getByRole('button', { name: 'Save and continue', exact: true })
+    assert.equal(await save.isDisabled(), true, 'An empty required profile cannot be submitted.')
+    const displayName = `Synthetic browser ${instance.name}`
+    await profile.getByRole('textbox', { name: 'Your name', exact: true }).fill(displayName)
+    const [response] = await Promise.all([
+      page.waitForResponse(value => value.url() === `${instance.origin}/api/local/required-setup/profile-name/complete` &&
+        value.request().method() === 'POST'),
+      save.click()
+    ])
+    assert.equal(response.status(), 200)
+    assert.deepEqual(response.request().postDataJSON(), { revision: 1 }, 'The UI acknowledges only the reviewed feature revision.')
+    const result = await boundedResponseJson(response)
+    assert.equal(result?.ok, true)
+    assert.equal(result?.code, 'RequiredFeatureCompleted')
+    await navigation.waitFor({ state: 'visible' })
+    await setup.waitFor({ state: 'hidden' })
+    const [saved, current, snapshot] = await Promise.all([
+      api(instance, '/api/local/profile'), api(instance, '/api/local/required-setup'), api(instance, '/api/local/snapshot')
+    ])
+    assert.equal(saved.displayName, displayName, 'The displayed name must persist through the real owner API.')
+    assert(current.features.every(feature => feature.completed), 'Navigation follows authoritative completed setup.')
+    assert.equal(snapshot.profiles?.length ?? snapshot.settings?.profiles.length, 0, 'Profile setup cannot configure a game server.')
+    assert.equal(snapshot.runs?.length ?? 0, 0, 'Profile setup cannot start a managed game process.')
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await navigation.waitFor({ state: 'visible' })
+    assert.equal(await setup.count(), 0, 'A saved valid name skips required setup on the next app page load.')
+    report.requiredSetup.push({ instance: instance.name, revision: 1, shortcutsGated: true, persistedNameMatches: true,
+      authoritativeCompletion: true, reloadSkippedCompletedStep: true, noGameConfiguredOrStarted: true })
+  })
 }
 async function openPage(instance, context) {
   const page = await context.newPage()
@@ -541,6 +622,7 @@ async function openPage(instance, context) {
     }
   })
   await page.goto(instance.origin, { waitUntil: 'domcontentloaded' })
+  await completeRequiredProfileSetup(page, instance)
   await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).waitFor()
   // These nodes come from the candidate's embedded bundle, never a Vite server or page.setContent.
   assert(await page.locator('script[src^="/assets/"]').count() > 0, 'The candidate must serve its bundled React assets.')
@@ -587,7 +669,7 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
     density: document.documentElement.dataset.density, textScale: getComputedStyle(document.documentElement).getPropertyValue('--qol-text-scale').trim(),
     highContrast: document.documentElement.dataset.highContrast,
     liveStatusCount: document.querySelectorAll('[role="status"],[aria-live="polite"]').length,
-    headerControls: [...document.querySelectorAll('.header-tools > details > summary, .header-tools > .command-trigger')]
+    headerControls: [...document.querySelectorAll('.header-tools > details > summary, .header-tools > .app-settings-trigger, .header-tools > .command-trigger')]
       .map(control => { const bounds = control.getBoundingClientRect(); return { name: control.getAttribute('aria-label'),
         left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height } }) }))
   report.layout.push({ name, ...metrics })
@@ -614,7 +696,7 @@ async function firstUseAndSetupRecovery(page, host) {
   const capture = async (phase, recovery = null) => {
     for (const textScale of ['100', '150']) {
       await page.setViewportSize({ width: 1440, height: 900 })
-      await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+      await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
       await setAppearanceTextScale(page, textScale)
       await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
         value => value === (textScale === '150' ? '24px' : '16px'), `${phase} ${textScale} percent text`)
@@ -629,7 +711,7 @@ async function firstUseAndSetupRecovery(page, host) {
             style = getComputedStyle(element), painted = document.elementFromPoint(labelBounds.left + labelBounds.width / 2, labelBounds.top + labelBounds.height / 2)
           const initialScrollTop = element.scrollTop
           element.scrollTop = element.scrollHeight
-          const factsBottomAtEnd = element.lastElementChild.getBoundingClientRect().bottom, endScrollTop = element.scrollTop
+          const factsBottomAtEnd = element.querySelector(':scope > span').getBoundingClientRect().bottom, endScrollTop = element.scrollTop
           element.scrollTop = initialScrollTop
           return { top: bounds.top, bottom: bounds.bottom, scrollTop: initialScrollTop, scrollHeight: element.scrollHeight,
             clientHeight: element.clientHeight, overflowY: style.overflowY, labelTop: labelBounds.top, labelBottom: labelBounds.bottom,
@@ -645,16 +727,19 @@ async function firstUseAndSetupRecovery(page, host) {
         assert(staging.factsBottomAtEnd <= staging.bottom + 1 && staging.factsBottomAtEnd >= staging.top,
           `${name}: the last staging facts must be reachable at the end of the banner scroll.`)
         const alignment = await firstHost.evaluate(element => {
-          const bounds = element.getBoundingClientRect(), heading = document.querySelector('.page-heading').getBoundingClientRect(),
+          const bounds = element.getBoundingClientRect(), container = element.closest('.context-content'),
+            workspace = container.getBoundingClientRect(), workspaceStyle = getComputedStyle(container),
             style = getComputedStyle(element), recovered = element.querySelector('.setup-draft-recovery')?.getBoundingClientRect()
-          return { left: bounds.left, right: bounds.right, width: bounds.width, headingLeft: heading.left, headingRight: heading.right,
+          return { left: bounds.left, right: bounds.right, width: bounds.width,
+            workspaceLeft: workspace.left + container.clientLeft + Number.parseFloat(workspaceStyle.paddingLeft),
+            workspaceRight: workspace.left + container.clientLeft + container.clientWidth - Number.parseFloat(workspaceStyle.paddingRight),
             contentLeft: bounds.left + Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.borderLeftWidth),
             contentRight: bounds.right - Number.parseFloat(style.paddingRight) - Number.parseFloat(style.borderRightWidth),
             recoveryLeft: recovered?.left ?? null, recoveryRight: recovered?.right ?? null }
         })
         report.layout.push({ name: `${name}-shared-width`, alignment })
-        assert(Math.abs(alignment.left - alignment.headingLeft) <= 1 && Math.abs(alignment.right - alignment.headingRight) <= 1,
-          `${name}: first-use content must align with the shared workspace heading width.`)
+        assert(Math.abs(alignment.left - alignment.workspaceLeft) <= 1 && Math.abs(alignment.right - alignment.workspaceRight) <= 1,
+          `${name}: first-use content must fill the current workspace content width.`)
         assert.equal(await firstHost.getByRole('button', { name: 'Host a server', exact: true }).isVisible(), true)
         assert.equal(await firstHost.getByRole('button', { name: 'Join a server', exact: true }).isVisible(), true)
         if (recovery) {
@@ -674,6 +759,7 @@ async function firstUseAndSetupRecovery(page, host) {
   await dialog.waitFor({ state: 'visible' })
   await dialog.getByRole('heading', { name: 'Choose a game', exact: true }).waitFor()
   await dialog.getByRole('button', { name: 'Cancel setup', exact: true }).click()
+  await acceptAppConfirmation(page, 'Discard setup changes?', 'Discard changes')
   await dialog.waitFor({ state: 'hidden' })
   assert.equal(await firstHost.getByRole('button', { name: 'Host a server', exact: true }).isVisible(), true)
   await assertEmptyBackend()
@@ -707,6 +793,7 @@ async function firstUseAndSetupRecovery(page, host) {
   assert.equal(await dialog.getByRole('textbox', { name: /^World name/u }).inputValue(), 'browser-first-use-world')
   assert.equal(await password.inputValue(), '', 'Recovery cannot restore a game password.')
   await dialog.getByRole('button', { name: 'Cancel setup', exact: true }).click()
+  await acceptAppConfirmation(page, 'Discard setup changes?', 'Discard changes')
   await dialog.waitFor({ state: 'hidden' })
   await recovery.waitFor({ state: 'hidden' })
   await assertEmptyBackend()
@@ -715,14 +802,20 @@ async function firstUseAndSetupRecovery(page, host) {
   assert.equal(cleared.ok, true)
   assert.equal(cleared.text, null, 'Cancel must clear only this disposable unsaved setup draft before profile seeding.')
   await page.setViewportSize({ width: 1440, height: 900 })
-  await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+  await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await setAppearanceTextScale(page, '100')
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
 }
 
-async function openAppearanceEditor(page) {
+async function openAppearanceEditor(page, { baseline = false } = {}) {
   const appearance = page.getByRole('group', { name: 'Appearance' })
-  // Baseline snapshots retain the historical inline preferences.
+  if (!baseline) {
+    await page.getByRole('region', { name: 'App Settings', exact: true }).waitFor({ state: 'visible' })
+    await selectWorkspaceSection(page, 'App settings sections', 'Appearance', 'appearance')
+    await appearance.waitFor({ state: 'visible' })
+    return appearance
+  }
+  // Caller-supplied baseline assets may retain the earlier focused dialog.
   if (await appearance.isVisible()) return appearance
   await page.getByRole('button', { name: 'Appearance Edit appearance', exact: true }).click()
   await page.getByRole('dialog', { name: 'Appearance', exact: true }).waitFor({ state: 'visible' })
@@ -737,22 +830,22 @@ async function closeAppearanceEditor(page) {
   await dialog.waitFor({ state: 'hidden' })
 }
 
-async function setAppearanceTextScale(page, textScale) {
-  const appearance = await openAppearanceEditor(page)
+async function setAppearanceTextScale(page, textScale, options) {
+  const appearance = await openAppearanceEditor(page, options)
   await appearance.getByRole('combobox', { name: /^Text size$/u }).selectOption(textScale)
   await closeAppearanceEditor(page)
 }
 
 async function routingAndAppearance(page) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
-  for (const [shortcut, destination] of [['Alt+2', 'Join'], ['Alt+3', 'Attention'], ['Alt+4', 'Settings'], ['Alt+1', 'Host']]) {
+  for (const [shortcut, destination] of [['Alt+2', 'Join'], ['Alt+3', 'Attention'], ['Alt+4', 'App Settings'], ['Alt+1', 'Host']]) {
     // Global navigation deliberately leaves a focused editor's typing alone.
-    await page.getByRole('heading', { level: 1 }).click()
+    await page.locator('.brand').click()
     await page.keyboard.press(shortcut)
     await eventually(() => navigation.getByRole('button', { name: destination, exact: true }).getAttribute('aria-current'),
       value => value === 'page', `keyboard opens ${destination}`)
   }
-  await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+  await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await page.keyboard.press('Control+k')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
   await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Attention Center')
@@ -765,14 +858,14 @@ async function routingAndAppearance(page) {
   await page.keyboard.press('Enter')
   await palette.waitFor({ state: 'hidden' })
   await eventually(() => navigation.getByRole('button', { name: 'Host', exact: true }).getAttribute('aria-current'), value => value === 'page', 'Host palette navigation from Join')
-  await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+  await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await page.keyboard.press('Control+k')
   await palette.getByRole('combobox', { name: 'Search commands' }).fill('Synthetic Bedrock B')
   await palette.getByRole('option').filter({ hasText: /files/iu }).click()
   await palette.waitFor({ state: 'hidden' })
   await page.getByRole('region', { name: 'Synthetic Bedrock B workspace', exact: true }).waitFor()
   assert.equal(await page.locator('.server-detail').getAttribute('data-server-tab'), 'files')
-  await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+  await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   const appearance = await openAppearanceEditor(page)
   for (const theme of ['system', 'light', 'dark']) {
     await appearance.getByRole('combobox', { name: /^Theme$/u }).selectOption(theme)
@@ -788,8 +881,8 @@ async function routingAndAppearance(page) {
   await appearance.getByRole('checkbox', { name: 'Stronger contrast and status outlines' }).check()
   await eventually(() => page.locator('html').getAttribute('data-density'), value => value === 'compact', 'compact layout')
   await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize), value => value === '24px', '150 percent root text size')
-  await screenshot(page, 'appearance-dialog-wide-150', { width: 1440, height: 900 }, page.getByRole('dialog', { name: 'Appearance', exact: true }))
-  await screenshot(page, 'appearance-dialog-narrow-150', { width: 390, height: 844 }, page.getByRole('dialog', { name: 'Appearance', exact: true }))
+  await screenshot(page, 'appearance-section-wide-150', { width: 1440, height: 900 }, appearance)
+  await screenshot(page, 'appearance-section-narrow-150', { width: 390, height: 844 }, appearance)
   await closeAppearanceEditor(page)
   await screenshot(page, 'settings-wide-150', { width: 1440, height: 900 })
   await screenshot(page, 'settings-narrow-150', { width: 390, height: 844 })
@@ -821,7 +914,7 @@ async function headerOverlayRegression(page, host) {
   }
   const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
   const notifications = page.locator('.notification-menu > summary')
-  const quickSettings = page.locator('.app-menu > summary')
+  const appSettings = page.locator('.header-tools .app-settings-trigger')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
   const viewports = [{ width: 1180, height: 774 }, { width: 1440, height: 900 }, { width: 641, height: 844 },
     { width: 700, height: 844 }, { width: 390, height: 844 }, { width: 900, height: 400 }]
@@ -876,7 +969,7 @@ async function headerOverlayRegression(page, host) {
           const viewport = { width: 1180, height: 774 }, name = `baseline-a1eb74e-notifications-1180x774-${textScale}`
           await page.setViewportSize(viewport)
           await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
-          await setAppearanceTextScale(page, textScale)
+          await setAppearanceTextScale(page, textScale, { baseline: true })
           await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
             value => value === (textScale === '150' ? '24px' : '16px'), `baseline ${textScale} percent text`)
           await navigation.getByRole('button', { name: 'Host', exact: true }).click()
@@ -904,7 +997,7 @@ async function headerOverlayRegression(page, host) {
     await eventually(() => page.locator('.staging-banner').isVisible(), value => value, 'actual staging banner')
     for (const textScale of ['100', '150']) {
       await page.setViewportSize({ width: 1440, height: 900 })
-      await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+      await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
       await setAppearanceTextScale(page, textScale)
       await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
         value => value === (textScale === '150' ? '24px' : '16px'), `${textScale} percent overlay text`)
@@ -929,24 +1022,25 @@ async function headerOverlayRegression(page, host) {
         assert(columns.every(row => Number.parseFloat(row.firstColumn) <= 40 && row.glyphWidth <= 40 &&
           row.contentWidth >= Math.min(200, row.width - 80) && row.glyphRight <= row.contentLeft && row.contentRight <= row.rowRight + 1),
           `${suffix}: the real glyph column must stay narrow and reserve width for the notification text.`)
-        // Switching either way closes the other menu; Escape restores the corresponding trigger.
-        await quickSettings.click()
+        // The header gear now opens the shared App Settings workspace. Moving to
+        // that page must still close the notification overlay without hiding controls.
+        await appSettings.click()
+        await page.getByRole('region', { name: 'App Settings', exact: true }).waitFor({ state: 'visible' })
         assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false)
-        const quick = page.locator('.app-menu-panel')
-        await screenshot(page, `quick-settings-${suffix}`, viewport, quick)
-        await box(quick, `quick-settings-${suffix}`)
-        await page.keyboard.press('Escape')
-        assert.equal(await page.locator('.app-menu').evaluate(element => element.open), false)
-        assert.equal(await quickSettings.evaluate(element => element === document.activeElement), true)
-        await quickSettings.click(); await notifications.click()
-        assert.equal(await page.locator('.app-menu').evaluate(element => element.open), false)
+        assert.equal(await navigation.getByRole('button', { name: 'App Settings', exact: true }).getAttribute('aria-current'), 'page')
+        await screenshot(page, `app-settings-${suffix}`, viewport)
+        await notifications.click()
         await page.keyboard.press('Escape')
         assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false)
         assert.equal(await notifications.evaluate(element => element === document.activeElement), true)
         await notifications.click(); await page.mouse.click(3, viewport.height - 3)
         assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false, 'Outside press closes Notifications.')
-        await quickSettings.click(); await page.mouse.click(3, viewport.height - 3)
-        assert.equal(await page.locator('.app-menu').evaluate(element => element.open), false, 'Outside press closes quick settings.')
+        await notifications.click()
+        await page.getByRole('button', { name: 'Commands', exact: true }).click()
+        await palette.waitFor({ state: 'visible' })
+        assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false, 'Opening Commands closes Notifications.')
+        await page.keyboard.press('Escape')
+        await palette.waitFor({ state: 'hidden' })
         await page.getByRole('button', { name: 'Commands', exact: true }).click()
         const search = palette.getByRole('combobox', { name: 'Search commands' })
         await search.waitFor()
@@ -968,14 +1062,15 @@ async function headerOverlayRegression(page, host) {
         await close.click(); await palette.waitFor({ state: 'hidden' })
         if (viewport.width <= 700) {
           const mobileControls = await navigation.locator('.workspace-nav-item').evaluateAll(elements => elements.map(element => {
-            const label = element.querySelector('.workspace-nav-label'), bounds = element.getBoundingClientRect(), style = getComputedStyle(label)
+            const label = element.querySelector('.workspace-nav-label'), bounds = element.getBoundingClientRect(),
+              icon = element.querySelector('.workspace-nav-icon svg').getBoundingClientRect()
             return { name: element.getAttribute('aria-label'), width: bounds.width, height: bounds.height, label: label.textContent,
-              labelVisible: style.display !== 'none' && style.visibility !== 'hidden' && label.getBoundingClientRect().width > 0 }
+              iconVisible: icon.width > 0 && icon.height > 0 }
           }))
           report.layout.push({ name: `mobile-navigation-${suffix}`, mobileControls })
-          assert.equal(mobileControls.length, 4)
-          assert(mobileControls.every(control => control.labelVisible && control.label === control.name && control.width >= 44 && control.height >= 44),
-            `${suffix}: all workspace labels and 44px touch targets remain visible.`)
+          assert.deepEqual(mobileControls.map(control => control.name), ['Host', 'Join', 'Attention', 'App Settings'])
+          assert(mobileControls.every(control => control.iconVisible && control.label === control.name && control.width >= 44 && control.height >= 44),
+            `${suffix}: the icon rail retains all four accessible names, painted icons and 44px touch targets.`)
         }
       }
     }
@@ -984,36 +1079,39 @@ async function headerOverlayRegression(page, host) {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.reload({ waitUntil: 'domcontentloaded' })
     await navigation.waitFor()
-    await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+    await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
     await setAppearanceTextScale(page, '100')
     await navigation.getByRole('button', { name: 'Host', exact: true }).click()
   }
 }
 async function serverNavigation(page, profiles) {
-  const list = page.getByRole('complementary', { name: 'Saved servers' })
   await selectServer(page, profiles.valheim.name, 'Logs')
   await selectServer(page, profiles.bedrock.name, 'Files')
-  await list.getByRole('button', { name: new RegExp(`^${profiles.valheim.name}`) }).click()
+  await selectHostServer(page, profiles.valheim.name)
   await eventually(() => page.locator('.server-detail').getAttribute('data-server-tab'), value => value === 'logs', 'per-server last tab')
-  await page.getByLabel('Find server', { exact: true }).fill('Bedrock')
-  assert.equal(await list.locator('.server-master-item').count(), 1)
-  assert((await list.locator('.server-master-item').innerText()).includes(profiles.bedrock.name))
-  await page.getByLabel('Find server', { exact: true }).fill('')
-  await list.getByRole('button', { name: `Pin ${profiles.extra.name}`, exact: true }).click()
-  await eventually(() => list.locator('.server-master-item').first().innerText(), value => value.includes(profiles.extra.name), 'favorite server ordering')
-  await list.getByRole('button', { name: `Unpin ${profiles.extra.name}`, exact: true }).click()
-  await list.getByRole('button', { name: 'Reorder servers', exact: true }).click()
-  await list.getByRole('button', { name: `Move ${profiles.extra.name} up`, exact: true }).click()
-  await list.getByRole('button', { name: `Move ${profiles.extra.name} up`, exact: true }).click()
-  await list.getByRole('button', { name: 'Finish ordering', exact: true }).click()
+  const picker = await openHostServerPicker(page)
+  const search = picker.getByRole('textbox', { name: 'Find selected server', exact: true })
+  await search.fill('Bedrock')
+  assert.equal(await picker.locator('.context-picker-option').count(), 1)
+  assert((await picker.locator('.context-picker-option').innerText()).includes(profiles.bedrock.name))
+  await search.fill('')
+  await picker.getByRole('button', { name: `Pin ${profiles.extra.name}`, exact: true }).click()
+  await eventually(() => picker.locator('.context-picker-option').first().innerText(), value => value.includes(profiles.extra.name), 'favorite server ordering')
+  await picker.getByRole('button', { name: `Unpin ${profiles.extra.name}`, exact: true }).click()
+  await picker.getByRole('button', { name: 'Reorder servers', exact: true }).click()
+  await picker.getByRole('button', { name: `Move ${profiles.extra.name} up`, exact: true }).click()
+  await picker.getByRole('button', { name: `Move ${profiles.extra.name} up`, exact: true }).click()
+  await picker.getByRole('button', { name: 'Finish ordering', exact: true }).click()
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await eventually(() => list.locator('.server-master-item').first().innerText(), value => value.includes(profiles.extra.name), 'saved manual ordering after reload')
+  await openHostServerPicker(page)
+  await eventually(() => picker.locator('.context-picker-option').first().innerText(), value => value.includes(profiles.extra.name), 'saved manual ordering after reload')
+  await picker.locator(':scope > summary').click()
   await screenshot(page, 'host-wide-100', { width: 1440, height: 900 })
 }
 async function setupReview(page, host, profiles) {
   await selectServer(page, profiles.valheim.name)
-  const addServer = page.locator('.page-heading-actions').getByRole('button', { name: 'Add server', exact: true })
-  assert.equal(await addServer.count(), 1, 'The populated Host page exposes one canonical Add server action.')
+  const addServer = page.getByRole('complementary', { name: 'Host navigation', exact: true }).getByRole('button', { name: 'Add server', exact: true })
+  assert.equal(await addServer.count(), 1, 'The populated Host sidebar exposes one canonical Add server action.')
   await addServer.click()
   const dialog = page.getByRole('dialog', { name: 'Add new server' })
   await dialog.getByRole('region', { name: 'Setup blockers' }).waitFor()
@@ -1043,11 +1141,13 @@ async function setupReview(page, host, profiles) {
   assert.notEqual(await dialog.getByLabel('Save directory', { exact: true }).inputValue(), savedBefore)
   await screenshot(page, 'setup-review-wide', { width: 1440, height: 900 })
   await dialog.getByRole('button', { name: 'Finish later', exact: true }).click()
+  await acceptAppConfirmation(page, 'Finish setup later?', 'Finish later')
   await dialog.waitFor({ state: 'hidden' })
   await reloadProtectedSetup(page, host, { profileId: setupProfileId, worldId: 'browser-new-world', step: 'review' }, 'populated-setup-recovery')
   await page.getByRole('button', { name: 'Review saved setup', exact: true }).click()
   await page.getByRole('dialog', { name: 'Add new server' }).getByText('Review and start', { exact: true }).waitFor()
   await page.getByRole('dialog', { name: 'Add new server' }).getByRole('button', { name: 'Cancel', exact: true }).click()
+  await acceptAppConfirmation(page, 'Discard setup changes?', 'Discard changes')
   await page.getByRole('dialog', { name: 'Add new server' }).waitFor({ state: 'hidden' })
 }
 async function recordGuidedEditorDom(page, phase) {
@@ -1061,7 +1161,7 @@ async function recordGuidedEditorDom(page, phase) {
     return (element.getAttribute('aria-labelledby') ?? '').split(/\s+/u).filter(Boolean)
       .map(id => document.getElementById(id)?.textContent ?? '').join(' ')
   }) : null
-  const selectedTabs = page.locator('.server-detail [aria-label="Selected server sections"] button[aria-current="page"]')
+  const selectedTabs = page.locator('[aria-label="Selected server sections"] button[aria-current="page"]')
   const selectedTabCount = await selectedTabs.count()
   const reloads = page.getByRole('button', { name: 'Reload game settings', exact: true })
   const reloadCount = await reloads.count()
@@ -1098,24 +1198,29 @@ async function editorRecovery(page, host, profiles) {
   }
   await recordGuidedEditorDom(page, 'initial-visible')
   const files = page.getByRole('region', { name: 'Server files and settings' })
+  const fileSections = page.getByRole('tablist', { name: 'Settings & files sections', exact: true })
+  await fileSections.getByRole('tab', { name: 'Server files', exact: true }).click()
   const row = files.locator('.server-file-row').filter({ hasText: 'server.properties' })
   await row.getByRole('button', { name: 'Edit file', exact: true }).click()
   const contents = files.getByRole('textbox', { name: /^File contents/u })
   const raw = profiles.properties + '# QoL browser raw draft\n'
   await contents.fill(raw)
-  await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: 'Logs', exact: true }).click()
+  await selectWorkspaceSection(page, 'Selected server sections', 'Logs', 'logs')
   const stored = await api(host, '/api/local/ui-drafts/read', 'POST', { purpose: 'file', profileId: profiles.bedrock.id,
     connectionId: null, key: 'file:server-properties' })
   assert.equal(stored.ok, true)
   assert(stored.text?.includes('QoL browser raw draft'), 'Immediate navigation must flush the last raw keystroke through the real protected store.')
   assert.equal(await readFile(path.join(profiles.bedrock.worldDirectory, 'server.properties'), 'utf8'), profiles.properties)
   await selectServer(page, profiles.bedrock.name, 'Files')
+  await fileSections.getByRole('tab', { name: 'Server files', exact: true }).click()
   await row.getByRole('button', { name: 'Edit file', exact: true }).click()
   await files.getByRole('button', { name: 'Review recovered draft', exact: true }).click()
   assert.equal(await contents.inputValue(), raw)
   await files.getByRole('button', { name: 'Review file changes', exact: true }).click()
   await files.getByRole('region', { name: 'Review raw file changes' }).getByText(/QoL browser raw draft/u).waitFor()
   await files.getByRole('button', { name: 'Discard unsaved file edits', exact: true }).click()
+  await acceptAppConfirmation(page, 'Discard file edits?', 'Discard file edits')
+  await fileSections.getByRole('tab', { name: 'Game settings', exact: true }).click()
   await recordGuidedEditorDom(page, 'before-guided')
   const difficulty = settings.getByRole('combobox', { name: /^Difficulty/u })
   const guided = await api(host, `/api/local/profiles/${profiles.bedrock.id}/game-settings`)
@@ -1148,7 +1253,7 @@ async function editorRecovery(page, host, profiles) {
   assert.equal(await difficulty.count(), 0)
   await settings.getByLabel('Search game settings', { exact: true }).fill('')
   assert.equal(await difficulty.inputValue(), 'hard')
-  await page.getByRole('navigation', { name: 'Selected server sections' }).getByRole('button', { name: 'Overview', exact: true }).click()
+  await selectWorkspaceSection(page, 'Selected server sections', 'Overview', 'overview')
   await selectServer(page, profiles.bedrock.name, 'Files')
   await settings.getByRole('button', { name: 'Review recovered draft', exact: true }).click()
   assert.equal(await difficulty.inputValue(), 'hard')
@@ -1156,6 +1261,7 @@ async function editorRecovery(page, host, profiles) {
   await settings.getByRole('region', { name: 'Review exact changes' }).waitFor()
   await screenshot(page, 'editor-recovery-wide', { width: 1440, height: 900 })
   await settings.getByRole('button', { name: 'Discard unsaved settings', exact: true }).click()
+  await acceptAppConfirmation(page, 'Discard unsaved settings?', 'Discard settings')
   assert.equal(await readFile(path.join(profiles.bedrock.worldDirectory, 'server.properties'), 'utf8'), profiles.properties)
 }
 async function lifecycleLogsAndSessions(page, host, profiles) {
@@ -1184,6 +1290,9 @@ async function lifecycleLogsAndSessions(page, host, profiles) {
   await screenshot(page, 'logs-wide', { width: 1440, height: 900 })
   await selectServer(page, profiles.valheim.name)
   await workspace.getByRole('button', { name: 'Stop server', exact: true }).click()
+  assert((await api(host, '/api/local/snapshot')).runs.some(value => value.profileId === profiles.valheim.id && value.state === 'Ready'),
+    'Opening owner Stop review must not stop the disposable server before confirmation.')
+  await acceptAppConfirmation(page, `Stop ${profiles.valheim.name}?`, 'Stop server')
   await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(value => value.profileId === profiles.valheim.id && value.state === 'Offline'), 'exact synthetic Stop', 45_000)
   // API completion can precede the shell's next three-second snapshot. Restore
   // must keep its offline guard until the selected workspace observes that state.
@@ -1283,8 +1392,15 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await api(friend, '/api/local/friend/poll', 'POST')
   const first = page.locator(`#friend-server-${profiles.valheim.id}`)
   const second = page.locator(`#friend-server-${profiles.bedrock.id}`)
+  const selectedServer = page.getByRole('combobox', { name: 'Selected server', exact: true })
+  await eventually(() => selectedServer.locator('option').count(), count => count === 2, 'the two currently assigned Friend servers')
+  await selectedServer.selectOption(profiles.bedrock.id)
+  await selectWorkspaceSection(page, 'Join sections', 'Play', 'play')
   await second.waitFor()
   assert.equal(await second.getByRole('button', { name: 'Start server', exact: true }).isDisabled(), true)
+  assert.equal(await first.count(), 0, 'Join renders only the selected assigned server.')
+  await selectedServer.selectOption(profiles.valheim.id)
+  await first.waitFor({ state: 'visible' })
   const play = first.getByRole('region', { name: 'Play', exact: true })
   await play.getByRole('button', { name: 'Start server', exact: true }).click()
   await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'), 'Friend UI starts the actual synthetic driver')
@@ -1295,14 +1411,19 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   assert.equal(await readiness.count(), 1, 'The selected Friend Play flow must expose one current readiness status.')
   assert.equal(await first.getByRole('button', { name: 'Stop server', exact: true }).count(), 0)
   assert.equal(await first.getByRole('button', { name: 'View logs', exact: true }).count(), 0)
+  assert.equal(await page.getByRole('navigation', { name: 'Join sections', exact: true }).getByRole('button', { name: 'Logs', exact: true }).count(), 0,
+    'The selected server has no log section without its separate View logs grant.')
+  assert.equal(await page.getByRole('combobox', { name: 'Join sections', exact: true, includeHidden: true }).locator('option[value="logs"]').count(), 0,
+    'Mobile section navigation must enforce the same View logs presentation.')
+  await play.locator('summary[aria-label="Server tools and connection help"]').click()
   await play.getByRole('button', { name: 'Open Connection Doctor', exact: true }).click()
   const doctor = page.locator('.friend-connection-tools .friend-connection-doctor')
   await doctor.waitFor({ state: 'visible' })
-  assert.equal(await doctor.evaluate(element => element.open), true, 'Play must expand the Doctor in its moved footer.')
+  assert.equal(await doctor.evaluate(element => element.open), true, 'Play must open the Doctor in the Connection help section.')
   assert.equal(await doctor.locator(':scope > summary').evaluate(element => element === document.activeElement), true,
-    'The moved Doctor summary receives keyboard focus.')
+    'The Connection Doctor summary receives keyboard focus.')
   // The OS/Open game control is only observed; this harness never invokes a native client.
-  await first.getByRole('button', { name: 'Open chat', exact: true }).first().click()
+  await selectWorkspaceSection(page, 'Join sections', 'Chat', 'chat')
   const chat = first.locator('.server-chat')
   const message = 'Synthetic browser message kept during navigation'
   await chat.getByLabel('Message', { exact: true }).fill(message)
@@ -1432,6 +1553,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   const chatViewport = page.viewportSize() ?? { width: 1440, height: 900 }
   await screenshot(page, 'friend-chat-confirmed-narrow', { width: 390, height: 844 }, signedMessage)
   await page.setViewportSize(chatViewport)
+  await selectWorkspaceSection(page, 'Join sections', 'Connection settings', 'connection')
   await page.getByRole('button', { name: 'Add another Host', exact: true }).click()
   await page.getByRole('button', { name: 'Cancel and return to saved Host', exact: true }).click()
   await first.getByRole('region', { name: 'Play', exact: true }).waitFor()
@@ -1442,17 +1564,21 @@ async function attentionAndLargeText(page) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
   await navigation.getByRole('button', { name: 'Attention', exact: true }).click()
   const attention = page.locator('.attention-workspace')
+  const history = attention.locator('.attention-history-disclosure')
+  await history.waitFor({ state: 'visible' })
+  if (!await history.evaluate(element => element.open)) await history.locator(':scope > summary').click()
   await attention.getByRole('combobox', { name: /^History time/u }).selectOption('day')
   await attention.getByLabel('Search attention', { exact: true }).fill('Synthetic')
   await attention.getByRole('button', { name: 'Mark read', exact: true }).first().click()
   await attention.getByText('History notice marked read.', { exact: true }).waitFor()
   await attention.getByRole('button', { name: 'Dismiss notice', exact: true }).first().click()
   await screenshot(page, 'attention-narrow', { width: 390, height: 844 })
-  await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+  await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await setAppearanceTextScale(page, '150')
   await navigation.getByRole('button', { name: 'Host', exact: true }).click()
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.getByRole('complementary', { name: 'Saved servers' }).locator('.server-master-item').first().click()
+  const picker = await openHostServerPicker(page)
+  await picker.locator('.context-picker-options').getByRole('button').first().click()
   const selectedDetailHeader = page.locator('.server-detail-card > .server-command-header > .profile-top')
   await screenshot(page, 'host-narrow-150', { width: 390, height: 844 }, selectedDetailHeader)
   await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 }, selectedDetailHeader)
@@ -1542,9 +1668,9 @@ try {
     () => firstUseAndSetupRecovery(hostPage, host))
   const profiles = await seedProfiles(host)
   await hostPage.reload({ waitUntil: 'domcontentloaded' })
-  await hostPage.getByRole('complementary', { name: 'Saved servers', exact: true }).waitFor()
+  await hostPage.getByRole('complementary', { name: 'Host navigation', exact: true }).locator('.context-picker-trigger').waitFor()
   await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage))
-  await step('staging header menus, long notification glyph columns, keyboard commands and mobile workspace labels at viewport boundaries', () => headerOverlayRegression(hostPage, host))
+  await step('staging notifications, shared App Settings, keyboard commands and accessible mobile icon rail at viewport boundaries', () => headerOverlayRegression(hostPage, host))
   await step('saved-server search, per-server tabs, favorites and durable manual ordering', () => serverNavigation(hostPage, profiles))
   await step('setup blockers, nonsecret reuse, applied port suggestion and paused-step recovery', () => setupReview(hostPage, host, profiles))
   await step('raw and guided protected drafts survive immediate navigation without changing files', () => editorRecovery(hostPage, host, profiles))

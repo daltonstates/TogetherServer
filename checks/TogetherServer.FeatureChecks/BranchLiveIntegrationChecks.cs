@@ -54,8 +54,15 @@ internal static class BranchLiveIntegrationChecks
         internal SharedWorldReceipt Receipt { get; }
         internal LiveSaveAcceptanceRecord Record => new(Artifact.TestId, Profile.Id, Artifact.OperationId,
             Artifact.Scope, Now.AddMinutes(-1), "ArtifactReady", "LiveSaveTestArtifactReady", Artifact);
-        internal LiveSaveAcceptanceRecord Accepted => Record with { State = "Accepted", Receipt = Receipt,
-            TransferUtc = Now.AddSeconds(2), LoadUtc = Now.AddSeconds(3), ChangeUtc = Now.AddSeconds(4), RestartUtc = Now.AddSeconds(5) };
+        internal LiveSaveAcceptanceRecord Accepted => Record with
+        {
+            State = "Accepted",
+            Receipt = Receipt,
+            TransferUtc = Now.AddSeconds(2),
+            LoadUtc = Now.AddSeconds(3),
+            ChangeUtc = Now.AddSeconds(4),
+            RestartUtc = Now.AddSeconds(5)
+        };
 
         internal Evidence(string path)
         {
@@ -74,12 +81,22 @@ internal static class BranchLiveIntegrationChecks
             WriteCopy(vault, Base, [1, 2, 3]);
             Branch = new SharedWorldSeparateCopyStore(Data).Declare(Offer(Base), vault, Source, true);
             var localId = SharedWorldBranchLiveSource.LocalProfileId(Branch.BranchHash);
-            Profile = new() { Id = localId, Kind = Base.Game, WorldId = Base.WorldId, WorldSource = "Existing",
-                Name = "Files only recovery", ServerName = "Files only recovery", GamePort = 5182,
+            Profile = new()
+            {
+                Id = localId,
+                Kind = Base.Game,
+                WorldId = Base.WorldId,
+                WorldSource = "Existing",
+                Name = "Files only recovery",
+                ServerName = "Files only recovery",
+                GamePort = 5182,
                 WorldDirectory = SharedWorldBranchLiveSource.WorldRoot(Data, Base, localId),
                 ExecutablePath = Path.Combine(Data.RootPath, "missing-synthetic-server.bin"),
-                SharedSavesEnabled = false, SeparateCopySourceProfileId = Root.ProfileId,
-                SeparateCopyBranchHash = Branch.BranchHash, CrashRecovery = new() { Enabled = false } };
+                SharedSavesEnabled = false,
+                SeparateCopySourceProfileId = Root.ProfileId,
+                SeparateCopyBranchHash = Branch.BranchHash,
+                CrashRecovery = new() { Enabled = false }
+            };
             Directory.CreateDirectory(Profile.WorldDirectory);
             File.WriteAllBytes(Path.Combine(Profile.WorldDirectory, "world.db"), [1, 2, 3]);
             Data.SaveSettings(new() { CompanionPort = 5181, CompanionListeningEnabled = false, Profiles = [Profile] });
@@ -90,7 +107,8 @@ internal static class BranchLiveIntegrationChecks
                 SetupHash: SharedWorldBranchLiveSource.SetupHash(Profile, setup));
             Data.SaveProtected(SharedWorldBranchLiveSource.StateName(localId), JsonSerializer.SerializeToUtf8Bytes(state));
             var scope = SharedWorldLiveSaveAdapters.BindInstallation(localId, Base.Game, Data.RootPath,
-                Hash([4]), Hash([5]), false) with { BinaryVersion = "1.2.3.4" };
+                Hash([4]), Hash([5]), false) with
+            { BinaryVersion = "1.2.3.4" };
             var id = Guid.NewGuid();
             var version = SharedWorldService.SignAcceptanceTestVersion(new(5, Root.GroupId, 1, null,
                 Root.ProfileId, Base.Game, Base.WorldId, Now, LiveSaveAcceptanceTrust.TestCaptureKind,
@@ -108,10 +126,19 @@ internal static class BranchLiveIntegrationChecks
                 WorldAuthorityTrust.RosterHash(Roster), version.VersionHash, Public(Hosting),
                 "https://127.0.0.1:5181", "Quorum", SourceId, Public(Source), "");
             var binding = new WorldSuccessorBinding(SourceId, Public(Source), Public(Hosting), "");
-            proposal = proposal with { SuccessorBinding = binding with { Signature = Convert.ToBase64String(
-                Source.SignData(WorldAuthorityTrust.BindingBasis(proposal, binding), HashAlgorithmName.SHA256)) } };
-            proposal = proposal with { Signature = Convert.ToBase64String(Source.SignData(
-                WorldAuthorityTrust.ProposalBasis(proposal), HashAlgorithmName.SHA256)) };
+            proposal = proposal with
+            {
+                SuccessorBinding = binding with
+                {
+                    Signature = Convert.ToBase64String(
+                Source.SignData(WorldAuthorityTrust.BindingBasis(proposal, binding), HashAlgorithmName.SHA256))
+                }
+            };
+            proposal = proposal with
+            {
+                Signature = Convert.ToBase64String(Source.SignData(
+                WorldAuthorityTrust.ProposalBasis(proposal), HashAlgorithmName.SHA256))
+            };
             var receipt = SignReceipt(new(1, Root.GroupId, Root.ProfileId, version.VersionHash,
                 SourceId, Roster.Epoch, Roster.Revision, Guid.NewGuid(), ""), Source);
             var pin = new string('A', 64);
@@ -169,8 +196,11 @@ internal static class BranchLiveIntegrationChecks
         using var stranger = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var fakeBase = SharedWorldService.SignVersion(f.Base with { BackupId = Guid.NewGuid() }, stranger);
         var fakeBranch = SharedWorldSeparateCopyStore.Sign(f.Offer(fakeBase), f.Source);
-        var fake = f.SignArtifact(f.Artifact with { Branch = fakeBranch,
-            Scope = f.Artifact.Scope with { ProfileId = SharedWorldBranchLiveSource.LocalProfileId(fakeBranch.BranchHash) } });
+        var fake = f.SignArtifact(f.Artifact with
+        {
+            Branch = fakeBranch,
+            Scope = f.Artifact.Scope with { ProfileId = SharedWorldBranchLiveSource.LocalProfileId(fakeBranch.BranchHash) }
+        });
         Require(LiveSaveAcceptanceTrust.VerifyArtifact(fake) &&
             !WorldPeerService.BranchLiveTestHasTrustedRoot(fake, f.Root, []) &&
             !WorldPeerService.BranchLiveTestHasTrustedRoot(f.Artifact, f.Root with { ProfileId = Guid.NewGuid() }, []) &&
@@ -179,9 +209,13 @@ internal static class BranchLiveIntegrationChecks
         var aliasedBase = SharedWorldService.SignVersion(f.Base with { ProfileId = Guid.NewGuid() }, f.Owner);
         var aliasedBranch = SharedWorldSeparateCopyStore.Sign(f.Offer(aliasedBase), f.Source);
         var aliasedVersion = SharedWorldService.SignAcceptanceTestVersion(f.Artifact.Version with
-            { ProfileId = aliasedBase.ProfileId }, f.Hosting);
-        var aliasedArtifact = f.SignArtifact(f.Artifact with { Version = aliasedVersion, Branch = aliasedBranch,
-            Scope = f.Artifact.Scope with { ProfileId = SharedWorldBranchLiveSource.LocalProfileId(aliasedBranch.BranchHash) } });
+        { ProfileId = aliasedBase.ProfileId }, f.Hosting);
+        var aliasedArtifact = f.SignArtifact(f.Artifact with
+        {
+            Version = aliasedVersion,
+            Branch = aliasedBranch,
+            Scope = f.Artifact.Scope with { ProfileId = SharedWorldBranchLiveSource.LocalProfileId(aliasedBranch.BranchHash) }
+        });
         Require(!LiveSaveAcceptanceTrust.VerifyArtifact(aliasedArtifact),
             "a signed proposal for another roster profile was aliased to this test's root world");
     }
@@ -265,8 +299,12 @@ internal static class BranchLiveIntegrationChecks
         }) Require(!LiveSaveAcceptanceTrust.AcceptedForScope(record, f.Artifact.Scope, f.Roster, f.Now),
             "a different local profile/test/run or artifact installation scope was credited to this accepted record");
         var normal = new ServerProfile { Id = f.Root.ProfileId };
-        var wrong = new ServerProfile { Id = Guid.NewGuid(), SeparateCopySourceProfileId = f.Root.ProfileId,
-            SeparateCopyBranchHash = f.Branch.BranchHash };
+        var wrong = new ServerProfile
+        {
+            Id = Guid.NewGuid(),
+            SeparateCopySourceProfileId = f.Root.ProfileId,
+            SeparateCopyBranchHash = f.Branch.BranchHash
+        };
         var otherRoot = new ServerProfile { Id = Guid.NewGuid() };
         var ids = WorldPeerService.LocalLiveTestProfileIds(f.Root, [normal, f.Profile, wrong, otherRoot]);
         Require(ids.Count == 2 && ids.Contains(normal.Id) && ids.Contains(f.Profile.Id),
@@ -276,8 +314,15 @@ internal static class BranchLiveIntegrationChecks
     private static void AttemptSelection(Evidence f)
     {
         var id = Guid.NewGuid();
-        var attempt = new LiveSaveAttempt { ProfileId = f.Profile.Id, RequestId = id, CaptureId = id,
-            OperationId = Guid.NewGuid(), BranchHash = f.Branch.BranchHash, State = "Publishing" };
+        var attempt = new LiveSaveAttempt
+        {
+            ProfileId = f.Profile.Id,
+            RequestId = id,
+            CaptureId = id,
+            OperationId = Guid.NewGuid(),
+            BranchHash = f.Branch.BranchHash,
+            State = "Publishing"
+        };
         var live = f.Live(id, 2, f.Base, [7, 8, 9]);
         Require(HostManager.BranchLiveAttemptMatches(f.Profile, attempt, f.Branch, live),
             "an interrupted exact branch pointer commit did not reconcile");

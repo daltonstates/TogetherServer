@@ -2203,18 +2203,18 @@ internal sealed partial class FriendLink
         bool retainedCopy = false)
     {
         lock (sharedReceiptSync)
-        lock (SharedWorldMutationGate.For(data.RootPath))
-        {
-            if (cancellationToken.IsCancellationRequested || !HasSharedWorldReceiveConsent(profileId)) return false;
-            // A prior receipt may have moved its verified payload before the
-            // latest pointer was written. Its retry uses the same final gate
-            // and Host confirmation as a newly received payload.
-            if (!retainedCopy) Directory.Move(stage, destination);
-            var latestStage = Path.Combine(root, "latest.json.new");
-            File.WriteAllBytes(latestStage, manifestBytes);
-            File.Move(latestStage, Path.Combine(root, "latest.json"), true);
-            return true;
-        }
+            lock (SharedWorldMutationGate.For(data.RootPath))
+            {
+                if (cancellationToken.IsCancellationRequested || !HasSharedWorldReceiveConsent(profileId)) return false;
+                // A prior receipt may have moved its verified payload before the
+                // latest pointer was written. Its retry uses the same final gate
+                // and Host confirmation as a newly received payload.
+                if (!retainedCopy) Directory.Move(stage, destination);
+                var latestStage = Path.Combine(root, "latest.json.new");
+                File.WriteAllBytes(latestStage, manifestBytes);
+                File.Move(latestStage, Path.Combine(root, "latest.json"), true);
+                return true;
+            }
     }
 
     internal sealed record SharedChainCheck(bool Valid, bool Conflict, bool Pending = false);

@@ -79,7 +79,8 @@ internal static class LiveSaveAcceptanceChecks
             // Deliberately fabricated in-memory cryptographic evidence. No Host
             // scope binder, actual binary or process is bypassed or enabled.
             var scope = SharedWorldLiveSaveAdapters.BindInstallation(profile, GameKinds.Valheim,
-                "synthetic disposable scope", Hash([1]), Hash([2]), false) with { BinaryVersion = "1.2.3.4" };
+                "synthetic disposable scope", Hash([1]), Hash([2]), false) with
+            { BinaryVersion = "1.2.3.4" };
             SharedWorldFile[] files = [new("world.db", Bytes.Length, Hash(Bytes)), new("empty.dat", 0, Hash([]))];
             var version = SharedWorldService.SignAcceptanceTestVersion(new(5, group, 1, null,
                 profile, GameKinds.Valheim, "synthetic-private-acceptance", Now,
@@ -109,9 +110,20 @@ internal static class LiveSaveAcceptanceChecks
             Domain = "TogetherServer private live-save acceptance v1",
             Artifact = new
             {
-                a.Schema, a.TestOnly, a.TestId, a.Scope, a.OperationId, a.SourceDeviceId,
-                a.CompletionUtc, a.SnapshotUtc, a.PayloadSha256, a.PayloadBytes,
-                a.ChunkBytes, a.ChunkCount, a.Version, Signature = ""
+                a.Schema,
+                a.TestOnly,
+                a.TestId,
+                a.Scope,
+                a.OperationId,
+                a.SourceDeviceId,
+                a.CompletionUtc,
+                a.SnapshotUtc,
+                a.PayloadSha256,
+                a.PayloadBytes,
+                a.ChunkBytes,
+                a.ChunkCount,
+                a.Version,
+                Signature = ""
             }
         }, LiveSaveAcceptanceTrust.Json);
         Require(LiveSaveAcceptanceTrust.ArtifactBasis(a).SequenceEqual(legacyBasis) &&
@@ -176,14 +188,30 @@ internal static class LiveSaveAcceptanceChecks
 
     private static void RunBinding()
     {
-        var profile = new ServerProfile { Kind = GameKinds.MinecraftJava, WorldId = "synthetic-run", GamePort = 25565,
-            WorldDirectory = @"C:\synthetic-live-test\world", ExecutablePath = @"C:\synthetic-live-test\java.exe",
-            Minecraft = new() { ServerJarPath = @"C:\synthetic-live-test\server.jar" } };
+        var profile = new ServerProfile
+        {
+            Kind = GameKinds.MinecraftJava,
+            WorldId = "synthetic-run",
+            GamePort = 25565,
+            WorldDirectory = @"C:\synthetic-live-test\world",
+            ExecutablePath = @"C:\synthetic-live-test\java.exe",
+            Minecraft = new() { ServerJarPath = @"C:\synthetic-live-test\server.jar" }
+        };
         GamePort[] ports = [new("TCP", 25565, "Game")];
-        ManagedRun Run() => new() { ProfileId = profile.Id, Kind = profile.Kind, OperationId = Guid.NewGuid(),
-            WorldId = profile.WorldId, WorldDirectory = profile.WorldDirectory, ExecutablePath = profile.ExecutablePath,
-            ServerArtifactPath = profile.Minecraft!.ServerJarPath, ProcessId = 424242, StartTimeUtcTicks = 123456,
-            GamePort = profile.GamePort, DeclaredPorts = ports.ToList() };
+        ManagedRun Run() => new()
+        {
+            ProfileId = profile.Id,
+            Kind = profile.Kind,
+            OperationId = Guid.NewGuid(),
+            WorldId = profile.WorldId,
+            WorldDirectory = profile.WorldDirectory,
+            ExecutablePath = profile.ExecutablePath,
+            ServerArtifactPath = profile.Minecraft!.ServerJarPath,
+            ProcessId = 424242,
+            StartTimeUtcTicks = 123456,
+            GamePort = profile.GamePort,
+            DeclaredPorts = ports.ToList()
+        };
         Require(LiveSaveAcceptanceTrust.RunMatchesProfile(profile, Run(), profile.ExecutablePath, ports),
             "the same synthetic exact run/profile/artifact/ports did not bind");
         var changedArtifact = Run(); changedArtifact.ServerArtifactPath = @"C:\synthetic-live-test\different.jar";

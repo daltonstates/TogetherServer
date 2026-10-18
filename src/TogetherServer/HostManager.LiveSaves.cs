@@ -175,9 +175,14 @@ public sealed partial class HostManager
                 if (removable is null) return new(false, "LiveSaveRetentionLimit", "Review pending attempts before another capture.");
                 attempts.Remove(removable);
             }
-            attempt = new() { RequestId = request.RequestId, ProfileId = profileId, OperationId = run.OperationId,
+            attempt = new()
+            {
+                RequestId = request.RequestId,
+                ProfileId = profileId,
+                OperationId = run.OperationId,
                 BranchHash = branchSource?.Branch?.BranchHash,
-                RequestedUtc = clock.GetUtcNow() };
+                RequestedUtc = clock.GetUtcNow()
+            };
             attempts.Add(attempt); SaveLiveSaveAttempts(attempts);
             deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(LiveCaptureTimeout(profile.Kind));

@@ -19,8 +19,13 @@ internal static class BranchLiveSourceChecks
         using var candidate = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var rootProfile = Guid.NewGuid(); var groupId = Guid.NewGuid(); var memberId = Guid.NewGuid();
         var endpoint = "https://127.0.0.1:5181";
-        data.SaveSettings(new HostSettings { CompanionEndpoint = endpoint, CompanionPort = 5181,
-            CompanionListeningEnabled = false, Profiles = [] });
+        data.SaveSettings(new HostSettings
+        {
+            CompanionEndpoint = endpoint,
+            CompanionPort = 5181,
+            CompanionListeningEnabled = false,
+            Profiles = []
+        });
         data.SaveProtected($"shared-world-pc-signing-{memberId:N}.protected", candidate.ExportPkcs8PrivateKey());
         using var certificate = new HostIdentity(data).Ensure(endpoint);
         var rosterDraft = new SharedWorldRoster(2, groupId, rootProfile, 1, 1, true, Public(owner),
@@ -40,11 +45,23 @@ internal static class BranchLiveSourceChecks
         var localId = SharedWorldBranchLiveSource.LocalProfileId(branch.BranchHash);
         var executable = Path.Combine(data.RootPath, "never-run.synthetic");
         File.WriteAllText(executable, "not an executable; source checks only");
-        var profile = new ServerProfile { Id = localId, Kind = GameKinds.Fixture, Name = "Protected branch",
-            ServerName = "Protected branch", WorldId = first.WorldId, WorldSource = "Existing",
-            WorldDirectory = SharedWorldBranchLiveSource.WorldRoot(data, first, localId), ExecutablePath = executable,
-            GamePort = 5182, SeparateCopySourceProfileId = rootProfile, SeparateCopyBranchHash = branch.BranchHash,
-            SharedSavesEnabled = false, CrashRecovery = new() { Enabled = false }, Backups = new() { Enabled = true } };
+        var profile = new ServerProfile
+        {
+            Id = localId,
+            Kind = GameKinds.Fixture,
+            Name = "Protected branch",
+            ServerName = "Protected branch",
+            WorldId = first.WorldId,
+            WorldSource = "Existing",
+            WorldDirectory = SharedWorldBranchLiveSource.WorldRoot(data, first, localId),
+            ExecutablePath = executable,
+            GamePort = 5182,
+            SeparateCopySourceProfileId = rootProfile,
+            SeparateCopyBranchHash = branch.BranchHash,
+            SharedSavesEnabled = false,
+            CrashRecovery = new() { Enabled = false },
+            Backups = new() { Enabled = true }
+        };
         Directory.CreateDirectory(profile.WorldDirectory);
         File.WriteAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"), initial);
         var settings = data.LoadSettings(); settings.Profiles = [profile]; data.SaveSettings(settings);
@@ -79,10 +96,19 @@ internal static class BranchLiveSourceChecks
         var games = new GameServerRegistry([driver], PortProbeMode.ObserveOnly);
         var snapshots = new ManagedLiveSnapshotStore(data, games)
         { FixtureRunIdentityForChecks = _ => true, FixtureAvailableBytesForChecks = () => 8L << 30 };
-        var run = new ManagedRun { ProfileId = localId, Kind = profile.Kind, WorldId = profile.WorldId,
-            WorldDirectory = profile.WorldDirectory, ExecutablePath = executable, GamePort = profile.GamePort,
-            OperationId = Guid.NewGuid(), ProcessId = 424242, StartTimeUtcTicks = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks,
-            DeclaredPorts = [] };
+        var run = new ManagedRun
+        {
+            ProfileId = localId,
+            Kind = profile.Kind,
+            WorldId = profile.WorldId,
+            WorldDirectory = profile.WorldDirectory,
+            ExecutablePath = executable,
+            GamePort = profile.GamePort,
+            OperationId = Guid.NewGuid(),
+            ProcessId = 424242,
+            StartTimeUtcTicks = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks,
+            DeclaredPorts = []
+        };
         data.SaveRuns([run]);
         SaveState(state with { Started = true });
         ImmutableLiveSaveSnapshot Capture() => snapshots.Stage(profile, run,
@@ -117,8 +143,15 @@ internal static class BranchLiveSourceChecks
         Require(!store.PublishLiveCapture(branch, profile, run, changed, snapshots, () => { }).Ok,
             "an interrupted branch publication was silently promoted on retry");
         var revokedMembers = roster.Members.Select(member => member with { Revoked = true }).ToArray();
-        var revoked = SignRoster(roster with { Epoch = 2, Revision = 2, Members = revokedMembers,
-            OwnerLocalBaselineMembers = revokedMembers, PreviousRosterHash = SharedWorldRosterTrust.Hash(roster), Signature = "" }, owner);
+        var revoked = SignRoster(roster with
+        {
+            Epoch = 2,
+            Revision = 2,
+            Members = revokedMembers,
+            OwnerLocalBaselineMembers = revokedMembers,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(roster),
+            Signature = ""
+        }, owner);
         new SharedWorldRosterChainStore(data).Append(revoked, roster.OwnerPublicKey);
         Require(!SharedWorldBranchLiveSource.IsOwnedSaveSource(data, profile, profile.WorldDirectory) &&
             !store.PublishLiveCapture(branch, profile, run, captured, snapshots, () => { }).Ok &&

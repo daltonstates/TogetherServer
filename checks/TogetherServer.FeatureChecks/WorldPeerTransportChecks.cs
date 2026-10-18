@@ -47,8 +47,11 @@ internal static class WorldPeerTransportChecks
         var draft = new SharedWorldRoster(3, source.GroupId, profileId, 1, 1, true,
             source.OwnerPublicKey, pairing.SharedRosterMembers(profileId).OrderBy(member => member.DeviceId).ToArray(), "",
             SignerDeviceId: Guid.Empty, SignerPublicKey: source.OwnerPublicKey);
-        var roster = draft with { Signature = Convert.ToBase64String(owner.SignData(
-            SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+        var roster = draft with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+        };
         new SharedWorldRosterChainStore(ownerData).Append(roster, source.OwnerPublicKey);
         pairing.ConfirmSharedRosterPublished(profileId, roster);
         firstData.SaveProtected($"shared-world-pc-signing-{first.DeviceId:N}.protected", firstKey.ExportPkcs8PrivateKey());
@@ -88,12 +91,17 @@ internal static class WorldPeerTransportChecks
         {
             var nextDraft = roster with
             {
-                Epoch = revision, Revision = revision,
+                Epoch = revision,
+                Revision = revision,
                 PreviousRosterHash = SharedWorldRosterTrust.Hash(previousRoster),
-                OwnerLocalBaselineMembers = roster.Members, Signature = ""
+                OwnerLocalBaselineMembers = roster.Members,
+                Signature = ""
             };
-            var next = nextDraft with { Signature = Convert.ToBase64String(owner.SignData(
-                SharedWorldRosterTrust.Basis(nextDraft), HashAlgorithmName.SHA256)) };
+            var next = nextDraft with
+            {
+                Signature = Convert.ToBase64String(owner.SignData(
+                SharedWorldRosterTrust.Basis(nextDraft), HashAlgorithmName.SHA256))
+            };
             new SharedWorldRosterChainStore(ownerData).Append(next, source.OwnerPublicKey);
             intervening.Add(next);
             previousRoster = next;
@@ -108,8 +116,11 @@ internal static class WorldPeerTransportChecks
             OwnerLocalBaselineMembers = pairing.SharedRosterMembers(profileId).OrderBy(member => member.DeviceId).ToArray(),
             Signature = ""
         };
-        var newer = newerDraft with { Signature = Convert.ToBase64String(owner.SignData(
-            SharedWorldRosterTrust.Basis(newerDraft), HashAlgorithmName.SHA256)) };
+        var newer = newerDraft with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(newerDraft), HashAlgorithmName.SHA256))
+        };
         new SharedWorldRosterChainStore(ownerData).Append(newer, source.OwnerPublicKey);
         pairing.ConfirmSharedRosterPublished(profileId, newer);
         SaveMembership(ownerData, source, newer, Guid.Empty, true, null);
@@ -168,8 +179,11 @@ internal static class WorldPeerTransportChecks
             new SharedWorldRosterChainStore(firstData).Heads(profileId).Single().Signature == newer.Signature,
             "an old signed roster rolled back the new enrollment floor");
         var alternateDraft = newerDraft with { Members = roster.Members, OwnerLocalBaselineMembers = roster.Members };
-        var alternate = alternateDraft with { Signature = Convert.ToBase64String(owner.SignData(
-            SharedWorldRosterTrust.Basis(alternateDraft), HashAlgorithmName.SHA256)) };
+        var alternate = alternateDraft with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(alternateDraft), HashAlgorithmName.SHA256))
+        };
         Invalid(() => firstService.PrepareChallenge(source.GroupKey, WorldPeerService.SignChallengeRequest(source,
             returning.DeviceId, returningKey, firstRoute.CertificateSha256, 11, [alternate]), firstRoute.CertificateSha256),
             "a competing owner-signed roster silently selected one membership history");
@@ -214,8 +228,11 @@ internal static class WorldPeerTransportChecks
             var draft = new SharedWorldRoster(3, root.GroupId, root.ProfileId, revision, revision, true,
                 root.OwnerPublicKey, members, "", revision == 1 ? null : SharedWorldRosterTrust.Hash(history[^1]),
                 Guid.Empty, root.OwnerPublicKey, members);
-            history.Add(draft with { Signature = Convert.ToBase64String(owner.SignData(
-                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) });
+            history.Add(draft with
+            {
+                Signature = Convert.ToBase64String(owner.SignData(
+                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+            });
         }
         var latest = history[^1];
         var responderInitiallyOld = scenario == BootstrapCase.InactiveResponder;
@@ -300,7 +317,8 @@ internal static class WorldPeerTransportChecks
         Require(proof.RosterRevisions is { Count: > 0 } && (replay.RosterRevisions is null or { Count: 0 }) && replay.Challenge is null,
             "a replayed request proof released another roster page or operation challenge");
         var unproved = WorldPeerService.SignChallengeRequest(root, requesterId, requesterKey, route.CertificateSha256, 1)
-            with { Signature = null };
+            with
+        { Signature = null };
         var denied = responderService.PrepareChallenge(root.GroupKey, unproved, route.CertificateSha256);
         var outsider = responderService.PrepareChallenge(root.GroupKey,
             WorldPeerService.SignChallengeRequest(root, outsiderId, outsiderKey, route.CertificateSha256, 1), route.CertificateSha256);
@@ -315,10 +333,20 @@ internal static class WorldPeerTransportChecks
                 route.CertificateSha256, 1), route.CertificateSha256),
             "a request signed for another world released roster details");
         var revokedMembers = latest.Members.Select(member => member.DeviceId == requesterId ? member with { Revoked = true } : member).ToArray();
-        var revokedDraft = latest with { Epoch = 20, Revision = 20, PreviousRosterHash = SharedWorldRosterTrust.Hash(latest),
-            Members = revokedMembers, OwnerLocalBaselineMembers = revokedMembers, Signature = "" };
-        var revoked = revokedDraft with { Signature = Convert.ToBase64String(owner.SignData(
-            SharedWorldRosterTrust.Basis(revokedDraft), HashAlgorithmName.SHA256)) };
+        var revokedDraft = latest with
+        {
+            Epoch = 20,
+            Revision = 20,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(latest),
+            Members = revokedMembers,
+            OwnerLocalBaselineMembers = revokedMembers,
+            Signature = ""
+        };
+        var revoked = revokedDraft with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(
+            SharedWorldRosterTrust.Basis(revokedDraft), HashAlgorithmName.SHA256))
+        };
         responseChain.Append(revoked, root.OwnerPublicKey);
         SaveMembership(responderData, root, revoked, responderId, true, null);
         var removed = responderService.PrepareChallenge(root.GroupKey,
@@ -332,8 +360,13 @@ internal static class WorldPeerTransportChecks
         var card = new WorldPeerContactCard(1, root, id, Public(key), 1, [route], "");
         var basis = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            domain = "TogetherServer world peer contact v1", card.Schema, card.Root,
-            card.DeviceId, card.PublicKey, card.Revision, card.Routes
+            domain = "TogetherServer world peer contact v1",
+            card.Schema,
+            card.Root,
+            card.DeviceId,
+            card.PublicKey,
+            card.Revision,
+            card.Routes
         }, Json);
         card = card with { Signature = Convert.ToBase64String(key.SignData(basis, HashAlgorithmName.SHA256)) };
         return "TSW1-" + Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(card, Json));
@@ -346,9 +379,18 @@ internal static class WorldPeerTransportChecks
         var basis = JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer peer roster catchup acknowledgement v1",
-            value.Schema, value.Root, value.DeviceId, value.PublicKey, value.ResponderDeviceId,
-            value.ResponderPublicKey, value.CertificateSha256, value.RequestSha256,
-            value.KnownRosterRevision, value.Code, value.Challenge, value.RosterRevisions
+            value.Schema,
+            value.Root,
+            value.DeviceId,
+            value.PublicKey,
+            value.ResponderDeviceId,
+            value.ResponderPublicKey,
+            value.CertificateSha256,
+            value.RequestSha256,
+            value.KnownRosterRevision,
+            value.Code,
+            value.Challenge,
+            value.RosterRevisions
         }, Json);
         return value with { Signature = Convert.ToBase64String(key.SignData(basis, HashAlgorithmName.SHA256)) };
     }

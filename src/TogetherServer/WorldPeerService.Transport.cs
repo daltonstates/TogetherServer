@@ -108,8 +108,13 @@ internal sealed partial class WorldPeerService : IDisposable
         JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer peer roster request proof v1",
-            value.Root, value.DeviceId, value.PublicKey, value.CertificateSha256,
-            value.Nonce, value.IssuedUtc, value.KnownRosterRevision,
+            value.Root,
+            value.DeviceId,
+            value.PublicKey,
+            value.CertificateSha256,
+            value.Nonce,
+            value.IssuedUtc,
+            value.KnownRosterRevision,
             rosterSha256 = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
                 value.RosterRevisions ?? [], SharedWorldPeerTrust.Json)))
         }, SharedWorldPeerTrust.Json);
@@ -122,8 +127,11 @@ internal sealed partial class WorldPeerService : IDisposable
             Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), rosters ?? [],
             Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), knownRosterRevision, root, fingerprint, "",
             DateTimeOffset.UtcNow);
-        return request with { Signature = Convert.ToBase64String(key.SignData(
-            ChallengeRequestBasis(request), HashAlgorithmName.SHA256)) };
+        return request with
+        {
+            Signature = Convert.ToBase64String(key.SignData(
+            ChallengeRequestBasis(request), HashAlgorithmName.SHA256))
+        };
     }
 
     private static bool VerifyChallengeRequestProof(WorldPeerChallengeRequest request)
@@ -225,8 +233,11 @@ internal sealed partial class WorldPeerService : IDisposable
                 group.DeviceId, publicKey, pin!,
                 Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(request, SharedWorldPeerTrust.Json))),
                 known, challenge is null ? "PeerRosterCatchUpRequired" : "PeerChallengeReady", challenge, "", pages);
-            return response with { Signature = Convert.ToBase64String(key.SignData(
-                ChallengeResponseBasis(response), HashAlgorithmName.SHA256)) };
+            return response with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                ChallengeResponseBasis(response), HashAlgorithmName.SHA256))
+            };
         }
     }
 
@@ -234,9 +245,18 @@ internal sealed partial class WorldPeerService : IDisposable
         JsonSerializer.SerializeToUtf8Bytes(new
         {
             domain = "TogetherServer peer roster catchup acknowledgement v1",
-            value.Schema, value.Root, value.DeviceId, value.PublicKey, value.ResponderDeviceId,
-            value.ResponderPublicKey, value.CertificateSha256, value.RequestSha256,
-            value.KnownRosterRevision, value.Code, value.Challenge, value.RosterRevisions
+            value.Schema,
+            value.Root,
+            value.DeviceId,
+            value.PublicKey,
+            value.ResponderDeviceId,
+            value.ResponderPublicKey,
+            value.CertificateSha256,
+            value.RequestSha256,
+            value.KnownRosterRevision,
+            value.Code,
+            value.Challenge,
+            value.RosterRevisions
         }, SharedWorldPeerTrust.Json);
 
     private bool VerifyChallengeResponse(Group group, SharedWorldPeerRoute route,

@@ -20,8 +20,11 @@ internal static class WorldPeerDefaultChecks
         Require(!WorldPeerDefaultTrust.Verify(first, root with { GroupId = Guid.NewGuid() }), "Another world's default is rejected.");
         var competing = WorldPeerDefaultTrust.Sign(draft with { SessionId = Guid.NewGuid() }, owner);
         Require(WorldPeerDefaultTrust.Heads([first, competing]).Length == 2, "Concurrent choices remain visible, regardless of timestamp.");
-        var resolved = WorldPeerDefaultTrust.Sign(draft with { Revision = 2,
-            PreviousHashes = [first.SelectionHash, competing.SelectionHash] }, owner);
+        var resolved = WorldPeerDefaultTrust.Sign(draft with
+        {
+            Revision = 2,
+            PreviousHashes = [first.SelectionHash, competing.SelectionHash]
+        }, owner);
         Require(WorldPeerDefaultTrust.Heads([first, competing, resolved]).Single() == resolved,
             "An explicit choice naming both heads resolves only default selection.");
         Require(!WorldPeerDefaultTrust.Verify(first with { PreviousHashes = [first.SelectionHash] }, root), "A self-parent is rejected.");

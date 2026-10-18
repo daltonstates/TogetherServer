@@ -129,6 +129,8 @@ jobs:
             legacy-sha256: E2741B7425C497A7850BC95B5B844A4503099BF6A575484476B4A37330CDCE8E
           - legacy-version: '0.3.1'
             legacy-sha256: 5ED1EC1755855F38BAA87415A580ACF63D06FA610660D9F7A897FC22008559AA
+          - legacy-version: '0.3.2'
+            legacy-sha256: 638B1919D47D2CDCD02FF5A589BEE1207B7BEB8915366E8943EDF1F8EBFD2C5A
     name: Verify ${{ matrix.legacy-version }} compatibility
     runs-on: windows-latest
     timeout-minutes: 20
@@ -219,7 +221,7 @@ jobs:
           $hashBefore = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
           $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
           if ((Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "$version+$env:GITHUB_SHA") { throw 'Candidate source identity mismatch.' }
-          ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets
+          ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets -CompilerPath (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
           ./checks/installer-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
           if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance failed.' }

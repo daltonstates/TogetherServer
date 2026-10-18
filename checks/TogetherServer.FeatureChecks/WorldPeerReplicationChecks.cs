@@ -123,13 +123,18 @@ internal static class WorldPeerReplicationChecks
         // must be fetched before classifying version 3 as a competing history.
         var intermediate = SharedWorldService.SignVersion(first with
         {
-            Number = 2, ParentHash = first.VersionHash, BackupId = Guid.NewGuid()
+            Number = 2,
+            ParentHash = first.VersionHash,
+            BackupId = Guid.NewGuid()
         }, owner);
         WriteCopy(bVault, intermediate, bytes);
         var caughtUpBytes = bytes.ToArray(); caughtUpBytes[0] ^= 0x31;
         var caughtUp = SharedWorldService.SignVersion(intermediate with
         {
-            Number = 3, ParentHash = intermediate.VersionHash, BackupId = Guid.NewGuid(), Files = [Fact(caughtUpBytes)]
+            Number = 3,
+            ParentHash = intermediate.VersionHash,
+            BackupId = Guid.NewGuid(),
+            Files = [Fact(caughtUpBytes)]
         }, owner);
         WriteCopy(bVault, caughtUp, caughtUpBytes);
         await cService.SyncNowAsync(default);
@@ -150,7 +155,10 @@ internal static class WorldPeerReplicationChecks
             var forkBytes = bytes.ToArray(); forkBytes[0] ^= (byte)(0x51 + forkIndex);
             var fork = SharedWorldService.SignVersion(first with
             {
-                Number = 2, ParentHash = first.VersionHash, BackupId = Guid.NewGuid(), Files = [Fact(forkBytes)]
+                Number = 2,
+                ParentHash = first.VersionHash,
+                BackupId = Guid.NewGuid(),
+                Files = [Fact(forkBytes)]
             }, owner);
             forkHashes.Add(fork.VersionHash);
             var forkVault = Path.Combine(bData.RootPath, "received-shared-histories", source.GroupKey, fork.VersionHash);
@@ -167,7 +175,9 @@ internal static class WorldPeerReplicationChecks
         // obtain a payload nonce or replace its retained verified version.
         var newerDraft = roster with
         {
-            Epoch = 2, Revision = 2, PreviousRosterHash = SharedWorldRosterTrust.Hash(roster),
+            Epoch = 2,
+            Revision = 2,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(roster),
             Members = roster.Members.Select(member => member.DeviceId == cId ? member with { Revoked = true } : member).ToArray(),
             Signature = ""
         };
@@ -178,7 +188,10 @@ internal static class WorldPeerReplicationChecks
         var changedBytes = bytes.ToArray(); changedBytes[^1] ^= 0x7F;
         var second = SharedWorldService.SignVersion(caughtUp with
         {
-            Number = 4, ParentHash = caughtUp.VersionHash, BackupId = Guid.NewGuid(), Files = [Fact(changedBytes)]
+            Number = 4,
+            ParentHash = caughtUp.VersionHash,
+            BackupId = Guid.NewGuid(),
+            Files = [Fact(changedBytes)]
         }, owner);
         WriteCopy(bVault, second, changedBytes);
         await bService.SyncNowAsync(default);
@@ -230,7 +243,8 @@ internal static class WorldPeerReplicationChecks
         Guid deviceId, bool consent, bool sharing, SharedWorldPeerRoute bootstrap) =>
         data.SaveProtected("world-peer-memberships.protected", JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Schema = 1, Groups = new[] { new { Root = source, Roster = roster, DeviceId = deviceId,
+            Schema = 1,
+            Groups = new[] { new { Root = source, Roster = roster, DeviceId = deviceId,
                 Name = "Synthetic replication world", ReceiveConsented = consent, SharingEnabled = sharing, Bootstrap = bootstrap } }
         }, Json));
     private static void SaveOwnerConnection(LocalData data, SharedWorldPeerRoot source, SharedWorldRoster roster,
@@ -238,8 +252,11 @@ internal static class WorldPeerReplicationChecks
     {
         data.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
         {
-            DisplayName = "Synthetic offline original A", DeviceId = deviceId, Endpoint = ownerRoute.Address,
-            Fingerprint = ownerRoute.CertificateSha256, Credential = new string('C', 64),
+            DisplayName = "Synthetic offline original A",
+            DeviceId = deviceId,
+            Endpoint = ownerRoute.Address,
+            Fingerprint = ownerRoute.CertificateSha256,
+            Credential = new string('C', 64),
             CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
             ConsentedSharedWorldProfiles = consent ? [source.ProfileId] : [],
             ApprovedSharedWorldGroups = new() { [source.ProfileId] = source.GroupId },

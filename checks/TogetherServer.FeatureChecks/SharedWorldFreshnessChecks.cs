@@ -115,7 +115,8 @@ internal static class SharedWorldFreshnessChecks
             var games = new GameServerRegistry(Data, true, PortProbeMode.ObserveOnly);
             Shares = new(Data, new WorldBackupService(Data, TimeProvider.System, games: games))
             {
-                FixtureLiveCaptureAcceptedForChecks = true, LiveGameRegistryForChecks = games,
+                FixtureLiveCaptureAcceptedForChecks = true,
+                LiveGameRegistryForChecks = games,
                 FixtureLiveRunIdentityForChecks = _ => ExactRun
             };
             Roster = Shares.PublishRoster(Profile, []);
@@ -188,9 +189,14 @@ internal static class SharedWorldFreshnessChecks
         File.WriteAllBytes(source, [1, 2, 3]);
         var run = new ManagedRun
         {
-            ProfileId = store.Profile.Id, Kind = store.Profile.Kind, WorldId = store.Profile.WorldId,
-            WorldDirectory = store.Profile.WorldDirectory, OperationId = Guid.NewGuid(),
-            ProcessId = 424242, StartTimeUtcTicks = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks, WasReady = true
+            ProfileId = store.Profile.Id,
+            Kind = store.Profile.Kind,
+            WorldId = store.Profile.WorldId,
+            WorldDirectory = store.Profile.WorldDirectory,
+            OperationId = Guid.NewGuid(),
+            ProcessId = 424242,
+            StartTimeUtcTicks = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks,
+            WasReady = true
         };
         store.Data.SaveRuns([run]);
         LiveSaveCompletionEvidence Completion() => new(store.Profile.Id, run.OperationId, run.ProcessId!.Value,

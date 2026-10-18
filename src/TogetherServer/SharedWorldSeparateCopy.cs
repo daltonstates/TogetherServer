@@ -45,8 +45,13 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
             branch.Signature
         }, Json) : JsonSerializer.SerializeToUtf8Bytes(new
         {
-            branch.Schema, branch.BranchId, branch.Offer, branch.WarningAccepted,
-            branch.CandidatePublicKey, branch.Signature, branch.SourceBranch
+            branch.Schema,
+            branch.BranchId,
+            branch.Offer,
+            branch.WarningAccepted,
+            branch.CandidatePublicKey,
+            branch.Signature,
+            branch.SourceBranch
         }, Json)));
 
     internal static bool Verify(WorldSeparateCopyBranch? branch)

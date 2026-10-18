@@ -99,7 +99,8 @@ try {
     $expectedFileVersion = [Version]$expectedVersion
     if ($actualVersion.Major -ne $expectedFileVersion.Major -or
         $actualVersion.Minor -ne $expectedFileVersion.Minor -or
-        $actualVersion.Build -ne $expectedFileVersion.Build) {
+        $actualVersion.Build -ne $expectedFileVersion.Build -or
+        $actualVersion.Revision -ne [Math]::Max(0, $expectedFileVersion.Revision)) {
         throw "Candidate file version $actualVersion does not match project version $expectedVersion."
     }
     $sourceRevision = (git rev-parse HEAD).Trim()

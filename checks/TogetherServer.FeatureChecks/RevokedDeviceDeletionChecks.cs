@@ -53,8 +53,14 @@ internal static class RevokedDeviceDeletionChecks
         // Damaged inherited authority cannot establish nonmembership. Keep its
         // revoked pairing tombstone and all immutable authority bytes intact.
         var protectedState = data.LoadPairingState();
-        protectedState.Devices.Add(new PairedDevice { Id = second.DeviceId, ProfileId = profile.Id,
-            AssignedProfileIds = [profile.Id], Revoked = true, CredentialHash = "synthetic" });
+        protectedState.Devices.Add(new PairedDevice
+        {
+            Id = second.DeviceId,
+            ProfileId = profile.Id,
+            AssignedProfileIds = [profile.Id],
+            Revoked = true,
+            CredentialHash = "synthetic"
+        });
         data.SavePairingState(protectedState);
         data.SaveProtected($"authority-floor-{profile.Id:N}.protected", [1, 2, 3]);
         var inherited = new PairingService(data);

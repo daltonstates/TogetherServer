@@ -17,16 +17,28 @@ internal static class WorldPeerDefaultTrust
 {
     internal static byte[] Basis(WorldPeerDefaultSelection value) => JsonSerializer.SerializeToUtf8Bytes(new
     {
-        domain = "TogetherServer explicit world session default v1", value.Schema, value.Root,
-        value.SelectorDeviceId, value.SelectorPublicKey, value.Revision, value.PreviousHashes,
-        value.DeviceId, value.PublicKey, value.SessionId, value.BranchHash, value.SelectedUtc
+        domain = "TogetherServer explicit world session default v1",
+        value.Schema,
+        value.Root,
+        value.SelectorDeviceId,
+        value.SelectorPublicKey,
+        value.Revision,
+        value.PreviousHashes,
+        value.DeviceId,
+        value.PublicKey,
+        value.SessionId,
+        value.BranchHash,
+        value.SelectedUtc
     }, SharedWorldPeerTrust.Json);
 
     internal static WorldPeerDefaultSelection Sign(WorldPeerDefaultSelection value, ECDsa key)
     {
         var hash = Convert.ToHexString(SHA256.HashData(Basis(value)));
-        return value with { SelectionHash = hash,
-            Signature = Convert.ToBase64String(key.SignData(Basis(value), HashAlgorithmName.SHA256)) };
+        return value with
+        {
+            SelectionHash = hash,
+            Signature = Convert.ToBase64String(key.SignData(Basis(value), HashAlgorithmName.SHA256))
+        };
     }
 
     internal static bool Verify(WorldPeerDefaultSelection value, SharedWorldPeerRoot root)

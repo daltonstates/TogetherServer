@@ -218,17 +218,8 @@ internal sealed class WorldPeerTestNamespace : IDisposable
     internal FileStream Resume(string relative)
     {
         if (!create || !relative.StartsWith("payload/", StringComparison.Ordinal)) throw new InvalidDataException();
-        _ = Parent(relative);
-        var handle = OpenFile(FullPath(relative), 0xC0000000, 0,
-            IntPtr.Zero, 4 /* OPEN_ALWAYS */, 0x00200000 /* open final reparse point itself */, IntPtr.Zero);
-        try
-        {
-            if (handle.IsInvalid || !GetFileInformationByHandle(handle, out var info))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            if (((FileAttributes)info.Attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0 ||
-                info.NumberOfLinks != 1) throw new InvalidDataException("The private partial file is linked.");
-            return new FileStream(handle, FileAccess.ReadWrite);
-        }
+        var handle = NativeSnapshotDirectory.ResumeFile(Parent(relative), relative.Split('/')[^1]);
+        try { return new FileStream(handle, FileAccess.ReadWrite); }
         catch { handle.Dispose(); throw; }
     }
 
@@ -279,17 +270,7 @@ internal sealed class WorldPeerTestNamespace : IDisposable
         directories.Clear(); children.Clear();
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileInformation
-    {
-        internal uint Attributes;
-        internal System.Runtime.InteropServices.ComTypes.FILETIME CreationTime, LastAccessTime, LastWriteTime;
-        internal uint VolumeSerial, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
-    }
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle OpenFile(string path, uint access, uint share, IntPtr security,
         uint disposition, uint flags, IntPtr template);
-    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation information);
 }

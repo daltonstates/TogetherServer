@@ -37,7 +37,8 @@ public static class CompanionProtocol
         SharedWorldPeersCapability
     ];
 
-    public static string AppVersion => typeof(CompanionProtocol).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+    public static string AppVersion => typeof(CompanionProtocol).Assembly.GetName().Version is { } version
+        ? AppUpdater.FormatVersion(version) : "unknown";
 
     public static CompanionProtocolInfo Describe(int? peerProtocol = null)
     {

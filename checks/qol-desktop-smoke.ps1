@@ -714,12 +714,27 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message.slice(0, 300)));
   const workspaces = page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true });
+  const requiredSetup = page.getByRole('region', { name: 'Required app setup', exact: true });
+  await workspaces.or(requiredSetup).waitFor({ state: 'visible' });
+  if (await requiredSetup.isVisible()) {
+    await requiredSetup.getByLabel('Your name', { exact: true }).fill('Native fixture tester');
+    await requiredSetup.getByRole('button', { name: 'Save and continue', exact: true }).click();
+    await workspaces.waitFor({ state: 'visible' });
+    const completedSetup = await json('/api/local/required-setup');
+    assert.ok(completedSetup.features.length > 0 && completedSetup.features.every(feature => feature.completed),
+      'The native required setup must be persisted before ordinary navigation becomes available.');
+  }
   const openChat = async () => {
     let roomScope = { received: false, ready: false, code: 'Unavailable', profileMatches: false, hostIdentityPresent: false };
     try {
       await workspaces.getByRole('button', { name: 'Host', exact: true }).click();
-      await page.locator('.server-master-item').filter({ hasText: 'Native desktop fixture' }).click();
-      await page.getByRole('navigation', { name: 'Selected server sections', exact: true }).getByRole('button', { name: 'Chat', exact: true }).click();
+      const picker = page.getByRole('complementary', { name: 'Host navigation', exact: true }).locator('details.context-picker');
+      if (!await picker.evaluate(element => element.open)) await picker.locator(':scope > summary').click();
+      await picker.getByRole('textbox', { name: 'Find selected server', exact: true }).fill('');
+      await picker.locator('.context-picker-options').getByRole('button', { name: /^Native desktop fixture/ }).click();
+      const mobileSections = page.getByRole('combobox', { name: 'Selected server sections', exact: true });
+      if (await mobileSections.isVisible()) await mobileSections.selectOption('chat');
+      else await page.getByRole('navigation', { name: 'Selected server sections', exact: true }).getByRole('button', { name: 'Chat', exact: true }).click();
       const room = await json(`/api/local/profiles/${profileId}/chat`, undefined, 5000);
       roomScope = { received: true, ready: room.ok === true,
         code: ['ChatReady', 'ChatUnavailable', 'UnknownProfile', 'ChatReviewRequired'].includes(room.code) ? room.code : 'Other',
@@ -755,7 +770,9 @@ try {
     }
   };
   if (mode === 'appearance') {
-    await workspaces.getByRole('button', { name: 'Settings', exact: true }).click();
+    await workspaces.getByRole('button', { name: 'App Settings', exact: true }).click();
+    await page.getByRole('navigation', { name: 'App settings sections', exact: true })
+      .getByRole('button', { name: 'Appearance', exact: true }).click();
     await page.getByLabel('Text size', { exact: true }).selectOption('150');
     await page.getByLabel('Layout', { exact: true }).selectOption('compact');
     await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--qol-text-scale') === '1.5');

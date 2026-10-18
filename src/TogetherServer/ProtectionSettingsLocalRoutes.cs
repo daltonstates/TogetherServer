@@ -71,8 +71,12 @@ internal static class ProtectionSettingsLocalRoutes
         {
             // Root's callback rechecks current Host role, update and shutdown
             // state after waiting, under the same gate as mode changes.
-            if (!ownerAllowed()) return Results.Conflict(new { ok = false, code = "ProtectionSettingsUnavailable",
-                message = "Switch to My server and finish the current app operation before changing protection settings." });
+            if (!ownerAllowed()) return Results.Conflict(new
+            {
+                ok = false,
+                code = "ProtectionSettingsUnavailable",
+                message = "Switch to My server and finish the current app operation before changing protection settings."
+            });
             var result = await manager.UpdateProtectionSettingsAsync(profileId, request, context.RequestAborted);
             return Results.Json(result); // Normal ActionResult includes the current conflict snapshot.
         }
@@ -82,6 +86,10 @@ internal static class ProtectionSettingsLocalRoutes
         finally { modeGate.Release(); }
     }
 
-    private static IResult Rejected() => Results.BadRequest(new { ok = false, code = "ProtectionSettingsRequestRejected",
-        message = "The fixed protection request could not be verified or saved. Existing settings were kept." });
+    private static IResult Rejected() => Results.BadRequest(new
+    {
+        ok = false,
+        code = "ProtectionSettingsRequestRejected",
+        message = "The fixed protection request could not be verified or saved. Existing settings were kept."
+    });
 }

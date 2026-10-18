@@ -990,10 +990,15 @@ internal sealed partial class FriendLink : IDisposable
     {
         view = view with
         {
-            State = "Revoked", ConnectionCode = "Revoked",
+            State = "Revoked",
+            ConnectionCode = "Revoked",
             Detail = "The Host replaced this server code or removed this PC's access. Ask for the current code.",
-            RemoteControlsEnabled = false, CanStart = false, CanStop = false,
-            Profiles = [], ChatProfiles = [], Activity = []
+            RemoteControlsEnabled = false,
+            CanStart = false,
+            CanStop = false,
+            Profiles = [],
+            ChatProfiles = [],
+            Activity = []
         };
     }
 

@@ -53,7 +53,9 @@ this checkbox alone does not establish that acceptance.
 
 1. Obtain explicit owner authorization before creating tags or releases.
 2. Prepare and verify a normal production artifact with a higher numeric
-   `vMAJOR.MINOR.PATCH` tag. Retain the normal asset names and checksums.
+   `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH.REVISION` tag. Retain the normal
+   asset names and checksums. The first authorized preview is `v0.3.2.1`;
+   its fourth numeric component is retained throughout update verification.
 3. Publish the GitHub release with **This is a pre-release** selected. Only
    enrolled PCs are offered it. Development devices without the checkbox need
    one initial installation containing this feature.
@@ -63,6 +65,9 @@ this checkbox alone does not establish that acceptance.
    and mark that release latest without changing its assets. Stable PCs are then
    offered those same tested bytes. Preview PCs already running them need no
    reinstall just because the release was promoted.
+
+The [0.3.2.1 prerelease record](31-0.3.2.1-PRERELEASE.md) tracks the separately
+authorized publication, four-part version support and exact-candidate acceptance.
 
 ## Validation and remaining acceptance
 

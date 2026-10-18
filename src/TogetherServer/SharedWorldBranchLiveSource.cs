@@ -37,11 +37,22 @@ internal static class SharedWorldBranchLiveSource
     internal static string SetupHash(ServerProfile profile, TakeoverLocalSetup setup) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
-            profile.Id, profile.Kind, profile.WorldId, profile.WorldDirectory,
-            ProfileGamePort = profile.GamePort, profile.ExecutablePath, profile.ServerName,
-            profile.SeparateCopySourceProfileId, profile.SeparateCopyBranchHash,
-            profile.Minecraft?.ServerJarPath, profile.Factorio?.RconPort,
-            setup.ServerFile, setup.GameVersion, setup.EnabledAddOns, setup.ControlPort, setup.GamePort
+            profile.Id,
+            profile.Kind,
+            profile.WorldId,
+            profile.WorldDirectory,
+            ProfileGamePort = profile.GamePort,
+            profile.ExecutablePath,
+            profile.ServerName,
+            profile.SeparateCopySourceProfileId,
+            profile.SeparateCopyBranchHash,
+            profile.Minecraft?.ServerJarPath,
+            profile.Factorio?.RconPort,
+            setup.ServerFile,
+            setup.GameVersion,
+            setup.EnabledAddOns,
+            setup.ControlPort,
+            setup.GamePort
         })));
 
     internal static SeparateCopyHostState? ReadState(LocalData data, Guid localId)

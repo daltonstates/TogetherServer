@@ -81,9 +81,12 @@ public sealed partial class HostManager
             var next = JsonSerializer.Deserialize<HostSettings>(JsonSerializer.SerializeToUtf8Bytes(settings)) ??
                 throw new InvalidDataException("The current Host settings could not be copied.");
             var changed = next.Profiles.Single(profile => profile.Id == profileId);
-            changed.Backups = new() { Enabled = request.Next.Backups.Enabled,
+            changed.Backups = new()
+            {
+                Enabled = request.Next.Backups.Enabled,
                 RetentionCount = request.Next.Backups.RetentionCount,
-                MinimumFreeSpaceMb = request.Next.Backups.MinimumFreeSpaceMb };
+                MinimumFreeSpaceMb = request.Next.Backups.MinimumFreeSpaceMb
+            };
             changed.CrashRecovery = new() { Enabled = request.Next.CrashRecovery.Enabled };
             cancellationToken.ThrowIfCancellationRequested();
             return UpdateSettingsLocked(next);

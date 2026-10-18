@@ -384,8 +384,16 @@ public sealed partial class HostManager
                     if (receipt.RosterEpoch < prior.RosterEpoch || receipt.RosterEpoch == prior.RosterEpoch && receipt.RosterRevision <= prior.RosterRevision)
                         return new(false, "LiveSaveTestReceiptReplay", "This test already has a receipt at that roster revision.");
                 }
-                record = record with { Receipt = receipt, TransferUtc = clock.GetUtcNow(), LoadUtc = null, ChangeUtc = null,
-                    RestartUtc = null, State = "ArtifactReady", Code = "LiveSaveTestTransferVerified" };
+                record = record with
+                {
+                    Receipt = receipt,
+                    TransferUtc = clock.GetUtcNow(),
+                    LoadUtc = null,
+                    ChangeUtc = null,
+                    RestartUtc = null,
+                    State = "ArtifactReady",
+                    Code = "LiveSaveTestTransferVerified"
+                };
                 ReplaceAcceptance(records, record);
                 return new(true, record.Code, "The exact private copy has a separate-device signed receipt. Actual game load, recognizable change and restart still need explicit owner reports.", record.View());
             }

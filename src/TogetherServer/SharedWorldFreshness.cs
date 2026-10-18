@@ -180,7 +180,9 @@ internal sealed class SharedWorldFreshnessScheduler(TimeProvider clock,
                 var failures = result.Ok ? 0 : Math.Min(30, state.ConsecutiveFailures + 1);
                 states[selected.ProfileId] = state with
                 {
-                    Code = result.Code, InProgress = false, ConsecutiveFailures = failures,
+                    Code = result.Code,
+                    InProgress = false,
+                    ConsecutiveFailures = failures,
                     LastSafeCaptureUtc = result.Ok ? now : state.LastSafeCaptureUtc,
                     LastFailureUtc = result.Ok ? state.LastFailureUtc : now,
                     LastFailureCode = result.Ok ? state.LastFailureCode : result.Code,
@@ -208,8 +210,11 @@ internal sealed class SharedWorldFreshnessScheduler(TimeProvider clock,
                     var failures = Math.Min(30, state.ConsecutiveFailures + 1);
                     states[id] = state with
                     {
-                        Code = "SharedFreshnessFailed", InProgress = false, LastFailureUtc = now,
-                        LastFailureCode = "SharedFreshnessFailed", ConsecutiveFailures = failures,
+                        Code = "SharedFreshnessFailed",
+                        InProgress = false,
+                        LastFailureUtc = now,
+                        LastFailureCode = "SharedFreshnessFailed",
+                        ConsecutiveFailures = failures,
                         NextAttemptUtc = now + FailureDelay(failures)
                     };
                 }
@@ -233,30 +238,30 @@ internal sealed partial class SharedWorldService
         DateTimeOffset verifiedUtc, CancellationToken cancellationToken)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
-          lock (sync)
-        {
-            if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
-                return NewestCompleteVerifiedBranch(profile, verifiedUtc, cancellationToken);
-            var latest = Status(profile).Latest;
-            if (latest is null) return null;
-            var candidate = latest;
-            while (true)
+            lock (sync)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                try
+                if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+                    return NewestCompleteVerifiedBranch(profile, verifiedUtc, cancellationToken);
+                var latest = Status(profile).Latest;
+                if (latest is null) return null;
+                var candidate = latest;
+                while (true)
                 {
-                    var payload = Path.Combine(VersionRoot(candidate), PayloadDirectory);
-                    EnsureUnlinkedRoot(data.RootPath, payload);
-                    VerifyLiveTree(payload, candidate.Files.OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase).ToArray(), cancellationToken);
-                    return new(candidate, true, true, verifiedUtc);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var payload = Path.Combine(VersionRoot(candidate), PayloadDirectory);
+                        EnsureUnlinkedRoot(data.RootPath, payload);
+                        VerifyLiveTree(payload, candidate.Files.OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase).ToArray(), cancellationToken);
+                        return new(candidate, true, true, verifiedUtc);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException) { }
+                    if (candidate.Number <= 1) return null;
+                    var prior = ReadPublishedAncestor(latest, candidate.Number - 1);
+                    if (prior is null || prior.VersionHash != candidate.ParentHash) return null;
+                    candidate = prior;
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException) { }
-                if (candidate.Number <= 1) return null;
-                var prior = ReadPublishedAncestor(latest, candidate.Number - 1);
-                if (prior is null || prior.VersionHash != candidate.ParentHash) return null;
-                candidate = prior;
             }
-        }
     }
 
     // Follow only the chosen branch's exact parent hashes, including its signed
@@ -304,29 +309,29 @@ internal sealed partial class SharedWorldService
         CancellationToken cancellationToken)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
-          lock (sync)
-        {
-            if (!LiveCaptureAccepted(profile))
-                throw new InvalidDataException("This game's live capture is not accepted.");
-            var (captured, setup, _) = ReadVerifiedLiveCapture(profile, captureId, cancellationToken);
-            var current = Status(profile).Latest;
-            if (current is null || !SharedWorldFreshness.SameCapture(captured.Files,
-                    SharedWorldPortableSetupReader.Capture(setup), current.Files, current.PortableSetup)) return null;
-            if (Authority.GovernanceUnresolved(profile.Id) ||
-                Authority.HasState(profile.Id) && Authority.LocalAuthorizedHead(profile.Id) is null ||
-                !AuthorizedPublishedLineage(profile) || ReviewLiveOrphan(profile).Code != "None")
-                throw new InvalidDataException("The signed live-save lineage needs review.");
-            var payload = Path.Combine(VersionRoot(current), PayloadDirectory);
-            EnsureUnlinkedRoot(data.RootPath, payload);
-            VerifyLiveTree(payload, current.Files.OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase).ToArray(), cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!RecordedExactLiveRun(profile, captured.OperationId, captured.ProcessId,
-                    captured.StartTimeUtcTicks, requireReady: profile.Kind == GameKinds.Fixture))
-                throw new InvalidDataException("The exact live-save process changed.");
-            if (!LiveCaptureAccepted(profile))
-                throw new InvalidDataException("The protected installed acceptance scope changed during verified-copy comparison.");
-            cancellationToken.ThrowIfCancellationRequested();
-            return current;
-        }
+            lock (sync)
+            {
+                if (!LiveCaptureAccepted(profile))
+                    throw new InvalidDataException("This game's live capture is not accepted.");
+                var (captured, setup, _) = ReadVerifiedLiveCapture(profile, captureId, cancellationToken);
+                var current = Status(profile).Latest;
+                if (current is null || !SharedWorldFreshness.SameCapture(captured.Files,
+                        SharedWorldPortableSetupReader.Capture(setup), current.Files, current.PortableSetup)) return null;
+                if (Authority.GovernanceUnresolved(profile.Id) ||
+                    Authority.HasState(profile.Id) && Authority.LocalAuthorizedHead(profile.Id) is null ||
+                    !AuthorizedPublishedLineage(profile) || ReviewLiveOrphan(profile).Code != "None")
+                    throw new InvalidDataException("The signed live-save lineage needs review.");
+                var payload = Path.Combine(VersionRoot(current), PayloadDirectory);
+                EnsureUnlinkedRoot(data.RootPath, payload);
+                VerifyLiveTree(payload, current.Files.OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase).ToArray(), cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!RecordedExactLiveRun(profile, captured.OperationId, captured.ProcessId,
+                        captured.StartTimeUtcTicks, requireReady: profile.Kind == GameKinds.Fixture))
+                    throw new InvalidDataException("The exact live-save process changed.");
+                if (!LiveCaptureAccepted(profile))
+                    throw new InvalidDataException("The protected installed acceptance scope changed during verified-copy comparison.");
+                cancellationToken.ThrowIfCancellationRequested();
+                return current;
+            }
     }
 }

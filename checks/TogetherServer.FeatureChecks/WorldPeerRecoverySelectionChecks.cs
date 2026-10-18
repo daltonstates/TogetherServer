@@ -49,7 +49,9 @@ internal static class WorldPeerRecoverySelectionChecks
         {
             var changed = SharedWorldPeerTrust.Sign(equivocated.Last with
             {
-                AnnouncedUtc = equivocated.Last.AnnouncedUtc.AddSeconds(1), AnnouncementHash = "", Signature = ""
+                AnnouncedUtc = equivocated.Last.AnnouncedUtc.AddSeconds(1),
+                AnnouncementHash = "",
+                Signature = ""
             }, equivocated.Owner);
             Require(equivocated.Store.Import(changed).Changed && equivocated.Store.Project().Peers.Single().HasConflict,
                 "the fixture did not retain actual same-revision signer equivocation");
@@ -100,14 +102,18 @@ internal static class WorldPeerRecoverySelectionChecks
             Lane = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("synthetic lane " + Root.GroupKey)));
             var draft = new SharedWorldRoster(3, Root.GroupId, Root.ProfileId, 1, 1, true, Root.OwnerPublicKey,
                 [], "", SignerDeviceId: Guid.Empty, SignerPublicKey: Root.OwnerPublicKey);
-            var roster = draft with { Signature = Convert.ToBase64String(Owner.SignData(
-                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            var roster = draft with
+            {
+                Signature = Convert.ToBase64String(Owner.SignData(
+                SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+            };
             Data.SaveSettings(new HostSettings { Profiles = [] });
             Data.SaveProtected("shared-world-signing-key.protected", Owner.ExportPkcs8PrivateKey());
             new SharedWorldRosterChainStore(Data).Append(roster, Root.OwnerPublicKey);
             Data.SaveProtected("world-peer-memberships.protected", JsonSerializer.SerializeToUtf8Bytes(new
             {
-                Schema = 1, Groups = new[] { new { Root, Roster = roster, DeviceId = Guid.Empty,
+                Schema = 1,
+                Groups = new[] { new { Root, Roster = roster, DeviceId = Guid.Empty,
                     Name = "Synthetic selection", ReceiveConsented = true, SharingEnabled = false,
                     Bootstrap = (SharedWorldPeerRoute?)null } }
             }, Json));

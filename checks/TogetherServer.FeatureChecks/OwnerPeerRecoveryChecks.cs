@@ -77,7 +77,10 @@ internal static class OwnerPeerRecoveryChecks
         var progressBytes = Encoding.UTF8.GetBytes("friend branch progress retained for owner recovery");
         var progress = SharedWorldService.SignVersion(first with
         {
-            Number = 2, ParentHash = first.VersionHash, BackupId = Guid.NewGuid(), Files = [Fact(progressBytes)]
+            Number = 2,
+            ParentHash = first.VersionHash,
+            BackupId = Guid.NewGuid(),
+            Files = [Fact(progressBytes)]
         }, hosting);
         var branchVault = SharedWorldBranchVault.Root(data, memberBranch);
         WriteCopy(branchVault, first, bytes);
@@ -159,10 +162,14 @@ internal static class OwnerPeerRecoveryChecks
     { Signature = Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.Basis(roster), HashAlgorithmName.SHA256)) };
     private static SharedWorldRoster NextRoster(SharedWorldRoster previous,
         IReadOnlyList<SharedWorldRosterMember> members, ECDsa owner) => SignRoster(previous with
-    {
-        Epoch = previous.Epoch + 1, Revision = previous.Revision + 1, Members = members,
-        PreviousRosterHash = SharedWorldRosterTrust.Hash(previous), OwnerLocalBaselineMembers = members, Signature = ""
-    }, owner);
+        {
+            Epoch = previous.Epoch + 1,
+            Revision = previous.Revision + 1,
+            Members = members,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(previous),
+            OwnerLocalBaselineMembers = members,
+            Signature = ""
+        }, owner);
     private static void WriteCopy(string root, SharedWorldVersion version, byte[] bytes)
     {
         var directory = Path.Combine(root, version.VersionHash);

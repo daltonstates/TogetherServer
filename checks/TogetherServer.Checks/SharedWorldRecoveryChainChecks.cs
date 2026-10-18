@@ -165,12 +165,27 @@ internal static class SharedWorldRecoveryChainChecks
         var separate = new SharedWorldSeparateCopyStore(second).Declare(loss, nextOffer,
             Vault(1), secondKey, true);
         second.SaveSettings(new HostSettings { CompanionPort = 51748 });
+        var authorityBeforeSeparateRestore = secondStore.Read(profile.Id).Select(item => item.RecordHash).ToArray();
+        var ownerBytesBeforeSeparateRestore = File.ReadAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"));
+        var successorBytesBeforeSeparateRestore = File.ReadAllBytes(Path.Combine(successorProfile.WorldDirectory, "world.dat"));
         var separateRestore = await new HostManager(second,
             new GameServerRegistry(second, true, PortProbeMode.ObserveOnly)).RestoreSeparateCopyAsync(profile.Id,
             new(separate.BranchHash, new(fixture, progress.PortableSetup.GameVersion,
                 progress.PortableSetup.AddOns, true, 51748, 51745), "Separate", "Separate"));
-        Require(separateRestore.Code == "LocalSetupIncomplete",
-            "warned separate restore rejected the successor signature or bypassed listener checks: " + separateRestore.Message);
+        Require(separateRestore.Ok && separateRestore.Code == "SeparateRestored" &&
+            separateRestore.ProfileId is { } restoredId && restoredId != profile.Id &&
+            separateRestore.VersionHash == progress.VersionHash && second.LoadRuns().Count == 0 &&
+            secondStore.Read(profile.Id).Select(item => item.RecordHash).SequenceEqual(authorityBeforeSeparateRestore) &&
+            File.ReadAllBytes(Path.Combine(profile.WorldDirectory, "world.dat")).SequenceEqual(ownerBytesBeforeSeparateRestore) &&
+            File.ReadAllBytes(Path.Combine(successorProfile.WorldDirectory, "world.dat")).SequenceEqual(successorBytesBeforeSeparateRestore),
+            "explicit solo restore did not preserve the exact successor save, original worlds, authority or manual Start: " + separateRestore.Message);
+        var separateProfile = second.LoadSettings().Profiles.Single(item => item.Id == separateRestore.ProfileId);
+        Require(separateProfile.SeparateCopySourceProfileId == profile.Id &&
+            separateProfile.SeparateCopyBranchHash == separate.BranchHash && !separateProfile.SharedSavesEnabled &&
+            separateProfile.WorldDirectory != profile.WorldDirectory &&
+            separateProfile.WorldDirectory != successorProfile.WorldDirectory &&
+            File.ReadAllText(Path.Combine(separateProfile.WorldDirectory, "world.dat")) == "successor progress",
+            "the solo restore selected another branch, reused an existing world or lost its exact verified bytes");
         var nextVotes = new[] { SharedWorldElection.Vote(loss, Vault(1), floor,
                 roster.OwnerPublicKey, nextOffer, devices[1].Id, secondKey, secondStore),
             SharedWorldElection.Vote(loss, Vault(2), floor, roster.OwnerPublicKey,

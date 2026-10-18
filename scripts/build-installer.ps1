@@ -15,9 +15,10 @@ $script = (Resolve-Path -LiteralPath (Join-Path $repository 'installer/TogetherS
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $project = [xml](Get-Content -LiteralPath (Join-Path $repository 'src/TogetherServer/TogetherServer.csproj') -Raw)
 $version = [string]$project.Project.PropertyGroup.Version
-if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'TogetherServer.csproj needs a stable MAJOR.MINOR.PATCH version.' }
+if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'TogetherServer.csproj needs a numeric MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.REVISION version.' }
+$expectedFileVersion = if ($version.Split('.').Count -eq 3) { "$version.0" } else { $version }
 $appInfo = (Get-Item -LiteralPath $app).VersionInfo
-if ($appInfo.FileVersion -ne "$version.0") {
+if ([Version]$appInfo.FileVersion -ne [Version]$expectedFileVersion) {
     throw "App file version $($appInfo.FileVersion) does not match project version $version."
 }
 
@@ -50,7 +51,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
 $installer = Join-Path $output 'TogetherServer-Setup-win-x64.exe'
 if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer was not created: $installer" }
 $installerInfo = (Get-Item -LiteralPath $installer).VersionInfo
-if ([Version]$installerInfo.FileVersion -ne [Version]$version) {
+$installerFileVersion = [Version]::new($installerInfo.FileMajorPart, $installerInfo.FileMinorPart,
+    $installerInfo.FileBuildPart, $installerInfo.FilePrivatePart)
+if ($installerFileVersion -ne [Version]$expectedFileVersion) {
     throw "Installer file version $($installerInfo.FileVersion) does not match $version."
 }
 

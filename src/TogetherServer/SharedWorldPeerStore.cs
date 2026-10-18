@@ -203,7 +203,7 @@ internal sealed class SharedWorldPeerStore
             branches = branches.OrderBy(value => value.BranchHash, StringComparer.Ordinal).ToArray();
             availableVersionHashes = (availableVersionHashes ?? []).Order(StringComparer.Ordinal).ToArray();
             if (last is not null && JsonSerializer.Serialize(new
-                { last.Routes, last.Sessions, last.Branches, last.AvailableVersionHashes }, SharedWorldPeerTrust.Json) ==
+            { last.Routes, last.Sessions, last.Branches, last.AvailableVersionHashes }, SharedWorldPeerTrust.Json) ==
                 JsonSerializer.Serialize(new
                 { Routes = routes, Sessions = sessions, Branches = branches, AvailableVersionHashes = availableVersionHashes }, SharedWorldPeerTrust.Json))
                 return last;

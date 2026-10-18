@@ -434,7 +434,7 @@ app.MapPost("/api/local/update/install", (Func<HttpContext, Task<IResult>>)(asyn
         if (targetVersion is null)
             return UpdatePreparationBlocked("NotReady", "No verified update is ready.");
         updater.ReportPreparation("Checkpoint", "Protecting local settings before restart.");
-        var checkpoint = updateCheckpoints.Create(appVersion.ToString(3), targetVersion,
+        var checkpoint = updateCheckpoints.Create(AppUpdater.FormatVersion(appVersion), targetVersion,
             Environment.ProcessPath ?? "");
         if (!checkpoint.Ok || checkpoint.Checkpoint is null)
         {

@@ -263,7 +263,7 @@ internal sealed partial class WorldPeerService
                     using var key = current is null ? null : LocalKey(current);
                     if (current is null || key is null || current.DeviceId != group.DeviceId || !current.ReceiveConsented ||
                         Access(current, current.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is not
-                            { Receive: true, EligibleHost: true } || !AuthorizedDescriptor(current, descriptor))
+                        { Receive: true, EligibleHost: true } || !AuthorizedDescriptor(current, descriptor))
                         throw new InvalidDataException("Current recovery membership or the selected save changed.");
                     RequireReviewedHeads(current);
                     WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
@@ -290,7 +290,7 @@ internal sealed partial class WorldPeerService
         using var key = current is null ? null : LocalKey(current);
         return current is not null && key is not null &&
             Access(current, current.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is
-                { Receive: true, EligibleHost: true } && await ReceiveAllowedAsync(current, cancellationToken);
+            { Receive: true, EligibleHost: true } && await ReceiveAllowedAsync(current, cancellationToken);
     }
 
     internal async Task<WorldAuthorityOfferResult> PrepareSoloRecoveryOfferAsync(Guid profileId,

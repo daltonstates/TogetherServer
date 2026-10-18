@@ -363,17 +363,17 @@ internal sealed class ManagedLiveSnapshotStore(LocalData data, GameServerRegistr
         var owned = profile.SeparateCopySourceProfileId is not null
             ? SharedWorldBranchLiveSource.IsOwnedSaveSource(data, profile, source)
             : profile.Kind switch
-        {
-            GameKinds.Valheim => profile.WorldSource == "New" && SamePath(world, data.NewWorldDirectory(profile.Id)) && data.OwnsNewWorld(profile) ||
-                profile.WorldSource == "Existing" && ValheimSetup.IsImportedWorld(data, profile.Id, world),
-            GameKinds.Terraria or GameKinds.Fixture => SamePath(world, data.NewWorldDirectory(profile.Id)),
-            GameKinds.Factorio => FactorioSetup.IsImportedCopy(data, profile),
-            GameKinds.MinecraftJava or GameKinds.MinecraftBedrock =>
-                SamePath(Path.GetDirectoryName(world)!, data.MinecraftInstallRoot) &&
-                Path.GetFileName(world).StartsWith(profile.Kind == GameKinds.MinecraftJava ? "java-" : "bedrock-", StringComparison.OrdinalIgnoreCase) &&
-                SamePath(source, profile.Kind == GameKinds.MinecraftJava ? Path.Combine(world, profile.WorldId) : Path.Combine(world, "worlds", profile.WorldId)),
-            _ => false
-        };
+            {
+                GameKinds.Valheim => profile.WorldSource == "New" && SamePath(world, data.NewWorldDirectory(profile.Id)) && data.OwnsNewWorld(profile) ||
+                    profile.WorldSource == "Existing" && ValheimSetup.IsImportedWorld(data, profile.Id, world),
+                GameKinds.Terraria or GameKinds.Fixture => SamePath(world, data.NewWorldDirectory(profile.Id)),
+                GameKinds.Factorio => FactorioSetup.IsImportedCopy(data, profile),
+                GameKinds.MinecraftJava or GameKinds.MinecraftBedrock =>
+                    SamePath(Path.GetDirectoryName(world)!, data.MinecraftInstallRoot) &&
+                    Path.GetFileName(world).StartsWith(profile.Kind == GameKinds.MinecraftJava ? "java-" : "bedrock-", StringComparison.OrdinalIgnoreCase) &&
+                    SamePath(source, profile.Kind == GameKinds.MinecraftJava ? Path.Combine(world, profile.WorldId) : Path.Combine(world, "worlds", profile.WorldId)),
+                _ => false
+            };
         if (!owned) throw new InvalidDataException("The save source is outside this profile's reviewed managed storage.");
         RequirePlainPath(source);
         if (!Directory.Exists(source)) throw new InvalidDataException("The reviewed save source is missing.");

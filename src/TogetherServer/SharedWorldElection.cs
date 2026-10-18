@@ -318,7 +318,7 @@ internal static class SharedWorldElection
         // branch. New hosting, reads and membership changes still check current access.
         return offer.Roster.Members.SingleOrDefault(member =>
             member.DeviceId == offer.CandidateReceipt.DeviceId) is
-            { Revoked: false, Grants: { Receive: true, EligibleHost: true } } member &&
+        { Revoked: false, Grants: { Receive: true, EligibleHost: true } } member &&
             member.PublicKey == key;
     }
 

@@ -406,8 +406,11 @@ internal sealed partial class WorldPeerService
                 if (current.DeviceId == Guid.Empty) return;
                 var draft = new SharedWorldReceipt(1, current.Root.GroupId, current.Root.ProfileId, version.VersionHash,
                     current.DeviceId, current.Roster.Epoch, current.Roster.Revision, Guid.NewGuid(), "");
-                receipt = draft with { Signature = Convert.ToBase64String(signingKey.SignData(
-                    SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+                receipt = draft with
+                {
+                    Signature = Convert.ToBase64String(signingKey.SignData(
+                    SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+                };
             }
         }
         if (group.DeviceId == Guid.Empty) Commit();

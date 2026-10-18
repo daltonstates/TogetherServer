@@ -2059,6 +2059,17 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
         ineligibleClient.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", ineligibleBearer);
         ineligibleClient.DefaultRequestHeaders.Add("X-Device-Id", ineligibleId.ToString());
+        using var metadataOnlyHistory = await ineligibleClient.GetAsync(
+            $"api/companion/servers/{profile.Id}/shared-world/authority");
+        using var metadataOnlyProof = await ineligibleClient.GetAsync(
+            $"api/companion/servers/{profile.Id}/shared-world/authority/{record.RecordHash}/proof/1");
+        using var metadataOnlySave = await ineligibleClient.GetAsync(
+            $"api/companion/servers/{profile.Id}/shared-world");
+        Require(metadataOnlyHistory.IsSuccessStatusCode && metadataOnlyProof.IsSuccessStatusCode &&
+            metadataOnlySave.StatusCode == HttpStatusCode.Forbidden,
+            "a metadata-only signed member lost read-only history or acquired save transfer access");
+        Require(pairing.Revoke(ineligibleId).Ok,
+            "the metadata-only peer could not be revoked before the dirty-roster check");
         var dirtyPath = Path.Combine(hostData.RootPath, "shared-worlds", profile.Id.ToString("N"),
             "roster-dirty");
         File.WriteAllText(dirtyPath, "review required");
@@ -2071,7 +2082,7 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
         Require(dirtyIneligible.StatusCode == HttpStatusCode.Forbidden &&
             dirtyIneligibleProof.StatusCode == HttpStatusCode.Forbidden &&
             dirtyEligible.IsSuccessStatusCode,
-            "dirty membership admitted an ineligible peer or blocked a still-granted voter");
+            "dirty membership admitted a revoked peer or blocked a still-granted voter");
         Require(pairing.Revoke(deviceId).Ok &&
             !(await voter.ReviewSharedHistoryAsync(profile.Id)).Ok,
             "revoked voter continued reading signed history");
@@ -7158,6 +7169,9 @@ await Check("three disposable PCs compare exact save heads before majority takeo
             for (var fileIndex = 0; fileIndex < version.Files.Count; fileIndex++)
                 File.WriteAllBytes(SharedWorldService.SafeChild(payload, version.Files[fileIndex].Path),
                     shares.ReadChunk(version, fileIndex, 0));
+            File.WriteAllBytes(Path.Combine(root, version.VersionHash, "version.json"),
+                JsonSerializer.SerializeToUtf8Bytes(version, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            FriendLink.KeepSignedManifest(root, version);
             File.WriteAllBytes(Path.Combine(root, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(version,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web)));
             return root;
@@ -7447,8 +7461,11 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                         var draft = new WorldAuthorityVote(1,
                             WorldAuthorityTrust.ProposalHash(competingOffer.Proposal), ids[index],
                             Convert.ToBase64String(keys[index].ExportSubjectPublicKeyInfo()), "");
-                        return draft with { Signature = Convert.ToBase64String(keys[index].SignData(
-                            WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256)) };
+                        return draft with
+                        {
+                            Signature = Convert.ToBase64String(keys[index].SignData(
+                            WorldAuthorityTrust.VoteBasis(draft), HashAlgorithmName.SHA256))
+                        };
                     }).ToArray();
                     SharedWorldElection.ConfirmQuorum(competingOffer, competingVotes,
                         separateAuthority, separateVault);

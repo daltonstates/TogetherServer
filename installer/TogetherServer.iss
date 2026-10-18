@@ -2,7 +2,7 @@
   #define AppSource "..\local-data\release-candidate\TogetherServer.exe"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.2"
+  #define AppVersion "0.3.2.1"
 #endif
 #ifndef OutputDirectory
   #define OutputDirectory "..\local-data\installer"

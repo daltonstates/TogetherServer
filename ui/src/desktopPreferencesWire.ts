@@ -76,7 +76,7 @@ export function parseUpdatePreparation(value: unknown): UpdatePreparation {
 }
 
 export function trustedReleaseNotesLink(value: string | null | undefined, version: string | null): boolean {
-  return !!version && /^\d+\.\d+\.\d+$/.test(version) &&
+  return !!version && /^\d+\.\d+\.\d+(\.\d+)?$/.test(version) &&
     value === `https://github.com/daltonstates/TogetherServer/releases/tag/v${version}`
 }
 

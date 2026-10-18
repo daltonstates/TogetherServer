@@ -146,7 +146,7 @@ public sealed class UpdateUiPreferences
 
     internal void RememberNotes(UpdateRelease release)
     {
-        var notes = new RetainedUpdateNotes(release.Version.ToString(3), release.ReleaseNotes, release.ReleaseNotesUrl?.AbsoluteUri);
+        var notes = new RetainedUpdateNotes(release.VersionText, release.ReleaseNotes, release.ReleaseNotesUrl?.AbsoluteUri);
         lock (sync)
         {
             if (state.Notes == notes) return;
@@ -196,12 +196,10 @@ public sealed class UpdateUiPreferences
         (value.Notes is null || (ValidVersion(value.Notes.Version) && value.Notes.Text is not null &&
             value.Notes.Text.Length <= AppUpdater.MaximumReleaseNotesCharacters &&
             AppUpdater.ValidReleaseNotesLink(value.Notes.Url, "v" + value.Notes.Version)));
-    private static bool ValidVersion(string? value) => value is not null && value.Length <= 32 &&
-        System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d+\.\d+\.\d+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant) &&
-        Version.TryParse(value, out _);
+    private static bool ValidVersion(string? value) => AppUpdater.TryParseVersion(value, out _);
     private static void ValidateVersion(string value)
     {
-        if (!ValidVersion(value)) throw new InvalidDataException("Update version must use major.minor.patch numbers.");
+        if (!ValidVersion(value)) throw new InvalidDataException("Update version must use three or four numeric components.");
     }
     public sealed class State
     {

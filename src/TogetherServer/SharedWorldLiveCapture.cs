@@ -56,9 +56,13 @@ internal sealed partial class SharedWorldService
     {
         var unsigned = draft with
         {
-            Schema = 5, Number = 1, ParentHash = null,
+            Schema = 5,
+            Number = 1,
+            ParentHash = null,
             CaptureKind = LiveSaveAcceptanceTrust.TestCaptureKind,
-            SigningPublicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), VersionHash = "", Signature = ""
+            SigningPublicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
+            VersionHash = "",
+            Signature = ""
         };
         var hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(VersionBasis(unsigned.GroupId,
             unsigned.Number, unsigned.ParentHash, unsigned.ProfileId, unsigned.Game, unsigned.WorldId,
@@ -135,8 +139,11 @@ internal sealed partial class SharedWorldService
                     sourceDevice, capture.CapturedUtc, snapshot.CapturedUtc,
                     LiveSaveAcceptanceTrust.PayloadHash(version.Files), LiveSaveAcceptanceTrust.TotalBytes(version.Files),
                     ChunkBytes, LiveSaveAcceptanceTrust.ChunkCount(version.Files), version, "");
-                var artifact = unsigned with { Signature = Convert.ToBase64String(key.SignData(
-                    LiveSaveAcceptanceTrust.ArtifactBasis(unsigned), HashAlgorithmName.SHA256)) };
+                var artifact = unsigned with
+                {
+                    Signature = Convert.ToBase64String(key.SignData(
+                    LiveSaveAcceptanceTrust.ArtifactBasis(unsigned), HashAlgorithmName.SHA256))
+                };
                 if (!LiveSaveAcceptanceTrust.VerifyArtifact(artifact)) throw new InvalidDataException();
                 return (artifact, payload);
             }
@@ -145,50 +152,50 @@ internal sealed partial class SharedWorldService
     internal bool LiveAcceptanceSourceMatches(ServerProfile profile)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
-          lock (sync)
-        {
-            if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+            lock (sync)
             {
-                _ = SharedWorldBranchLiveSource.Resolve(data, profile);
-                return true;
+                if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+                {
+                    _ = SharedWorldBranchLiveSource.Resolve(data, profile);
+                    return true;
+                }
+                var binding = ReadBinding(profile.Id);
+                return binding is not null && BindingMatches(binding, profile) && ReadRoster(profile) is not null;
             }
-            var binding = ReadBinding(profile.Id);
-            return binding is not null && BindingMatches(binding, profile) && ReadRoster(profile) is not null;
-        }
     }
 
     internal bool AcceptanceTestSourceMatches(ServerProfile profile, LiveSaveTestArtifact artifact, DateTimeOffset? now = null)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
-          lock (sync)
-        {
-            return LiveSaveAcceptanceTrust.MatchesSource(artifact, ResolveLiveSaveSource(profile, now), profile, now ?? DateTimeOffset.UtcNow);
-        }
+            lock (sync)
+            {
+                return LiveSaveAcceptanceTrust.MatchesSource(artifact, ResolveLiveSaveSource(profile, now), profile, now ?? DateTimeOffset.UtcNow);
+            }
     }
 
     internal LiveSaveSourceContext ResolveLiveSaveSource(ServerProfile profile, DateTimeOffset? now = null,
         bool requireStarted = false)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
-          lock (sync)
-        {
-            if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
-                return SharedWorldBranchLiveSource.Resolve(data, profile, now, requireStarted);
-            var binding = ReadBinding(profile.Id);
-            var roster = ReadRoster(profile);
-            if (!profile.SharedSavesEnabled || binding is null || !BindingMatches(binding, profile) || roster is null ||
-                roster.ProfileId != profile.Id || roster.GroupId != binding.GroupId)
-                throw new InvalidDataException("The signed shared source is missing or changed.");
-            using var key = LoadPublishingKey(profile.Id);
-            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
-            var head = Authority.LocalAuthorizedHead(profile.Id);
-            var deviceId = publicKey == roster.OwnerPublicKey ? Guid.Empty :
-                head?.Proposal.SuccessorBinding?.DeviceId ?? head?.SuccessorReceipt?.DeviceId ??
-                roster.Members.SingleOrDefault(member => member.PublicKey == publicKey)?.DeviceId ??
-                throw new InvalidDataException("The current hosting key has no enrolled source device binding.");
-            return new(profile.Id, new(roster.OwnerPublicKey, profile.Id, binding.GroupId), null,
-                deviceId, publicKey, roster);
-        }
+            lock (sync)
+            {
+                if (LiveSaveAcceptanceTrust.IsRecoveryProfile(profile))
+                    return SharedWorldBranchLiveSource.Resolve(data, profile, now, requireStarted);
+                var binding = ReadBinding(profile.Id);
+                var roster = ReadRoster(profile);
+                if (!profile.SharedSavesEnabled || binding is null || !BindingMatches(binding, profile) || roster is null ||
+                    roster.ProfileId != profile.Id || roster.GroupId != binding.GroupId)
+                    throw new InvalidDataException("The signed shared source is missing or changed.");
+                using var key = LoadPublishingKey(profile.Id);
+                var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+                var head = Authority.LocalAuthorizedHead(profile.Id);
+                var deviceId = publicKey == roster.OwnerPublicKey ? Guid.Empty :
+                    head?.Proposal.SuccessorBinding?.DeviceId ?? head?.SuccessorReceipt?.DeviceId ??
+                    roster.Members.SingleOrDefault(member => member.PublicKey == publicKey)?.DeviceId ??
+                    throw new InvalidDataException("The current hosting key has no enrolled source device binding.");
+                return new(profile.Id, new(roster.OwnerPublicKey, profile.Id, binding.GroupId), null,
+                    deviceId, publicKey, roster);
+            }
     }
 
     private (LiveSaveTestArtifact Artifact, string SealedPayload) PrepareBranchAcceptanceTestArtifact(
@@ -215,8 +222,11 @@ internal sealed partial class SharedWorldService
             source.SourceDeviceId, snapshot.Completion.CompletedUtc, snapshot.CapturedUtc,
             LiveSaveAcceptanceTrust.PayloadHash(version.Files), LiveSaveAcceptanceTrust.TotalBytes(version.Files),
             ChunkBytes, LiveSaveAcceptanceTrust.ChunkCount(version.Files), version, "", source.Branch);
-        var artifact = draft with { Signature = Convert.ToBase64String(key.SignData(
-            LiveSaveAcceptanceTrust.ArtifactBasis(draft), HashAlgorithmName.SHA256)) };
+        var artifact = draft with
+        {
+            Signature = Convert.ToBase64String(key.SignData(
+            LiveSaveAcceptanceTrust.ArtifactBasis(draft), HashAlgorithmName.SHA256))
+        };
         token.ThrowIfCancellationRequested();
         if (!LiveSaveAcceptanceTrust.MatchesSource(artifact, source, profile, DateTimeOffset.UtcNow) ||
             !SharedWorldBranchLiveSource.SameSource(source, ResolveLiveSaveSource(profile, requireStarted: true)) ||

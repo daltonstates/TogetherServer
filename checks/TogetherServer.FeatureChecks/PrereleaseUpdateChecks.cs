@@ -56,6 +56,31 @@ internal static class PrereleaseUpdateChecks
             using var json = JsonDocument.Parse(body);
             Reject<InvalidDataException>(() => UpdateUiPreferences.ParseIncludePrereleases(json.RootElement));
         }
+        foreach (var version in new[] { "0.3.2.1", "0.3.2.0" })
+        {
+            var versionDirectory = Path.Combine(root, "numeric-preferences-" + version);
+            using (var data = new LocalData(versionDirectory))
+            {
+                var preferences = new UpdateUiPreferences(data);
+                preferences.SetIncludePrereleases(true);
+                preferences.Snooze(new("0.3.2", "SkipVersion"));
+                preferences.Snooze(new(version, "Tomorrow"));
+                using var reminder = JsonDocument.Parse(JsonSerializer.Serialize(new { version, duration = "Tomorrow" }));
+                Require(UpdateUiPreferences.ParseSnooze(reminder.RootElement).Version == version,
+                    "A four-part reminder request must preserve its exact release identity");
+                preferences.RememberNotes(AppUpdater.ParseRelease(Metadata(version, preview: true), true)!);
+            }
+            using (var data = new LocalData(versionDirectory))
+            {
+                var restarted = new UpdateUiPreferences(data);
+                Require(restarted.IncludePrereleases && restarted.SnoozedUntil(version) is not null &&
+                    restarted.NotesFor(version)?.Url == NotesUrl(version) && restarted.IsVersionSkipped("0.3.2") &&
+                    !restarted.IsVersionSkipped(version),
+                    "Four-part notes and reminders must persist independently from the preceding stable release");
+            }
+        }
+        foreach (var version in new[] { "0.3", "0.3.2.1.1", "0.3.2-rc.1", "0.3.2.1+build", "0.3.2.1\n" })
+            Reject<InvalidDataException>(() => new UpdateUiPreferences().Snooze(new(version, "Tomorrow")));
     }
 
     internal static async Task RunSelectionAsync(string root)
@@ -96,6 +121,35 @@ internal static class PrereleaseUpdateChecks
         Require((await newerInstallation.CheckAsync(true)).State == "Current" && newerInstallation.PreparedVersion is null,
             "Neither feed may offer a downgrade to an installed preview");
         Require(!Directory.Exists(Path.Combine(root, "selection", "updates")), "Checking or enrolling must not download or install an update");
+
+        Require(AppUpdater.FormatVersion(new Version(0, 3, 2, 0)) == "0.3.2" &&
+            AppUpdater.FormatVersion(new Version(0, 3, 2, 1)) == "0.3.2.1",
+            "Installed version display must retain a nonzero revision and preserve stable display identities");
+        Require(CompanionProtocol.AppVersion == AppUpdater.FormatVersion(typeof(CompanionProtocol).Assembly.GetName().Version!) &&
+            DesktopWindow.IsApprovedExternal(NotesUrl("0.3.2.1")) &&
+            !DesktopWindow.IsApprovedExternal(NotesUrl("0.3.2.1") + "?command=start"),
+            "Companion display and approved notes navigation must retain the numeric revision without widening trusted links");
+        stable = Metadata("0.3.2");
+        listing = "[" + string.Join(',', Metadata("0.3.2.1", preview: true), stable,
+            Metadata("0.3.2.2", preview: true), Metadata("0.3.2.0")) + "]";
+        var revisionPreferences = new UpdateUiPreferences(new UpdateUiPreferences.State { IncludePrereleases = true });
+        var revisionUpdater = Updater(root, "numeric-selection", client, revisionPreferences, new Version(0, 3, 2, 1));
+        var nextRevision = await revisionUpdater.CheckAsync(true);
+        Require(nextRevision.State == "Available" && nextRevision.CurrentVersion == "0.3.2.1" &&
+            nextRevision.LatestVersion == "0.3.2.2" && nextRevision.LatestIsPrerelease &&
+            nextRevision.ReleaseNotesUrl == NotesUrl("0.3.2.2"),
+            "The next numeric revision must retain its display, ordering, preview label and notes URL");
+        Require((await revisionUpdater.SnoozeAsync(new("0.3.2", "SkipVersion"))).Code == "VersionChanged" &&
+            (await revisionUpdater.SnoozeAsync(new("0.3.2.2", "SkipVersion"))).Ok &&
+            revisionUpdater.View.VersionSkipped && !revisionPreferences.IsVersionSkipped("0.3.2.1"),
+            "Only the exact available revision may change its reminder");
+        listing = "[" + Metadata("0.3.2.1", preview: true) + "]";
+        Require((await revisionUpdater.CheckAsync(true)).State == "Current",
+            "An installed numeric preview must not offer itself again");
+        var stableOnly = await SetAndCheckAsync(revisionUpdater, false);
+        Require(stableOnly.State == "Current" && stableOnly.CurrentVersion == "0.3.2.1" &&
+            stableOnly.LatestVersion == "0.3.2" && revisionUpdater.PreparedVersion is null,
+            "Opting out of a four-part preview must not offer a stable downgrade");
     }
 
     internal static async Task RunTrustAsync(string root)
@@ -107,6 +161,9 @@ internal static class PrereleaseUpdateChecks
             Metadata("0.5.0", preview: true, url: "https://example.test/untrusted.exe"),
             Metadata("0.5.0", preview: true, digest: "sha256:bad"),
             Metadata("0.5.0-rc.1", preview: true),
+            Metadata("0.5.0.1.1", preview: true),
+            Metadata("0.5.0.1-rc.1", preview: true),
+            Metadata("0.5.0.1\n", preview: true),
             Metadata("0.5.0", preview: true).Replace("\"prerelease\":true", "\"prerelease\":null", StringComparison.Ordinal) })
             Require(AppUpdater.ParseRelease(metadata, true) is null, "Opt-in must retain the release trust and numeric tag constraints");
         Require(AppUpdater.ParseReleases("[]") is null && AppUpdater.ParseReleases("[null,{}," + preview + "]")?.IsPrerelease == true,
@@ -117,7 +174,8 @@ internal static class PrereleaseUpdateChecks
         // A built managed PE supplies version resources for download verification, without starting any executable.
         var payloadPath = typeof(AppUpdater).Assembly.Location;
         var payload = await File.ReadAllBytesAsync(payloadPath);
-        var payloadVersion = Version.Parse(FileVersionInfo.GetVersionInfo(payloadPath).FileVersion!).ToString(3);
+        var packagedVersion = Version.Parse(FileVersionInfo.GetVersionInfo(payloadPath).FileVersion!);
+        var payloadVersion = AppUpdater.FormatVersion(packagedVersion);
         var valid = Metadata(payloadVersion, preview: true, payload: payload);
         var listing = "[" + valid + "]";
         var digest = Convert.ToHexString(SHA256.HashData(payload));
@@ -138,6 +196,18 @@ internal static class PrereleaseUpdateChecks
         var tampered = Updater(root, "preview-tampered", client, new(new UpdateUiPreferences.State { IncludePrereleases = true }));
         Require((await tampered.PrepareAsync()).Code == "InvalidDownload" && tampered.PreparedVersion is null,
             "Opt-in must not weaken payload digest verification");
+        var wrongRevision = new Version(packagedVersion.Major, packagedVersion.Minor, packagedVersion.Build,
+            Math.Max(0, packagedVersion.Revision) + 1).ToString(4);
+        listing = "[" + Metadata(wrongRevision, preview: true, payload: payload) + "]";
+        var mismatchedRevision = Updater(root, "preview-wrong-revision", client,
+            new(new UpdateUiPreferences.State { IncludePrereleases = true }));
+        Require((await mismatchedRevision.PrepareAsync()).Code == "InvalidDownload" && mismatchedRevision.PreparedVersion is null,
+            "Matching major/minor/patch and digest must not accept a different packaged revision");
+        listing = "[" + Metadata(packagedVersion.ToString(4), preview: true, payload: payload) + "]";
+        var exactRevision = Updater(root, "preview-exact-revision", client,
+            new(new UpdateUiPreferences.State { IncludePrereleases = true }));
+        Require((await exactRevision.PrepareAsync()).Ok && exactRevision.PreparedVersion == packagedVersion.ToString(4),
+            "Download verification and prepared handoff must retain the exact four-part release identity");
         listing = "[" + valid + "]";
         var signed = Updater(root, "preview-publisher", client, new(new UpdateUiPreferences.State { IncludePrereleases = true }),
             verifier: new Verifier(path => Path.GetFileName(path) == AppUpdater.AssetName
@@ -158,6 +228,36 @@ internal static class PrereleaseUpdateChecks
             AppUpdater.AssetName, SearchOption.AllDirectories).Single(), digest),
             "Opting out must not mutate the previously verified payload bytes");
         await CheckBusyAndFailedRefreshAsync(root);
+        CheckNumericCheckpoints(root);
+    }
+
+    private static void CheckNumericCheckpoints(string root)
+    {
+        using var data = new LocalData(Path.Combine(root, "numeric-update-checkpoints"));
+        var executable = Path.Combine(data.RootPath, "TogetherServer.exe");
+        File.WriteAllText(executable, "Synthetic checkpoint source; never executed");
+        var executableHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(executable)));
+        var service = new StateCheckpointService(data, TimeProvider.System);
+        foreach (var (current, target) in new[] { ("0.3.2", "0.3.2.1"), ("0.3.2.1", "0.3.2.2") })
+        {
+            var result = service.Create(current, target, executable);
+            Require(result.Ok && result.Checkpoint is not null, "A forward numeric revision must create a recovery checkpoint");
+            var checkpoint = result.Checkpoint!;
+            using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(checkpoint.Directory, "checkpoint-manifest.json")));
+            Require(manifest.RootElement.GetProperty("currentVersion").GetString() == current &&
+                manifest.RootElement.GetProperty("targetVersion").GetString() == target &&
+                StateCheckpointService.TryValidate(data.RootPath, checkpoint.Directory, checkpoint.ManifestSha256,
+                    out _, executableHash, allowSupportedSourceSchema: true),
+                "The helper must validate the full forward revision and exact previous-EXE checkpoint binding");
+        }
+        foreach (var target in new[] { "0.3.2", "0.3.2.0", "0.3.2.1" })
+        {
+            var result = service.Create("0.3.2.1", target, executable);
+            Require(result.Ok && result.Checkpoint is not null &&
+                !StateCheckpointService.TryValidate(data.RootPath, result.Checkpoint.Directory, result.Checkpoint.ManifestSha256,
+                    out _, executableHash, allowSupportedSourceSchema: true),
+                "A checkpoint must not let the helper repeat or downgrade an installed numeric revision");
+        }
     }
 
     private static async Task CheckBusyAndFailedRefreshAsync(string root)
@@ -209,10 +309,12 @@ internal static class PrereleaseUpdateChecks
             draft,
             prerelease = preview,
             body = "Synthetic release notes",
+            html_url = NotesUrl(version),
             assets = new[] { new { name = AppUpdater.AssetName, state = "uploaded", size = payload?.Length ?? 4,
                 digest = digest ?? "sha256:" + (payload is null ? new string('A', 64) : Convert.ToHexString(SHA256.HashData(payload))),
                 browser_download_url = url ?? $"https://github.com/daltonstates/TogetherServer/releases/download/v{version}/{AppUpdater.AssetName}" } }
         });
+    private static string NotesUrl(string version) => $"https://github.com/daltonstates/TogetherServer/releases/tag/v{version}";
     private static HttpResponseMessage Json(string json) => new(HttpStatusCode.OK) { Content = new StringContent(json) };
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {

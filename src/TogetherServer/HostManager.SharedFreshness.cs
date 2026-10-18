@@ -176,16 +176,21 @@ public sealed partial class HostManager
         var setup = ServerSetupSnapshots.Read(profile, ServerSetupSnapshots.Capture(profile, data));
         var configuration = new
         {
-            Contract = 2, Profile = profile,
+            Contract = 2,
+            Profile = profile,
             SaveRoot = Path.GetFullPath(profile.WorldDirectory).ToUpperInvariant(),
-            profile.GamePort, profile.Crossplay, profile.PublicListing,
-            RconPort = profile.Factorio?.RconPort, Setup = setup
+            profile.GamePort,
+            profile.Crossplay,
+            profile.PublicListing,
+            RconPort = profile.Factorio?.RconPort,
+            Setup = setup
         };
         cancellationToken.ThrowIfCancellationRequested();
         return SharedWorldLiveSaveAdapters.BindInstallation(profile.Id, profile.Kind,
             Path.GetFullPath(data.RootPath).ToUpperInvariant(),
             Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(binaries))),
             Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(configuration))),
-            profile.Kind == GameKinds.Fixture) with { BinaryVersion = string.Join(";", versions) };
+            profile.Kind == GameKinds.Fixture) with
+        { BinaryVersion = string.Join(";", versions) };
     }
 }

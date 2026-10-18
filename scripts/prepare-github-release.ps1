@@ -18,19 +18,19 @@ try {
 
     $project = [xml](Get-Content -LiteralPath 'src/TogetherServer/TogetherServer.csproj' -Raw)
     $version = [string]$project.Project.PropertyGroup.Version
-    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'TogetherServer.csproj needs a stable MAJOR.MINOR.PATCH version.' }
+    if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'TogetherServer.csproj needs a numeric MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.REVISION version.' }
     $tag = "v$version"
     $localTags = @(git tag --list 'v*')
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect local release tags.' }
     $remoteRefs = @(git ls-remote --tags origin 'refs/tags/v*')
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect origin release tags.' }
     $remoteTags = @($remoteRefs | ForEach-Object {
-        if ($_ -match 'refs/tags/(v\d+\.\d+\.\d+)(\^\{\})?$') { $Matches[1] }
+        if ($_ -match 'refs/tags/(v\d+\.\d+\.\d+(?:\.\d+)?)(\^\{\})?$') { $Matches[1] }
     })
     $knownTags = @($localTags + $remoteTags | Sort-Object -Unique)
     if ($knownTags -contains $tag) { throw "Release tag $tag already exists locally or on origin." }
     $knownVersions = @($knownTags | ForEach-Object {
-        if ($_ -match '^v(\d+\.\d+\.\d+)$') { [Version]$Matches[1] }
+        if ($_ -match '^v(\d+\.\d+\.\d+(?:\.\d+)?)$') { [Version]$Matches[1] }
     })
     if ($knownVersions.Count -gt 0) {
         $latestVersion = $knownVersions | Sort-Object | Select-Object -Last 1

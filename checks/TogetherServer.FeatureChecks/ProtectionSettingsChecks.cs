@@ -130,8 +130,13 @@ internal static class ProtectionSettingsChecks
         using (var uncertain = new Fixture(root, "unknown-run"))
         {
             var runs = Field<List<ManagedRun>>(uncertain.Manager, "runs");
-            runs.Add(new() { ProfileId = uncertain.ProfileId, Kind = GameKinds.Fixture,
-                WorldDirectory = uncertain.Current().Profiles[0].WorldDirectory, ProcessId = null });
+            runs.Add(new()
+            {
+                ProfileId = uncertain.ProfileId,
+                Kind = GameKinds.Fixture,
+                WorldDirectory = uncertain.Current().Profiles[0].WorldDirectory,
+                ProcessId = null
+            });
             await RejectsAsync(uncertain, "ProfileInUse", policy => policy with { Backups = new(true, 9, 0) });
             Require(runs.Count == 1, "a protection edit cleared an uncertain managed run record");
         }
@@ -218,10 +223,18 @@ internal static class ProtectionSettingsChecks
             Data.SaveSettings(new HostSettings { MaxConcurrentServers = 3, Profiles = [target, Profile("Synthetic sibling", 2458)] });
             Manager = new(Data, new GameServerRegistry([new PolicyOnlyDriver(kind, crashRecovery, backups)], PortProbeMode.ObserveOnly));
         }
-        internal ServerProfile Profile(string name, int port) => new() { Id = Guid.NewGuid(), Kind = kind,
-            Name = name, ServerName = name, WorldId = "SyntheticPolicy", WorldSource = "New", GamePort = port,
+        internal ServerProfile Profile(string name, int port) => new()
+        {
+            Id = Guid.NewGuid(),
+            Kind = kind,
+            Name = name,
+            ServerName = name,
+            WorldId = "SyntheticPolicy",
+            WorldSource = "New",
+            GamePort = port,
             WorldDirectory = Path.Combine(Data.RootPath, "never-open-world-" + Guid.NewGuid().ToString("N")),
-            ExecutablePath = Path.Combine(Data.RootPath, "never-start-server.exe") };
+            ExecutablePath = Path.Combine(Data.RootPath, "never-start-server.exe")
+        };
         internal HostSettings Current() => Data.LoadSettings();
         public void Dispose() => Data.Dispose();
     }

@@ -32,8 +32,10 @@ internal static class SoloRecoveryChecks
         var endpoint = $"https://127.0.0.1:{ports[0]}";
         data.SaveSettings(new HostSettings
         {
-            CompanionEndpoint = endpoint, CompanionPort = ports[0],
-            CompanionListeningEnabled = false, Profiles = []
+            CompanionEndpoint = endpoint,
+            CompanionPort = ports[0],
+            CompanionListeningEnabled = false,
+            Profiles = []
         });
         data.SaveProtected($"shared-world-pc-signing-{deviceId:N}.protected", candidate.ExportPkcs8PrivateKey());
         using var certificate = new HostIdentity(data).Ensure(endpoint);
@@ -157,7 +159,8 @@ internal static class SoloRecoveryChecks
             "recovery from a branch skipped damaged signed ancestry");
         var noHostRoster = SignRoster(roster with
         {
-            Members = [roster.Members[0] with { Grants = new(Receive: true) }, roster.Members[1]], Signature = ""
+            Members = [roster.Members[0] with { Grants = new(Receive: true) }, roster.Members[1]],
+            Signature = ""
         }, owner);
         Reject(() => SharedWorldSeparateCopyStore.PrepareSoloOffer(vault, noHostRoster,
             floor with { Signature = noHostRoster.Signature }, deviceId, candidate, endpoint, pin, authority),
@@ -174,7 +177,9 @@ internal static class SoloRecoveryChecks
         var chosenBytes = Encoding.UTF8.GetBytes("selected left authority progress");
         var chosen = SharedWorldService.SignVersion(first with
         {
-            Number = first.Number + 1, ParentHash = first.VersionHash, BackupId = Guid.NewGuid(),
+            Number = first.Number + 1,
+            ParentHash = first.VersionHash,
+            BackupId = Guid.NewGuid(),
             Files = [FileFact(chosenBytes)]
         }, candidate);
         WriteCopy(vault, chosen, chosenBytes);

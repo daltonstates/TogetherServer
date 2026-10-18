@@ -145,16 +145,18 @@ describe('update details', () => {
     expect(screen.queryByRole('region', { name: 'Update details' })).not.toBeInTheDocument()
   })
 
-  it('renders release notes as plain text and snoozes exactly the displayed version', async () => {
+  it.each(['0.4.0', '0.3.2.1'])('renders plain-text release notes and snoozes exactly version %s', async version => {
+    const details = parseDesktopUpdateDetails({ ...update, latestVersion: version,
+      releaseNotesUrl: `https://github.com/daltonstates/TogetherServer/releases/tag/v${version}` })
     const saver = vi.fn(async () => ({ ok: true, message: 'Reminder saved.' }))
     const onSnoozed = vi.fn()
-    const { container } = render(<UpdateDetailsPanel update={update} snoozeSaver={saver} onSnoozed={onSnoozed} />)
-    fireEvent.click(screen.getByText('What changed in version 0.4.0'))
+    const { container } = render(<UpdateDetailsPanel update={details} snoozeSaver={saver} onSnoozed={onSnoozed} />)
+    fireEvent.click(screen.getByText(`What changed in version ${version}`))
     expect(screen.getByText(/<image src=/)).toBeInTheDocument()
     expect(container.querySelector('img')).toBeNull()
-    expect(screen.getByRole('link', { name: 'Open this release on GitHub' })).toHaveAttribute('href', update.releaseNotesUrl)
+    expect(screen.getByRole('link', { name: 'Open this release on GitHub' })).toHaveAttribute('href', details.releaseNotesUrl)
     fireEvent.change(screen.getByLabelText('Remind me'), { target: { value: 'Tomorrow' } })
-    await waitFor(() => expect(saver).toHaveBeenCalledWith('0.4.0', 'Tomorrow'))
+    await waitFor(() => expect(saver).toHaveBeenCalledWith(version, 'Tomorrow'))
     expect(onSnoozed).toHaveBeenCalledOnce()
   })
 
@@ -180,6 +182,10 @@ describe('update details', () => {
 
   it('rejects foreign release links and progress outside the existing updater bounds and exports typed details only', () => {
     expect(() => parseDesktopUpdateDetails({ ...update, releaseNotesUrl: 'https://example.com/update.exe' })).toThrow()
+    for (const version of ['0.3.2.1-preview.1', '0.3.2.1.1', '../0.3.2.1'])
+      expect(() => parseDesktopUpdateDetails({ ...update, latestVersion: version,
+        releaseNotesUrl: `https://github.com/daltonstates/TogetherServer/releases/tag/v${version}` })).toThrow()
+    expect(() => parseDesktopUpdateDetails({ ...update, latestVersion: '0.3.2.1' })).toThrow()
     expect(() => parseDesktopUpdateDetails({ ...update, promptSnoozed: true, snoozedUntilUtc: null })).toThrow()
     expect(() => parseUpdatePreparation({ stage: 'Downloading', message: 'Downloading.', downloadedBytes: 201 * 1024 * 1024,
       totalBytes: null, blocker: null })).toThrow()

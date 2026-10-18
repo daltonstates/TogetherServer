@@ -201,9 +201,14 @@ public sealed partial class PairingService
             var expiry = UtcNow.AddDays(90);
             var enrolled = existing ?? new PairedDevice
             {
-                Id = Guid.NewGuid(), ProfileId = localProfileId, Name = "Shared world member",
-                AssignedProfileIds = [localProfileId], SharedWorldPublicKey = publicKey, ServerPermissionOverrides = [],
-                PeerWorldGroupKey = root.GroupKey, PeerWorldSourceProfileId = root.ProfileId,
+                Id = Guid.NewGuid(),
+                ProfileId = localProfileId,
+                Name = "Shared world member",
+                AssignedProfileIds = [localProfileId],
+                SharedWorldPublicKey = publicKey,
+                ServerPermissionOverrides = [],
+                PeerWorldGroupKey = root.GroupKey,
+                PeerWorldSourceProfileId = root.ProfileId,
                 PeerWorldSourceDeviceId = deviceId
             };
             enrolled.ProfileId = localProfileId;
@@ -252,11 +257,16 @@ public sealed partial class FriendService
             var id = Guid.NewGuid();
             var config = new FriendConfiguration
             {
-                DisplayName = "Shared world Host", Endpoint = route.Address,
-                Fingerprint = route.CertificateSha256, AcceptedFingerprints = [route.CertificateSha256],
-                DeviceId = enrollment.Credential.DeviceId, Credential = enrollment.Credential.Credential,
+                DisplayName = "Shared world Host",
+                Endpoint = route.Address,
+                Fingerprint = route.CertificateSha256,
+                AcceptedFingerprints = [route.CertificateSha256],
+                DeviceId = enrollment.Credential.DeviceId,
+                Credential = enrollment.Credential.Credential,
                 CredentialExpiresUtc = enrollment.Credential.ExpiresUtc,
-                PeerWorld = root, PeerWorldMemberDeviceId = deviceId, PeerWorldBranchHash = enrollment.BranchHash,
+                PeerWorld = root,
+                PeerWorldMemberDeviceId = deviceId,
+                PeerWorldBranchHash = enrollment.BranchHash,
                 SharedWorldSigningKeys = new() { [root.ProfileId] = root.OwnerPublicKey },
                 SharedRosterFloors = new() { [root.ProfileId] = new(root.GroupId, roster.Epoch, roster.Revision, roster.Signature) },
                 ApprovedSharedWorldGroups = new() { [root.ProfileId] = root.GroupId },
@@ -284,13 +294,16 @@ internal sealed partial class FriendLink
         Guid deviceId, string branchHash, bool allowOriginal)
     {
         await gate.WaitAsync();
-        try { return config is not null && !config.KnownRevoked &&
+        try
+        {
+            return config is not null && !config.KnownRevoked &&
             config.CredentialExpiresUtc > DateTimeOffset.UtcNow && SharedWorldDeviceId == deviceId &&
             config.SharedWorldSigningKeys.GetValueOrDefault(root.ProfileId) == root.OwnerPublicKey &&
             config.ApprovedSharedWorldGroups.GetValueOrDefault(root.ProfileId) == root.GroupId &&
             (config.PeerWorld == root && config.PeerWorldBranchHash == branchHash ||
              allowOriginal && config.PeerWorld is null) &&
-            config.Endpoint.TrimEnd('/').Equals(endpoint.TrimEnd('/'), StringComparison.OrdinalIgnoreCase); }
+            config.Endpoint.TrimEnd('/').Equals(endpoint.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+        }
         finally { gate.Release(); }
     }
 }

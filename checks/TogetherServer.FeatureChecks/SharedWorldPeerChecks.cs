@@ -106,8 +106,13 @@ internal static class SharedWorldPeerChecks
             Require(secondStore.Import(second).Code == "PeerCatchUpRequired" &&
                 secondStore.Project().AnnouncementCount == 0, "a missing signed parent was silently skipped");
             Require(secondStore.ImportPage(firstStore.ReadPage()).Accepted == 2, "the first peer did not catch up");
-            var otherBranch = branch with { BranchHash = Hash(30), HeadVersionHash = Hash(31),
-                ParentVersionHash = branch.HeadVersionHash, VersionNumber = 2 };
+            var otherBranch = branch with
+            {
+                BranchHash = Hash(30),
+                HeadVersionHash = Hash(31),
+                ParentVersionHash = branch.HeadVersionHash,
+                VersionNumber = 2
+            };
             friendAnnouncement = secondStore.Publish(friendId, friend, [route], [], [otherBranch], [otherBranch.HeadVersionHash]);
             Require(thirdStore.ImportPage(secondStore.ReadPage()).Accepted == 3,
                 "an offline PC could not catch up through a peer while the original owner was absent");
@@ -127,8 +132,11 @@ internal static class SharedWorldPeerChecks
             var health = thirdStore.Project().Replication;
             Require(health.LastSuccessfulSyncUtc is not null && health.PeersLastSyncSucceeded == 0 && health.HasConflicts,
                 "a failed sync erased history or presented old contact as current connectivity");
-            var revokedDraft = rosterDraft with { Members = rosterDraft.Members.Select(value =>
-                value.DeviceId == friendId ? value with { Revoked = true } : value).ToArray() };
+            var revokedDraft = rosterDraft with
+            {
+                Members = rosterDraft.Members.Select(value =>
+                value.DeviceId == friendId ? value with { Revoked = true } : value).ToArray()
+            };
             roster = SignRoster(revokedDraft);
             Require(!thirdStore.Project().Peers.Single(value => value.DeviceId == friendId).Authorized &&
                 thirdStore.Project().Branches.Count == 2 &&

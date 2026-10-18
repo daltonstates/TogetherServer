@@ -7,28 +7,29 @@ $appPath = (Resolve-Path -LiteralPath $AppPath).Path
 $sourceApp = if ($LegacyAppPath) { (Resolve-Path -LiteralPath $LegacyAppPath).Path } else { $appPath }
 function Get-HandoffAppVersion([string]$Path) {
     $fileInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
-    if ([string]::IsNullOrWhiteSpace($fileInfo.FileVersion) -or $fileInfo.FilePrivatePart -ne 0) {
-        throw 'Update handoff requires a file version with no private component.'
+    if ([string]::IsNullOrWhiteSpace($fileInfo.FileVersion)) {
+        throw 'Update handoff requires a numeric file version.'
     }
-    return [Version]::new($fileInfo.FileMajorPart, $fileInfo.FileMinorPart, $fileInfo.FileBuildPart)
+    return [Version]::new($fileInfo.FileMajorPart, $fileInfo.FileMinorPart, $fileInfo.FileBuildPart, $fileInfo.FilePrivatePart)
 }
+function Format-HandoffVersion([Version]$Version) { return $Version.ToString($(if ($Version.Revision -gt 0) { 4 } else { 3 })) }
 $candidateFileVersion = Get-HandoffAppVersion $appPath
-$candidateVersion = $candidateFileVersion.ToString(3)
+$candidateVersion = Format-HandoffVersion $candidateFileVersion
 $project = [xml](Get-Content -LiteralPath (Join-Path $repository 'src/TogetherServer/TogetherServer.csproj') -Raw)
 $projectVersion = [Version]$project.Project.PropertyGroup.Version
-if ($projectVersion.Revision -gt 0 -or $candidateVersion -ne $projectVersion.ToString(3)) {
+if ($candidateVersion -ne (Format-HandoffVersion $projectVersion)) {
     throw "Update handoff candidate version $candidateVersion does not match current project version $projectVersion."
 }
 $sourceFileVersion = if ($LegacyAppPath) { Get-HandoffAppVersion $sourceApp } else { $candidateFileVersion }
-$sourceVersion = $sourceFileVersion.ToString(3)
-if ($LegacyAppPath -and $sourceVersion -notin '0.3.0', '0.3.1') {
-    throw 'Mixed update acceptance requires a published 0.3.0 or 0.3.1 source EXE.'
+$sourceVersion = Format-HandoffVersion $sourceFileVersion
+if ($LegacyAppPath -and $sourceVersion -notin '0.3.0', '0.3.1', '0.3.2') {
+    throw 'Mixed update acceptance requires a published 0.3.0, 0.3.1 or 0.3.2 source EXE.'
 }
 if ($LegacyAppPath -and $sourceFileVersion.CompareTo($candidateFileVersion) -ge 0) {
     throw 'Mixed update acceptance requires a source version strictly older than the candidate.'
 }
 $sourceSchemaVersion = if ($LegacyAppPath -and $sourceVersion -eq '0.3.0') { 2 } else { 4 }
-$targetSchemaVersion = 4
+$targetSchemaVersion = 5
 $signature = Get-AuthenticodeSignature -LiteralPath $appPath
 if ($signature.Status -eq 'Valid' -and $signature.SignerCertificate) {
     $publisherHasher = [Security.Cryptography.SHA256]::Create()

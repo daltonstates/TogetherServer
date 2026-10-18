@@ -27,10 +27,10 @@ internal static class WorldGroupAccess
     internal static bool MayRecover(SharedWorldRoster? roster, Guid deviceId,
         string publicKey, TimeProvider? clock = null) =>
         ActiveMember(roster, deviceId, publicKey, clock)?.Grants is
-            { Receive: true, EligibleHost: true };
+        { Receive: true, EligibleHost: true };
 
     internal static bool MayReshare(SharedWorldRoster? roster, Guid deviceId,
         string publicKey, TimeProvider? clock = null) =>
         ActiveMember(roster, deviceId, publicKey, clock)?.Grants is
-            { Receive: true, Reshare: true };
+        { Receive: true, Reshare: true };
 }

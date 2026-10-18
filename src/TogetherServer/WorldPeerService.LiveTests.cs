@@ -251,8 +251,11 @@ internal sealed partial class WorldPeerService
                         var draft = new SharedWorldReceipt(current.DeviceId == Guid.Empty ? 2 : 1,
                             current.Root.GroupId, current.Root.ProfileId, artifact.Version.VersionHash,
                             current.DeviceId, current.Roster.Epoch, current.Roster.Revision, Guid.NewGuid(), "");
-                        var receipt = draft with { Signature = Convert.ToBase64String(key.SignData(
-                            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+                        var receipt = draft with
+                        {
+                            Signature = Convert.ToBase64String(key.SignData(
+                            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+                        };
                         completion = new(1, current.Root, artifact.TestId, artifact.Version.VersionHash,
                             verified.ArtifactHash, current.DeviceId, publicKey, current.Roster.Epoch,
                             current.Roster.Revision, receipt);

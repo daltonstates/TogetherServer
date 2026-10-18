@@ -10,8 +10,13 @@ internal sealed partial class WorldPeerService
 {
     private static byte[] ContactBasis(WorldPeerContactCard card) => JsonSerializer.SerializeToUtf8Bytes(new
     {
-        domain = "TogetherServer world peer contact v1", card.Schema, card.Root,
-        card.DeviceId, card.PublicKey, card.Revision, card.Routes
+        domain = "TogetherServer world peer contact v1",
+        card.Schema,
+        card.Root,
+        card.DeviceId,
+        card.PublicKey,
+        card.Revision,
+        card.Routes
     }, Json);
 
     internal string CreateContactCode(string groupKey)
