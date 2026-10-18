@@ -1377,3 +1377,20 @@ UI, packaged update/relaunch and real Friend-PC/game checks remain unverified
 under the active-desktop constraint. See [delivery, reuse instructions and
 remaining acceptance](29-REQUIRED-FEATURE-SETUP.md). No production app was launched
 or replaced, and no release was published.
+
+## Per-PC prerelease updates: 2026-10-18
+
+The owner approved an **Include prerelease versions** checkbox in App Settings
+and retained explicit **Update and restart** installation. Stable is the default;
+enrolled PCs also receive eligible previews in the same production installation.
+Implementation, publishing instructions, focused checks and remaining acceptance
+are tracked in [prerelease update delivery](30-PRERELEASE-UPDATES.md).
+
+PASS 126 focused UI checks, the complete **1,115 tests/91 files** JSDOM suite,
+UI typecheck/lint/bundle, the code-only gate with all **47 source/synthetic
+groups**, and focused .NET formatting. Solution compilation embedding the new
+bundle finished with zero warnings/errors. The existing Vite chunk warning and
+unsupported symbolic-link subcase remain. Rendered/native review and actual
+GitHub preview/stable update-relaunch acceptance remain pending on an approved
+separate test PC/session. The running app was left in place; no release or tag
+was published.

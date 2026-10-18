@@ -99,6 +99,10 @@ export function parseDesktopUpdateDetails(value: unknown, context = 'Update deta
     preparation: source.preparation == null ? null : parseUpdatePreparation(source.preparation) }
 }
 
+export function saveUpdatePreferences(includePrereleases: boolean, signal?: AbortSignal): Promise<DesktopUpdateDetails> {
+  return changeJson('/api/local/update/preferences', 'PUT', parseDesktopUpdateDetails, { includePrereleases }, signal)
+}
+
 export function updatePreparationReport(update: DesktopUpdateDetails, preparation: UpdatePreparation | null | undefined): string {
   return JSON.stringify({ currentVersion: update.currentVersion, targetVersion: update.latestVersion,
     publisherTrust: update.publisherTrust, snoozedUntilUtc: update.snoozedUntilUtc ?? null,

@@ -360,7 +360,7 @@ export type AppInstanceView = {
   dataRoot: string
   dataIsolation: string
 }
-export type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string; publisherTrust: string }
+export type UpdateView = { state: 'Checking' | 'Current' | 'Available' | 'NoRelease' | 'Unavailable' | 'Unsupported'; currentVersion: string; latestVersion: string | null; message: string; publisherTrust: string; includePrereleases: boolean; latestIsPrerelease: boolean }
 export type DesktopPreferences = { available: boolean; launchAtLogin: boolean; closeToTray: boolean; startupAvailable: boolean }
 export type DesktopPreferenceResult = BasicResult & { preferences: DesktopPreferences }
 export type FriendIssue = { code: string; message: string }
@@ -1095,7 +1095,9 @@ export const parseUpdateView: Decoder<UpdateView> = (value, context = 'update st
   return { state: literal(source.state, ['Checking', 'Current', 'Available', 'NoRelease', 'Unavailable', 'Unsupported'] as const, `${context}.state`),
     currentVersion: text(source.currentVersion, `${context}.currentVersion`), latestVersion: nullableText(source.latestVersion, `${context}.latestVersion`),
     message: text(source.message, `${context}.message`),
-    publisherTrust: source.publisherTrust === undefined ? 'Unknown' : text(source.publisherTrust, `${context}.publisherTrust`) }
+    publisherTrust: source.publisherTrust === undefined ? 'Unknown' : text(source.publisherTrust, `${context}.publisherTrust`),
+    includePrereleases: source.includePrereleases === undefined ? false : flag(source.includePrereleases, `${context}.includePrereleases`),
+    latestIsPrerelease: source.latestIsPrerelease === undefined ? false : flag(source.latestIsPrerelease, `${context}.latestIsPrerelease`) }
 }
 
 const parseOwnerDiagnosticCheck: Decoder<OwnerDiagnosticCheck> = (value, context = 'diagnostic check') => {

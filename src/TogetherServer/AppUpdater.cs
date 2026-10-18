@@ -12,10 +12,10 @@ namespace TogetherServer;
 public sealed record UpdateView(string State, string CurrentVersion, string? LatestVersion, string Message,
     string PublisherTrust = "Checking", string ReleaseNotes = "", string? ReleaseNotesUrl = null,
     DateTimeOffset? SnoozedUntilUtc = null, bool PromptSnoozed = false, bool VersionSkipped = false,
-    UpdatePreparationView? Preparation = null);
+    UpdatePreparationView? Preparation = null, bool IncludePrereleases = false, bool LatestIsPrerelease = false);
 public sealed record UpdateResult(bool Ok, string Code, string Message);
 public sealed record UpdateRelease(Version Version, string Tag, Uri DownloadUrl, long Size, string Sha256,
-    string ReleaseNotes = "", Uri? ReleaseNotesUrl = null);
+    string ReleaseNotes = "", Uri? ReleaseNotesUrl = null, bool IsPrerelease = false);
 public sealed record UpdatePreparationView(string Stage, string Message, long DownloadedBytes = 0,
     long? TotalBytes = null, string? Blocker = null);
 public sealed record AuthenticodeVerification(bool Valid, string? PublisherKey, string Message, bool IsUnsigned = false);
@@ -34,6 +34,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
     public const int MaximumReleaseNotesCharacters = 4000;
     public static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromMinutes(30);
     private const string LatestUrl = "https://api.github.com/repos/daltonstates/TogetherServer/releases/latest";
+    private const string ReleasesUrl = "https://api.github.com/repos/daltonstates/TogetherServer/releases?per_page=100";
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly IAuthenticodeVerifier signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
     private readonly UpdateUiPreferences preferences = uiPreferences ?? new UpdateUiPreferences();
@@ -60,7 +61,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 SnoozedUntilUtc = until,
                 PromptSnoozed = until is not null,
                 VersionSkipped = current.LatestVersion is { } latest && preferences.IsVersionSkipped(latest),
-                Preparation = preparation
+                Preparation = preparation,
+                IncludePrereleases = preferences.IncludePrereleases
             };
         }
     }
@@ -91,6 +93,29 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
     }
 
     private UpdateView SetView(UpdateView next) { view = next; return View; }
+
+    public async Task<UpdateResult> SetIncludePrereleasesAsync(bool includePrereleases)
+    {
+        if (!enabled) return new(false, "UpdatesDisabled", disabledMessage);
+        // The caller shares the mode gate with Host controls. Never wait here behind network work.
+        if (!await gate.WaitAsync(0))
+            return new(false, "UpdateBusy", "An update check or download is still running. Try changing this preference again when it finishes.");
+        try
+        {
+            if (preferences.IncludePrereleases != includePrereleases)
+            {
+                // Persist before publishing the choice. A failed save preserves the previous channel.
+                preferences.SetIncludePrereleases(includePrereleases);
+                available = null;
+                preparedPath = null;
+                checkedUtc = default;
+                preparation = new("Idle", "An update starts only when you choose Update and restart.");
+                SetView(new("Checking", currentVersion.ToString(3), null, "Checking for updates.", view.PublisherTrust));
+            }
+            return new(true, "UpdatePreferencesSaved", "Update preference saved on this PC.");
+        }
+        finally { gate.Release(); }
+    }
     public string? PreparedVersion => available is not null && preparedPath is not null && File.Exists(preparedPath)
         ? available.Version.ToString(3) : null;
     public bool IsStandalone => File.Exists(executablePath) &&
@@ -126,7 +151,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             publisherKey = nextPublisherKey;
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, LatestUrl);
+                var includePrereleases = preferences.IncludePrereleases;
+                using var request = new HttpRequestMessage(HttpMethod.Get, includePrereleases ? ReleasesUrl : LatestUrl);
                 request.Headers.UserAgent.ParseAdd("TogetherServer/" + currentVersion.ToString(3));
                 request.Headers.Accept.ParseAdd("application/vnd.github+json");
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
@@ -144,35 +170,40 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 int length;
                 while ((length = await releaseStream.ReadAsync(chunk)) != 0)
                 {
-                    if (releaseBytes.Length + length > 1024 * 1024) throw new InvalidDataException("Release response was too large.");
+                    var maximumMetadataBytes = includePrereleases ? 4 * 1024 * 1024 : 1024 * 1024;
+                    if (releaseBytes.Length + length > maximumMetadataBytes) throw new InvalidDataException("Release response was too large.");
                     releaseBytes.Write(chunk, 0, length);
                 }
                 var json = Encoding.UTF8.GetString(releaseBytes.ToArray());
-                var release = ParseRelease(json);
+                var release = includePrereleases ? ParseReleases(json) : ParseRelease(json);
                 if (release is null)
+                {
+                    available = null;
+                    preparedPath = null;
                     return SetView(new("Unavailable", currentVersion.ToString(3), null,
-                        "The latest release has no valid Windows EXE and SHA-256 digest.",
+                        "No eligible release has a valid Windows EXE and SHA-256 digest.",
                         signed ? "Verified publisher" : "GitHub digest only"));
+                }
                 preferences.RememberNotes(release);
                 if (release.Version.CompareTo(currentVersion) <= 0)
                 {
                     available = null;
                     preparedPath = null;
                     return SetView(new("Current", currentVersion.ToString(3), release.Version.ToString(3), "TogetherServer is up to date.",
-                        signed ? "Verified publisher" : "GitHub digest only"));
+                        signed ? "Verified publisher" : "GitHub digest only", LatestIsPrerelease: release.IsPrerelease));
                 }
                 if (available?.Tag != release.Tag || available.Sha256 != release.Sha256) preparedPath = null;
                 available = release;
                 return SetView(new("Available", currentVersion.ToString(3), release.Version.ToString(3),
-                    $"TogetherServer {release.Version.ToString(3)} is available.",
-                    signed ? "Verified publisher" : "GitHub digest only"));
+                    $"TogetherServer {release.Version.ToString(3)}{(release.IsPrerelease ? " (prerelease)" : "")} is available.",
+                    signed ? "Verified publisher" : "GitHub digest only", LatestIsPrerelease: release.IsPrerelease));
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException or
                                       InvalidDataException or UnauthorizedAccessException)
             {
                 return SetView(new("Unavailable", currentVersion.ToString(3), available?.Version.ToString(3),
                     "Could not check GitHub Releases. Your current app keeps working.",
-                    signed ? "Verified publisher" : "GitHub digest only"));
+                    signed ? "Verified publisher" : "GitHub digest only", LatestIsPrerelease: available?.IsPrerelease ?? false));
             }
         }
         finally { gate.Release(); }
@@ -317,14 +348,32 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
         { return PreparationResult(false, "LaunchFailed", "Could not start the updater. Your current app keeps running."); }
     }
 
-    public static UpdateRelease? ParseRelease(string json)
+    public static UpdateRelease? ParseRelease(string json, bool includePrereleases = false)
     {
         using var document = JsonDocument.Parse(json);
-        var release = document.RootElement;
+        return ParseRelease(document.RootElement, includePrereleases);
+    }
+
+    internal static UpdateRelease? ParseReleases(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var releases = document.RootElement;
+        if (releases.ValueKind != JsonValueKind.Array || releases.GetArrayLength() > 100)
+            throw new InvalidDataException("Release listing must be a bounded array.");
+        // GitHub lists by creation time; choose by version so publishing an older build cannot downgrade a PC.
+        return releases.EnumerateArray().Select(release => ParseRelease(release, includePrereleases: true))
+            .Where(release => release is not null).OrderByDescending(release => release!.Version)
+            .ThenBy(release => release!.IsPrerelease).FirstOrDefault();
+    }
+
+    private static UpdateRelease? ParseRelease(JsonElement release, bool includePrereleases)
+    {
         if (release.ValueKind != JsonValueKind.Object ||
             !release.TryGetProperty("tag_name", out var tagValue) || tagValue.ValueKind != JsonValueKind.String ||
             !release.TryGetProperty("draft", out var draft) || draft.ValueKind != JsonValueKind.False ||
-            !release.TryGetProperty("prerelease", out var prerelease) || prerelease.ValueKind != JsonValueKind.False ||
+            !release.TryGetProperty("prerelease", out var prerelease) ||
+            prerelease.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+            prerelease.ValueKind == JsonValueKind.True && !includePrereleases ||
             !release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return null;
         var tag = tagValue.GetString()!;
         if (!Regex.IsMatch(tag, @"^v\d+\.\d+\.\d+$", RegexOptions.CultureInvariant) ||
@@ -349,7 +398,8 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             var notesUrl = release.TryGetProperty("html_url", out var page) && page.ValueKind == JsonValueKind.String &&
                 ValidReleaseNotesLink(page.GetString(), tag) && Uri.TryCreate(page.GetString(), UriKind.Absolute, out var approvedPage)
                 ? approvedPage : null;
-            return new(version, tag, url, size, digest[7..].ToUpperInvariant(), notes, notesUrl);
+            return new(version, tag, url, size, digest[7..].ToUpperInvariant(), notes, notesUrl,
+                IsPrerelease: prerelease.ValueKind == JsonValueKind.True);
         }
         return null;
     }

@@ -9,7 +9,8 @@ const connectionId = '22222222-2222-4222-8222-222222222222'
 const preferences: NotificationPreferences = { quietMode: false, allowedEvents: [...notificationEventKinds], servers: [],
   systemState: 'AcceptsNotifications', systemAllowsNotifications: true }
 const update: DesktopUpdateDetails = { state: 'Available', currentVersion: '0.3.0', latestVersion: '0.4.0',
-  message: 'Available.', publisherTrust: 'GitHub digest only', releaseNotes: 'Safer recovery\n<image src="https://example.com/private">',
+  message: 'Available.', publisherTrust: 'GitHub digest only', includePrereleases: false, latestIsPrerelease: false,
+  releaseNotes: 'Safer recovery\n<image src="https://example.com/private">',
   releaseNotesUrl: 'https://github.com/daltonstates/TogetherServer/releases/tag/v0.4.0',
   promptSnoozed: false, snoozedUntilUtc: null }
 
@@ -110,6 +111,21 @@ describe('desktop notification preferences', () => {
 })
 
 describe('update details', () => {
+  it('defaults missing prerelease flags to false and retains explicit saved and selected-release booleans', () => {
+    const legacy = { state: 'Current', currentVersion: '0.3.0', latestVersion: null, message: 'Current.', publisherTrust: 'GitHub digest only' }
+    expect(parseDesktopUpdateDetails(legacy)).toMatchObject({ includePrereleases: false, latestIsPrerelease: false })
+    expect(parseDesktopUpdateDetails({ ...update, includePrereleases: true, latestIsPrerelease: true }))
+      .toMatchObject({ includePrereleases: true, latestIsPrerelease: true })
+    expect(parseDesktopUpdateDetails(update)).toMatchObject({ includePrereleases: false, latestIsPrerelease: false })
+  })
+
+  it('rejects present prerelease flags that are not booleans, including explicit null', () => {
+    for (const field of ['includePrereleases', 'latestIsPrerelease']) {
+      for (const value of [null, 'true', 'false', 0, 1, {}, []])
+        expect(() => parseDesktopUpdateDetails({ ...update, [field]: value })).toThrow()
+    }
+  })
+
   it('omits idle details for a current app and retains preparation that still needs attention', () => {
     const current: DesktopUpdateDetails = { ...update, state: 'Current', preparation: {
       stage: 'Idle', message: 'No update in progress.', downloadedBytes: 0, totalBytes: null, blocker: null

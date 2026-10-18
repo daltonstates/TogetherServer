@@ -1,10 +1,10 @@
 import { ProfileSettings, type ProfileEditorState } from './ProfileSettings'
 import { DismissibleNotice } from './DismissibleNotice'
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useId, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { Button, Input } from './Controls'
 import { DesktopPreferencesPanel, UpdateDetailsPanel } from './DesktopPreferencesPanel'
 import type { AppInstanceView, DesktopPreferences } from './contracts'
-import type { DesktopUpdateDetails } from './desktopPreferencesWire'
+import { saveUpdatePreferences, type DesktopUpdateDetails } from './desktopPreferencesWire'
 import { Icon } from './Icon'
 import { ActionFeedback, AppearancePreferences } from './QolWidgets'
 import type { UiPreferences } from './qolPreferences'
@@ -32,7 +32,7 @@ export type AppSettingsProps = {
   onClearNotice: () => void
   onCheckUpdate: () => Promise<boolean>
   onReviewUpdate: () => void
-  onReloadUpdate: () => void
+  onReloadUpdate: () => void | Promise<void>
   onQuit: () => void
 }
 
@@ -45,14 +45,22 @@ const sections: Record<AppSettingsSection, { title: string; description: string;
   shortcuts: { title: 'Keyboard shortcuts', description: 'Move between pages and actions from the keyboard.', icon: 'keyboard' }
 }
 
-export function AppSettings({ profile, section, onSectionChange, onClose, onBusyChange, preferences, onPreferencesChange, desktop, instance, update,
+export function AppSettings({ profile, section, onSectionChange, onClose, onBusyChange, preferences, onPreferencesChange, desktop, instance, update: receivedUpdate,
   busy, desktopBusy, updateBusy, onDesktopChange, notice, onClearNotice, onCheckUpdate, onReviewUpdate, onReloadUpdate, onQuit }: AppSettingsProps) {
   const [internalSection, setInternalSection] = useState<AppSettingsSection>('appearance')
   const [childBusy, setChildBusy] = useState(false)
-  useEffect(() => { onBusyChange?.(childBusy) }, [childBusy, onBusyChange])
+  const [updatePreferenceBusy, setUpdatePreferenceBusy] = useState(false)
+  const [savedUpdate, setSavedUpdate] = useState<{ source: DesktopUpdateDetails | null; value: DesktopUpdateDetails } | null>(null)
+  const [updatePreferenceNotice, setUpdatePreferenceNotice] = useState<{ error: boolean; text: string } | null>(null)
+  const updatePreferenceRequest = useRef<AbortController | null>(null)
+  const updatePreferenceHelpId = useId()
+  const nestedBusy = childBusy || updatePreferenceBusy
+  useEffect(() => { onBusyChange?.(nestedBusy) }, [nestedBusy, onBusyChange])
   useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
+  useEffect(() => () => { updatePreferenceRequest.current?.abort() }, [])
+  const update = savedUpdate && savedUpdate.source === receivedUpdate ? savedUpdate.value : receivedUpdate
   const page = section ?? internalSection
-  const pageBusy = !!profile?.saving || busy || desktopBusy || updateBusy || childBusy
+  const pageBusy = !!profile?.saving || busy || desktopBusy || updateBusy || nestedBusy
   const selectSection = (next: AppSettingsSection) => {
     if (pageBusy || next === page) return
     onClearNotice()
@@ -60,6 +68,28 @@ export function AppSettings({ profile, section, onSectionChange, onClose, onBusy
     onSectionChange?.(next)
   }
   const checkUpdate = async () => { if (await onCheckUpdate()) onReviewUpdate() }
+  const saveUpdatePreference = async (includePrereleases: boolean) => {
+    if (pageBusy || !update || instance?.isStaging || instance?.updatesAvailable === false) return
+    const controller = new AbortController()
+    updatePreferenceRequest.current = controller
+    setUpdatePreferenceBusy(true); setUpdatePreferenceNotice(null)
+    try {
+      const next = await saveUpdatePreferences(includePrereleases, controller.signal)
+      if (controller.signal.aborted) return
+      setSavedUpdate({ source: receivedUpdate, value: next })
+      setUpdatePreferenceNotice({ error: false, text: 'Update preference saved on this PC.' })
+      try { await onReloadUpdate() }
+      catch {
+        if (!controller.signal.aborted) setUpdatePreferenceNotice({ error: true,
+          text: 'Update preference saved on this PC, but update status could not be refreshed. Check updates to try again.' })
+      }
+    } catch {
+      if (!controller.signal.aborted) setUpdatePreferenceNotice({ error: true,
+        text: 'Could not save the update preference. The last confirmed choice is shown. Try again.' })
+    } finally {
+      if (!controller.signal.aborted) { updatePreferenceRequest.current = null; setUpdatePreferenceBusy(false) }
+    }
+  }
   return <section className="settings-section app-settings-page task-first-page" aria-busy={pageBusy}>
     {section === undefined && <nav className="app-settings-sections" aria-label="App Settings sections">
       {(Object.keys(sections) as AppSettingsSection[]).map(key => <Button key={key} className="text-button"
@@ -89,6 +119,15 @@ export function AppSettings({ profile, section, onSectionChange, onClose, onBusy
           <small>{instance?.updatesAvailable === false ? instance.isStaging ? 'Stable updates are disabled in staging.' : 'Updates are unavailable in this build.' : 'Install when you choose, after a recovery checkpoint.'}</small></span>
           <Button className="secondary" aria-label={updateBusy ? 'Checking for updates' : 'Check for updates'} disabled={pageBusy || instance?.updatesAvailable === false} onClick={() => void checkUpdate()}>
             <Icon name={updateBusy ? 'loader' : 'refresh'} />{updateBusy ? 'Checking…' : 'Check updates'}</Button></div>
+        <label className="setting-toggle"><span><strong>Include prerelease versions</strong><small id={updatePreferenceHelpId}>{instance?.isStaging
+          ? 'Disabled in staging so it cannot replace the stable app.'
+          : 'Applies only to this PC. Prerelease versions may be unvalidated. Installing still requires Update and restart.'}</small></span>
+          <Input type="checkbox" aria-label="Include prerelease versions" aria-describedby={updatePreferenceHelpId}
+            checked={update?.includePrereleases ?? false} disabled={!update || pageBusy || instance?.isStaging || instance?.updatesAvailable === false}
+            onChange={event => void saveUpdatePreference(event.target.checked)} /></label>
+        {updatePreferenceBusy && <p role="status" aria-live="polite">Saving update preference…</p>}
+        {updatePreferenceNotice && <DismissibleNotice as="p" className={updatePreferenceNotice.error ? 'error' : 'helper-text'}
+          role={updatePreferenceNotice.error ? 'alert' : 'status'} aria-live="polite" aria-atomic="true">{updatePreferenceNotice.text}</DismissibleNotice>}
         {update && <><p className="helper-text">Update trust: {update.publisherTrust}. Stop all managed servers and resolve uncertain process records before updating.</p>
           <DismissibleNotice as="p" className={update.state === 'Unavailable' || update.publisherTrust === 'Signature rejected' ? 'warning-text' : 'helper-text'} role="status">{update.message}</DismissibleNotice>
           {update.state === 'Available' && <Button className="secondary" disabled={pageBusy || instance?.updatesAvailable === false} onClick={onReviewUpdate}><Icon name="refresh" />Review update</Button>}

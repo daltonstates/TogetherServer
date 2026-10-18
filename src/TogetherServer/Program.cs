@@ -577,6 +577,31 @@ app.MapPut("/api/local/desktop/notifications", (Func<HttpContext, Task<IResult>>
     })));
 app.MapGet("/api/local/update/preparation", (HttpContext context) =>
     FixedOwnerGetRejection(context) is { } rejection ? rejection : Results.Json(updater.Preparation));
+app.MapPut("/api/local/update/preferences", (Func<HttpContext, Task<IResult>>)(async context =>
+{
+    var saved = false;
+    var result = await FeatureRole(context, !friendMode, async () =>
+    {
+        if (!instance.UpdatesAvailable)
+            return Results.Conflict(new { code = "UpdatesDisabled", message = "Update preferences are unavailable in this app instance." });
+        var bytes = await FeatureBody(context, 128);
+        if (bytes is null) return Results.BadRequest(new { code = "InvalidUpdatePreferences", message = "Choose whether to include prerelease versions on this PC." });
+        try
+        {
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 2 });
+            var changed = await updater.SetIncludePrereleasesAsync(UpdateUiPreferences.ParseIncludePrereleases(document.RootElement));
+            if (!changed.Ok) return Results.Conflict(changed);
+            saved = true;
+            return Results.NoContent();
+        }
+        catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException)
+        { return Results.BadRequest(new { code = "InvalidUpdatePreferences", message = "Choose whether to include prerelease versions on this PC." }); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { return Results.Json(new { code = "UpdatePreferencesSaveFailed", message = "Could not save update preferences. Try again." }, statusCode: 503); }
+    });
+    // Fetch metadata after releasing the mode gate so a slow GitHub response cannot block Host controls.
+    return saved ? Results.Json(await updater.CheckAsync(true)) : result;
+}));
 app.MapPost("/api/local/update/snooze", (Func<HttpContext, Task<IResult>>)(context =>
     FeatureRole(context, !friendMode, async () =>
     {

@@ -91,6 +91,30 @@ public sealed class UpdateUiPreferences
         lock (sync) return state.Snoozes.Any(item => item.Version == version && item.SkipVersion);
     }
 
+    public bool IncludePrereleases { get { lock (sync) return state.IncludePrereleases; } }
+
+    internal void SetIncludePrereleases(bool includePrereleases)
+    {
+        lock (sync)
+        {
+            if (state.IncludePrereleases == includePrereleases) return;
+            var next = Clone();
+            next.IncludePrereleases = includePrereleases;
+            Save(next);
+        }
+    }
+
+    public static bool ParseIncludePrereleases(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Update preferences must be an object.");
+        var properties = input.EnumerateObject().ToArray();
+        if (properties.Length != 1 || properties[0].Name != "includePrereleases" ||
+            properties[0].Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw new InvalidDataException("Choose whether to include prerelease versions on this PC.");
+        return properties[0].Value.GetBoolean();
+    }
+
     public DateTimeOffset? Snooze(UpdateSnoozeRequest request)
     {
         ValidateVersion(request.Version);
@@ -155,7 +179,12 @@ public sealed class UpdateUiPreferences
         return new(version, duration);
     }
 
-    private State Clone() => new() { Snoozes = state.Snoozes.ToList(), Notes = state.Notes };
+    private State Clone() => new()
+    {
+        Snoozes = state.Snoozes.ToList(),
+        Notes = state.Notes,
+        IncludePrereleases = state.IncludePrereleases
+    };
     private void Save(State next)
     {
         save?.Invoke(next);
@@ -172,12 +201,13 @@ public sealed class UpdateUiPreferences
         Version.TryParse(value, out _);
     private static void ValidateVersion(string value)
     {
-        if (!ValidVersion(value)) throw new InvalidDataException("Update version must be a stable release version.");
+        if (!ValidVersion(value)) throw new InvalidDataException("Update version must use major.minor.patch numbers.");
     }
     public sealed class State
     {
         public List<SnoozeEntry> Snoozes { get; set; } = [];
         public RetainedUpdateNotes? Notes { get; set; }
+        public bool IncludePrereleases { get; set; }
     }
     public sealed record SnoozeEntry(string Version, DateTimeOffset UntilUtc, bool SkipVersion = false);
 }

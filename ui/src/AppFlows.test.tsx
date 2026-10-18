@@ -394,7 +394,7 @@ function nativeNotifications() {
 describe('Task-first app and Host PC navigation', () => {
   it('keeps update review open while a reminder save is pending, then permits closing after failure', async () => {
     const update: DesktopUpdateDetails = { state: 'Available', currentVersion: '0.3.2', latestVersion: '0.4.0',
-      message: 'Available.', publisherTrust: 'GitHub digest only', releaseNotes: '', releaseNotesUrl: null,
+      message: 'Available.', publisherTrust: 'GitHub digest only', includePrereleases: false, latestIsPrerelease: false, releaseNotes: '', releaseNotesUrl: null,
       promptSnoozed: false, snoozedUntilUtc: null }
     const read = transport.read.getMockImplementation()!
     transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/update' ? update
