@@ -93,6 +93,54 @@ stage heading before confirming the automatic transition to an up-to-date copy.
 The corrected full suite passes **1,070/1,070 in 89 files**. The final code-only
 gate also passes, with zero build warnings/errors and the same explicit skips.
 
+### Expanded rendered review
+
+Hosted Windows run [39141354749](https://github.com/daltonstates/TogetherServer/actions/runs/39141354749)
+completed all **836/836** captures at
+`80e9d2c540a8d4763b83802bace794fc648e3a65`, producing **2,072 screenshots**.
+There were no missing images, skipped cases or fatal infrastructure errors.
+The run failed its gate with 15 harness failures and 34 findings; it is not a
+passing visual result. Artifact ZIP SHA-256:
+`903711FD676753E4F86E99D223DE17DB5E47D39E7CB68BF64109924D8CB19086`.
+All **314 contact sheets** were inspected: Host 164, sharing 89, Settings 27,
+Join/global 34. Original PNGs were opened for suspected defects. Failed
+screenshots remain failure evidence, even when their surrounding layout is
+readable.
+
+The stale permission/status selectors, removed transfer paragraph, notification
+menu tooltip dismissal and underlying-picker hit tests were corrected in the
+harness. Actual defects were an uncontained rehearsal hash, a file-diff minimum
+width that inflated the editor, and keyboard focus lost after successful access
+saves. Hashes and paths now wrap in their pane; exact diffs have a labeled,
+keyboard-accessible internal horizontal reader; the topmost settings dialog
+recovers focus when its active control becomes disabled, hidden or removed.
+
+Additional observed polish aligns the removed-Host checkbox with its label,
+shortens Play disclosures, gives very narrow privacy fields their own action
+row and reduces narrow SettingsCard gutters without reducing text scaling.
+Restore review now precedes its inventory; optional game-check guidance and
+recovery setup explanations are disclosed while required inputs, blockers,
+exact-copy evidence and consent stay visible.
+The final Host review also found setup CSS overridden by later shared rules,
+an indented unwrapped destination path, an oversized narrow timer label and two
+nested rehearsal disclosures with the same title. Scoped selector precedence,
+full path wrapping, compact timer/card gutters and one rehearsal disclosure
+correct these findings. Visible programmatic focus targets retain focus during
+dialog updates; disabled, hidden or removed targets recover within the top modal.
+
+The initial three-position scroll sampling left gaps on long panes. Continuous
+overlapping captures now record actual viewport/ancestor intersections and fail
+on any unpictured interval beyond one-pixel rounding. The finite-case inventory,
+shared UI tests and final hosted rerun will be recorded after integration.
+Final inventory: **267 cases**, **844 viewport plans**, **39 narrow 150%** and
+four short desktop cases, plus continuous scroll companions. Pure renderer and
+fixture checks pass **24/24**. Two explicit expanded Play guidance cases cover
+the shortened summaries and their full instructions.
+After integrating these findings, the full UI suite passes **1,074/1,074 in 89
+files**. Final TypeScript, lint and the production UI build pass, retaining only
+the existing large-bundle advisory. Hosted pixel and continuous-scroll acceptance
+are still pending.
+
 The previous screenshot fixture inventory had drifted from the recent
 Backups tabs and peer-world UI; this review updates it against the actual bundled
 application rather than the historical mockups.

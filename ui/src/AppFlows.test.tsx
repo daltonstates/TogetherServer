@@ -1362,7 +1362,7 @@ describe('Friend task structure', () => {
     const play = await screen.findByRole('region', { name: 'Play' })
     expect(screen.queryByText('Connection identity and recovery')).not.toBeInTheDocument()
     expect(joinSections().getByRole('button', { name: 'Play' })).toHaveAttribute('aria-current', 'page')
-    const support = within(play).getByText('Server tools and connection help').closest('details')!
+    const support = within(play).getByLabelText('Server tools and connection help').closest('details')!
     fireEvent.click(support.querySelector('summary')!)
     expect(screen.getAllByText(/^Your access:/)).toHaveLength(1)
     expect(screen.queryByText(/^Host permissions:/)).not.toBeInTheDocument()

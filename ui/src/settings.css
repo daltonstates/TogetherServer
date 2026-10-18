@@ -552,6 +552,8 @@
 }
 
 @media (max-width: 480px) {
+  .settings-card.ui-button { gap: 10px; padding: 12px; }
+  .settings-card .settings-card-icon { inline-size: 32px; block-size: 32px; }
   .settings-workspace > .settings-layout > .settings-tabs .ui-button { min-block-size: 3.5rem; }
   .settings-dialog {
     inline-size: calc(100vw - 1rem);

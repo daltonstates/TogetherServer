@@ -113,6 +113,13 @@ it('finishes a reopened restored copy using newly reviewed server inputs without
   fireEvent.change(screen.getByLabelText('Future Friend control port'), { target: { value: '5141' } })
   fireEvent.change(screen.getByLabelText('Future game port'), { target: { value: '2466' } })
   fireEvent.click(screen.getByLabelText('I set a new game password on this PC'))
+  fireEvent.click(screen.getByText('Recovery steps and route checks'))
+  fireEvent.click(screen.getByText('Recovery steps and route checks'))
+  expect(screen.getByLabelText('Valheim dedicated server')).toHaveValue(serverFile)
+  expect(screen.getByLabelText('Installed game version')).toHaveValue('0.221.4')
+  expect(screen.getByLabelText('Future Friend control port')).toHaveValue('5141')
+  expect(screen.getByLabelText('I set a new game password on this PC')).toBeChecked()
+  expect(mutations).toEqual([])
   fireEvent.click(screen.getByRole('button', { name: 'Finish local setup checks' }))
   await screen.findByText('Manual Start is available.')
   expect(mutations).toEqual([{ path: `${base}/finish`, method: 'POST', body: {

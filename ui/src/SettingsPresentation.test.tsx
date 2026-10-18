@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Button, Input } from './Controls'
 import { SettingsCard, SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
@@ -142,6 +143,69 @@ describe('SettingsDialog', () => {
     view.unmount()
     expect(opener).toHaveFocus()
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('recovers focus after a leaf editor removes its focused action following an async save', async () => {
+    let completeSave: (() => void) | undefined
+    const save = new Promise<void>(resolve => { completeSave = resolve })
+    function Editor() {
+      const [saved, setSaved] = useState(false)
+      return <><Input aria-label="PC name" />{saved ? <p role="status">Access saved.</p> :
+        <Button onClick={() => void save.then(() => setSaved(true))}>Save access</Button>}</>
+    }
+    render(<SettingsDialog title="Access" onClose={vi.fn()}><Editor /></SettingsDialog>)
+    const action = screen.getByRole('button', { name: 'Save access' })
+    action.focus()
+    fireEvent.click(action)
+    await act(async () => { completeSave?.(); await save })
+    expect(screen.getByRole('status')).toHaveTextContent('Access saved.')
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'PC name' })).toHaveFocus())
+    expect(showModal).toHaveBeenCalledOnce()
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('preserves a visible programmatic announcement target across status updates and recovers when it becomes hidden', async () => {
+    const content = (message: string, hidden = false) => <SettingsDialog title="Sharing" onClose={vi.fn()}>
+      <Input aria-label="Hosting choice" />
+      <section aria-label="Host on this PC" tabIndex={-1} hidden={hidden}><p role="status">{message}</p></section>
+    </SettingsDialog>
+    const view = render(content('Preparing the selected copy.'))
+    const target = screen.getByRole('region', { name: 'Host on this PC' })
+    target.focus()
+    expect(target).toHaveFocus()
+    await act(async () => {
+      await Promise.resolve()
+      view.rerender(content('The selected copy is ready to review.'))
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('The selected copy is ready to review.')
+    expect(target).toHaveFocus()
+
+    view.rerender(content('The selected copy is ready to review.', true))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Hosting choice' })).toHaveFocus())
+    expect(showModal).toHaveBeenCalledOnce()
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('recovers focus when pending disables the active control and respects a newer modal', async () => {
+    const view = render(<SettingsDialog title="Access" onClose={vi.fn()} footer={<Button>Done</Button>}>
+      <Button>Save deadline</Button>
+    </SettingsDialog>)
+    const action = screen.getByRole('button', { name: 'Save deadline' })
+    expect(action).toHaveFocus()
+    view.rerender(<SettingsDialog title="Access" onClose={vi.fn()} busy footer={<Button disabled>Done</Button>}>
+      <Button disabled>Save deadline</Button>
+    </SettingsDialog>)
+    // Chromium drops focus when its current button becomes disabled.
+    action.blur()
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Access' })).toHaveFocus())
+
+    const nested = render(<SettingsDialog title="Confirm" onClose={vi.fn()}><Input aria-label="Confirmation field" /></SettingsDialog>)
+    const confirmation = screen.getByRole('textbox', { name: 'Confirmation field' })
+    expect(confirmation).toHaveFocus()
+    view.rerender(<SettingsDialog title="Access" onClose={vi.fn()}><Input aria-label="Underlying field" /></SettingsDialog>)
+    await act(async () => { await Promise.resolve() })
+    expect(confirmation).toHaveFocus()
+    nested.unmount()
   })
 
   it('does not refocus an opener that has been removed from the workspace', () => {

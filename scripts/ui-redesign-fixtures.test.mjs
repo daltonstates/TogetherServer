@@ -389,6 +389,77 @@ test('layout visibility excludes closed disclosure bodies while retaining native
   assert.equal(concealed(node('BUTTON')), false, 'a genuinely visible clipped control remains eligible for checking');
 });
 
+test('scroll screenshot segments cover short, long and narrow panes without unpictured intervals', () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const names = ['scrollCaptureOffsets', 'scrollCaptureCoverage', 'scrollCaptureVisibleRange'];
+  const helpers = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
+  assert.equal(helpers.length, 3, 'test the actual renderer calculations without launching a browser');
+  const { scrollCaptureOffsets: offsetsFor, scrollCaptureCoverage: coverageFor, scrollCaptureVisibleRange: rangeFor } = runInNewContext(
+    helpers.map(node => node.getText(ast)).join('\n') + '\n;({scrollCaptureOffsets,scrollCaptureCoverage,scrollCaptureVisibleRange})', {
+      innerHeight: 900, getComputedStyle: node => ({ overflowY: node.overflowY ?? 'visible' })
+    });
+  for (const [height, contentHeight] of [
+    [672, 2020], [723, 2302], [487, 1484], // Observed gaps in the initial hosted artifact.
+    [844, 100], [844, 844], [844, 855], [400, 800], [400, 1200], [400, 1201],
+    [240, 10000], [40, 4000], [373.5, 9980.25]
+  ]) {
+    const offsets = offsetsFor(height, contentHeight), maximum = Math.max(0, contentHeight - height);
+    assert.equal(offsets[0], 0); assert.equal(offsets.at(-1), maximum);
+    assert.equal(new Set(offsets).size, offsets.length, 'every segment has a distinct offset');
+    for (let index = 1; index < offsets.length; index++) {
+      assert.ok(offsets[index] > offsets[index - 1]);
+      assert.ok(offsets[index] - offsets[index - 1] <= height * .85 + 1e-8, 'adjacent views overlap by at least 15%');
+    }
+    const ranges = offsets.map(start => ({ start, end: Math.min(contentHeight, start + height) }));
+    const coverage = coverageFor(contentHeight, ranges);
+    assert.equal(coverage.complete, true, `${height}/${contentHeight} covers the whole scroll height`);
+    assert.equal(coverage.gaps.length, 0); assert.equal(coverage.coveredThrough, contentHeight);
+    const rounded = offsets.map(start => ({ start: Math.min(maximum, Math.round(start)),
+      end: Math.min(contentHeight, Math.min(maximum, Math.round(start)) + height) }));
+    assert.equal(coverageFor(contentHeight, rounded).complete, true, 'actual integer browser offsets preserve coverage');
+  }
+  const height = 723, contentHeight = 2302;
+  const oldThreeViews = [0, 790, 1579].map(start => ({ start, end: Math.min(contentHeight, start + height) }));
+  assert.equal(coverageFor(contentHeight, oldThreeViews).complete, false, 'the original three-point sampling is rejected');
+  assert.equal(coverageFor(contentHeight, oldThreeViews).gaps.length, 2);
+  const complete = offsetsFor(height, contentHeight).map(start => ({ start, end: Math.min(contentHeight, start + height) }));
+  assert.equal(coverageFor(contentHeight, complete.slice().reverse()).complete, true, 'range order is irrelevant');
+  assert.equal(coverageFor(contentHeight, complete.filter((_, index) => index !== 1)).complete, false, 'a missing interior screenshot fails coverage');
+  assert.equal(coverageFor(contentHeight, complete.map(range => ({ ...range, end: range.end - 40 }))).complete, false, 'viewport clipping cannot pass as full content');
+  assert.equal(coverageFor(100, [{ start: .5, end: 99.5 }]).complete, true, 'subpixel rounding is tolerated');
+  assert.equal(coverageFor(100, [{ start: 2, end: 100 }]).complete, false, 'an unpictured top is reported');
+  for (const dimensions of [[0, 100], [-1, 100], [NaN, 100], [100, Infinity], [100, -1]])
+    assert.throws(() => offsetsFor(...dimensions), /finite positive/);
+  assert.throws(() => offsetsFor(40, 100000), /complete coverage was not captured/, 'unexpected huge content fails explicitly instead of truncating the gallery');
+
+  const node = ({ top, height, contentHeight = height, scrollTop = 0, parent = null, overflowY = 'visible', modal = false }) => ({
+    clientTop: 0, clientHeight: height, scrollHeight: contentHeight, scrollTop, parentElement: parent, overflowY, modal,
+    className: 'synthetic-pane', tagName: modal ? 'DIALOG' : 'DIV', getAttribute: () => null,
+    getBoundingClientRect: () => ({ top, bottom: top + height }),
+    closest() { for (let current = this; current; current = current.parentElement) if (current.modal) return current; return null; }
+  });
+  for (const overflowY of ['auto', 'scroll', 'hidden', 'clip']) {
+    const outer = node({ top: 120, height: 500, overflowY });
+    const inner = node({ top: 180, height: 350, overflowY, parent: outer });
+    const pane = node({ top: 100, height: 723, contentHeight: 2302, scrollTop: 790, parent: inner });
+    const range = rangeFor(pane);
+    assert.equal(range.start, 870); assert.equal(range.end, 1220); assert.equal(range.visibleHeight, 350,
+      `${overflowY} ancestors reduce the actually pictured scroll range`);
+    assert.ok(range.clippedBy.length > 1);
+  }
+  const visibleOverflow = node({ top: 180, height: 350 });
+  assert.equal(rangeFor(node({ top: 100, height: 723, parent: visibleOverflow })).visibleHeight, 723);
+  const workspace = node({ top: 400, height: 100, overflowY: 'hidden' });
+  const modal = node({ top: 100, height: 700, overflowY: 'auto', parent: workspace, modal: true });
+  const modalPane = rangeFor(node({ top: 120, height: 600, contentHeight: 2000, parent: modal }));
+  assert.equal(modalPane.visibleHeight, 600, 'the top-layer modal escapes its underlying workspace clipping');
+  assert.equal(rangeFor(modal).visibleHeight, 700);
+  const viewportClipped = rangeFor(node({ top: 800, height: 200, contentHeight: 500 }));
+  assert.equal(viewportClipped.visibleHeight, 100); assert.equal(viewportClipped.end, 100);
+  assert.equal(viewportClipped.clippedBy[0].name, 'viewport');
+});
+
 test('draft revision storage never crosses fixture states', () => {
   const state = createFixtureState();
   const identity = { purpose: 'settings', profileId: fixtureIds.primary, key: 'settings:properties' };
@@ -460,7 +531,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     ...['access', 'stop', 'network', 'diagnostics', 'advanced'].map(id => `host-pc-${id}`),
     'host-first-use', 'host-compare-all',
     ...['play', 'chat', 'logs', 'shared-saves', 'network', 'connection', 'pairing'].map(id => `join-${id}`),
-    'join-shared-verified-copy', 'join-shared-receiving',
+    'join-shared-verified-copy', 'join-shared-receiving', 'join-play-instructions-expanded', 'join-play-tools-expanded',
     'join-first-pairing', 'join-permitted-controls', 'join-permitted-start', 'attention-issues', 'attention-history',
     ...['appearance', 'notifications', 'windows', 'updates', 'shortcuts'].map(id => `settings-${id}`),
     'dialog-server-tools', 'dialog-managed-sharing-host', 'dialog-managed-sharing-friend', 'join-consent', 'dialog-save-consent',
@@ -479,6 +550,15 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     const screen = plans.find(plan => plan.testCase.id === id).testCase.screen;
     assert.equal(screen.role, 'region');
     assert.equal(screen.name, 'Next shared-save action', `${id} targets the actual task card after Shared copy polish`);
+  }
+  for (const [id, summary] of [['join-play-instructions-expanded', 'Join instructions'], ['join-play-tools-expanded', 'Tools & help']]) {
+    const testCase = plans.find(plan => plan.testCase.id === id).testCase;
+    assert.equal(testCase.screen.css, '.friend-play-flow details[open]');
+    assert.ok(testCase.screen.text.length > 50, `${id} asserts actual guidance rather than only its disclosure title`);
+    assert.equal(testCase.steps[0].summary, summary); assert.equal(testCase.steps[0].within, '.friend-play-flow');
+    assert.equal(testCase.steps.length, 2, `${id} also opens its nested guidance or permission details`);
+    assert.ok(plans.some(plan => plan.testCase.id === id && plan.variant.scale === 150 && plan.variant.viewport.width === 390),
+      `${id} includes narrow 150% text coverage`);
   }
   for (const id of captures) {
     const variants = plans.filter(plan => plan.testCase.id === id).map(plan => plan.variant);

@@ -192,10 +192,10 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}
-    {canJoin && currentProfile && <details className="server-support-disclosure"><summary><Icon name="game" />How to join in the game</summary><JoinGuide kind={currentProfile.gameKind ?? currentProfile.kind} /></details>}
+    {canJoin && currentProfile && <details className="server-support-disclosure"><summary aria-label="How to join in the game"><Icon name="game" />Join instructions</summary><JoinGuide kind={currentProfile.gameKind ?? currentProfile.kind} /></details>}
     {requirements}
     {currentProfile?.state === 'Offline' && permissions.currentAccess && permissions.actions.start.available && startNotice && <details className="server-support-disclosure"><summary><Icon name="plug" />Connection checks before Start</summary>{startNotice}</details>}
-    <details className="server-support-disclosure"><summary><Icon name="plug" />Server tools and connection help</summary>
+    <details className="server-support-disclosure"><summary aria-label="Server tools and connection help"><Icon name="plug" />Tools &amp; help</summary>
       {onOpenConnectionDoctor && <Button className="text-button" onClick={onOpenConnectionDoctor}>Open Connection Doctor</Button>}
       <FriendPermissionExplanation snapshot={snapshot} profile={profile} nowMs={nowMs} />
     </details>

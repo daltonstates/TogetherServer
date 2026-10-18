@@ -133,7 +133,7 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('heading', { name: 'Play' })).toBeInTheDocument()
     expect(screen.getAllByRole('status').find(element => element.textContent?.includes('Players are online.'))).toHaveTextContent('Wait until the server reports zero players.')
     expect(screen.getByRole('button', { name: 'Open Connection Doctor' })).not.toBeVisible()
-    fireEvent.click(screen.getByText('Server tools and connection help'))
+    fireEvent.click(screen.getByLabelText('Server tools and connection help'))
     fireEvent.click(screen.getByRole('button', { name: 'Open Connection Doctor' }))
     expect(doctor).toHaveBeenCalledOnce()
   })
@@ -213,7 +213,7 @@ describe('the composed play flow', () => {
     const details = screen.getByRole('region', { name: 'Join details' })
     expect(screen.getByRole('button', { name: 'Open game' }).compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(details.compareDocumentPosition(screen.getByText('Version checks')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByText('How to join in the game').closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByLabelText('How to join in the game').closest('details')).not.toHaveAttribute('open')
   })
 
   it('keeps granted Stop visible and blocks it for an occupied, stale or paused Host', () => {

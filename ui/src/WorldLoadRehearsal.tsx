@@ -4,6 +4,7 @@ import { Button, Input, Select } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { ContractError, type Decoder, type WorldBackupRecord } from './contracts'
 import { useConfirmation } from './Confirmation'
+import './WorldLoadRehearsal.css'
 
 type Outcome = 'Unobserved' | 'OwnerConfirmed' | 'OwnerFailed'
 export type WorldLoadView = {
@@ -128,7 +129,7 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
     finally { setBusy(false) }
   }
   const confirmOutcome = (step: string, passed: boolean) => void action('confirm', { step, passed, gameVersion: gameVersion.trim() || null })
-  return <><details className="connection-doctor" onToggle={event => { if (event.currentTarget.open) void refresh() }}>
+  return <><details className="connection-doctor world-load-rehearsal" onToggle={event => { if (event.currentTarget.open) void refresh() }}>
     <summary>Test a copy in the game</summary>
     <p>Prepare a fresh disposable copy, load it in the game, make a recognizable change, then save, stop and restart. The source stays intact. Your confirmations are recorded separately from process checks.</p>
     {!received && <label>Completed backup <Select aria-label="Load rehearsal backup" value={chosenBackup ?? ''}
@@ -159,7 +160,7 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
             <Button className="text-button" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Restart', false)}>Restart failed</Button></li></ol>
         <Button className="text-button" disabled={busy} onClick={() => void action('cleanup', { confirmStopped: true })}>Clean up this disposable copy</Button>
       </>}
-      <details><summary>Exact copy and setup</summary><p>Copy: {selected.copyIdentity}</p><p>App at preparation: {selected.appVersion} · Installed game: {selected.gameVersion}</p>
+      <details><summary>Exact copy and setup</summary><p>Copy: <code>{selected.copyIdentity}</code></p><p>App at preparation: {selected.appVersion} · Installed game: {selected.gameVersion}</p>
         {selected.ownerReportedGameVersion && <p>Owner-reported game version: {selected.ownerReportedGameVersion}</p>}
         <p className="helper-text">Working folder: {selected.worldDirectory}</p><p>Recorded Starts: {selected.managedStarts} · graceful Stops: {selected.gracefulStops}</p></details>
     </section>}

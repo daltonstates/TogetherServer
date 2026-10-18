@@ -9,6 +9,20 @@ const view = () => ({ id: 'b7dc82fb-256f-45f9-962a-8039f5e0b5ab', game: 'Terrari
   gracefulStops: 0, cleaned: false, preparedUtc: '2026-10-04T12:00:00Z' })
 afterEach(() => vi.unstubAllGlobals())
 describe('guided world load', () => {
+  it('keeps the full exact copy identity and working folder available without changing the rehearsal', async () => {
+    const source = { ...view(), worldDirectory: `C:\\disposable\\${'synthetic-working-copy-'.repeat(20)}\\world` }
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, message: '', rehearsals: [source] })))
+    vi.stubGlobal('fetch', fetch)
+    render(<WorldLoadRehearsalPanel profileId="test-profile" received />)
+    fireEvent.click(screen.getByText('Test a copy in the game'))
+    await screen.findByRole('region', { name: 'World load steps' })
+    fireEvent.click(screen.getByText('Exact copy and setup'))
+    expect(screen.getByText(source.copyIdentity)).toBeVisible()
+    expect(screen.getByText(`Working folder: ${source.worldDirectory}`)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'The change survived restart' })).toBeDisabled()
+    expect(fetch).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: 'POST' }))
+  })
+
   it('requires a dialog decision before stopped cleanup and retains the original source on decline', async () => {
     const source = view()
     const fetch = vi.fn(async (path: string) => new Response(JSON.stringify(path.endsWith('/cleanup') ?

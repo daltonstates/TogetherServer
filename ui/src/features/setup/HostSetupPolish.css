@@ -7,21 +7,37 @@
 .task-first-setup .server-step > h3 { justify-content: flex-start; }
 .task-first-setup .server-step-content { width: 100%; min-width: 0; }
 
-.task-first-setup .minecraft-selected-server {
+.task-first-setup .server-step .selection-summary.minecraft-selected-server {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: .35rem;
-  min-width: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
 }
-.task-first-setup .minecraft-selected-server .minecraft-selected-label { white-space: nowrap; }
-.task-first-setup .minecraft-selected-server > strong { min-width: 0; overflow-wrap: anywhere; }
-.task-first-setup .minecraft-selected-server > small {
+.task-first-setup .server-step .selection-summary.minecraft-selected-server .minecraft-selected-label { white-space: nowrap; }
+.task-first-setup .server-step .selection-summary.minecraft-selected-server > strong {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-first-setup .server-step .selection-summary.minecraft-selected-server > small {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: .2rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
+  overflow-wrap: anywhere;
+}
+.task-first-setup .server-step .selection-summary.minecraft-selected-server > small > span {
+  display: block;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .task-first-setup .minecraft-installation-choice > div { min-width: 0; }
@@ -52,7 +68,24 @@
   overflow-wrap: normal;
 }
 
+.task-first-setup .settings-grid,
+.task-first-setup .settings-grid > label { min-inline-size: 0; max-inline-size: 100%; }
+.task-first-setup .settings-grid > label > :is(.ui-input, .ui-select, .ui-textarea) { min-inline-size: 0; max-inline-size: 100%; }
+.task-first-setup .setup-world-locations .review-summary > div { min-inline-size: 0; }
 .task-first-setup .setup-world-locations .review-summary > div:only-child { grid-column: 1 / -1; }
+.task-first-setup .setup-world-locations .review-summary dt { min-inline-size: 0; overflow-wrap: anywhere; }
+.task-first-setup .setup-world-locations .review-summary dd {
+  min-inline-size: 0;
+  margin: .35rem 0 0;
+  overflow-wrap: anywhere;
+}
+.task-first-setup .setup-world-locations .review-summary code {
+  display: block;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .task-first-setup .custom-script-manager > label { min-width: 0; }
 .task-first-setup .custom-script-manager .ui-textarea {
   display: block;

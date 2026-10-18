@@ -4,16 +4,20 @@ import { Icon, type IconName } from './Icon'
 
 const focusableSelector = 'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])'
 
+function availableFocusTarget(element: HTMLElement, root: HTMLElement) {
+  if (!root.contains(element) || element.matches(':disabled') || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false
+  for (let ancestor: HTMLElement | null = element; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+    if (ancestor instanceof HTMLDetailsElement && !ancestor.open && !ancestor.querySelector(':scope > summary')?.contains(element)) return false
+    const style = getComputedStyle(ancestor)
+    if (style.display === 'none' || style.visibility === 'hidden') return false
+  }
+  return true
+}
+
 function focusableElements(root: HTMLElement) {
-  return Array.from(root.querySelectorAll<HTMLElement>(focusableSelector)).filter(element => {
-    if (element.tabIndex < 0 || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false
-    for (let ancestor: HTMLElement | null = element; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
-      if (ancestor instanceof HTMLDetailsElement && !ancestor.open && !ancestor.querySelector(':scope > summary')?.contains(element)) return false
-      const style = getComputedStyle(ancestor)
-      if (style.display === 'none' || style.visibility === 'hidden') return false
-    }
-    return true
-  }).sort((first, second) => first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
+  return Array.from(root.querySelectorAll<HTMLElement>(focusableSelector))
+    .filter(element => element.tabIndex >= 0 && availableFocusTarget(element, root))
+    .sort((first, second) => first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
 }
 
 function focusMeaningfulAction(dialog: HTMLDialogElement) {
@@ -78,14 +82,23 @@ export function SettingsDialog({ title, description, onClose, busy = false, chil
     focusMeaningfulAction(dialog)
 
     // Native dialog is not available in some embedded/test environments.
-    const containFocus = (event: FocusEvent) => {
+    const containFocus = () => {
       const topDialog = Array.from(document.querySelectorAll('dialog[open]')).at(-1)
-      if (topDialog === dialog && event.target instanceof Node && !dialog.contains(event.target)) focusMeaningfulAction(dialog)
+      if (topDialog !== dialog) return
+      const active = document.activeElement
+      if (active !== dialog && (!(active instanceof HTMLElement) || !availableFocusTarget(active, dialog)))
+        focusMeaningfulAction(dialog)
     }
     document.addEventListener('focusin', containFocus)
+    // Disabling or removing a focused Save can leave focus on BODY without a
+    // focusin event. Cover leaf-editor updates as well as parent busy changes.
+    const focusObserver = new MutationObserver(containFocus)
+    focusObserver.observe(dialog, { childList: true, subtree: true, attributes: true,
+      attributeFilter: ['disabled', 'hidden', 'inert', 'aria-hidden', 'open', 'class', 'style'] })
 
     return () => {
       document.removeEventListener('focusin', containFocus)
+      focusObserver.disconnect()
       if (dialog.open) {
         if (typeof dialog.close === 'function') dialog.close()
         else dialog.removeAttribute('open')

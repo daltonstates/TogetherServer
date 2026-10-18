@@ -3,7 +3,6 @@ const backupsSection = ['Selected server sections', 'backups', 'Backups'];
 const sharingSteps = [{ nav: 'World protection sections', button: 'Sharing & hosting' }];
 const liveSteps = [...sharingSteps, { summary: 'Live-save setup & acceptance' }, { summary: /Automatic recovery copies/ }];
 const rehearsalSteps = [
-  { summary: 'Test a copy in the game', within: '.protection-backup-library' },
   { summary: 'Test a copy in the game', within: '.protection-backup-library .connection-doctor' },
 ];
 const ownerSteps = [
@@ -25,6 +24,7 @@ export const extraCases = [
   ], region('Backup comparison')),
   hostCase('world-backup-restore-review', 'host-world-review-offline', [
     { button: 'Review backup', first: true }, { button: 'Review Restore', first: true },
+    { summary: 'After Restore', within: '[aria-label="Review Restore"]' },
   ], region('Review Restore')),
   hostCase('world-rehearsal-results', 'host-world-rehearsal-offline', rehearsalSteps, region('World load steps')),
   hostCase('world-rehearsal-exact-copy', 'host-world-rehearsal-offline', [
@@ -36,7 +36,10 @@ export const extraCases = [
   hostCase('world-rehearsal-reported-results', 'host-world-rehearsal-confirmed-offline', rehearsalSteps, region('World load steps')),
   hostCase('world-rehearsal-isolated-controls', 'host-world-rehearsal-isolated-offline', rehearsalSteps,
     { css: '[aria-label="World load steps"]', text: 'Start this isolated copy.' }),
-  hostCase('world-owner-recovery-local-fields', 'host-peers-world-owner-prepared', ownerSteps, region('Host this separate copy')),
+  hostCase('world-owner-recovery-local-fields', 'host-peers-world-owner-prepared', [
+    ...ownerSteps, { summary: 'Recovery steps and route checks', within: '.shared-separate-copy' },
+    { summary: 'Managed server folder and source settings', within: '.shared-separate-copy' },
+  ], region('Host this separate copy')),
   hostCase('world-owner-recovery-restored-checks', 'host-peers-world-owner-restored', ownerSteps, region('Host this separate copy')),
   hostCase('world-owner-recovery-route-evidence', 'host-peers-world-owner-route', [
     ...ownerSteps, { summary: 'Signed recovery proof' },

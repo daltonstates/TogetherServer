@@ -259,6 +259,10 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .context-picker-option strong, .context-picker-option small { display: block; overflow-wrap: anywhere; }
 .context-picker-popover .context-picker-option > .icon-button { width: 36px; flex: 0 0 36px; justify-content: center; }
 .context-picker-tools { margin-top: 8px; border-top: 1px solid var(--color-border); padding-top: 8px; }
+.app-shell .context-sidebar .context-picker-tools > label:has(input[type="checkbox"]) {
+  display: flex; align-items: center; gap: 8px; min-height: 36px;
+}
+.context-picker-tools input[type="checkbox"] { flex: 0 0 auto; width: auto; margin: 0; }
 .context-sidebar-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 7px; }
 .context-server-select { display: grid; gap: 6px; font-size: .75rem; color: var(--color-text-muted); margin-top: 12px; }
 .context-heading-utility { display: flex; justify-content: flex-end; }
@@ -414,6 +418,12 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .context-picker-trigger strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-chat-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .server-chat-edit-actions > small { margin-inline-end: auto; }
+.connection-details-card { container: connection-details / inline-size; }
+@container connection-details (max-width: 11rem) {
+  .task-first-connection .connection-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .task-first-connection .connection-field-actions { grid-column: 1; grid-row: 3; justify-self: end; gap: 8px; }
+  .task-first-connection .privacy-mask { white-space: nowrap; }
+}
 .server-log-viewer { container-type: inline-size; }
 .app-shell .server-log-filter-toggle { display: none; }
 @container (max-width: 32rem) {

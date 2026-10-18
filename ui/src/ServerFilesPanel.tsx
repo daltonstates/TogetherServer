@@ -389,7 +389,7 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
         {diff && reviewMatches && <section aria-label="Review raw file changes"><h4>Before and after</h4>
           <p>{diff.unchangedStart} unchanged leading lines · {diff.unchangedEnd} unchanged trailing lines</p>
           <p>Line endings before: {(loaded.content?.match(/\r\n/gu) ?? []).length} CRLF, {(loaded.content?.match(/(?<!\r)\n/gu) ?? []).length} LF. After: {(draft.match(/\r\n/gu) ?? []).length} CRLF, {(draft.match(/(?<!\r)\n/gu) ?? []).length} LF.</p>
-          <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Change</th><th>Before line</th><th>After line</th><th>Exact text</th></tr></thead>
+          <div className="server-file-diff-scroll" role="region" aria-label="File change comparison" tabIndex={0}><table><thead><tr><th>Change</th><th>Before line</th><th>After line</th><th>Exact text</th></tr></thead>
             <tbody>{diff.lines.map((line, index) => <tr key={index}><td>{line.type}</td><td>{line.before ?? '—'}</td><td>{line.after ?? '—'}</td><td><pre>{line.text || '(empty line)'}</pre></td></tr>)}</tbody></table></div>
           {diff.omitted > 0 && <p>{diff.omitted} more lines changed. The editor above contains the complete proposed file; only this comparison is shortened.</p>}
           <p>Save first checkpoints the offline world and supported setup, then keeps the previous file version for Undo.</p>

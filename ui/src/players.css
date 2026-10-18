@@ -64,6 +64,10 @@
 .players-panel .players-count-value { font-size: clamp(1.6rem, 3.5vw, 2.2rem); }
 .players-panel[data-count-state="Fresh"] .players-count-value { color: var(--color-accent-light); }
 .players-panel .players-timer-value { font-size: clamp(1.3rem, 2.8vw, 1.75rem); }
+@media (max-width: 640px) {
+  .players-panel .players-stat { padding: 12px; gap: 10px; }
+  .players-panel .players-timer-value { font-size: 1.1rem; overflow-wrap: normal; }
+}
 .players-panel .players-timer-context {
   margin: 0;
   color: var(--color-text-muted);

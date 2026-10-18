@@ -3,6 +3,7 @@ name: UI redesign visual review
 on:
   push:
     branches: ['review/ui-redesign-*']
+    paths-ignore: ['docs/**', '**/*.md']
 
 permissions:
   contents: read

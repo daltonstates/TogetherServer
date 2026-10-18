@@ -431,6 +431,10 @@
 .backup-library .backup-library-restore > h4 { color: var(--color-warning-text); }
 .backup-library .backup-library-restore :is(dl, dd) { min-inline-size: 0; overflow-wrap: anywhere; }
 .backup-library .backup-library-restore > label.check { align-items: flex-start; min-block-size: 2.75rem; padding-block: .65rem; }
+.backup-library .backup-library-restore:focus { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.backup-library .backup-restore-followup { margin-block-start: 12px; color: var(--color-text-muted); font-size: .75rem; }
+.backup-library .backup-restore-followup > summary { cursor: pointer; color: var(--color-text-secondary); }
+.backup-library .backup-restore-followup > p { margin-block-start: 8px; }
 .backup-library .backup-library-secondary { display: grid; gap: .65rem; min-inline-size: 0; }
 .backup-library .backup-library-policy {
   min-inline-size: 0;
@@ -469,6 +473,11 @@
 }
 @media (forced-colors: active) {
   .backup-library.backup-catalog :is(.ui-button, .ui-input, .ui-select, summary):focus-visible { outline-color: Highlight; }
+}
+@media (max-width: 640px) {
+  .backup-library.backup-catalog { padding: 12px; }
+  .backup-library .backup-library-restore { padding: 12px; }
+  .backup-library .backup-library-restore dl { line-height: 1.45; }
 }
 @media (prefers-reduced-motion: reduce) {
   .backup-library .icon-spin { animation: none; }

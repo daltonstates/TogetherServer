@@ -4,6 +4,7 @@ import { Button, Input, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { SharedWorldServerFile } from './SharedWorldServerFile'
 import { futureHostFields, sharedSaveAge, type SharedGame } from './sharedWorldUx'
+import './SharedWorldSeparateRoute.css'
 
 type Branch = { branchHash: string; offer: { version: { number: number; createdUtc?: string; game?: string };
   proposal: { profileId: string; candidateAddress: string } } }
@@ -185,8 +186,10 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
     } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
     finally { if (scope.current === profileId) setBusy(false) }
   }
-  return <details open={expanded || undefined}><summary>Recovery copies on this PC</summary>
-    <p>Restore a signed recovery branch into a fresh local world, finish local setup, then choose Start manually. A second-PC route check is optional evidence; it does not settle the split or prove the game route.</p>
+  return <details className="shared-separate-copy" open={expanded || undefined}><summary>Recovery copies on this PC</summary>
+    <p>Recovery keeps a separate history. Restore locally, finish setup, then Start manually.</p>
+    <details className="separate-copy-guidance"><summary>Recovery steps and route checks</summary>
+      <p>Restore a signed recovery branch into a fresh local world, finish local setup, then choose Start manually. A second-PC route check is optional evidence; it does not settle the split or prove the game route.</p></details>
     {separateCopies > 0 && <><Button className="secondary" disabled={busy}
       onClick={() => void load()}>Show recovery copies on this PC</Button>
       {ownBranches.map(item => <div key={item.branchHash}>
@@ -201,12 +204,13 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
       {hosting.reviewRequired ? <DismissibleNotice as="p" scope={noticeScope} role="alert">{hosting.message}</DismissibleNotice> :
         <p role="status">{hosting.message}</p>}
       {!hosting.reviewRequired && <>
-        <p>Another game server may still be running. This copy stays separate until the group reviews both save histories.</p>
+        {!hosting.readyForManualStart && <p>Another game server may still be running. This copy stays separate until the group reviews both save histories.</p>}
         {hosting.requiredAddOns?.length ? <details><summary>Required add-ons</summary>
           <ul>{hosting.requiredAddOns.map(item => <li key={`${item.type}:${item.name}`}>
             {item.name} {item.version} ({item.type})</li>)}</ul>
           <p>Install these packages in this PC’s managed server folder before restoring.</p>
         </details> : null}
+        <div className="separate-copy-fields">
         {!hosting.readyForManualStart && !hosting.running && <>
           {hosting.restored && <p>Select the installed server file and matching game version to finish checking this restored copy.</p>}
           <SharedWorldServerFile key={profileId} profileId={profileId} game={effectiveGame}
@@ -218,7 +222,9 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
             onChange={event => setServerName(event.target.value)} /></label>
           {(effectiveGame === 'MinecraftJava' || !knownGame) && <label>{effectiveGame === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different'}<Input value={executable}
             onChange={event => setExecutable(event.target.value)} /></label>}
-          {hosting.preparedServerRoot && <p>Prepare the matching Minecraft server and add-ons in this managed folder: {hosting.preparedServerRoot}. Match its server.properties settings and player allowlist to the signed source; a mismatch blocks restore and Start.</p>}
+          {hosting.preparedServerRoot && <details className="separate-copy-guidance"><summary>Managed server folder and source settings</summary>
+            <p>Prepare the matching server files and required add-ons in this managed folder: <code>{hosting.preparedServerRoot}</code>.</p>
+            <p>Match the server settings and player allowlist to the signed source; a mismatch blocks restore and Start.</p></details>}
           {(fields.factorio || !knownGame) && <label>Factorio local RCON port, if used<Input inputMode="numeric"
             value={factorioRconPort} onChange={event => setFactorioRconPort(event.target.value)} /></label>}
           {fields.factorio && <p className="helper-text">Keep the RCON port local. Never forward it.</p>}
@@ -228,16 +234,17 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
           value={controlPort} onChange={event => setControlPort(event.target.value)} /></label>
           <label>Future game port<Input inputMode="numeric" value={gamePort}
             onChange={event => setGamePort(event.target.value)} /></label>
-          <label><Input type="checkbox" checked={newPasswordSet}
+          <label className="separate-copy-consent"><Input type="checkbox" checked={newPasswordSet}
             onChange={event => setNewPasswordSet(event.target.checked)} /> {fields.password ?
               'I set a new game password on this PC' : 'I reviewed local game access and set a new password where this game supports one'}</label>
           <Button className="secondary" disabled={busy} onClick={() => void hostChange(
             hosting.restored ? 'finish' : 'restore')}>
             {hosting.restored ? 'Finish local setup checks' : 'Restore into a fresh managed world'}</Button></>}
-        {hosting.readyForManualStart && <><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Local setup passed. A real game load, game connection, and saved restart remain unverified. Another session may still run; this recovery branch does not select the group's default history.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
+        </div>
+        {hosting.readyForManualStart && <div className="separate-copy-start-review"><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Local setup passed. Game load, a real game join and saved restart remain unverified. Other sessions may still run; this copy does not change the group's default history.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
           onChange={event => setSplitAccepted(event.target.checked)} /> I understand another server may still be running</label>
           <Button disabled={busy || !splitAccepted} onClick={() => void hostChange('start')}>
-            Start recovery copy</Button></>}
+            Start recovery copy</Button></div>}
         {hosting.running && <DismissibleNotice scope={noticeScope} role="note"><p>This recovery session is running. A returning Host does not stop it or replace its history.</p>
           {(onOpenHostControls || onOpenSeparateHostControls) && <Button className="secondary" onClick={() =>
             hosting.localProfileId && onOpenSeparateHostControls ? onOpenSeparateHostControls(hosting.localProfileId) : onOpenHostControls?.()

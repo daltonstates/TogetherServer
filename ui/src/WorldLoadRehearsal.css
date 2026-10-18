@@ -1,0 +1,31 @@
+.world-load-rehearsal.connection-doctor {
+  grid-template-columns: minmax(0, 1fr);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  box-sizing: border-box;
+}
+.world-load-rehearsal :is(section, details, label, ol, li, .actions) {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+.world-load-rehearsal :is(p, li, code) { overflow-wrap: anywhere; }
+.world-load-rehearsal code { white-space: pre-wrap; }
+.world-load-rehearsal :is(.ui-input, .ui-select) {
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  box-sizing: border-box;
+}
+.world-load-rehearsal .actions { flex-wrap: wrap; }
+.world-load-rehearsal .ui-button {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.world-load-rehearsal li { margin-block: 8px; }
+@media (max-width: 640px) {
+  .world-load-rehearsal ol { padding-inline-start: 1.25rem; }
+  .world-load-rehearsal li > .ui-button { display: block; margin-block-start: 6px; }
+  .world-load-rehearsal .ui-button { min-block-size: 44px; }
+}

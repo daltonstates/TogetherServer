@@ -2338,8 +2338,8 @@ export function App() {
                   } : undefined}
                   renderActions={backup => <Button className="secondary" disabled={!!pending || dirty || status?.state !== 'Offline'}
                     onClick={() => void prepareMoveKit(profile.id, backup.backupId)}>Prepare move kit</Button>} /></PaneErrorBoundary>
-                      {!profile.worldLoadRehearsalId && profile.kind !== 'Custom' && <details className="protection-help"><summary>Test a copy in the game</summary>
-                        <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} /></details>}
+                      {!profile.worldLoadRehearsalId && profile.kind !== 'Custom' && <div className="protection-help">
+                        <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} /></div>}
                     </div>
                     {profile.kind !== 'Custom' && <div hidden={section !== 'sharing'} className="protection-sharing-panel">
                       <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []} worldName={profile.worldId}

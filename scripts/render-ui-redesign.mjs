@@ -91,6 +91,12 @@ const cases = [
   { id: 'host-first-use', scenario: 'host-first-use', workspace: 'Host', screen: heading('Host or join a server') },
   { id: 'host-compare-all', scenario: 'host-multi', workspace: 'Host', action: 'compare', screen: { role: 'dialog', name: 'All servers' } },
   ...joinSections.map(([id, label, screen]) => ({ id: `join-${id}`, scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', id, label], screen })),
+  { id: 'join-play-instructions-expanded', scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', 'play', 'Play'],
+    steps: [{ summary: 'Join instructions', within: '.friend-play-flow' }, { summary: 'How to join in Valheim', within: '.friend-play-flow' }],
+    screen: { css: '.friend-play-flow details[open]', text: 'Open Valheim, choose your character, then choose Join Game and Join IP.' } },
+  { id: 'join-play-tools-expanded', scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', 'play', 'Play'],
+    steps: [{ summary: 'Tools & help', within: '.friend-play-flow' }, { summary: /^Your access:/, within: '.friend-play-flow' }],
+    screen: { css: '.friend-play-flow details[open]', text: 'Grants apply only to this server. Readiness and a fresh zero-player check are still required for Stop and Restart.' } },
   { id: 'join-shared-verified-copy', scenario: 'friend-shared-verified-offline', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: heading('Prepare hosting on this PC'), action: 'shared-verified-copy' },
   { id: 'join-shared-receiving', scenario: 'friend-shared-receiving-offline', workspace: 'Join',
@@ -278,7 +284,7 @@ const variants = [
   { id: 'lightnarrow', viewport: { width: 390, height: 844 }, theme: 'light', scale: 100 },
 ];
 const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups', 'host-files', 'host-pc-access', 'host-pc-stop',
-  'host-first-use', 'join-play', 'join-shared-saves', 'join-first-pairing', 'attention-issues', 'settings-appearance',
+  'host-first-use', 'join-play', 'join-play-instructions-expanded', 'join-play-tools-expanded', 'join-shared-saves', 'join-first-pairing', 'attention-issues', 'settings-appearance',
   'tooltip-hover', 'tooltip-keyboard', 'host-server-file-editor', 'host-server-file-review', 'host-server-files-checkpoints',
   'dialog-protection', 'dialog-access-access-time', 'host-live-save-acceptance', 'join-peers-conflict',
   ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation/.test(testCase.id)).map(testCase => testCase.id)]);
@@ -329,10 +335,10 @@ async function performActions(page, testCase, record) {
       } else {
         await visible(next.getByRole('heading', { name: 'Receiving the save copy', exact: true }));
         const progress = await visible(page.getByRole('region', { name: 'Save transfer progress', exact: true }));
-        await visible(progress.getByText(/^Receiving copy/));
         const bytes = await visible(progress.getByRole('progressbar', { name: 'Save bytes received', exact: true }));
-        const values = await bytes.evaluate(el => ({ value: el.value, max: el.max }));
-        if (values.value !== 1048576 || values.max !== 4194304) throw new Error('Receiving byte progress differs from the strict fixture');
+        const values = await bytes.evaluate(el => ({ value: el.value, max: el.max, description: el.getAttribute('aria-valuetext') }));
+        if (values.value !== 1048576 || values.max !== 4194304 || values.description !== '1 MiB of 4 MiB')
+          throw new Error('Receiving byte progress or its accessible description differs from the strict fixture');
       }
       const primary = next.locator('button:not(.secondary):not(.text-button)');
       if (verified) {
@@ -571,6 +577,58 @@ async function independentScrollEvidence(page, record) {
   await sidebar.evaluate((el, top) => { el.scrollTop = top; }, initial[0].top);
 }
 
+function scrollCaptureOffsets(height, contentHeight) {
+  if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(contentHeight) || contentHeight < 0)
+    throw new Error('Scroll capture requires finite positive pane height and nonnegative content height');
+  const maximum = Math.max(0, contentHeight - height);
+  if (maximum === 0) return [0];
+  const intervals = Math.ceil(maximum / (height * .85));
+  // Fixture content is finite. Fail explicitly if unexpected geometry would
+  // produce an excessive artifact rather than silently omitting any content.
+  if (intervals > 128) throw new Error('Scroll pane needs more than 129 screenshots; complete coverage was not captured');
+  return Array.from({ length: intervals + 1 }, (_, index) => index === intervals ? maximum : maximum * index / intervals);
+}
+
+function scrollCaptureCoverage(contentHeight, ranges, tolerance = 1) {
+  if (!Number.isFinite(contentHeight) || contentHeight < 0 || !Number.isFinite(tolerance) || tolerance < 0)
+    throw new Error('Scroll coverage requires finite nonnegative dimensions');
+  let end = 0;
+  const gaps = [];
+  for (const range of [...ranges].sort((left, right) => left.start - right.start)) {
+    if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.end < range.start)
+      throw new Error('Scroll coverage contains an invalid captured range');
+    const start = Math.max(0, Math.min(contentHeight, range.start)), next = Math.max(0, Math.min(contentHeight, range.end));
+    if (start > end + tolerance) gaps.push({ start: end, end: start });
+    end = Math.max(end, next);
+  }
+  if (end < contentHeight - tolerance) gaps.push({ start: end, end: contentHeight });
+  return { complete: gaps.length === 0, contentHeight, coveredThrough: end, tolerance, gaps };
+}
+
+function scrollCaptureVisibleRange(el) {
+  const bounds = el.getBoundingClientRect(), contentTop = bounds.top + el.clientTop;
+  let clipTop = 0, clipBottom = innerHeight;
+  const clippedBy = [{ name: 'viewport', top: 0, bottom: innerHeight }], modal = el.closest('dialog:modal');
+  // A modal is painted in the browser top layer. Its DOM ancestors outside the
+  // modal do not clip it, while ordinary nested readers retain ancestor clips.
+  if (el !== modal) for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    if (/^(auto|scroll|hidden|clip)$/.test(getComputedStyle(parent).overflowY)) {
+      const parentBounds = parent.getBoundingClientRect(), top = parentBounds.top + parent.clientTop;
+      const bottom = top + parent.clientHeight;
+      if (top > clipTop || bottom < clipBottom) clippedBy.push({
+        name: parent.getAttribute('aria-label') || parent.className || parent.tagName, top, bottom
+      });
+      clipTop = Math.max(clipTop, top); clipBottom = Math.min(clipBottom, bottom);
+    }
+    if (parent === modal) break;
+  }
+  const visibleTop = Math.max(0, Math.min(el.clientHeight, clipTop - contentTop));
+  const visibleBottom = Math.max(visibleTop, Math.min(el.clientHeight, clipBottom - contentTop));
+  return { scrollTop: el.scrollTop, start: Math.min(el.scrollHeight, el.scrollTop + visibleTop),
+    end: Math.min(el.scrollHeight, el.scrollTop + visibleBottom), visibleHeight: visibleBottom - visibleTop,
+    clippedBy: visibleBottom - visibleTop < el.clientHeight - 1 ? clippedBy : [] };
+}
+
 async function captureScrollEvidence(page, record, output) {
   if (record.id.startsWith('tooltip-') || record.id.startsWith('dialog-selected-server-picker')) return;
   const panes = page.locator('.workspace-scroll, .workspace-scroll *, .context-content, .context-content *, dialog[open], dialog[open] *');
@@ -598,6 +656,7 @@ async function captureScrollEvidence(page, record, output) {
     const geometry = await pane.evaluate(el => ({ top: el.scrollTop, height: el.clientHeight, contentHeight: el.scrollHeight,
       name: el.getAttribute('aria-label') || el.className }));
     if (geometry.contentHeight <= geometry.height + 10) continue;
+    const offsets = scrollCaptureOffsets(geometry.height, geometry.contentHeight);
     // Reveal nested readers such as .host-sharing-pane before recording their
     // offsets, then restore the surrounding workspace/dialog reading position.
     const ancestorScroll = await pane.evaluate(el => {
@@ -607,24 +666,37 @@ async function captureScrollEvidence(page, record, output) {
       return positions;
     });
     await pane.scrollIntoViewIfNeeded();
-    const maximum = geometry.contentHeight - geometry.height;
-    const offsets = [...new Set([0, ...(geometry.contentHeight > geometry.height * 2 ? [Math.round(maximum / 2)] : []), maximum])];
-    for (const top of offsets) {
-      await pane.evaluate((el, value) => { el.scrollTop = value; }, top);
-      await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
-      const position = top === 0 ? 'top' : top === maximum ? 'bottom' : 'middle';
-      const filename = `${record.id}--pane-${index}-${position}.png`;
-      await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
-      record.screenshots.push({ file: filename, kind: 'scroll-pane', pane: geometry.name, position, scrollTop: top });
-    }
-    record.scrollEvidence.push({ ...geometry, capturedOffsets: offsets });
-    await pane.evaluate((el, top) => { el.scrollTop = top; }, geometry.top);
-    await pane.evaluate((el, positions) => {
-      let index = 0;
-      for (let parent = el.parentElement; parent; parent = parent.parentElement) {
-        parent.scrollTop = positions[index].top; parent.scrollLeft = positions[index].left; index++;
+    const evidence = { ...geometry, paneIndex: index, plannedOffsets: offsets, capturedOffsets: [], coveredRanges: [] };
+    record.scrollEvidence.push(evidence);
+    try {
+      for (let segment = 0; segment < offsets.length; segment++) {
+        await pane.evaluate((el, value) => { el.scrollTop = value; }, offsets[segment]);
+        await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+        // Use actual browser scroll offsets and the viewport intersection, so
+        // rounding or a clipped pane cannot turn missing pixels into a pass.
+        const range = await pane.evaluate(scrollCaptureVisibleRange);
+        const position = segment === 0 ? 'top' : segment === offsets.length - 1 ? 'bottom'
+          : offsets.length === 3 ? 'middle' : `segment-${String(segment + 1).padStart(2, '0')}-of-${String(offsets.length).padStart(2, '0')}`;
+        const filename = `${record.id}--pane-${index}-${position}.png`;
+        await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
+        record.screenshots.push({ file: filename, kind: 'scroll-pane', pane: geometry.name, position, ...range });
+        evidence.capturedOffsets.push(range.scrollTop);
+        evidence.coveredRanges.push({ file: filename, ...range });
       }
-    }, ancestorScroll);
+      evidence.coverage = scrollCaptureCoverage(geometry.contentHeight, evidence.coveredRanges);
+      if (!evidence.coverage.complete) {
+        record.layoutFindings.push({ kind: 'scroll-capture-incomplete', pane: geometry.name, ...evidence.coverage });
+        throw new Error(`Scrollable pane ${geometry.name} has unpictured content: ${JSON.stringify(evidence.coverage.gaps)}`);
+      }
+    } finally {
+      await pane.evaluate((el, top) => { el.scrollTop = top; }, geometry.top);
+      await pane.evaluate((el, positions) => {
+        let index = 0;
+        for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+          parent.scrollTop = positions[index].top; parent.scrollLeft = positions[index].left; index++;
+        }
+      }, ancestorScroll);
+    }
   }
 }
 
@@ -797,9 +869,20 @@ try {
       if (!hasDialog && !testCase.action?.startsWith('tooltip') && testCase.action !== 'picker') {
         await page.mouse.move(0, 0);
         if (await page.getByRole('tooltip').count()) {
-          await page.keyboard.press('Escape');
+          const headerMenu = page.locator('.header-tools > details[open]');
+          if (await headerMenu.count()) {
+            // Escape correctly closes the menu too. Move keyboard focus into
+            // its real first control to dismiss only the trigger tooltip.
+            await page.keyboard.press('Tab');
+            await visible(headerMenu);
+            if (!await headerMenu.evaluate(el => el.contains(document.activeElement)))
+              throw new Error('Tooltip cleanup moved keyboard focus outside the open header menu');
+            record.actions.push({ action: 'dismiss-page-tooltip', method: 'hover-exit-and-Tab-inside-header-menu' });
+          } else {
+            await page.keyboard.press('Escape');
+            record.actions.push({ action: 'dismiss-page-tooltip', method: 'hover-exit-and-Escape' });
+          }
           await page.getByRole('tooltip').waitFor({ state: 'hidden', timeout: 8000 });
-          record.actions.push({ action: 'dismiss-page-tooltip', method: 'hover-exit-and-Escape' });
         }
       }
       record.screenBounds = await screen.boundingBox();
@@ -808,7 +891,11 @@ try {
       }
       if (hasDialog && !record.dialogInitialFocus.insideDialog) record.layoutFindings.push({ kind: 'dialog-initial-focus-outside', ...record.dialogInitialFocus });
       if (hasDialog && record.dialogInitialFocus.closeControl) record.layoutFindings.push({ kind: 'dialog-initial-focus-on-close', ...record.dialogInitialFocus });
-      if (testCase.action === 'picker') await pickerEvidence(page, record);
+      if (testCase.action === 'picker') {
+        if (hasDialog) record.pickerEvidence = { state: 'under-active-modal', expectedInert: true,
+          evidence: 'The asserted confirmation dialog is the active surface; underlying picker buttons are expected to fail hit testing.' };
+        else await pickerEvidence(page, record);
+      }
       record.layoutFindings.push(...await layoutFindings(page));
       const filename = `${record.id}.png`;
       await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });

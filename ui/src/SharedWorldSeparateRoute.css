@@ -1,0 +1,32 @@
+.shared-separate-copy,
+[aria-label="Owner recovery from peer history"] { min-inline-size: 0; }
+.shared-separate-copy[open],
+[aria-label="Owner recovery from peer history"] { display: grid; gap: 12px; }
+.shared-separate-copy :is(section, details, label, .actions),
+[aria-label="Owner recovery from peer history"] > * { min-inline-size: 0; max-inline-size: 100%; }
+[aria-label="Owner recovery from peer history"] > label { display: flex; align-items: flex-start; gap: 8px; font-size: .78rem; line-height: 1.5; }
+[aria-label="Owner recovery from peer history"] > label > input[type="checkbox"] { flex: 0 0 auto; margin-block-start: 3px; }
+[aria-label="Owner recovery from peer history"] > .ui-button { justify-self: start; min-inline-size: 0; max-inline-size: 100%; white-space: normal; overflow-wrap: anywhere; }
+.shared-separate-copy :is(p, li),
+[aria-label="Owner recovery from peer history"] > p { margin: 0; font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
+.shared-separate-copy summary { cursor: pointer; font-size: .8rem; line-height: 1.5; }
+.shared-separate-copy [aria-label="Host this separate copy"] { display: grid; gap: 12px; }
+.shared-separate-copy .separate-copy-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-inline-size: 0; }
+.shared-separate-copy .separate-copy-fields:empty { display: none; }
+.shared-separate-copy .separate-copy-fields > :is(div, p, details, button, .separate-copy-consent) { grid-column: 1 / -1; }
+.shared-separate-copy .separate-copy-fields > div { display: grid; gap: 6px; }
+.shared-separate-copy label { display: grid; gap: 6px; font-size: .78rem; line-height: 1.5; }
+.shared-separate-copy label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 8px; }
+.shared-separate-copy input[type="checkbox"] { flex: 0 0 auto; margin-block-start: 3px; }
+.shared-separate-copy :is(.ui-input:not([type="checkbox"]), .ui-textarea) { inline-size: 100%; min-inline-size: 0; max-inline-size: 100%; box-sizing: border-box; }
+.shared-separate-copy .ui-button { justify-self: start; min-inline-size: 0; max-inline-size: 100%; white-space: normal; overflow-wrap: anywhere; }
+.shared-separate-copy .separate-copy-guidance { padding: 10px 12px; border: 1px solid var(--color-border-subtle); border-radius: 8px; color: var(--color-text-muted); }
+.shared-separate-copy .separate-copy-guidance[open] { display: grid; gap: 8px; }
+.shared-separate-copy .separate-copy-guidance code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.shared-separate-copy .separate-copy-start-review { display: grid; gap: 10px; }
+.shared-separate-copy .separate-copy-start-review > .start-connection-notice { margin: 0; padding: 12px; }
+.shared-separate-copy summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 4px; }
+@media (max-width: 640px) {
+  .shared-separate-copy .separate-copy-fields { grid-template-columns: minmax(0, 1fr); }
+  .shared-separate-copy .ui-button { min-block-size: 44px; }
+}

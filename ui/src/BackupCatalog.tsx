@@ -127,8 +127,10 @@ function RestoreBackupReview({ review, unavailableReason, working, onConfirm, on
   onCancel: () => void
 }) {
   const [accepted, setAccepted] = useState(false)
+  const reviewElement = useRef<HTMLElement>(null)
+  useEffect(() => { reviewElement.current?.focus() }, [])
   const backup = review.backup
-  return <section aria-label="Review Restore" className="recent-session-card backup-library-restore" aria-busy={working}>
+  return <section ref={reviewElement} tabIndex={-1} aria-label="Review Restore" className="recent-session-card backup-library-restore" aria-busy={working}>
     <h4><Icon name="warning" size={19} />Review Restore</h4>
     <dl>
       <dt>Name</dt><dd>{backup.label || 'Unnamed backup'}</dd>
@@ -141,12 +143,13 @@ function RestoreBackupReview({ review, unavailableReason, working, onConfirm, on
       <dt>Restore scope</dt><dd>World only. This action does not restore protected setup or game binaries.</dd>
     </dl>
     <p>{review.checkpoint}</p><p>{unavailableReason || review.reason}</p>
-    <p>The selected backup is verified again. After Restore, test the world in the game and check a recognizable saved change after restart.</p>
     <label className="check"><Input type="checkbox" checked={accepted} disabled={working}
       onChange={event => setAccepted(event.target.checked)} />I reviewed this backup and the current world replacement.</label>
     <div className="actions"><Button className="secondary" disabled={working || !accepted || !review.canRestore || !!unavailableReason}
       onClick={onConfirm}>{working ? 'Restoring…' : 'Restore reviewed backup'}</Button>
       <Button className="text-button" disabled={working} onClick={onCancel}>Cancel Restore</Button></div>
+    <details className="backup-restore-followup"><summary>After Restore</summary>
+      <p>The selected backup is verified again. After Restore, test the world in the game and check a recognizable saved change after restart.</p></details>
   </section>
 }
 
@@ -291,6 +294,12 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
       </div>}
       {notice && <DismissibleNotice as="p" scope={profileId} role="status">{notice}</DismissibleNotice>}
       {working && <p className="backup-library-progress" role="status"><Icon name="loader" />{working.action} is in progress for the selected backup.</p>}
+      {review && onRestore && <RestoreBackupReview key={JSON.stringify([profileId, review.backup.backupId, review.backup.createdUtc, review.backup.payloadSha256, review.currentWorld, currentGame, offline])}
+        review={review} unavailableReason={unavailableReasons.restore} working={!!working} onCancel={() => setRestoreId(null)} onConfirm={() => {
+          if (!review.canRestore || unavailableReasons.restore) return
+          void run(review.backup, 'Restore', (_backup, signal) => onRestore(review, signal))
+        }} />}
+      {restoreId && !review && <DismissibleNotice as="p" scope={profileId} noticeKey={restoreId}>The reviewed backup is no longer in this catalog. Choose a completed copy again.</DismissibleNotice>}
       <div className="backup-library-toolbar" role="search" aria-label="Find backups">
         <label className="backup-library-search" htmlFor={`${titleId}-query`}>
           <span>Search backups</span>
@@ -343,12 +352,6 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
       </BackupBookmarkEditor>)}</div>
       {!expanded && filtered.length > shown.length && <Button className="secondary backup-library-show-more" onClick={() => setExpanded(true)}><Icon name="chevronDown" />Show {filtered.length - shown.length} more backups</Button>}
       {compare.length === 2 && <BackupComparison left={compare[0]} right={compare[1]} />}
-      {review && onRestore && <RestoreBackupReview key={JSON.stringify([profileId, review.backup.backupId, review.backup.createdUtc, review.backup.payloadSha256, review.currentWorld, currentGame, offline])}
-        review={review} unavailableReason={unavailableReasons.restore} working={!!working} onCancel={() => setRestoreId(null)} onConfirm={() => {
-          if (!review.canRestore || unavailableReasons.restore) return
-          void run(review.backup, 'Restore', (_backup, signal) => onRestore(review, signal))
-        }} />}
-      {restoreId && !review && <DismissibleNotice as="p" scope={profileId} noticeKey={restoreId}>The reviewed backup is no longer in this catalog. Choose a completed copy again.</DismissibleNotice>}
       {catalog.moreBackupsAvailable && <p className="backup-library-coverage"><Icon name="warning" size={17} />Only 100 retained backups are loaded, with pins first. Filters and comparisons cover these rows; exact retention candidates require the complete catalog.</p>}
       <div className="backup-library-secondary">
         <details className="backup-library-policy"><summary><Icon name="shield" size={17} />Protection and retention details</summary>
