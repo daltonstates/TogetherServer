@@ -127,6 +127,7 @@ beforeEach(() => {
   host().runs[0].playerCountObservedUtc = new Date().toISOString()
   transport.read.mockReset().mockImplementation(async (path: string) => {
     if (path === '/api/local/snapshot') return state
+    if (path === '/api/local/profile') return { displayName: '' }
     if (path === '/api/local/data-recovery') return { lifecycleBlocked: recoveryBlocked, notices: [] }
     if (path === '/api/local/instance') return instance
     if (path === '/api/local/companion') return companion
@@ -290,7 +291,7 @@ describe('Task-first app and Host PC navigation', () => {
       expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
       const sections = within(within(settings).getByRole('navigation', { name: 'App settings sections' }))
       expect(sections.getAllByRole('button').map(button => button.textContent)).toEqual([
-        'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+        'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
       ])
       fireEvent.click(sections.getByRole('button', { name: 'Windows behavior' }))
       expect(await within(settings).findByRole('heading', { name: 'Windows behavior' })).toBeVisible()
@@ -313,7 +314,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
     const sections = within(settings).getByRole('navigation', { name: 'App settings sections' })
     expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+      'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
     ])
     expect(within(sections).getByRole('button', { name: 'Appearance' })).toHaveAttribute('aria-current', 'page')
     expect(within(settings).getByRole('combobox', { name: 'Theme' })).toBeVisible()
@@ -335,7 +336,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
     const sections = within(settings).getByRole('navigation', { name: 'App settings sections' })
     expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+      'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
     ])
     expect(within(sections).getByRole('button', { name: 'Appearance' })).toHaveAttribute('aria-current', 'page')
     expect(within(settings).getByRole('combobox', { name: 'Theme' })).toHaveValue('dark')
@@ -359,6 +360,33 @@ describe('Task-first app and Host PC navigation', () => {
     expect(await screen.findByRole('combobox', { name: 'Theme' })).toHaveValue('light')
     expect(screen.getByRole('combobox', { name: 'Layout' })).toHaveValue('compact')
     expectNoMutation()
+  })
+
+  it.each(['Host', 'Friend'] as const)('sets a shared name from the %s sidebar and keeps the draft between Settings pages', async mode => {
+    if (mode === 'Friend') state = friend()
+    transport.change.mockImplementation(async (...args: unknown[]) =>
+      args[0] === '/api/local/profile'
+        ? { ok: true, code: 'ProfileSaved', message: 'Saved', displayName: (args[3] as { displayName: string }).displayName }
+        : { ok: true, code: 'Requested', message: 'Request accepted.', snapshot: state })
+    render(<App />)
+    await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: 'Set your name' }))
+    const settings = await screen.findByRole('region', { name: 'App Settings' })
+    const navigation = within(within(settings).getByRole('navigation', { name: 'App settings sections' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Your name' })).toBeEnabled())
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'Alex' } })
+    fireEvent.click(navigation.getByRole('button', { name: 'Appearance' }))
+    fireEvent.click(navigation.getByRole('button', { name: 'Profile' }))
+    expect(screen.getByRole('textbox', { name: 'Your name' })).toHaveValue('Alex')
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
+    await screen.findByText('Profile saved. Your name is shared with connected PCs.')
+    fireEvent.click(workspaces().getByRole('button', { name: mode === 'Host' ? 'Host' : 'Join' }))
+    await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
+    expect(screen.getByText('Sharing as', { exact: false })).toHaveTextContent('Sharing as Alex')
+    expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/profile'])
+    expectNoServerAction()
+    expect(state.mode).toBe(mode)
   })
 
   it('opens Friend access from This Host PC and returns to the same selected server', async () => {

@@ -18,6 +18,11 @@ const device: Device = {
 }
 
 describe('Friend access summary and review', () => {
+  it('finds a Friend by their shared person name without losing PC label search', () => {
+    const named = { ...device, profileName: 'Sam Rivera' }
+    for (const search of ['sam rivera', ' LIVING ROOM '])
+      expect(filterFriendPcs([named], servers, { ...defaultFriendPcFilters, search }, nowMs)).toEqual([named])
+  })
   it('preserves mixed exact-server grants instead of treating Start as a log or timer grant', () => {
     const view = effectiveDeviceAccess(device, servers, nowMs)
     expect(view.rows[0]).toMatchObject({ exception: false, effectivePermissions: { canStart: true, canStop: false, canViewLogs: false, canExtendTimer: false } })

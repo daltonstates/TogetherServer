@@ -298,7 +298,7 @@ export function filterFriendPcs(devices: readonly Device[], servers: readonly Fr
       (filters.status === 'revoked' && view.state === 'Revoked') ||
       (filters.status === 'unassigned' && view.rows.length === 0)
     if (!statusMatches) return false
-    const searchable = [device.name, view.label, ...view.rows.map(row => row.name)].join(' ').toLocaleLowerCase()
+    const searchable = [device.profileName ?? '', device.name, view.label, ...view.rows.map(row => row.name)].join(' ').toLocaleLowerCase()
     return !search || searchable.includes(search)
   }).sort((left, right) => {
     const rank = (device: Device) => {
@@ -319,7 +319,7 @@ export type FriendPcFiltersProps = {
 
 export function FriendPcFilters({ value, servers, resultCount, totalCount, onChange }: FriendPcFiltersProps) {
   return <div className="friend-pc-filters" role="group" aria-label="Filter Friend PCs">
-    <label><span className="friend-filter-label"><Icon name="search" size={15} />Search Friend PCs</span><Input type="search" maxLength={200} value={value.search} placeholder="PC or assigned server name" onChange={event => onChange({ ...value, search: event.target.value })} /></label>
+    <label><span className="friend-filter-label"><Icon name="search" size={15} />Search Friend PCs</span><Input type="search" maxLength={200} value={value.search} placeholder="Person, PC or assigned server name" onChange={event => onChange({ ...value, search: event.target.value })} /></label>
     <label><span className="friend-filter-label"><Icon name="monitor" size={15} />PC status</span><Select value={value.status} onChange={event => onChange({ ...value, status: event.target.value as FriendPcFiltersValue['status'] })}>
       <option value="all">Current PCs</option><option value="connected">Connected</option><option value="unknown">Connection Unknown or refresh needed</option>
       <option value="approval">Waiting for approval</option><option value="expired">Access expired</option><option value="helper">Temporary helper</option>

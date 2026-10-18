@@ -181,6 +181,8 @@ WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, mode
     () => friendMode, () => updatePending || shutdownPending);
 ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
     () => !friendMode && !updatePending && !shutdownPending);
+UserProfileLocalRoutes.Map(app, data.UserProfile, modeGate,
+    () => !updatePending && !shutdownPending);
 // As with the existing save action, HostManager owns capture serialization.
 // Do not hold modeGate through a long adapter wait: safe Stop and exact-request
 // cancellation must remain able to enter their existing lifecycle paths.
@@ -1017,7 +1019,7 @@ app.MapPost("/api/local/profiles/{id:guid}/chat/messages", (Guid id, ChatPostReq
         return Results.BadRequest(new { code = "InvalidChatText", message = "Write a message of at most 500 characters." });
     try
     {
-        serverChat.Post(room.HostId, id, Guid.Empty, "Host", request.Text!);
+        serverChat.Post(room.HostId, id, Guid.Empty, data.UserProfile.SharedName ?? "Host", request.Text!);
         return Results.Json(HostChatRoom(id));
     }
     catch (Exception ex) when (ex is IOException or InvalidDataException or

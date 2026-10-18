@@ -13,6 +13,7 @@ namespace TogetherServer;
 public sealed class FriendConfiguration
 {
     public string DisplayName { get; set; } = "";
+    public string? HostProfileName { get; set; }
     public string Endpoint { get; set; } = "";
     public string Fingerprint { get; set; } = "";
     public List<string>? AcceptedFingerprints { get; set; }
@@ -69,7 +70,7 @@ public sealed record PublicProfile(Guid Id, string Name, string State, string? J
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null,
     HostCertificateState? Certificates = null, ConnectionRoute? Route = null,
-    IReadOnlyList<ActivityEvent>? Activity = null);
+    IReadOnlyList<ActivityEvent>? Activity = null, string? HostProfileName = null);
 public sealed record ChatProfile(Guid Id, string Name, bool Supported);
 public sealed record FriendView(string Mode, string State, string Detail, string Endpoint, DateTimeOffset? LastConnectedUtc,
     bool RemoteControlsEnabled, bool CanStart, bool CanStop, IReadOnlyList<PublicProfile> Profiles,
@@ -81,7 +82,7 @@ public sealed record FriendView(string Mode, string State, string Detail, string
     string? ExpiryWarning = null, string RouteMode = ConnectionRouteModes.DirectInternet,
     string? RouteAddress = null, Guid HostId = default, string? ConnectionName = null,
     IReadOnlyList<ActivityEvent>? Activity = null,
-    IReadOnlyList<ChatProfile>? ChatProfiles = null);
+    IReadOnlyList<ChatProfile>? ChatProfiles = null, string? HostProfileName = null);
 public sealed record FriendActionResult(bool Ok, string Code, string Message, CompanionStatus? Status,
     IReadOnlyList<PortConflictView>? PortConflicts = null, Guid? OperationId = null,
     string? OperationState = null);
@@ -203,6 +204,7 @@ internal sealed partial class FriendLink : IDisposable
         {
             if (string.IsNullOrWhiteSpace(config.DisplayName))
                 config.DisplayName = HostLabel(config.Endpoint);
+            config.HostProfileName = UserProfileName.TryNormalize(config.HostProfileName, out var savedName) ? savedName : null;
             config.AcceptedFingerprints = ValidFingerprints(config.AcceptedFingerprints)
                 .Append(config.Fingerprint).Where(ValidFingerprint).Distinct(StringComparer.Ordinal).ToList();
             config.Route = ConnectionRoutes.Normalize(config.Route);
@@ -219,7 +221,7 @@ internal sealed partial class FriendLink : IDisposable
             ? new("Friend", "Not connected", "Paste the server code from the Host PC.", "", null, false, false, false, [], [])
             : new("Friend", "Disconnected/Unknown", "Waiting for a verified Host response.", config.Endpoint,
                 null, false, false, false, [], [], ConnectionName: config.DisplayName,
-                ChatProfiles: CachedChatProfiles());
+                ChatProfiles: CachedChatProfiles(), HostProfileName: config.HostProfileName);
         if (config?.KnownRevoked == true) ApplyKnownRevocation();
     }
 
@@ -334,9 +336,10 @@ internal sealed partial class FriendLink : IDisposable
                 return new(false, "HostAddressMismatch", "The Host address does not match this server code. Check the address with the Host.", null);
             try
             {
-                using var pairingClient = MakeClient(invite.Endpoint, [invite.Fingerprint]);
+                using var pairingClient = makeClient(invite.Endpoint, [invite.Fingerprint]);
                 using var response = await pairingClient.PostAsync("api/companion/pair", new StringContent(
-                    JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope), Json), Encoding.UTF8, "application/json"));
+                    JsonSerializer.Serialize(new PairingActivation(invite.DeviceId, invite.Code, invite.ServerScope,
+                        data.UserProfile.View().DisplayName), Json), Encoding.UTF8, "application/json"));
                 if (!response.IsSuccessStatusCode)
                     return response.StatusCode == HttpStatusCode.TooManyRequests
                         ? new(false, "HostBusy", "There were too many connection attempts. Wait a moment, then try again.", null)
@@ -345,11 +348,13 @@ internal sealed partial class FriendLink : IDisposable
                             : new(false, "HostUnavailable", $"The Host app returned {(int)response.StatusCode} while connecting. Ask the Host to check its app.", null);
                 var credential = await response.Content.ReadFromJsonAsync<PairingCredential>(Json);
                 if (credential is null || credential.DeviceId == Guid.Empty ||
-                    (!invite.ServerScope && credential.DeviceId != invite.DeviceId) || credential.Credential.Length < 32)
+                    (!invite.ServerScope && credential.DeviceId != invite.DeviceId) || credential.Credential.Length < 32 ||
+                    !UserProfileName.TryNormalize(credential.HostProfileName, out var hostProfileName))
                     return new(false, "PairingRejected", "The Host returned invalid access information.", null);
                 config = new FriendConfiguration
                 {
                     DisplayName = HostLabel(invite.Endpoint),
+                    HostProfileName = hostProfileName,
                     Endpoint = invite.Endpoint,
                     Fingerprint = invite.Fingerprint,
                     DeviceId = credential.DeviceId,
@@ -368,7 +373,8 @@ internal sealed partial class FriendLink : IDisposable
                 view = new FriendView("Friend", credential.ApprovalPending ? "Awaiting approval" : "Disconnected/Unknown",
                     credential.ApprovalPending ? "Connected securely. Waiting for the Host to approve this PC."
                         : "Connected. Waiting for the Host to respond.",
-                    config.Endpoint, null, false, false, false, [], [], ConnectionName: config.DisplayName);
+                    config.Endpoint, null, false, false, false, [], [], ConnectionName: config.DisplayName,
+                    HostProfileName: config.HostProfileName);
                 return new(true, credential.ApprovalPending ? "ApprovalPending" : "Paired",
                     credential.ApprovalPending
                         ? "This PC was saved securely. The Host must approve it before it can connect."
@@ -419,7 +425,8 @@ internal sealed partial class FriendLink : IDisposable
                 }
                 var hostClient = HostClient();
                 var heartbeat = new HeartbeatRequest(config.DeviceId, instanceId, ++sequence,
-                    CompanionProtocol.AppVersion, CompanionProtocol.Current, CompanionProtocol.Capabilities);
+                    CompanionProtocol.AppVersion, CompanionProtocol.Current, CompanionProtocol.Capabilities,
+                    data.UserProfile.View().DisplayName);
                 using var request = new HttpRequestMessage(HttpMethod.Post, "api/companion/heartbeat")
                 {
                     Content = new StringContent(JsonSerializer.Serialize(heartbeat, Json), Encoding.UTF8, "application/json")
@@ -954,6 +961,12 @@ internal sealed partial class FriendLink : IDisposable
         }
         config.CachedProfiles = status.Profiles.ToList();
         ApplyHostMetadata(status.Certificates, status.Route);
+        var hostProfileName = UserProfileName.TryNormalize(status.HostProfileName, out var name) ? name : null;
+        if (config.HostProfileName != hostProfileName)
+        {
+            config.HostProfileName = hostProfileName;
+            SaveConfig();
+        }
         var compatible = CompanionProtocol.Supports(status.Protocol);
         var warning = ExpiryWarning();
         view = new FriendView("Friend", !compatible ? "Update required" :
@@ -969,7 +982,7 @@ internal sealed partial class FriendLink : IDisposable
             CertificateExpiresUtc: config.CertificateExpiresUtc, ExpiryWarning: warning,
             RouteMode: config.Route?.Mode ?? ConnectionRouteModes.DirectInternet,
             RouteAddress: config.Route?.Address, HostId: config.HostId,
-            ConnectionName: config.DisplayName, Activity: status.Activity);
+            ConnectionName: config.DisplayName, Activity: status.Activity, HostProfileName: config.HostProfileName);
         view = view with { ChatProfiles = CachedChatProfiles() };
     }
 

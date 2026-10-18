@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ApiError, changeJson, errorMessage, getJson, getLocalJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
+import { ProfileAccess, useLocalProfile } from './ProfileSettings'
 import { AppSettings } from './AppSettings'
 import { SectionSidebar } from './SectionSidebar'
 import { SearchablePicker } from './SearchablePicker'
@@ -323,6 +324,7 @@ export function App() {
   const [selectedFriendProfileId, setSelectedFriendProfileId] = useState('')
   const [serverToolsProfileId, setServerToolsProfileId] = useState('')
   const [showAllServers, setShowAllServers] = useState(false)
+  const localProfile = useLocalProfile()
   const [appSettingsBusy, setAppSettingsBusy] = useState(false)
   const [serverNotification, setServerNotification] = useState<{ id: string; name: string; connectionId?: string } | null>(null)
   const [serverNotificationBusy, setServerNotificationBusy] = useState(false)
@@ -376,7 +378,7 @@ export function App() {
     else draftGuards.current.delete('chat')
   }, [])
   const beforeChangingScope = async (reviewSettings = true): Promise<boolean> => {
-    if (appSettingsBusy || serverNotificationBusy || workspacePage === 'settings' && (desktopBusy || updateBusy)) {
+    if (localProfile.saving || appSettingsBusy || serverNotificationBusy || workspacePage === 'settings' && (desktopBusy || updateBusy)) {
       setNotice({ good: false, text: 'Wait for the preference change to finish before leaving this page.' })
       return false
     }
@@ -1995,7 +1997,7 @@ export function App() {
       {workspacePage === 'settings' && snapshot && <section className="context-workspace app-settings-workspace" aria-label="App Settings">
         <aside className="context-sidebar" aria-label="App settings navigation" tabIndex={0}><SectionSidebar title="App Settings" label="App settings sections"
           sections={appSections} section={appSection} onSelect={section => void changeScope(() => setAppSection(section))} /></aside>
-        <div className="context-content settings-content"><AppSettings preferences={uiPreferences} onPreferencesChange={setUiPreferences}
+        <div className="context-content settings-content"><AppSettings profile={localProfile} preferences={uiPreferences} onPreferencesChange={setUiPreferences}
           section={appSection} onSectionChange={section => void changeScope(() => setAppSection(section))} onBusyChange={setAppSettingsBusy}
           desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
           onDesktopChange={patch => void saveDesktopPreference(patch)} notice={notice} onClearNotice={() => setNotice(null)}
@@ -2004,6 +2006,7 @@ export function App() {
 
       {workspacePage === 'join' && snapshot?.mode === 'Friend' && <section className="context-workspace join-context-workspace">
         <aside className="context-sidebar" aria-label="Join navigation" tabIndex={0}>
+          <ProfileAccess profile={localProfile} onOpen={() => void changeScope(() => { setWorkspacePage('settings'); setAppSection('profile') })} />
           {(snapshot.connections?.length ?? 0) > 0 && <FriendHostPicker connections={snapshot.connections ?? []}
             selectedId={snapshot.connectionId} showRemoved={showRemovedHosts} favorites={uiPreferences.favoriteHosts} busy={!!pending}
             onShowRemoved={setShowRemovedHosts} onSelect={id => void selectFriendConnection(id)}
@@ -2031,7 +2034,7 @@ export function App() {
         <section className="panel friend-panel friend-primary">
           {(showPairing || !snapshot.endpoint || friendConnectionHidden) && <div className="section-heading"><div><h2>{snapshot.endpoint && !friendConnectionHidden ? 'Add another Host' : 'Join a server'}</h2><p>Ask the Host for the current server code.</p></div></div>}
           {snapshot.endpoint && !showPairing && !friendConnectionHidden ? <>
-            <div className="join-host-caption"><Icon name="monitor" /><span>Host: <strong>{snapshot.connectionName || 'Saved Host'}</strong></span></div>
+            <div className="join-host-caption"><Icon name="monitor" /><span>Host: <strong>{snapshot.hostProfileName?.trim() || snapshot.connectionName || 'Saved Host'}</strong>{snapshot.hostProfileName?.trim() && snapshot.connectionName && <small> / Saved as: {snapshot.connectionName}</small>}</span></div>
             <div className={pending === 'poll' ? 'compact-status refreshing' : 'compact-status'} aria-busy={pending === 'poll'}><span className={`status ${statusTone(snapshot.state)}`}>{pending === 'poll' && <Icon name="loader" />}{snapshot.state === 'Disconnected/Unknown' ? 'Connection unknown' : snapshot.state === 'Disabled' ? 'Connected · controls paused' : snapshot.state}</span>
               {(joinSection === 'network' || joinSection === 'connection') && <span>{snapshot.lastConnectedUtc ? `Last reached ${Math.max(0, Math.floor((nowMs - Date.parse(snapshot.lastConnectedUtc)) / 60000))} min ago · ${new Date(snapshot.lastConnectedUtc).toLocaleString()}` : 'Waiting for a reply from the Host'}</span>}</div>
             {snapshot.expiryWarning && <DismissibleNotice scope={snapshot.connectionId} className="notice bad" role="status">{snapshot.expiryWarning}</DismissibleNotice>}
@@ -2183,6 +2186,7 @@ export function App() {
 
       {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <section className="context-workspace host-context-workspace">
         <aside className="context-sidebar" aria-label="Host navigation" tabIndex={0}>
+          <ProfileAccess profile={localProfile} onOpen={() => void changeScope(() => { setWorkspacePage('settings'); setAppSection('profile') })} />
           <div className="host-sidebar-primary">
           {savedProfiles.length > 0 && <SearchablePicker label="Selected server" selectedId={selectedHostProfile?.id ?? ''}
             items={visibleHostProfiles.map(profile => ({ id: profile.id, name: profile.name, detail: profileGameLabel(profile), keywords: profile.worldId,
@@ -2537,7 +2541,7 @@ export function App() {
               selectedProfileId={selectedHostProfileId} profileOrder={savedProfiles.map(profile => profile.id)} onSelectedProfileIdChange={setSelectedHostProfileId} /></PaneErrorBoundary>}
           </div>
         </section>}
-        {workspacePage === 'host' && hostScope === 'pc' && serverAccessDevice && <SettingsDialog title={`Manage access for ${serverAccessDevice.name}`} wide busy={!!pending || deadlineDraftState.saving}
+        {workspacePage === 'host' && hostScope === 'pc' && serverAccessDevice && <SettingsDialog title={`Manage access for ${serverAccessDevice.profileName?.trim() ? `${serverAccessDevice.profileName.trim()} (PC: ${serverAccessDevice.name})` : serverAccessDevice.name}`} wide busy={!!pending || deadlineDraftState.saving}
           description="Permissions, servers, access time, and PC details." onClose={closeDeviceServerAccess}
           footer={<><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={closeDeviceServerAccess}>{deviceAccessTab === 'servers' ? 'Cancel' : 'Done'}</Button>
             {deviceAccessTab === 'servers' && <Button disabled={!!pending || !serverAccessDirty || serverAccessDevice.temporaryHelperActive || !serverAccessDevice.paired || serverAccessDevice.approvalPending}

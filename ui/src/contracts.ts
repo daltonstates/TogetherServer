@@ -234,6 +234,7 @@ export type Device = {
   id: string
   profileId: string
   assignedProfileIds: string[]
+  profileName?: string | null
   name: string
   canStart: boolean
   canStop: boolean
@@ -313,6 +314,7 @@ export type FriendSnapshot = {
   routeMode?: string
   routeAddress?: string | null
   hostId?: string
+  hostProfileName?: string | null
   connectionName?: string | null
   activity?: ActivityEvent[]
   chatProfiles?: { id: string; name: string; supported: boolean }[]
@@ -836,6 +838,7 @@ const parseFriendSnapshotInternal = (value: unknown, context: string, depth: num
     certificateExpiresUtc: optionalNullableText(source.certificateExpiresUtc, `${context}.certificateExpiresUtc`),
     expiryWarning: optionalNullableText(source.expiryWarning, `${context}.expiryWarning`), routeMode: optionalText(source.routeMode, `${context}.routeMode`),
     routeAddress: optionalNullableText(source.routeAddress, `${context}.routeAddress`), hostId: optionalText(source.hostId, `${context}.hostId`),
+    hostProfileName: optionalProfileName(source.hostProfileName, `${context}.hostProfileName`),
     connectionName: optionalNullableText(source.connectionName, `${context}.connectionName`),
     activity: source.activity === undefined || source.activity === null ? undefined : list(source.activity, `${context}.activity`, parseActivity),
     chatProfiles: source.chatProfiles === undefined || source.chatProfiles === null ? undefined :
@@ -1262,6 +1265,7 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
   if (temporaryHelperActive && temporaryHelperUntilUtc === null)
     throw new ContractError(`${context}.temporaryHelperActive requires a deadline.`)
   return { id: text(source.id, `${context}.id`), profileId: text(source.profileId, `${context}.profileId`),
+    profileName: optionalProfileName(source.profileName, `${context}.profileName`),
     assignedProfileIds: textList(source.assignedProfileIds, `${context}.assignedProfileIds`), name: text(source.name, `${context}.name`),
     canStart: flag(source.canStart, `${context}.canStart`), canStop: flag(source.canStop, `${context}.canStop`),
     canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`), canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
@@ -1461,3 +1465,22 @@ export const parseWorldBrowseResult: Decoder<WorldBrowseResult> = (value, contex
   return { ...basic, worldId: nullableText(source.worldId, `${context}.worldId`), sourceSaveRoot: nullableText(source.sourceSaveRoot, `${context}.sourceSaveRoot`),
     sourceFolder: text(source.sourceFolder, `${context}.sourceFolder`), ...optionalSetupSourceFacts(source, context) }
 }
+
+export type LocalProfile = { displayName: string }
+export type LocalProfileResult = BasicResult & LocalProfile
+function profileName(value: unknown, context: string): string {
+  const name = text(value, context)
+  if (name.length > 80 || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(name))
+    throw new ContractError(`${context} must be a display name of at most 80 characters without invalid, control or formatting characters.`)
+  return name
+}
+function optionalProfileName(value: unknown, context: string): string | null | undefined {
+  return value === undefined || value === null ? value : profileName(value, context)
+}
+export const parseLocalProfile: Decoder<LocalProfile> = (value, context = 'profile') => {
+  const source = object(value, context)
+  return { displayName: profileName(source.displayName, `${context}.displayName`) }
+}
+export const parseLocalProfileResult: Decoder<LocalProfileResult> = (value, context = 'profile result') => ({
+  ...parseBasicResult(value, context), ...parseLocalProfile(value, context)
+})

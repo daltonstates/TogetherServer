@@ -18,6 +18,7 @@ public sealed class PairedDevice
     public Guid InviteGeneration { get; set; }
     public List<Guid>? AssignedProfileIds { get; set; }
     public string Name { get; set; } = "";
+    public string? ProfileName { get; set; }
     public bool CanStart { get; set; }
     public bool CanStop { get; set; }
     public bool CanExtendTimer { get; set; }
@@ -102,7 +103,7 @@ public sealed record DeviceView(Guid Id, Guid ProfileId, IReadOnlyList<Guid> Ass
     DateTimeOffset? TemporaryHelperUntilUtc = null, bool TemporaryHelperActive = false,
     IReadOnlyList<Guid>? SaveReceiveProfileIds = null,
     IReadOnlyDictionary<Guid, SharedWorldGrants>? SharedWorldGrants = null,
-    bool SharedWorldKeyEnrolled = false);
+    bool SharedWorldKeyEnrolled = false, string? ProfileName = null);
 public sealed record ServerPermissionView(Guid ProfileId, bool CanStart, bool CanStop,
     bool CanExtendTimer = false, bool CanViewLogs = false);
 
@@ -112,11 +113,12 @@ public sealed record ServerInviteView(PairingInvite Invitation, bool CanStart,
     bool Open = true, int DeviceLimit = 1, int ActivatedDevices = 0,
     bool RequireApproval = false, DateTimeOffset? OpenedUtc = null,
     int DurationMinutes = 30, bool CanViewLogs = false);
-public sealed record PairingActivation(Guid DeviceId, string Code, bool ServerScope = false);
+public sealed record PairingActivation(Guid DeviceId, string Code, bool ServerScope = false,
+    string? ProfileName = null);
 public sealed record PairingCredential(Guid DeviceId, string Credential, DateTimeOffset ExpiresUtc,
-    bool ApprovalPending = false);
+    bool ApprovalPending = false, string? HostProfileName = null);
 public sealed record HeartbeatRequest(Guid DeviceId, Guid InstanceId, long Sequence, string Version,
-    int ProtocolVersion = 1, IReadOnlyList<string>? Capabilities = null);
+    int ProtocolVersion = 1, IReadOnlyList<string>? Capabilities = null, string? ProfileName = null);
 public sealed record HeartbeatReceipt(Guid InstanceId, long Sequence, DateTimeOffset ReceivedUtc,
     string AppVersion = "", int ProtocolVersion = 1);
 public sealed record PairingDecision(bool Ok, string Code, string Message);
@@ -1062,7 +1064,8 @@ public sealed partial class PairingService
                     device.TemporaryHelperUntilUtc, helper,
                     device.SaveReceiveProfileIds.Where(device.AssignedProfileIds.Contains).ToArray(),
                     new Dictionary<Guid, SharedWorldGrants>(device.SharedWorldGrants ?? []),
-                    device.SharedWorldPublicKey is not null);
+                    device.SharedWorldPublicKey is not null,
+                    UserProfileName.TryNormalize(device.ProfileName, out var name) ? name : null);
             }).ToList();
         }
     }
@@ -1113,7 +1116,8 @@ public sealed partial class PairingService
 
     public PairingCredential? Activate(PairingActivation request)
     {
-        if (request.Code is null || request.Code.Length > 128) return null;
+        if (request.Code is null || request.Code.Length > 128 ||
+            !UserProfileName.TryNormalize(request.ProfileName, out var profileName)) return null;
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
             if (request.ServerScope)
@@ -1131,6 +1135,7 @@ public sealed partial class PairingService
                     AssignedProfileIds = [state.ProfileId],
                     ServerPermissionOverrides = [],
                     Name = $"Friend PC {id.ToString("N")[..6]}",
+                    ProfileName = profileName,
                     CanStart = state.CanStart,
                     CanStop = state.CanStop,
                     CanViewLogs = state.CanViewLogs,
@@ -1147,7 +1152,7 @@ public sealed partial class PairingService
                 Activity("Connections", state.RequireApproval ? "ApprovalPending" : "Paired",
                     state.RequireApproval ? "This PC is waiting for Host approval." : "This PC connected.",
                     ActivitySeverity.Important, state.ProfileId, id, ActivityVisibility.Device);
-                return new PairingCredential(id, serverToken, expires, state.RequireApproval);
+                return new PairingCredential(id, serverToken, expires, state.RequireApproval, data.UserProfile.SharedName);
             }
             var device = devices.SingleOrDefault(d => d.Id == request.DeviceId);
             if (device is null || IsRevoked(device) || device.InviteHash is null ||
@@ -1161,10 +1166,12 @@ public sealed partial class PairingService
             ForgetRenewalReceipt(device.Id);
             device.InviteHash = null;
             device.InviteExpiresUtc = null;
+            if (request.ProfileName is not null) device.ProfileName = profileName;
             heartbeats.TryRemove(device.Id, out _);
             SaveState();
             data.TryAudit($"activate {device.Id} {UtcNow:O}");
-            return new PairingCredential(device.Id, token, device.CredentialExpiresUtc.Value);
+            return new PairingCredential(device.Id, token, device.CredentialExpiresUtc.Value,
+                HostProfileName: data.UserProfile.SharedName);
         }
     }
 
@@ -1310,7 +1317,9 @@ public sealed partial class PairingService
 
     public PairingDecision RecordHeartbeat(PairedDevice device, HeartbeatRequest request)
     {
-        if (request.InstanceId == Guid.Empty || request.Sequence < 1 || request.Version is null || request.Version.Length > 32)
+        if (request.DeviceId != device.Id || request.InstanceId == Guid.Empty || request.Sequence < 1 ||
+            request.Version is null || request.Version.Length > 32 ||
+            !UserProfileName.TryNormalize(request.ProfileName, out var profileName))
             return new PairingDecision(false, "InvalidHeartbeat", "Heartbeat fields are invalid.");
         lock (SharedWorldMutationGate.For(data.RootPath)) lock (sync)
         {
@@ -1322,6 +1331,13 @@ public sealed partial class PairingService
             if (heartbeats.TryGetValue(device.Id, out var prior) && prior.InstanceId == request.InstanceId &&
                 request.Sequence <= prior.Sequence)
                 return new PairingDecision(false, "Replay", "Heartbeat sequence did not advance.");
+            if (request.ProfileName is not null && current.ProfileName != profileName)
+            {
+                var priorName = current.ProfileName;
+                current.ProfileName = profileName;
+                try { SaveState(); }
+                catch { current.ProfileName = priorName; throw; }
+            }
             heartbeats[device.Id] = new HeartbeatReceipt(request.InstanceId, request.Sequence,
                 UtcNow, request.Version, request.ProtocolVersion);
             return new PairingDecision(true, "Received", "Heartbeat recorded.");

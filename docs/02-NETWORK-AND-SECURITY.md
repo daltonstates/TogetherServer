@@ -47,6 +47,15 @@ Chat sync uses the deliberately enabled Host HTTPS listener with the same pinned
 
 ## Host identity and Friend credentials
 
+Profile names are bounded self-reported display text, independent of pinned
+identity and credentials. Only valid pairing or authenticated status returns
+the Host's name; a Friend can update only its own name through its current
+authenticated heartbeat after authorization and replay checks. Local labels,
+assignments and permissions remain separate. Names are Windows-protected at
+rest and excluded from activity/audit messages and support exports. The shared
+Host/Join profile editor requires exact loopback/header/origin/body checks; it
+has no companion profile-mutation route. See [profile delivery](28-PROFILE-NAMES.md).
+
 - Host mode generates a TLS identity. Its certificate/private key stays on the Host in Windows-protected storage. Each saved server can have one current `TS3` code carrying the Host address, full certificate fingerprint, server profile ID, and random shared secret; the owner shares it through a trusted channel. The code remains active until the owner deliberately replaces it. Friend mode pins the Host identity and refuses mismatches without a "skip certificate checks" button.
 - The Host identity is stable independently of the advertised endpoint. Endpoint recovery begins from an existing saved connection and accepts a new endpoint only when its TLS certificate matches a currently accepted pin and the existing device credential authenticates. A replacement certificate is never trusted just because it appears at the new address.
 - Certificate rotation is staged. The Host creates a next certificate, announces its fingerprint over the current pinned authenticated channel, then activates it while Friends accept the current and next/previous pins for a bounded grace period. Certificate expiries are visible on both sides. Already expired or offline clients use a new pairing flow.

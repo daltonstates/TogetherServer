@@ -9,6 +9,22 @@ const connection = (id: string, state: string): FriendSnapshot => ({ mode: 'Frie
 const connections = [connection('Removed Host', 'Revoked'), connection('Offline favorite', 'Disconnected/Unknown'),
   connection('Active Host', 'Connected')]
 
+it('uses the shared Host name while preserving the searchable local alias and falling back when cleared', () => {
+  const props = { selectedId: 'one', showRemoved: false, favorites: [], busy: false, onShowRemoved: vi.fn(),
+    onSelect: vi.fn(), onFavorite: vi.fn(), onForget: vi.fn() }
+  const saved = { ...connection('one', 'Connected'), connectionName: 'Weekend PC', hostProfileName: 'Alex' }
+  const { container, rerender } = render(<FriendHostPicker {...props} connections={[saved]} />)
+  expect(container.querySelector('summary')).toHaveAccessibleName('Selected Host: Alex')
+  container.querySelector('details')!.open = true
+  expect(screen.getByText('Saved as: Weekend PC')).toBeInTheDocument()
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Weekend PC' } })
+  expect(screen.getByRole('button', { name: /Alex/ })).toBeInTheDocument()
+  for (const hostProfileName of [undefined, null, '', '  ']) {
+    rerender(<FriendHostPicker {...props} connections={[{ ...saved, hostProfileName }]} />)
+    expect(container.querySelector('summary')).toHaveAccessibleName('Selected Host: Weekend PC')
+  }
+})
+
 it('hides removed Hosts from names and search, orders active Hosts first, and never implies a hidden selection', () => {
   const onSelect = vi.fn()
   const { container } = render(<FriendHostPicker connections={connections} selectedId="Removed Host" showRemoved={false}

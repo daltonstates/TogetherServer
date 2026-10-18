@@ -13,8 +13,9 @@ export function FriendHostPicker({ connections, selectedId, showRemoved, favorit
   const visible = orderHostConnections(connections, showRemoved, favorites)
   return <SearchablePicker label="Selected Host" selectedId={selectedId}
     items={visible.map(connection => ({ id: connection.connectionId,
-      name: connection.connectionName ?? connection.profiles[0]?.name ?? 'Saved Host',
-      detail: isRemovedHost(connection) ? undefined : orderProfiles(connection.profiles).map(profile => profile.name).join(', '),
+      name: connection.hostProfileName?.trim() || connection.connectionName || connection.profiles[0]?.name || 'Saved Host',
+      detail: [connection.hostProfileName?.trim() && connection.connectionName ? `Saved as: ${connection.connectionName}` : '',
+        isRemovedHost(connection) ? '' : orderProfiles(connection.profiles).map(profile => profile.name).join(', ')].filter(Boolean).join(' / '),
       state: isRemovedHost(connection) ? 'Access removed' : connection.state }))}
     onSelect={onSelect}
     tools={<label><Input type="checkbox" checked={showRemoved} onChange={event => onShowRemoved(event.target.checked)} />Show removed Hosts</label>}

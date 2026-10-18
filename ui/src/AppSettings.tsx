@@ -1,3 +1,4 @@
+import { ProfileSettings, type ProfileEditorState } from './ProfileSettings'
 import { DismissibleNotice } from './DismissibleNotice'
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Button, Input } from './Controls'
@@ -10,9 +11,10 @@ import type { UiPreferences } from './qolPreferences'
 import { SettingsSectionHeading } from './SettingsPresentation'
 import './TaskFirstPages.css'
 
-export type AppSettingsSection = 'appearance' | 'notifications' | 'windows' | 'updates' | 'shortcuts'
+export type AppSettingsSection = 'profile' | 'appearance' | 'notifications' | 'windows' | 'updates' | 'shortcuts'
 
 export type AppSettingsProps = {
+  profile?: ProfileEditorState
   section?: AppSettingsSection
   onSectionChange?: (section: AppSettingsSection) => void
   onClose?: () => void
@@ -34,7 +36,8 @@ export type AppSettingsProps = {
   onQuit: () => void
 }
 
-const sections: Record<AppSettingsSection, { title: string; description: string; icon: 'palette' | 'bell' | 'monitor' | 'refresh' | 'keyboard' }> = {
+const sections: Record<AppSettingsSection, { title: string; description: string; icon: 'users' | 'palette' | 'bell' | 'monitor' | 'refresh' | 'keyboard' }> = {
+  profile: { title: 'Profile', description: 'The name you share when hosting and joining.', icon: 'users' },
   appearance: { title: 'Appearance', description: 'How TogetherServer looks on this PC.', icon: 'palette' },
   notifications: { title: 'Notifications', description: 'Defaults for Windows alerts on this PC.', icon: 'bell' },
   windows: { title: 'Windows behavior', description: 'Opening, closing and the Windows tray.', icon: 'monitor' },
@@ -42,14 +45,14 @@ const sections: Record<AppSettingsSection, { title: string; description: string;
   shortcuts: { title: 'Keyboard shortcuts', description: 'Move between pages and actions from the keyboard.', icon: 'keyboard' }
 }
 
-export function AppSettings({ section, onSectionChange, onClose, onBusyChange, preferences, onPreferencesChange, desktop, instance, update,
+export function AppSettings({ profile, section, onSectionChange, onClose, onBusyChange, preferences, onPreferencesChange, desktop, instance, update,
   busy, desktopBusy, updateBusy, onDesktopChange, notice, onClearNotice, onCheckUpdate, onReviewUpdate, onReloadUpdate, onQuit }: AppSettingsProps) {
   const [internalSection, setInternalSection] = useState<AppSettingsSection>('appearance')
   const [childBusy, setChildBusy] = useState(false)
   useEffect(() => { onBusyChange?.(childBusy) }, [childBusy, onBusyChange])
   useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   const page = section ?? internalSection
-  const pageBusy = busy || desktopBusy || updateBusy || childBusy
+  const pageBusy = !!profile?.saving || busy || desktopBusy || updateBusy || childBusy
   const selectSection = (next: AppSettingsSection) => {
     if (pageBusy || next === page) return
     onClearNotice()
@@ -66,6 +69,7 @@ export function AppSettings({ section, onSectionChange, onClose, onBusyChange, p
     <SettingsSectionHeading icon={sections[page].icon} title={sections[page].title} description={sections[page].description} />
     <ActionFeedback notice={notice} />
     <div className="app-settings-content" key={page}>
+      {page === 'profile' && profile && <ProfileSettings profile={profile} />}
       {page === 'appearance' && <><AppearancePreferences value={preferences} onChange={onPreferencesChange} />
         <p className="helper-text">Preferences save as you change them.</p></>}
       {page === 'notifications' && <><DesktopPreferencesPanel quietMode={preferences.quietMode}

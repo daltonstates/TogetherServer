@@ -47,7 +47,7 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
   if (device.revoked) return <article className="friend-pc-card" data-access-state="Revoked" aria-labelledby={headingId}>
     <header className="friend-pc-card-heading">
       <div className="friend-pc-identity"><span className="friend-pc-icon"><Icon name="monitor" size={22} /></span>
-        <div><h3 id={headingId}>{device.name}</h3><span className="friend-pc-kind">Friend PC</span></div></div>
+        <div><h3 id={headingId}>{device.profileName?.trim() || device.name}</h3><span className="friend-pc-kind">{device.profileName?.trim() ? `PC: ${device.name}` : 'Friend PC'}</span></div></div>
       <span className="friend-access-badge friend-pc-access-state">Access removed</span>
     </header>
     <p className="friend-pc-quiet">This PC no longer has access. Delete its saved record to remove it from this list.</p>
@@ -72,7 +72,7 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
   return <article className="friend-pc-card" data-access-state={view.state} aria-labelledby={headingId}>
     <header className="friend-pc-card-heading">
       <div className="friend-pc-identity"><span className="friend-pc-icon"><Icon name="monitor" size={22} /></span>
-        <div><h3 id={headingId}>{device.name}</h3><span className="friend-pc-kind">Friend PC</span></div></div>
+        <div><h3 id={headingId}>{device.profileName?.trim() || device.name}</h3><span className="friend-pc-kind">{device.profileName?.trim() ? `PC: ${device.name}` : 'Friend PC'}</span></div></div>
       <span className="friend-access-badge friend-pc-access-state"><Icon name={view.state === 'Available' ? 'shield' : 'warning'} size={14} />{view.label}</span>
     </header>
 

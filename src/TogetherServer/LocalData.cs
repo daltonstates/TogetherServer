@@ -161,6 +161,8 @@ public sealed class LocalData : IDisposable
     private readonly object activitySync = new();
     private readonly object stateSync = new();
     private readonly List<DataRecoveryNotice> recoveryNotices = [];
+    private UserProfileStore? userProfile;
+    internal UserProfileStore UserProfile => LazyInitializer.EnsureInitialized(ref userProfile, () => new UserProfileStore(this));
     public string WorldImportsRoot => Path.Combine(root, "world-imports");
     public string ManagedWorldsRoot => Path.Combine(root, "worlds");
     public string MinecraftInstallRoot => Path.Combine(root, "minecraft-servers");

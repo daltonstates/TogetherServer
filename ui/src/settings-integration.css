@@ -67,3 +67,6 @@
   .settings-dialog .server-picker-permissions { padding: 0; }
   .settings-dialog .server-picker-permissions label { min-height: 3rem; flex: 1 1 7rem; }
 }
+
+.profile-access { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .35rem; padding: .65rem .4rem; border-bottom: 1px solid var(--color-border-subtle); margin-bottom: .65rem; font-size: .85rem; overflow-wrap: anywhere; }
+.profile-access strong, .join-host-caption strong { overflow-wrap: anywhere; }

@@ -1,12 +1,13 @@
 import type { DesktopNotificationTarget } from './desktopNotificationBridge'
 import type { IconName } from './Icon'
 
-export type AppSection = 'appearance' | 'notifications' | 'windows' | 'updates' | 'shortcuts'
+export type AppSection = 'profile' | 'appearance' | 'notifications' | 'windows' | 'updates' | 'shortcuts'
 export type HostPcSection = 'access' | 'stop' | 'network' | 'diagnostics' | 'advanced'
 export type JoinSection = 'pairing' | 'play' | 'chat' | 'logs' | 'shared-saves' | 'network' | 'connection'
 export type SectionItem<T extends string> = { id: T; label: string; icon: IconName }
 
 export const appSections: SectionItem<AppSection>[] = [
+  { id: 'profile', label: 'Profile', icon: 'users' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
   { id: 'notifications', label: 'Notifications', icon: 'bell' },
   { id: 'windows', label: 'Windows behavior', icon: 'monitor' },

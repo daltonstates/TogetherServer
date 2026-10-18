@@ -1339,3 +1339,22 @@ The running production app, worlds, credentials, listener, router, firewall, and
 Friend access, saved Host selection and sharing-member lists hide revoked accounts by default. Explicit Show removed controls expose confirmed deletion of revoked pairing records or saved Host connections. Current usable PCs and active server/Host profiles lead their lists without changing settings or selection. Protected learned revocation survives restart; old credentials remain denied after deletion. Signed lineage and inherited authority retain their existing safety restrictions.
 
 PASS 970 JSDOM tests across 81 files, the code-only gate with 22 source/synthetic groups, production UI bundle, final app compilation with zero .NET warnings/errors, and byte-for-byte embedding of all four current UI assets. The existing Vite chunk-size warning remains. Symbolic-link subcases and native/browser/process/Friend-PC/game/save acceptance remain explicitly skipped under the owner's foreground constraint. See [delivery and remaining checks](25-REVOKED-PROFILES-AND-DELETION.md).
+
+## 2026-10-18 - Shared profile names
+
+Added **App Settings → Profile** and name-setup links in Host and Join. A chosen
+name is automatically exchanged during pairing and authenticated refreshes,
+including existing pairings. Friend PC cards, saved Host selection, Join captions,
+search and new chat posts show the person while keeping PC labels and local Host
+aliases separate. Names use protected local storage, strict bounded validation
+and the existing access gates; they provide no identity or lifecycle authority.
+
+PASS the code-only gate, **1,085 JSDOM tests across 90 files**, final lint and
+TypeScript/production UI bundle, zero-warning final solution build embedding
+the bundle, and all **43 source/synthetic groups** after the final cache-order
+regression fix. Initial route-binding and old menu-expectation issues were fixed
+and retained in [delivery and remaining checks](28-PROFILE-NAMES.md). The existing
+Vite chunk-size warning remains. Symbolic-link subcases are skipped; native,
+rendered/browser, packaged-process and real Friend-PC/network acceptance remain
+unverified under the active-desktop constraint. Production was not launched,
+replaced or modified, and no release was published.

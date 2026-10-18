@@ -19,6 +19,16 @@ const device: Device = {
 const callbacks = () => ({ onManage: vi.fn(), onApprove: vi.fn() })
 
 describe('Friend PC overview card', () => {
+  it('shows a shared person name with the PC label secondary and falls back for older or cleared profiles', () => {
+    const input = { device: { ...device, profileName: 'Sam' }, servers, nowMs, busy: false, ...callbacks() }
+    const { rerender } = render(<FriendPcCard {...input} />)
+    expect(screen.getByRole('heading', { name: 'Sam' })).toBeInTheDocument()
+    expect(screen.getByText('PC: Living room PC')).toBeInTheDocument()
+    for (const profileName of [undefined, null, '', '  ']) {
+      rerender(<FriendPcCard {...input} device={{ ...device, profileName }} />)
+      expect(screen.getByRole('heading', { name: 'Living room PC' })).toBeInTheDocument()
+    }
+  })
   it('separates identity, heartbeat, assigned servers and exact grants without overview editors', () => {
     const actions = callbacks()
     const { container } = render(<FriendPcCard device={device} servers={servers} nowMs={nowMs} busy={false} {...actions} />)

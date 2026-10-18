@@ -92,6 +92,14 @@ The Host and Friend capabilities may run concurrently in the same process. Host 
 
 ## Friend internals
 
+One Windows-protected local profile supplies the same chosen display name in
+Host and Join. Additive pairing/heartbeat fields update each authenticated
+device's separate person name; pairing/status responses supply the Host's name.
+Friend protected configuration caches the observed Host name independently of
+its local saved alias. The loopback profile editor has exact bounded input and
+shares the mode/update gate without requiring Host role. New chat entries use
+these names without rewriting signed history. See [profile delivery](28-PROFILE-NAMES.md).
+
 `remote-rehearsal-v1` adds one fixed authenticated exchange over a marked synthetic staging profile. The loopback owner preparation creates only a multi-chunk fixture checkpoint, signed roster and published copy in staging storage; it never pairs a PC or grants Receive. The Friend flow reuses fresh status, the normal signing enrollment and roster checks, idempotent chat IDs, bounded verified transfer and signed receipts. Receive-only rehearsal receipt verification explicitly omits Eligible host; handoff still requires it by default. The report is an allowlisted seven-stage projection with no IDs, names, endpoints, pins, paths, hashes, messages or credentials. No new listener, remote shell, arbitrary target or telemetry poll is introduced.
 
 - The same executable runs in Friend mode and serves its React UI locally. It stores only its own pairing material, protected on that Windows account.

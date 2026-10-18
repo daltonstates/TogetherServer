@@ -374,7 +374,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 snapshot.Settings.RemoteControlsEnabled ? null : "The Host has paused remote Start and Stop.",
                 profiles, profiles.Any(profile => profile.CanStart), profiles.Any(profile => profile.CanStop),
                 DateTimeOffset.UtcNow, protocol, identity.State(), ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute),
-                activity);
+                activity, data.UserProfile.SharedName);
         }
 
         var companion = app.MapGroup("/api/companion");
@@ -741,7 +741,9 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     !chat.IsMember(profileId, current.Id))
                     return Results.Json(new { code = "ChatAccessDenied" }, statusCode: 403);
                 foreach (var draft in request.Drafts ?? [])
-                    chat.Post(hostId, profileId, current.Id, current.Name, draft.Text, draft.Id);
+                    chat.Post(hostId, profileId, current.Id,
+                        UserProfileName.TryNormalize(current.ProfileName, out var personName) && personName is not null
+                            ? personName : current.Name, draft.Text, draft.Id);
                 if (!pairing.AuthorizeActiveDevice(device.Id, out current).Ok ||
                     current is null || !pairing.CanAccess(current, profileId) ||
                     !chat.IsMember(profileId, current.Id))
