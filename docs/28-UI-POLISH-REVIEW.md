@@ -26,6 +26,9 @@ authoritative.
 - Friend shared-save management separates Copy status, People, Recovery and
   Details. Transfer progress, storage warnings and conflicting histories stay
   visible across sections, and unfinished recovery fields retain their values.
+- Join puts Play and connection actions before world discovery. Short icon
+  disclosures hold instructions, requirements and tools. Narrow screens flatten
+  the nested card padding; joining instructions have one disclosure.
 
 ## Review and validation
 
@@ -38,12 +41,12 @@ journeys were deliberately skipped. Detailed logs stay under ignored
 `local-data/ui-polish-review/`.
 
 The initial full JSDOM suite passed 1,060 tests in 89 files. A subsequent full
-suite passed 1,063 after the failed-draft recovery fixes. The final full suite
+suite passed 1,063 after the failed-draft recovery fixes. The first integrated suite
 passed **1,067/1,067 in 89 files** after the inactive-editor guard correction.
 Final lint, TypeScript and production UI build passed; the build retains the
 existing bundle-size advisory. The initial locked renderer fixtures passed
 **19/19**. Subsequent focused tests cover the findings below; final local results
-follow. The expanded hosted capture remains pending.
+follow.
 
 ### Initial rendered review
 
@@ -137,9 +140,51 @@ four short desktop cases, plus continuous scroll companions. Pure renderer and
 fixture checks pass **24/24**. Two explicit expanded Play guidance cases cover
 the shortened summaries and their full instructions.
 After integrating these findings, the full UI suite passes **1,074/1,074 in 89
-files**. Final TypeScript, lint and the production UI build pass, retaining only
-the existing large-bundle advisory. Hosted pixel and continuous-scroll acceptance
-are still pending.
+files**. TypeScript, lint and the production UI build pass, retaining only
+the existing large-bundle advisory.
+The code-only verifier was rerun against `c5cfaa7` and passes with zero build
+warnings/errors; the source-link privilege and interactive acceptance skips
+remain explicit. No production app or process fixture was launched locally.
+
+### Complete capture and final visual findings
+
+Hosted Windows run [39143788396](https://github.com/daltonstates/TogetherServer/actions/runs/39143788396)
+at `c5cfaa731114926d7d14daf6dc13d4e1a0c37b17` passed **844/844** planned
+captures and produced **2,422 PNGs**, with no failed cases, layout findings,
+missing screenshots, skips or fatal errors. The 194 intentional error-state
+cases are expected synthetic UI states. ZIP SHA-256:
+`385F4539E403BC919DED9BD022F76AC76D356D2D1D4B4B8D955FC471BFAC971C`.
+The hosted bundle index hash matches the locally built index exactly.
+
+All **542 non-null vertical pane records** report complete continuous coverage;
+their **1,578 companion PNGs** cover the panes across 473 cases. The three
+short-desktop scroll probes confirm separate sidebar/content movement and full
+keyboard visibility of the last sidebar row. Advanced content fits without
+scrolling; Files and Backups overflow and scroll independently. The fourth short
+case tests the picker: all seven visible buttons pass hit testing and the
+popover fits the viewport.
+
+Exact SHA-256 comparison reuses **1,229 previously inspected PNGs** only from
+captured cases with no reported finding. All **175 fresh contact sheets** were
+visually inspected, covering the other **1,193 PNGs**: Host 87 sheets / 598 PNGs,
+sharing 57 / 389, Settings 8 / 50, and Join/global 23 / 156. Original images were
+opened when a sheet suggested a problem.
+The Join/global review also opened its narrow
+150% instruction original. That inspection found excess nested card padding
+and a second instruction disclosure that reduced readable line width. The
+mobile Join cards now share one inset, and instructions expand directly.
+The Host review also found that vertical screenshots omit the far side of the
+intentional file-diff horizontal reader. Horizontal companions now capture its
+left, interior and right columns at each visible row band, restoring its original
+scroll position afterward. Coverage fails unless every counted row band shows
+all columns and the bands cover every row. A complete hosted rerun remains.
+
+After the Join correction, the full UI suite again passes **1,074/1,074 in 89
+files**, plus TypeScript, lint and the production UI build. The existing bundle
+size advisory remains. Renderer/fixture checks pass **24/24** after updating the
+obsolete two-disclosure expectation. Horizontal capture calculations also pass
+the pure checks, including clipped readers and missing-corner counterexamples.
+Final hosted capture results will be recorded before delivery.
 
 The previous screenshot fixture inventory had drifted from the recent
 Backups tabs and peer-world UI; this review updates it against the actual bundled

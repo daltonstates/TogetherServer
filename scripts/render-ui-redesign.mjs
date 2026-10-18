@@ -92,7 +92,7 @@ const cases = [
   { id: 'host-compare-all', scenario: 'host-multi', workspace: 'Host', action: 'compare', screen: { role: 'dialog', name: 'All servers' } },
   ...joinSections.map(([id, label, screen]) => ({ id: `join-${id}`, scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', id, label], screen })),
   { id: 'join-play-instructions-expanded', scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', 'play', 'Play'],
-    steps: [{ summary: 'Join instructions', within: '.friend-play-flow' }, { summary: 'How to join in Valheim', within: '.friend-play-flow' }],
+    steps: [{ summary: 'Join instructions', within: '.friend-play-flow' }],
     screen: { css: '.friend-play-flow details[open]', text: 'Open Valheim, choose your character, then choose Join Game and Join IP.' } },
   { id: 'join-play-tools-expanded', scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', 'play', 'Play'],
     steps: [{ summary: 'Tools & help', within: '.friend-play-flow' }, { summary: /^Your access:/, within: '.friend-play-flow' }],
@@ -605,32 +605,93 @@ function scrollCaptureCoverage(contentHeight, ranges, tolerance = 1) {
   return { complete: gaps.length === 0, contentHeight, coveredThrough: end, tolerance, gaps };
 }
 
-function scrollCaptureVisibleRange(el) {
-  const bounds = el.getBoundingClientRect(), contentTop = bounds.top + el.clientTop;
-  let clipTop = 0, clipBottom = innerHeight;
-  const clippedBy = [{ name: 'viewport', top: 0, bottom: innerHeight }], modal = el.closest('dialog:modal');
+function scrollCaptureVisibleRange(el, axis = 'vertical') {
+  const horizontal = axis === 'horizontal', edge = horizontal ? 'left' : 'top';
+  const clientInset = horizontal ? 'clientLeft' : 'clientTop', clientSize = horizontal ? 'clientWidth' : 'clientHeight';
+  const scrollSize = horizontal ? 'scrollWidth' : 'scrollHeight', scrollOffset = horizontal ? 'scrollLeft' : 'scrollTop';
+  const bounds = el.getBoundingClientRect(), contentTop = bounds[edge] + el[clientInset];
+  const viewportSize = horizontal ? innerWidth : innerHeight;
+  let clipTop = 0, clipBottom = viewportSize;
+  const clippedBy = [{ name: 'viewport', start: 0, end: viewportSize }], modal = el.closest('dialog:modal');
   // A modal is painted in the browser top layer. Its DOM ancestors outside the
   // modal do not clip it, while ordinary nested readers retain ancestor clips.
   if (el !== modal) for (let parent = el.parentElement; parent; parent = parent.parentElement) {
-    if (/^(auto|scroll|hidden|clip)$/.test(getComputedStyle(parent).overflowY)) {
-      const parentBounds = parent.getBoundingClientRect(), top = parentBounds.top + parent.clientTop;
-      const bottom = top + parent.clientHeight;
+    if (/^(auto|scroll|hidden|clip)$/.test(getComputedStyle(parent)[horizontal ? 'overflowX' : 'overflowY'])) {
+      const parentBounds = parent.getBoundingClientRect(), top = parentBounds[edge] + parent[clientInset];
+      const bottom = top + parent[clientSize];
       if (top > clipTop || bottom < clipBottom) clippedBy.push({
-        name: parent.getAttribute('aria-label') || parent.className || parent.tagName, top, bottom
+        name: parent.getAttribute('aria-label') || parent.className || parent.tagName, start: top, end: bottom
       });
       clipTop = Math.max(clipTop, top); clipBottom = Math.min(clipBottom, bottom);
     }
     if (parent === modal) break;
   }
-  const visibleTop = Math.max(0, Math.min(el.clientHeight, clipTop - contentTop));
-  const visibleBottom = Math.max(visibleTop, Math.min(el.clientHeight, clipBottom - contentTop));
-  return { scrollTop: el.scrollTop, start: Math.min(el.scrollHeight, el.scrollTop + visibleTop),
-    end: Math.min(el.scrollHeight, el.scrollTop + visibleBottom), visibleHeight: visibleBottom - visibleTop,
-    clippedBy: visibleBottom - visibleTop < el.clientHeight - 1 ? clippedBy : [] };
+  const visibleTop = Math.max(0, Math.min(el[clientSize], clipTop - contentTop));
+  const visibleBottom = Math.max(visibleTop, Math.min(el[clientSize], clipBottom - contentTop));
+  return { [scrollOffset]: el[scrollOffset], start: Math.min(el[scrollSize], el[scrollOffset] + visibleTop),
+    end: Math.min(el[scrollSize], el[scrollOffset] + visibleBottom),
+    [horizontal ? 'visibleWidth' : 'visibleHeight']: visibleBottom - visibleTop,
+    clippedBy: visibleBottom - visibleTop < el[clientSize] - 1 ? clippedBy : [] };
+}
+
+function scrollCaptureReaderCoverage(contentWidth, contentHeight, views) {
+  const horizontal = views.map(view => scrollCaptureCoverage(contentWidth, view.coveredRanges));
+  // A vertical band counts only when every column in that band was pictured.
+  // Otherwise separate left-top and right-bottom views could falsely pass.
+  const vertical = scrollCaptureCoverage(contentHeight, views.flatMap((view, index) =>
+    horizontal[index].complete ? [{ start: view.top, end: view.bottom }] : []));
+  return { complete: horizontal.every(coverage => coverage.complete) && vertical.complete,
+    horizontal, vertical };
+}
+
+async function captureFileDiffEvidence(page, record, output, frame) {
+  const readers = page.locator('.server-file-diff-scroll');
+  for (let index = 0; index < await readers.count(); index++) {
+    const reader = readers.nth(index);
+    const geometry = await reader.evaluate(el => {
+      const topDialog = [...document.querySelectorAll('dialog[open]')].at(-1);
+      if (topDialog && !topDialog.contains(el) || el.closest('[hidden],[inert]')) return null;
+      const bounds = el.getBoundingClientRect(), style = getComputedStyle(el);
+      if (bounds.width < 1 || bounds.height < 1 || style.visibility === 'hidden') return null;
+      return { left: el.scrollLeft, width: el.clientWidth, contentWidth: el.scrollWidth,
+        height: el.clientHeight, contentHeight: el.scrollHeight, name: el.getAttribute('aria-label') || el.className };
+    });
+    if (!geometry || geometry.width < 1 || geometry.contentWidth <= geometry.width + 1) continue;
+    let evidence = record.horizontalScrollEvidence.find(item => item.readerIndex === index);
+    if (!evidence) {
+      evidence = { ...geometry, readerIndex: index, plannedOffsets: scrollCaptureOffsets(geometry.width, geometry.contentWidth), views: [] };
+      record.horizontalScrollEvidence.push(evidence);
+    }
+    const vertical = await reader.evaluate(scrollCaptureVisibleRange);
+    const horizontal = await reader.evaluate(scrollCaptureVisibleRange, 'horizontal');
+    if (vertical.visibleHeight < 1 || horizontal.visibleWidth < 1) continue;
+    const view = { frame, top: 0, bottom: geometry.contentHeight, coveredRanges: [] };
+    evidence.views.push(view);
+    try {
+      for (let segment = 0; segment < evidence.plannedOffsets.length; segment++) {
+        await reader.evaluate((el, value) => { el.scrollLeft = value; }, evidence.plannedOffsets[segment]);
+        await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+        const range = await reader.evaluate(scrollCaptureVisibleRange, 'horizontal');
+        const verticalRange = await reader.evaluate(scrollCaptureVisibleRange);
+        const position = segment === 0 ? 'left' : segment === evidence.plannedOffsets.length - 1 ? 'right'
+          : `segment-${String(segment + 1).padStart(2, '0')}-of-${String(evidence.plannedOffsets.length).padStart(2, '0')}`;
+        const filename = `${record.id}--${frame}--file-diff-${index}-${position}.png`;
+        await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
+        record.screenshots.push({ file: filename, kind: 'horizontal-scroll-pane', pane: geometry.name, frame, position, ...range, verticalRange });
+        view.coveredRanges.push({ file: filename, ...range });
+        view.top = Math.max(view.top, verticalRange.start);
+        view.bottom = Math.max(view.top, Math.min(view.bottom, verticalRange.end));
+      }
+    } finally {
+      await reader.evaluate((el, left) => { el.scrollLeft = left; }, geometry.left);
+    }
+  }
 }
 
 async function captureScrollEvidence(page, record, output) {
   if (record.id.startsWith('tooltip-') || record.id.startsWith('dialog-selected-server-picker')) return;
+  record.horizontalScrollEvidence = [];
+  await captureFileDiffEvidence(page, record, output, 'viewport');
   const panes = page.locator('.workspace-scroll, .workspace-scroll *, .context-content, .context-content *, dialog[open], dialog[open] *');
   const indices = await panes.evaluateAll(elements => {
     const topDialog = [...document.querySelectorAll('dialog[open]')].at(-1);
@@ -682,6 +743,7 @@ async function captureScrollEvidence(page, record, output) {
         record.screenshots.push({ file: filename, kind: 'scroll-pane', pane: geometry.name, position, ...range });
         evidence.capturedOffsets.push(range.scrollTop);
         evidence.coveredRanges.push({ file: filename, ...range });
+        await captureFileDiffEvidence(page, record, output, `pane-${index}-${position}`);
       }
       evidence.coverage = scrollCaptureCoverage(geometry.contentHeight, evidence.coveredRanges);
       if (!evidence.coverage.complete) {
@@ -696,6 +758,13 @@ async function captureScrollEvidence(page, record, output) {
           parent.scrollTop = positions[index].top; parent.scrollLeft = positions[index].left; index++;
         }
       }, ancestorScroll);
+    }
+  }
+  for (const evidence of record.horizontalScrollEvidence) {
+    evidence.coverage = scrollCaptureReaderCoverage(evidence.contentWidth, evidence.contentHeight, evidence.views);
+    if (!evidence.coverage.complete) {
+      record.layoutFindings.push({ kind: 'file-diff-capture-incomplete', pane: evidence.name, ...evidence.coverage });
+      throw new Error(`File comparison ${evidence.name} has unpictured rows or columns`);
     }
   }
 }

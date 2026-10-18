@@ -414,6 +414,8 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 }
 .app-shell .update-banner > .ui-button:not(.notice-dismiss) { justify-self: start; max-width: 100%; }
 .server-files-workspace .server-files-disclosure > summary::after { content: none; }
+.friend-play-flow .join-guide { border: 0; padding: 0; background: transparent; }
+.join-guide h5 { margin: 0; color: var(--color-text-secondary); font-size: .8125rem; line-height: 1.5; }
 .host-sidebar-primary { display: grid; gap: 6px; min-width: 0; }
 .context-picker-trigger strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-chat-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -434,6 +436,12 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   .server-log-filters .server-log-contains { grid-column: 1 / -1; }
 }
 @media (max-width: 700px) {
+  .app-shell .join-context-workspace .friend-primary { padding: 12px; }
+  .app-shell .join-context-workspace .friend-server-list > .profile-card { padding: 0; border: 0; background: transparent; }
+  .app-shell .join-context-workspace .friend-play-flow { padding: 0; border: 0; background: transparent; }
+  .join-context-workspace .friend-play-flow .server-support-disclosure > summary { padding-inline: 12px; gap: 8px; }
+  .join-context-workspace .friend-play-flow .server-support-disclosure > :not(summary) { margin-inline: 12px; }
+  .join-context-workspace .friend-play-flow .friend-permissions { padding: 8px 10px; }
   .app-shell .update-banner { grid-template-columns: minmax(0, 1fr); padding-inline-start: 18px; }
   .app-shell .host-context-workspace > .context-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .host-sidebar-primary { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }

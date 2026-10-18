@@ -30,9 +30,9 @@ const steps: Record<string, string[]> = {
 export function JoinGuide({ kind }: { kind: string }) {
   const gameSteps = steps[kind]
   if (!gameSteps) return null
-  return <details className="join-guide">
-    <summary>How to join in {gameLabel(kind)}</summary>
+  return <section className="join-guide" aria-label={`How to join in ${gameLabel(kind)}`}>
+    <h5>How to join in {gameLabel(kind)}</h5>
     <ol>{gameSteps.map(step => <li key={step}>{step}</li>)}</ol>
     <small>If the app connection works but the game cannot join, use Connection Doctor to check the game route from this PC.</small>
-  </details>
+  </section>
 }

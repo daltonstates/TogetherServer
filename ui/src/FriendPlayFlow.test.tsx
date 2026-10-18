@@ -162,6 +162,7 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('button', { name: 'Open game' }).compareDocumentPosition(screen.getByText('Requirements slot')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText('Masked connection controls').compareDocumentPosition(screen.getByText('Requirements slot')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText('How to join in Valheim')).toBeInTheDocument()
+    expect(screen.getByText('How to join in Valheim').closest('details')).toBe(screen.getByLabelText('How to join in the game').closest('details'))
     expect(fetcher).not.toHaveBeenCalled()
   })
 

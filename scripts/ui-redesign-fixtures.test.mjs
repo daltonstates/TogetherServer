@@ -389,20 +389,22 @@ test('layout visibility excludes closed disclosure bodies while retaining native
   assert.equal(concealed(node('BUTTON')), false, 'a genuinely visible clipped control remains eligible for checking');
 });
 
-test('scroll screenshot segments cover short, long and narrow panes without unpictured intervals', () => {
+test('scroll screenshot segments cover short, long and narrow panes on both axes without unpictured intervals', () => {
   const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
   const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  const names = ['scrollCaptureOffsets', 'scrollCaptureCoverage', 'scrollCaptureVisibleRange'];
+  const names = ['scrollCaptureOffsets', 'scrollCaptureCoverage', 'scrollCaptureVisibleRange', 'scrollCaptureReaderCoverage'];
   const helpers = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
-  assert.equal(helpers.length, 3, 'test the actual renderer calculations without launching a browser');
-  const { scrollCaptureOffsets: offsetsFor, scrollCaptureCoverage: coverageFor, scrollCaptureVisibleRange: rangeFor } = runInNewContext(
-    helpers.map(node => node.getText(ast)).join('\n') + '\n;({scrollCaptureOffsets,scrollCaptureCoverage,scrollCaptureVisibleRange})', {
-      innerHeight: 900, getComputedStyle: node => ({ overflowY: node.overflowY ?? 'visible' })
+  assert.equal(helpers.length, 4, 'test the actual renderer calculations without launching a browser');
+  const { scrollCaptureOffsets: offsetsFor, scrollCaptureCoverage: coverageFor, scrollCaptureVisibleRange: rangeFor,
+    scrollCaptureReaderCoverage: readerCoverageFor } = runInNewContext(
+    helpers.map(node => node.getText(ast)).join('\n') + '\n;({scrollCaptureOffsets,scrollCaptureCoverage,scrollCaptureVisibleRange,scrollCaptureReaderCoverage})', {
+      innerHeight: 900, innerWidth: 1280,
+      getComputedStyle: node => ({ overflowY: node.overflowY ?? 'visible', overflowX: node.overflowX ?? 'visible' })
     });
   for (const [height, contentHeight] of [
     [672, 2020], [723, 2302], [487, 1484], // Observed gaps in the initial hosted artifact.
     [844, 100], [844, 844], [844, 855], [400, 800], [400, 1200], [400, 1201],
-    [240, 10000], [40, 4000], [373.5, 9980.25]
+    [240, 10000], [40, 4000], [373.5, 9980.25], [244, 704], [160, 1030] // Narrow horizontal file readers.
   ]) {
     const offsets = offsetsFor(height, contentHeight), maximum = Math.max(0, contentHeight - height);
     assert.equal(offsets[0], 0); assert.equal(offsets.at(-1), maximum);
@@ -433,10 +435,12 @@ test('scroll screenshot segments cover short, long and narrow panes without unpi
     assert.throws(() => offsetsFor(...dimensions), /finite positive/);
   assert.throws(() => offsetsFor(40, 100000), /complete coverage was not captured/, 'unexpected huge content fails explicitly instead of truncating the gallery');
 
-  const node = ({ top, height, contentHeight = height, scrollTop = 0, parent = null, overflowY = 'visible', modal = false }) => ({
-    clientTop: 0, clientHeight: height, scrollHeight: contentHeight, scrollTop, parentElement: parent, overflowY, modal,
+  const node = ({ top = 0, height = 900, contentHeight = height, scrollTop = 0, left = 0, width = 1280,
+    contentWidth = width, scrollLeft = 0, parent = null, overflowY = 'visible', overflowX = 'visible', modal = false }) => ({
+    clientTop: 0, clientHeight: height, scrollHeight: contentHeight, scrollTop, parentElement: parent, overflowY, overflowX, modal,
+    clientLeft: 0, clientWidth: width, scrollWidth: contentWidth, scrollLeft,
     className: 'synthetic-pane', tagName: modal ? 'DIALOG' : 'DIV', getAttribute: () => null,
-    getBoundingClientRect: () => ({ top, bottom: top + height }),
+    getBoundingClientRect: () => ({ top, bottom: top + height, left, right: left + width }),
     closest() { for (let current = this; current; current = current.parentElement) if (current.modal) return current; return null; }
   });
   for (const overflowY of ['auto', 'scroll', 'hidden', 'clip']) {
@@ -458,6 +462,32 @@ test('scroll screenshot segments cover short, long and narrow panes without unpi
   const viewportClipped = rangeFor(node({ top: 800, height: 200, contentHeight: 500 }));
   assert.equal(viewportClipped.visibleHeight, 100); assert.equal(viewportClipped.end, 100);
   assert.equal(viewportClipped.clippedBy[0].name, 'viewport');
+
+  for (const overflowX of ['auto', 'scroll', 'hidden', 'clip']) {
+    const parent = node({ left: 100, width: 300, overflowX });
+    const range = rangeFor(node({ left: 50, width: 400, contentWidth: 1200, scrollLeft: 350, parent }), 'horizontal');
+    assert.equal(range.scrollLeft, 350); assert.equal(range.start, 400); assert.equal(range.end, 700);
+    assert.equal(range.visibleWidth, 300, `${overflowX} ancestors clip the actual captured columns`);
+  }
+  const clippedColumns = rangeFor(node({ left: 1200, width: 200, contentWidth: 800 }), 'horizontal');
+  assert.equal(clippedColumns.visibleWidth, 80); assert.equal(clippedColumns.end, 80);
+  const narrowWorkspace = node({ left: 600, width: 100, overflowX: 'hidden' });
+  const wideModal = node({ left: 100, width: 1100, parent: narrowWorkspace, modal: true });
+  assert.equal(rangeFor(node({ left: 120, width: 600, contentWidth: 1400, parent: wideModal }), 'horizontal').visibleWidth, 600,
+    'top-layer modal readers also escape underlying horizontal clipping');
+
+  const columns = offsetsFor(300, 800).map(start => ({ start, end: start + 300 }));
+  const bands = [{ top: 0, bottom: 220, coveredRanges: columns }, { top: 180, bottom: 400, coveredRanges: columns }];
+  const completeReader = readerCoverageFor(800, 400, bands);
+  assert.equal(completeReader.complete, true); assert.equal(completeReader.vertical.coveredThrough, 400);
+  assert.equal(readerCoverageFor(800, 400, bands.slice(0, 1)).complete, false, 'all columns in only the top rows are incomplete');
+  assert.equal(readerCoverageFor(800, 400, [bands[0], { ...bands[1], coveredRanges: columns.slice(0, -1) }]).complete, false,
+    'bottom rows missing exact-text columns cannot pass full reader coverage');
+  assert.equal(readerCoverageFor(800, 400, [
+    { top: 0, bottom: 220, coveredRanges: [{ start: 0, end: 400 }] },
+    { top: 180, bottom: 400, coveredRanges: [{ start: 400, end: 800 }] }
+  ]).complete, false, 'independent row and column unions cannot disguise uncaptured corners');
+  assert.equal(readerCoverageFor(800, 400, []).complete, false, 'an offscreen reader without captures fails explicitly');
 });
 
 test('draft revision storage never crosses fixture states', () => {
@@ -556,7 +586,8 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     assert.equal(testCase.screen.css, '.friend-play-flow details[open]');
     assert.ok(testCase.screen.text.length > 50, `${id} asserts actual guidance rather than only its disclosure title`);
     assert.equal(testCase.steps[0].summary, summary); assert.equal(testCase.steps[0].within, '.friend-play-flow');
-    assert.equal(testCase.steps.length, 2, `${id} also opens its nested guidance or permission details`);
+    assert.equal(testCase.steps.length, id === 'join-play-instructions-expanded' ? 1 : 2,
+      `${id} opens its content without a redundant instruction disclosure`);
     assert.ok(plans.some(plan => plan.testCase.id === id && plan.variant.scale === 150 && plan.variant.viewport.width === 390),
       `${id} includes narrow 150% text coverage`);
   }
